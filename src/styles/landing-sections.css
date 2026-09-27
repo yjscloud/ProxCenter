@@ -1,0 +1,1107 @@
+/* ==========================================================================
+   产品官网 — 第 2 块：首屏 / 数字带 / 能力矩阵 / 架构图谱
+   ==========================================================================
+   令牌与基础件见 landing.css。
+   ========================================================================== */
+
+/* ==========================================================================
+   0. 首屏
+   ==========================================================================
+   与「左文右图 + 通栏浏览器示意」的老结构不同，这里把首屏做成一屏两栏：
+   左边负责叙事（是什么、能做什么、下一步点哪里），右边直接放一块**控制台
+   速览**——KPI、节点负载、最近动态都是面板里真实存在的栏目。用户在首屏就能
+   看到「这东西长什么样、盯着什么数据」，比再滚一屏去看大图更省一次滚动。
+
+   检索条做成通栏的「指令条」压在首屏底部：它的作用是把人送去能力矩阵，
+   放在两栏之下才拿得到整行宽度，也才担得起这个位置。
+   ========================================================================== */
+
+.lp-hero {
+  position: relative;
+  padding: 68px 0 56px;
+  overflow: hidden;
+}
+
+/* 中心辉光：极淡的一层冷蓝，只在首屏顶部，避免整页发灰 */
+.lp-hero::before {
+  content: '';
+  position: absolute;
+  top: -340px;
+  left: 50%;
+  width: 1100px;
+  height: 620px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: radial-gradient(
+    50% 50% at 50% 50%,
+    rgba(0, 82, 217, 0.13),
+    rgba(0, 164, 255, 0.07) 46%,
+    transparent 72%
+  );
+}
+
+.lp-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.04fr) minmax(0, 0.96fr);
+  align-items: center;
+  gap: 64px;
+}
+
+.lp-hero-copy {
+  min-width: 0;
+}
+
+.lp-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.lp-hero-copy .lp-h1 {
+  max-width: 12em;
+}
+
+.lp-hero-copy .lp-lead {
+  margin-top: 20px;
+  max-width: 34em;
+}
+
+.lp-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 30px;
+}
+
+.lp-trust {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 18px;
+  margin-top: 34px;
+  padding-top: 24px;
+  border-top: 1px solid var(--lp-line);
+}
+
+.lp-trust-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--lp-muted);
+}
+
+.lp-trust-item svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--lp-green);
+}
+
+/* ---- 首屏右侧：控制台速览 ---- */
+
+.lp-hero-aside {
+  position: relative;
+  min-width: 0;
+}
+
+.lp-board {
+  position: relative;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r-lg);
+  box-shadow: var(--lp-sh-md);
+  overflow: hidden;
+}
+
+.lp-board-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--lp-line);
+  background: var(--lp-sunken);
+}
+
+.lp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lp-line-3);
+}
+
+.lp-dot:nth-child(1) {
+  background: #f0a5a0;
+}
+.lp-dot:nth-child(2) {
+  background: #f2cd93;
+}
+.lp-dot:nth-child(3) {
+  background: #9fd6b6;
+}
+
+/* min-width:0 是省略号能生效的前提 —— flex 子项默认 min-width:auto，不会收缩 */
+.lp-board-url {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--lp-dim);
+  margin-left: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-board-state {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--lp-green);
+  white-space: nowrap;
+}
+
+.lp-board-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lp-green);
+  box-shadow: 0 0 0 3px rgba(34, 160, 107, 0.15);
+}
+
+.lp-board-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lp-board-kpi {
+  padding: 16px 14px;
+  border-right: 1px solid var(--lp-line);
+}
+
+.lp-board-kpi:last-child {
+  border-right: 0;
+}
+
+.lp-board-kpi-num {
+  font-family: var(--font-mono);
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--lp-ink);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.lp-board-kpi-num.is-green {
+  color: var(--lp-green);
+}
+.lp-board-kpi-num.is-blue {
+  color: var(--lp-blue);
+}
+.lp-board-kpi-num.is-amber {
+  color: var(--lp-amber);
+}
+
+.lp-board-kpi-label {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: var(--lp-dim);
+}
+
+.lp-board-section {
+  padding: 14px 16px;
+  border-top: 1px solid var(--lp-line);
+}
+
+.lp-board-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.lp-board-section-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--lp-text);
+}
+
+.lp-board-section-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--lp-dim);
+}
+
+.lp-load-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.lp-load-name {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--lp-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-load-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--lp-sunken);
+  overflow: hidden;
+}
+
+.lp-load-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--lp-blue);
+}
+
+.lp-load-fill.is-warn {
+  background: var(--lp-amber);
+}
+
+.lp-load-fill.is-high {
+  background: var(--lp-red);
+}
+
+.lp-load-val {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--lp-text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.lp-feed {
+  display: flex;
+  flex-direction: column;
+}
+
+.lp-feed-item {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 12.5px;
+  color: var(--lp-muted);
+}
+
+.lp-feed-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--lp-dim);
+}
+
+.lp-feed-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-feed-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--lp-r-xs);
+  white-space: nowrap;
+}
+
+.lp-feed-badge.is-ok {
+  color: var(--lp-green);
+  background: rgba(34, 160, 107, 0.1);
+}
+
+.lp-feed-badge.is-run {
+  color: var(--lp-blue);
+  background: var(--lp-tint-2);
+}
+
+/* 安全基线一行：大号评分 + 单位 + 可加固项数。
+   早先这里是一枚绝对定位的浮层标签，压住了「最近动态」的状态列 ——
+   示意界面里的信息不该被装饰盖住，改成速览面板自己的一个栏目。 */
+.lp-board-score {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.lp-board-score-num {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--lp-green);
+  font-variant-numeric: tabular-nums;
+}
+
+.lp-board-score-unit {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lp-text);
+}
+
+.lp-board-score-tag {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lp-green);
+  background: rgba(34, 160, 107, 0.1);
+  border: 1px solid rgba(34, 160, 107, 0.24);
+  border-radius: var(--lp-r-xs);
+  padding: 2px 8px;
+  white-space: nowrap;
+  align-self: center;
+}
+
+/* ---- 首屏底部的指令条 ---- */
+
+.lp-command-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 56px;
+  padding: 10px 10px 10px 16px;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r-lg);
+  box-shadow: var(--lp-sh-sm);
+  transition:
+    border-color var(--lp-ease) 180ms,
+    box-shadow var(--lp-ease) 180ms;
+}
+
+.lp-command-bar:focus-within {
+  border-color: var(--lp-tint-line);
+  box-shadow: var(--lp-sh-md);
+}
+
+.lp-command-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: var(--lp-r-xs);
+  background: var(--lp-tint);
+  border: 1px solid var(--lp-tint-line);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--lp-blue);
+  white-space: nowrap;
+}
+
+.lp-command-icon {
+  display: grid;
+  place-items: center;
+  color: var(--lp-dim);
+  margin-left: 2px;
+}
+
+.lp-command-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--lp-ink);
+  outline: none;
+}
+
+.lp-command-input::placeholder {
+  color: var(--lp-dim);
+}
+
+.lp-command-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.lp-command-keys {
+  display: flex;
+  gap: 6px;
+  margin-right: 4px;
+}
+
+.lp-command-key {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r-xs);
+  background: var(--lp-sunken);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--lp-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lp-command-key:hover {
+  color: var(--lp-blue);
+  border-color: var(--lp-tint-line);
+  background: var(--lp-hover);
+}
+
+/* ==========================================================================
+   1. 数字带
+   ==========================================================================
+   四组可核对的事实。横向一条，用竖向细线分隔 —— 不做成四张卡片，
+   卡片会让人以为这是「卖点」，一条带子才像仪表读数。
+   ========================================================================== */
+
+.lp-metrics {
+  padding: 0;
+  background: var(--lp-bg-soft);
+  border-top: 1px solid var(--lp-line);
+  border-bottom: 1px solid var(--lp-line);
+}
+
+.lp-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lp-metric {
+  padding: 30px 26px;
+  border-right: 1px solid var(--lp-line);
+}
+
+.lp-metric:last-child {
+  border-right: 0;
+}
+
+.lp-metric-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.lp-metric-num {
+  font-family: var(--font-mono);
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--lp-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.lp-metric-unit {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lp-blue);
+}
+
+.lp-metric-label {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--lp-dim);
+}
+
+/* ==========================================================================
+   2. 能力矩阵
+   ==========================================================================
+   左侧是能力域导航（吸顶），右侧是条目网格。用「侧栏 + 网格」而不是顶部
+   一排筛选胶囊：能力域有 7 个，横向排开必然折行，折行后计数与名称对不上，
+   反而看不出「这一域有多少条」。
+   ========================================================================== */
+
+.lp-matrix-layout {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 36px;
+  align-items: start;
+}
+
+.lp-domain-rail {
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lp-domain-rail-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--lp-dim);
+  padding: 0 10px 10px;
+}
+
+.lp-domain-btn {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--lp-r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--lp-ease) 150ms,
+    color var(--lp-ease) 150ms;
+}
+
+.lp-domain-btn:hover {
+  background: var(--lp-hover);
+}
+
+.lp-domain-btn.is-active {
+  background: var(--lp-tint);
+}
+
+/* 选中态的左侧短竖条：比整块变色克制，也更像导航 */
+.lp-domain-btn.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--lp-blue);
+}
+
+.lp-domain-btn-icon {
+  display: grid;
+  place-items: center;
+  color: var(--lp-dim);
+}
+
+.lp-domain-btn.is-active .lp-domain-btn-icon {
+  color: var(--lp-blue);
+}
+
+.lp-domain-btn-body {
+  min-width: 0;
+}
+
+.lp-domain-btn-name {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--lp-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-domain-btn.is-active .lp-domain-btn-name {
+  color: var(--lp-blue);
+}
+
+.lp-domain-btn-en {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--lp-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-domain-btn-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--lp-dim);
+  padding: 1px 6px;
+  border-radius: var(--lp-r-xs);
+  background: var(--lp-sunken);
+  border: 1px solid var(--lp-line);
+}
+
+.lp-domain-btn.is-active .lp-domain-btn-count {
+  color: var(--lp-blue);
+  border-color: var(--lp-tint-line);
+  background: var(--lp-card);
+}
+
+.lp-matrix-main {
+  min-width: 0;
+}
+
+.lp-matrix-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--lp-line);
+}
+
+.lp-matrix-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  max-width: 420px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--lp-line-2);
+  border-radius: var(--lp-r-sm);
+  background: var(--lp-card);
+  transition:
+    border-color var(--lp-ease) 160ms,
+    box-shadow var(--lp-ease) 160ms;
+}
+
+.lp-matrix-search:focus-within {
+  border-color: var(--lp-tint-line);
+  box-shadow: 0 0 0 3px var(--lp-tint);
+}
+
+.lp-matrix-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--lp-ink);
+  outline: none;
+}
+
+.lp-matrix-search input::placeholder {
+  color: var(--lp-dim);
+}
+
+.lp-matrix-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.lp-matrix-search-icon {
+  display: grid;
+  place-items: center;
+  color: var(--lp-dim);
+}
+
+.lp-matrix-search-clear {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--lp-r-xs);
+  background: transparent;
+  color: var(--lp-dim);
+  cursor: pointer;
+}
+
+.lp-matrix-search-clear:hover {
+  color: var(--lp-red);
+  background: rgba(213, 73, 65, 0.08);
+}
+
+.lp-matrix-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--lp-dim);
+  white-space: nowrap;
+}
+
+.lp-matrix-meta strong {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--lp-blue);
+}
+
+.lp-matrix-reset {
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--lp-blue);
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.lp-matrix-reset:hover {
+  text-decoration: underline;
+}
+
+/* 250px 的下限让右侧网格在 1200 容器里稳定排到 3 列；
+   定到 288 时会掉成 2 列，卡片被拉得很宽、描述只剩一行，反而更空。 */
+.lp-matrix {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.lp-cap {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  padding: 15px 16px;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r);
+  transition:
+    border-color var(--lp-ease) 170ms,
+    box-shadow var(--lp-ease) 170ms,
+    transform var(--lp-ease) 170ms;
+}
+
+.lp-cap:hover {
+  border-color: var(--lp-tint-line);
+  box-shadow: var(--lp-sh-sm);
+  transform: translateY(-2px);
+}
+
+.lp-cap:hover .lp-icon-box {
+  background: var(--lp-tint);
+  border-color: var(--lp-tint-line);
+}
+
+.lp-cap-body {
+  min-width: 0;
+}
+
+.lp-cap-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.lp-cap-name {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--lp-ink);
+}
+
+.lp-cap-domain {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--lp-dim);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.lp-cap-desc {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.66;
+  color: var(--lp-muted);
+}
+
+.lp-matrix-empty {
+  margin-top: 20px;
+  padding: 46px 24px;
+  text-align: center;
+  border: 1px dashed var(--lp-line-2);
+  border-radius: var(--lp-r);
+  background: var(--lp-bg-soft);
+}
+
+.lp-matrix-empty .lp-p {
+  margin: 10px auto 18px;
+  max-width: 46em;
+}
+
+/* ==========================================================================
+   3. 架构图谱
+   ==========================================================================
+   三段式：访问入口 → 面板 → 多套 Proxmox 连接。中间用虚线引线 + 等宽标注
+   表达「流量方向」，不讲任何部署细节 —— 这一块只回答一个问题：
+   PVE 的 8006 要不要对外开放。
+   ========================================================================== */
+
+.lp-topo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px minmax(0, 1.16fr) 132px minmax(0, 1fr);
+  align-items: center;
+}
+
+.lp-topo-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lp-topo-col-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lp-dim);
+  padding-bottom: 2px;
+}
+
+.lp-topo-card {
+  display: flex;
+  gap: 11px;
+  padding: 13px 14px;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r);
+  box-shadow: var(--lp-sh-xs);
+}
+
+.lp-topo-card-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: var(--lp-r-xs);
+  background: var(--lp-sunken);
+  border: 1px solid var(--lp-line);
+  color: var(--lp-blue);
+}
+
+.lp-topo-card-body {
+  min-width: 0;
+}
+
+.lp-topo-card-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--lp-ink);
+}
+
+.lp-topo-card-desc {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--lp-dim);
+}
+
+/* 引线：一条渐变虚线 + 居中的等宽标注 */
+.lp-topo-link {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+}
+
+.lp-topo-link-line {
+  position: relative;
+  width: 100%;
+  height: 1px;
+  background-image: linear-gradient(
+    90deg,
+    var(--lp-line-3) 0 6px,
+    transparent 6px 12px
+  );
+  background-size: 12px 1px;
+  background-repeat: repeat-x;
+}
+
+.lp-topo-link-line::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -3px;
+  width: 6px;
+  height: 6px;
+  border-top: 1px solid var(--lp-line-3);
+  border-right: 1px solid var(--lp-line-3);
+  transform: rotate(45deg);
+}
+
+.lp-topo-link-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--lp-dim);
+  white-space: nowrap;
+}
+
+/* 面板本身：唯一一块被强调的方框 */
+.lp-topo-core {
+  position: relative;
+  padding: 18px;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-tint-line);
+  border-radius: var(--lp-r-lg);
+  box-shadow: var(--lp-sh-md);
+}
+
+.lp-topo-core::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(165deg, rgba(0, 82, 217, 0.05), transparent 52%);
+}
+
+.lp-topo-core-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--lp-ink);
+}
+
+.lp-topo-core-mark {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--lp-grad);
+}
+
+.lp-topo-core-head .lp-status {
+  margin-left: auto;
+}
+
+.lp-topo-core-sub {
+  position: relative;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--lp-dim);
+}
+
+.lp-topo-core-blocks {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.lp-topo-block {
+  padding: 10px 11px;
+  border-radius: var(--lp-r-sm);
+  background: var(--lp-sunken);
+  border: 1px solid var(--lp-line);
+}
+
+.lp-topo-block-name {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--lp-text);
+}
+
+.lp-topo-block-desc {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--lp-dim);
+}
+
+.lp-topo-cluster {
+  padding: 12px 13px;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line);
+  border-left: 3px solid var(--lp-green);
+  border-radius: var(--lp-r-sm);
+  box-shadow: var(--lp-sh-xs);
+}
+
+.lp-topo-cluster.is-down {
+  border-left-color: var(--lp-red);
+}
+
+.lp-topo-cluster-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lp-topo-cluster-icon {
+  display: grid;
+  place-items: center;
+  color: var(--lp-dim);
+}
+
+.lp-topo-cluster-name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--lp-ink);
+}
+
+.lp-topo-cluster-head .lp-status {
+  margin-left: auto;
+}
+
+.lp-topo-cluster-meta {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--lp-dim);
+}
+
+.lp-topo-cluster-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: var(--lp-r-sm);
+  background: var(--lp-tint);
+  border: 1px dashed var(--lp-tint-line);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--lp-blue);
+}
+
+.lp-topo-cluster-hint svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.lp-topo-notes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin: 40px 0 0;
+  padding: 26px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--lp-line);
+}
+
+.lp-topo-note {
+  position: relative;
+  padding-left: 16px;
+  font-size: 12.5px;
+  line-height: 1.72;
+  color: var(--lp-muted);
+}
+
+.lp-topo-note-bar {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 2px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--lp-grad);
+}

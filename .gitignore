@@ -1,0 +1,49 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.sw?
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Python
+# 写成 `.venv` 而不是 `.venv/`：带斜杠的模式只匹配**目录**，而本项目里
+# .venv / node_modules 常常是指向别处的软链接（git 不跟随软链接，会把它当文件），
+# 那样就会漏网 —— 实测 `git status` 会把 .venv 软链接列为待提交。
+.venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+# 面板数据库内含 Proxmox Token 密钥，绝不入库
+backend/data/
+
+# TypeScript 增量构建缓存
+*.tsbuildinfo
+
+# 本地备份（含旧 dist 快照与图片，体积大且无版本价值）
+backup/
+
+# 浏览器自动化 / 调试留下的产物：
+#   .playwright-cli/   playwright-cli 的会话目录
+#   login.yaml         登录页的无障碍快照（调样式时抓的）
+.playwright-cli/
+/login.yaml
+

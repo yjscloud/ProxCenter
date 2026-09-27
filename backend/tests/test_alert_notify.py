@@ -1,0 +1,455 @@
+"""告警推送来源开关：读写的健壮性、dispatch / record 的门禁、接口权限。
+
+这个开关的失效方式都很隐蔽 —— 要么「该发的没发」（用户以为告警坏了），要么
+「说不发还在发」（用户以为已经静默了）。所以用例重点盯三件事：
+
+* **默认全开**：升级后不能突然少收到本该收到的告警；
+* **未知来源放行**：调用点把来源名写错时宁可多推一条，也不要整类告警静默；
+* **停推只停推送**：巡检与告警历史必须照常，否则「静默」就变成了「失明」。
+
+模块层用 ``asyncio.run`` + ``db`` 夹具（只建表、不起 app），接口层用 ``api``
+夹具的 TestClient。两层不混用：TestClient 的全局连接池绑在它自己的事件循环上，
+模块层再新建循环去碰同一个池会互相踩。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict, List
+
+import pytest
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BACKEND_DIR))
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
+
+from app import alerting, database, notifications  # noqa: E402
+from app.config import settings  # noqa: E402
+from conftest import connect  # noqa: E402
+from test_api_routes import api, auth_headers  # noqa: E402,F401
+
+ADMIN_PASSWORD = settings.admin_password
+VIEWER_PASSWORD = "Unit-Test-Pa55word"
+SOURCE = "portguard"
+
+
+async def _shutdown_pool(coro):
+    """跑完协程顺手关掉连接池（它绑在 asyncio.run 新建的循环上）。"""
+    try:
+        return await coro
+    finally:
+        await database.close_pool()
+
+
+def _run(coro):
+    return asyncio.run(_shutdown_pool(coro))
+
+
+@pytest.fixture()
+def db(clean_mysql_db):
+    """只建表、不启动 app。告警历史 / 活跃状态表在 alerting.init_table() 里。"""
+    from app import store
+
+    _run(store.init_db())
+    _run(alerting.init_table())
+    _run(notifications.init_table())
+    yield
+
+
+def _exec(sql: str, params: tuple = ()) -> List[Any]:
+    conn = connect(settings.db_name)
+    try:
+        with conn.cursor() as c:
+            c.execute(sql, params)
+            return c.fetchall()
+    finally:
+        conn.close()
+
+
+def _history_count() -> int:
+    return int(_exec("SELECT COUNT(*) FROM alert_history")[0][0])
+
+
+def _notification_count() -> int:
+    return int(_exec("SELECT COUNT(*) FROM notifications")[0][0])
+
+
+def _last_history() -> Dict[str, Any]:
+    rows = _exec(
+        "SELECT result, detail FROM alert_history ORDER BY id DESC LIMIT 1"
+    )
+    assert rows, "应当写入了一条告警历史"
+    return {"result": rows[0][0], "detail": rows[0][1]}
+
+
+def _entry(**over: Any) -> Dict[str, Any]:
+    entry = {
+        "username": "admin",
+        "rule_id": "ssh-fail",
+        "rule_name": "SSH 登录失败次数",
+        "target_type": "ssh",
+        "target": "1.2.3.4",
+        "metric": "ssh_fail",
+        "value": 12.0,
+        "threshold": 10.0,
+        "result": "sent",
+        "detail": "飞书：已发送",
+        "kind": "alarm",
+        "ts": 1_700_000_000,
+    }
+    entry.update(over)
+    return entry
+
+
+class _Recorder:
+    """把三个外部通道与站内推送换成计数器。"""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls: Dict[str, int] = {"feishu": 0, "email": 0, "webhook": 0, "inbox": 0}
+
+        async def feishu(card, owner=""):
+            self.calls["feishu"] += 1
+            return True, "已发送"
+
+        async def email(owner, title, text):
+            self.calls["email"] += 1
+            return True, "已发送"
+
+        async def webhook(title, text, context, owner, cfg=None):
+            self.calls["webhook"] += 1
+            return True, "已发送"
+
+        async def inbox(entry, created=None):
+            self.calls["inbox"] += 1
+
+        monkeypatch.setattr(alerting, "send_feishu", feishu)
+        monkeypatch.setattr(alerting, "send_alert_email", email)
+        monkeypatch.setattr(alerting, "send_webhook", webhook)
+        monkeypatch.setattr(alerting.notifications, "push_alert", inbox)
+
+
+def _all_channels_on() -> Dict[str, Any]:
+    return {
+        "feishu": {"enabled": True},
+        "email": {"enabled": True},
+        "webhook": {"enabled": True, "webhook": "https://example.invalid/hook"},
+    }
+
+
+# ============================================================ 注册表与读写
+class TestNotifySourcesConfig:
+    def test_registry_is_stable(self, db) -> None:
+        ids = [item["id"] for item in alerting.NOTIFY_SOURCES]
+        assert ids == ["resource", "portguard", "sshguard", "sshremote", "backupguard"]
+        assert alerting.NOTIFY_SOURCE_IDS == tuple(ids)
+        # 审计日志要把 id 翻成人话，标签不能缺
+        assert all(alerting.NOTIFY_LABELS[i] for i in ids)
+
+    def test_every_source_has_a_call_site_constant(self, db) -> None:
+        """每个来源都要有对应常量，否则调用点只能手写字符串 —— 拼错就永远静默。"""
+        for name in (
+            "SOURCE_RESOURCE",
+            "SOURCE_PORTGUARD",
+            "SOURCE_SSHGUARD",
+            "SOURCE_SSHREMOTE",
+            "SOURCE_BACKUPGUARD",
+        ):
+            assert getattr(alerting, name) in alerting.NOTIFY_SOURCE_IDS
+
+    def test_defaults_are_all_on(self, db) -> None:
+        cfg = _run(alerting.load_notify_sources())
+        assert cfg == alerting.default_notify_sources()
+        assert all(cfg.values())
+        # 没配过时必须全开：升级后不能突然少收到告警
+        assert all(_run(alerting.push_enabled(s)) for s in alerting.NOTIFY_SOURCE_IDS)
+
+    def test_save_and_reload_roundtrip(self, db) -> None:
+        saved = _run(alerting.save_notify_sources({SOURCE: False}))
+        assert saved[SOURCE] is False
+        assert saved["resource"] is True  # 没传的保持原值
+
+        assert _run(alerting.load_notify_sources())[SOURCE] is False
+        assert _run(alerting.push_enabled(SOURCE)) is False
+
+    def test_save_ignores_unknown_keys(self, db) -> None:
+        """只认注册表里的来源：不能凭空写进一个谁也不认识的键。"""
+        saved = _run(alerting.save_notify_sources({"not_a_source": False}))
+        assert "not_a_source" not in saved
+        assert set(saved) == set(alerting.NOTIFY_SOURCE_IDS)
+
+    def test_malformed_config_falls_back_to_all_on(self, db) -> None:
+        async def corrupt() -> None:
+            from app import store
+
+            await store.set_setting(alerting.NOTIFY_SOURCES_KEY, "{ not json")
+
+        _run(corrupt())
+        assert _run(alerting.load_notify_sources()) == alerting.default_notify_sources()
+
+    def test_partial_config_keeps_other_defaults(self, db) -> None:
+        async def partial() -> None:
+            from app import store
+
+            await store.set_setting(
+                alerting.NOTIFY_SOURCES_KEY, json.dumps({SOURCE: False})
+            )
+
+        _run(partial())
+        cfg = _run(alerting.load_notify_sources())
+        assert cfg[SOURCE] is False
+        assert cfg["resource"] is True
+
+
+# ============================================================ 门禁
+class TestPushGate:
+    def test_unknown_source_fails_open(self, db) -> None:
+        """来源名拼错时放行：宁可多推一条，也不要让整类告警静默。"""
+        assert _run(alerting.push_enabled("")) is True
+        assert _run(alerting.push_enabled("typo-source")) is True
+        assert _run(alerting.push_enabled("resource")) is True
+
+    def test_dispatch_skips_every_channel_when_muted(
+        self, db, monkeypatch
+    ) -> None:
+        rec = _Recorder(monkeypatch)
+        _run(alerting.save_notify_sources({SOURCE: False}))
+        cfg = _all_channels_on()
+
+        ok, detail = _run(
+            alerting.dispatch(
+                "admin",
+                cfg["feishu"],
+                cfg["email"],
+                "标题",
+                "正文",
+                {"card": True},
+                webhook=cfg["webhook"],
+                source=SOURCE,
+            )
+        )
+        assert ok is False
+        assert detail == alerting.MUTED_DETAIL
+        assert rec.calls == {"feishu": 0, "email": 0, "webhook": 0, "inbox": 0}
+
+    def test_dispatch_still_sends_when_enabled(self, db, monkeypatch) -> None:
+        rec = _Recorder(monkeypatch)
+        cfg = _all_channels_on()
+        ok, _ = _run(
+            alerting.dispatch(
+                "admin",
+                cfg["feishu"],
+                cfg["email"],
+                "标题",
+                "正文",
+                {"card": True},
+                webhook=cfg["webhook"],
+                source=SOURCE,
+            )
+        )
+        assert ok is True
+        assert rec.calls["feishu"] == 1
+        assert rec.calls["email"] == 1
+        assert rec.calls["webhook"] == 1
+
+    def test_source_is_scoped(self, db, monkeypatch) -> None:
+        """关掉端口巡检不能连带把 SSH 告警也停了。"""
+        rec = _Recorder(monkeypatch)
+        _run(alerting.save_notify_sources({SOURCE: False}))
+        cfg = _all_channels_on()
+
+        _run(
+            alerting.dispatch(
+                "admin", cfg["feishu"], cfg["email"], "t", "b", {}, source=SOURCE
+            )
+        )
+        assert rec.calls["feishu"] == 0
+
+        _run(
+            alerting.dispatch(
+                "admin",
+                cfg["feishu"],
+                cfg["email"],
+                "t",
+                "b",
+                {},
+                source="sshguard",
+            )
+        )
+        assert rec.calls["feishu"] == 1
+
+    def test_record_muted_writes_history_but_not_inbox(
+        self, db, monkeypatch
+    ) -> None:
+        """停推的语义是「彻底静默，只留可追溯的记录」。"""
+        # 站内投递换成了计数器，所以「发没发」看 rec.calls，别看库里的行数
+        rec = _Recorder(monkeypatch)
+        _run(alerting.save_notify_sources({SOURCE: False}))
+        before = _history_count()
+
+        _run(alerting.record(_entry(), source=SOURCE))
+
+        # 历史照写 —— 否则「停推期间到底有没有出事」无从查证，那是失明不是静默
+        assert _history_count() == before + 1
+        # 站内消息不发
+        assert rec.calls["inbox"] == 0
+
+    def test_record_enabled_writes_both(self, db, monkeypatch) -> None:
+        rec = _Recorder(monkeypatch)
+        before = _history_count()
+
+        _run(alerting.record(_entry(), source=SOURCE))
+
+        assert _history_count() == before + 1
+        assert rec.calls["inbox"] == 1
+
+    def test_record_without_source_always_pushes(self, db, monkeypatch) -> None:
+        """不带来源的调用（第三方模块自建的事件）保持原行为，不受开关影响。"""
+        rec = _Recorder(monkeypatch)
+        _run(alerting.save_notify_sources({s: False for s in alerting.NOTIFY_SOURCE_IDS}))
+        before = _history_count()
+
+        _run(alerting.record(_entry()))
+
+        assert rec.calls["inbox"] == 1
+        assert _history_count() == before + 1
+
+    def test_muted_is_recorded_as_muted_not_failed(self, db, monkeypatch) -> None:
+        """停推写进历史的是 muted，不是 failed。
+
+        两者都不算送达，但意义相反：前者是运维自己关的，后者是真出问题了。
+        混成 failed 会让割接窗口一过，历史页的「发送失败」红成一片 —— 真故障
+        反而淹没在里面，而它才是最该被一眼看到的。
+        """
+        _Recorder(monkeypatch)
+        _run(alerting.save_notify_sources({SOURCE: False}))
+        cfg = _all_channels_on()
+
+        # 走完整链路：dispatch 判定停推 → 调用点据此写 failed → record 归一化成 muted
+        ok, detail = _run(
+            alerting.dispatch(
+                "admin", cfg["feishu"], cfg["email"], "t", "b", {}, source=SOURCE
+            )
+        )
+        assert ok is False and detail == alerting.MUTED_DETAIL
+
+        _run(alerting.record(_entry(result="failed", detail=detail), source=SOURCE))
+
+        row = _last_history()
+        assert row["result"] == alerting.RESULT_MUTED == "muted"
+        assert row["detail"] == alerting.MUTED_DETAIL
+
+    def test_real_failure_is_not_relabelled(self, db, monkeypatch) -> None:
+        """来源没关时，真失败必须老实标 failed —— 归一化不能顺手把故障也吞掉。"""
+        _Recorder(monkeypatch)
+        # 三个通道全关：dispatch 会返回「告警通知已停用，仅记录」
+        _run(
+            alerting.record(
+                _entry(result="failed", detail="告警通知已停用，仅记录"),
+                source=SOURCE,
+            )
+        )
+        row = _last_history()
+        assert row["result"] == "failed"
+        assert row["detail"] == "告警通知已停用，仅记录"
+
+    def test_already_sent_is_never_relabelled(self, db, monkeypatch) -> None:
+        """已经送达的记录不因「现在开关关了」而追溯改写。
+
+        归一化的条件是「停推 **且** 确实没送达」。少了后半句，一个把 source 传给
+        record 却忘了传给 dispatch 的调用点，会把真发出去的告警错标成静默。
+        """
+        _Recorder(monkeypatch)
+        _run(alerting.save_notify_sources({SOURCE: False}))
+
+        _run(alerting.record(_entry(result="sent"), source=SOURCE))
+        assert _last_history()["result"] == "sent"
+
+    def test_record_writes_a_real_inbox_row(self, db) -> None:
+        """不打桩跑一遍：确认 record 确实往站内通知表里落了行。
+
+        上面几个用例把 push_alert 换成了计数器，验证的是「有没有调」；这条验证
+        「调了之后真的写进去了」—— 否则接线断了（比如参数名对不上）也测不出来。
+        """
+        _run(alerting.record(_entry(), source=SOURCE))
+        assert _notification_count() == 1
+
+    def test_unmuting_restores_delivery(self, db, monkeypatch) -> None:
+        rec = _Recorder(monkeypatch)
+        cfg = _all_channels_on()
+        _run(alerting.save_notify_sources({SOURCE: False}))
+
+        async def pump() -> bool:
+            ok, _ = await alerting.dispatch(
+                "admin", cfg["feishu"], cfg["email"], "t", "b", {}, source=SOURCE
+            )
+            return ok
+
+        assert _run(pump()) is False
+        _run(alerting.save_notify_sources({SOURCE: True}))
+        assert _run(pump()) is True
+        assert rec.calls["feishu"] == 1
+
+
+# ============================================================ 接口
+class TestNotifySourcesApi:
+    def test_overview_exposes_registry_and_state(self, api) -> None:
+        body = api.get("/api/alerts", headers=auth_headers(api)).json()
+        assert [s["id"] for s in body["notify_sources"]] == list(
+            alerting.NOTIFY_SOURCE_IDS
+        )
+        assert body["notify_enabled"] == alerting.default_notify_sources()
+
+    def test_put_requires_admin(self, api) -> None:
+        admin = auth_headers(api)
+        api.post(
+            "/api/users",
+            json={"username": "alertviewer", "password": VIEWER_PASSWORD, "role": "viewer"},
+            headers=admin,
+        )
+        viewer = {
+            "Authorization": "Bearer "
+            + api.post(
+                "/api/auth/login",
+                json={"username": "alertviewer", "password": VIEWER_PASSWORD},
+            ).json()["access_token"]
+        }
+        # 全局静默开关不能落到普通用户手里：否则等于给了「先把告警捂掉再干活」
+        resp = api.put(
+            "/api/alerts/notify-sources", json={SOURCE: False}, headers=viewer
+        )
+        assert resp.status_code == 403
+
+    def test_put_toggles_and_persists(self, api) -> None:
+        headers = auth_headers(api)
+        resp = api.put(
+            "/api/alerts/notify-sources", json={SOURCE: False}, headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["notify_enabled"][SOURCE] is False
+
+        listed = api.get("/api/alerts", headers=headers).json()
+        assert listed["notify_enabled"][SOURCE] is False
+        assert listed["notify_enabled"]["resource"] is True
+
+    def test_put_is_written_to_audit_log(self, api) -> None:
+        headers = auth_headers(api)
+        api.put("/api/alerts/notify-sources", json={SOURCE: False}, headers=headers)
+
+        rows = _exec(
+            "SELECT action, detail FROM audit_log WHERE action = %s ORDER BY id DESC LIMIT 1",
+            ("alert.notify_sources",),
+        )
+        assert rows, "改全局开关必须留痕"
+        action, detail = rows[0]
+        assert action == "alert.notify_sources"
+        # 审计里要写人话，否则「关掉了 portguard」没人看得懂
+        assert alerting.NOTIFY_LABELS[SOURCE] in detail
+
+    def test_put_empty_body_is_a_noop(self, api) -> None:
+        headers = auth_headers(api)
+        resp = api.put("/api/alerts/notify-sources", json={}, headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["notify_enabled"] == alerting.default_notify_sources()

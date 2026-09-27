@@ -1,0 +1,51 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* -----------------------------------------------------------------------
+       preserveSymlinks 必须开着，否则整份类型检查会失真。
+
+       本部署环境的依赖不在项目内：node_modules 是指向
+       /data/node_modules-proxmox-panel 的软链（真实目录不叫 node_modules），
+       .venv 同理。默认情况下解析器会把软链还原成真实路径，于是「包内部再
+       引用另一个包」时向上查找的是 <真实目录>/node_modules —— 那里不存在，
+       解析失败。
+
+       实测后果（一个包解析失败，传染出一整片假错误）：
+         · @tanstack/react-query 的 `export * from "@tanstack/query-core"` 失效
+           → useQuery 退化成 any → 242 个 TS7006「参数隐式 any」
+         · recharts 的类型拿不到 React 身份 → 84 个 TS2607 / TS2786「不能
+           作为 JSX 组件」
+
+       开着它，解析器保留 node_modules 这个路径名，向上查找就能命中软链本身；
+       如果将来依赖被正常装到项目内（真实的 node_modules 目录），这个开关
+       也不会有任何副作用。
+       ----------------------------------------------------------------------- */
+    "preserveSymlinks": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "types": ["vite/client"]
+  },
+  "include": ["src"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}

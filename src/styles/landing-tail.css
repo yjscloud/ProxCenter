@@ -1,0 +1,778 @@
+/* ==========================================================================
+   产品官网 — 第 4 块：常见问题 / 收尾 CTA / 页脚 / 返回顶部 / 响应式
+   ==========================================================================
+   令牌与基础件见 landing.css。
+   ========================================================================== */
+
+/* ==========================================================================
+   0. 常见问题
+   ==========================================================================
+   用原生 <details>：不写一行 JS 就有完整的键盘与读屏行为，展开态由浏览器
+   维护。这里只负责把默认的三角标记换成右侧的 +/− 方块。
+   ========================================================================== */
+
+.lp-faq {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r-lg);
+  background: var(--lp-card);
+  overflow: hidden;
+}
+
+.lp-faq-item {
+  border-bottom: 1px solid var(--lp-line);
+}
+
+.lp-faq-item:last-child {
+  border-bottom: 0;
+}
+
+.lp-faq-q {
+  position: relative;
+  padding: 20px 60px 20px 24px;
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--lp-ink);
+  cursor: pointer;
+  list-style: none;
+  transition: color var(--lp-ease) 150ms, background-color var(--lp-ease) 150ms;
+}
+
+.lp-faq-q::-webkit-details-marker {
+  display: none;
+}
+
+.lp-faq-q:hover {
+  color: var(--lp-blue);
+  background: var(--lp-hover);
+}
+
+/* 加减号：两条短横拼成 +，展开时竖的那条转 90° 淡出。
+   两条都靠 translateX(50%) 把中心对齐到「距右边 32px」这条轴线上 ——
+   只写 right 的话，横线的中心会落在竖线的右端，看起来是 ⊢ 而不是 +。 */
+.lp-faq-q::after,
+.lp-faq-q::before {
+  content: '';
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateX(50%);
+  background: var(--lp-dim);
+  transition:
+    transform var(--lp-ease) 180ms,
+    opacity var(--lp-ease) 180ms,
+    background-color var(--lp-ease) 160ms;
+}
+
+.lp-faq-q::before {
+  width: 12px;
+  height: 1.5px;
+  margin-top: -0.75px;
+}
+
+.lp-faq-q::after {
+  width: 1.5px;
+  height: 12px;
+  margin-top: -6px;
+}
+
+.lp-faq-q:hover::before,
+.lp-faq-q:hover::after {
+  background: var(--lp-blue);
+}
+
+.lp-faq-item[open] .lp-faq-q {
+  color: var(--lp-blue);
+}
+
+.lp-faq-item[open] .lp-faq-q::after {
+  transform: translateX(50%) rotate(90deg);
+  opacity: 0;
+}
+
+.lp-faq-a {
+  padding: 0 60px 22px 24px;
+  font-size: 13.5px;
+  line-height: 1.82;
+  color: var(--lp-muted);
+}
+
+/* ==========================================================================
+   1. 收尾 CTA
+   ==========================================================================
+   整页保持浅色，所以收尾不做成深色整段，而是一块深蓝渐变的大面板：既有
+   分量，又不会让页面的「浅色」基调在最后被推翻。
+   ========================================================================== */
+
+.lp-finale-wrap {
+  padding: 92px 0 72px;
+  background: var(--lp-card);
+  border-top: 1px solid var(--lp-line);
+}
+
+.lp-finale {
+  position: relative;
+  padding: 56px 56px 52px;
+  border-radius: 20px;
+  overflow: hidden;
+  color: #fff;
+  background:
+    radial-gradient(110% 130% at 88% 0%, rgba(0, 164, 255, 0.32), transparent 56%),
+    linear-gradient(152deg, #0b2547 0%, #0d3a86 52%, #0a5fd0 100%);
+  box-shadow: var(--lp-sh-lg);
+}
+
+/* 图纸底纹：与深色安全区同构，让两个重音区看起来是一套东西 */
+.lp-finale::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.09) 1px, transparent 1px);
+  background-size: 26px 26px;
+  mask-image: radial-gradient(90% 120% at 82% 6%, #000, transparent 74%);
+  -webkit-mask-image: radial-gradient(90% 120% at 82% 6%, #000, transparent 74%);
+}
+
+.lp-finale-inner {
+  position: relative;
+  max-width: 620px;
+}
+
+.lp-finale .lp-eyebrow {
+  color: rgba(190, 224, 255, 0.92);
+}
+
+.lp-finale .lp-h2 {
+  margin-top: 14px;
+  color: #fff;
+}
+
+.lp-finale .lp-p {
+  margin-top: 16px;
+  color: rgba(219, 235, 255, 0.82);
+  font-size: 15px;
+}
+
+.lp-finale .lp-cta-row {
+  margin-top: 30px;
+}
+
+.lp-finale-points {
+  position: absolute;
+  right: 56px;
+  bottom: 52px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lp-finale-point {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: rgba(214, 233, 255, 0.8);
+}
+
+.lp-finale-point svg {
+  color: #8fd7ff;
+}
+
+/* ==========================================================================
+   2. 页脚
+   ========================================================================== */
+
+.lp-footer {
+  background: var(--lp-bg-soft);
+  border-top: 1px solid var(--lp-line);
+  padding: 52px 0 28px;
+}
+
+.lp-footer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr));
+  gap: 40px;
+}
+
+.lp-footer-brand {
+  margin-bottom: 14px;
+}
+
+.lp-footer-desc {
+  max-width: 34em;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--lp-dim);
+}
+
+.lp-footer-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lp-dim);
+  margin-bottom: 14px;
+}
+
+.lp-footer-title-gap {
+  margin-top: 24px;
+}
+
+.lp-footer-links {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-items: flex-start;
+}
+
+.lp-footer-link {
+  font-size: 12.5px;
+  color: var(--lp-muted);
+}
+
+a.lp-footer-link:hover {
+  color: var(--lp-blue);
+}
+
+.lp-footer-link-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lp-footer-link-btn:hover {
+  color: var(--lp-blue);
+}
+
+.lp-footer-friendlinks {
+  margin-top: 40px;
+  padding-top: 24px;
+  border-top: 1px solid var(--lp-line);
+}
+
+.lp-friendlink-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.lp-friendlink {
+  font-size: 12.5px;
+  color: var(--lp-muted);
+}
+
+.lp-friendlink:hover {
+  color: var(--lp-blue);
+}
+
+.lp-footer-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  margin-top: 40px;
+  padding-top: 22px;
+  border-top: 1px solid var(--lp-line);
+  font-size: 12px;
+  color: var(--lp-dim);
+}
+
+.lp-footer-icp {
+  color: var(--lp-dim);
+}
+
+.lp-footer-icp:hover {
+  color: var(--lp-blue);
+}
+
+/* ==========================================================================
+   3. 返回顶部
+   ========================================================================== */
+
+.lp-back-to-top {
+  position: fixed;
+  right: 26px;
+  bottom: 26px;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--lp-r);
+  border: 1px solid var(--lp-line);
+  background: var(--lp-card);
+  color: var(--lp-text);
+  box-shadow: var(--lp-sh-md);
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(10px);
+  transition:
+    opacity var(--lp-ease) 200ms,
+    transform var(--lp-ease) 200ms,
+    visibility 200ms,
+    color var(--lp-ease) 160ms,
+    border-color var(--lp-ease) 160ms;
+}
+
+.lp-back-to-top.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+.lp-back-to-top:hover {
+  color: var(--lp-blue);
+  border-color: var(--lp-tint-line);
+}
+
+/* ==========================================================================
+   4. 响应式
+   ==========================================================================
+   断点只有两档：1080（两栏塌成一栏）与 720（导航收进抽屉）。
+   中间再插断点只会让覆盖规则互相打架。
+   ========================================================================== */
+
+@media (max-width: 1080px) {
+  .lp-container {
+    padding: 0 22px;
+  }
+
+  .lp-section,
+  .lp-band-dark {
+    padding: 68px 0;
+  }
+
+  .lp-section-head {
+    margin-bottom: 30px;
+  }
+
+  /* ---- 顶栏：导航收进抽屉 ---- */
+  .lp-nav-links,
+  .lp-nav-docs {
+    display: none;
+  }
+
+  .lp-nav-toggle {
+    display: grid;
+  }
+
+  .lp-drawer.is-open {
+    display: block;
+  }
+
+  /* ---- 首屏 ---- */
+  .lp-hero-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
+  }
+
+  .lp-hero-copy .lp-h1,
+  .lp-hero-copy .lp-lead {
+    max-width: none;
+  }
+
+  .lp-command-bar {
+    margin-top: 40px;
+  }
+
+  /* ---- 数字带 ---- */
+  .lp-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lp-metric {
+    padding: 24px 22px;
+  }
+
+  .lp-metric:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .lp-metric:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--lp-line);
+  }
+
+  /* ---- 能力矩阵：侧栏改横滑胶囊 ---- */
+  .lp-matrix-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+  }
+
+  .lp-domain-rail {
+    position: static;
+    flex-direction: row;
+    gap: 8px;
+    padding-bottom: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .lp-domain-rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  .lp-domain-rail-label {
+    display: none;
+  }
+
+  .lp-domain-btn {
+    grid-template-columns: 20px auto auto;
+    width: auto;
+    flex: none;
+    border: 1px solid var(--lp-line);
+    border-radius: 999px;
+    padding: 8px 13px;
+    background: var(--lp-card);
+  }
+
+  .lp-domain-btn.is-active {
+    border-color: var(--lp-tint-line);
+  }
+
+  .lp-domain-btn.is-active::before {
+    display: none;
+  }
+
+  .lp-domain-btn-en {
+    display: none;
+  }
+
+  /* ---- 架构图谱：三段改竖排 ---- */
+  .lp-topo {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .lp-topo-link {
+    flex-direction: row;
+    justify-content: center;
+    gap: 12px;
+    padding: 0;
+  }
+
+  .lp-topo-link-line {
+    width: 70px;
+    background-image: linear-gradient(
+      180deg,
+      var(--lp-line-3) 0 6px,
+      transparent 6px 12px
+    );
+    background-size: 1px 12px;
+    background-repeat: repeat-y;
+    height: 20px;
+  }
+
+  .lp-topo-link-line::after {
+    right: auto;
+    left: -3px;
+    top: auto;
+    bottom: -1px;
+    transform: rotate(135deg);
+  }
+
+  .lp-topo-notes {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  /* ---- 控制台实况 ---- */
+  .lp-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* ---- 重点能力 ---- */
+  .lp-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 26px;
+    padding: 24px;
+  }
+
+  .lp-row.is-flip .lp-row-copy,
+  .lp-row.is-flip .lp-row-visual {
+    order: 0;
+  }
+
+  /* ---- 安全合规 ---- */
+  .lp-defenses {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* ---- 场景 / 上手 ---- */
+  .lp-scenarios,
+  .lp-start {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-scenario-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    scrollbar-width: none;
+  }
+
+  .lp-scenario-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .lp-scenario-tab {
+    grid-template-columns: 30px minmax(0, 1fr);
+    flex: none;
+    width: 230px;
+  }
+
+  .lp-scenario-tab-index {
+    display: none;
+  }
+
+  /* ---- 收尾 ---- */
+  .lp-finale-points {
+    position: static;
+    margin-top: 30px;
+  }
+
+  .lp-finale {
+    padding: 40px;
+  }
+
+  .lp-finale-wrap {
+    padding: 68px 0 52px;
+  }
+
+  .lp-footer-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 30px;
+  }
+}
+
+@media (max-width: 720px) {
+  .lp-container {
+    padding: 0 16px;
+  }
+
+  .lp-section,
+  .lp-band-dark {
+    padding: 52px 0;
+  }
+
+  .lp-hero {
+    padding-top: 44px;
+  }
+
+  .lp-h1 {
+    letter-spacing: -0.026em;
+  }
+
+  .lp-lead {
+    font-size: 14.5px;
+  }
+
+  .lp-trust {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  /* 指令条在窄屏去掉键盘提示，输入框独占一行 */
+  .lp-command-bar {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+  }
+
+  .lp-command-tag,
+  .lp-command-keys {
+    display: none;
+  }
+
+  .lp-command-input {
+    flex: 1 1 60%;
+  }
+
+  .lp-command-bar .lp-btn {
+    margin-left: auto;
+  }
+
+  .lp-board-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lp-board-kpi:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .lp-board-kpi:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--lp-line);
+  }
+
+  .lp-metrics-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-metric {
+    border-right: 0;
+    border-bottom: 1px solid var(--lp-line);
+    padding: 20px 18px;
+  }
+
+  .lp-metric:last-child {
+    border-bottom: 0;
+  }
+
+  .lp-metric-num {
+    font-size: 28px;
+  }
+
+  .lp-matrix-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .lp-matrix-search {
+    max-width: none;
+  }
+
+  .lp-matrix {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-tabs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-stage-body {
+    padding: 16px;
+    min-height: 0;
+  }
+
+  .lp-pv-kpis,
+  .lp-pv-gauges {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-pv-score {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .lp-pv-tr.is-5 {
+    grid-template-columns: 0.9fr 0.6fr 0.9fr 0.6fr;
+  }
+
+  .lp-pv-tr.is-5 > span:nth-child(4) {
+    display: none;
+  }
+
+  .lp-pv-tr.is-head.is-5 {
+    grid-template-columns: 0.9fr 0.6fr 0.9fr 0.6fr;
+  }
+
+  .lp-pv-tr.is-head.is-5 > span:nth-child(4) {
+    display: none;
+  }
+
+  /* 处置顺序三步：窄屏把横向箭头改竖排，箭头本身省掉 */
+  .lp-order {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .lp-order-item {
+    flex: none;
+  }
+
+  .lp-order-arrow {
+    display: none;
+  }
+
+  .lp-defenses {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 审计账本：窄屏只留动作与结果，时间与操作人退到同一行的小字里 */
+  .lp-audit-tr {
+    grid-template-columns: minmax(0, 1.5fr) 72px;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+
+  .lp-audit-tr > span:nth-child(1),
+  .lp-audit-tr > span:nth-child(2),
+  .lp-audit-tr > span:nth-child(4) {
+    display: none;
+  }
+
+  .lp-audit-tr.is-head {
+    grid-template-columns: minmax(0, 1.5fr) 72px;
+  }
+
+  .lp-audit-head {
+    padding: 14px;
+  }
+
+  .lp-scenario-panel {
+    padding: 22px;
+  }
+
+  .lp-finale {
+    padding: 30px 24px;
+    border-radius: 16px;
+  }
+
+  .lp-finale .lp-cta-row .lp-btn {
+    flex: 1;
+  }
+
+  .lp-finale-wrap {
+    padding: 52px 0 40px;
+  }
+
+  .lp-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-stack-col {
+    border-right: 0;
+    border-bottom: 1px solid var(--lp-line);
+  }
+
+  .lp-stack-col:last-child {
+    border-bottom: 0;
+  }
+
+  .lp-footer-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lp-footer {
+    padding-top: 40px;
+  }
+
+  .lp-back-to-top {
+    right: 16px;
+    bottom: 16px;
+  }
+
+  .lp-drawer-links {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 深度下钻的深度图在窄屏容易挤成一团，退到两列 */
+  .lp-timeline {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .lp-timeline-label {
+    font-size: 9.5px;
+  }
+}

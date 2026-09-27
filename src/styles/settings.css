@@ -1,0 +1,216 @@
+/* ==========================================================================
+   ProxCenter — 设置页
+   外壳（吸顶区块导航 / 分组 / 分区）是通用的，见 layout.css 的
+   「页内区块导航 + 分组堆叠」；这里只剩本页自己的表单排版。
+
+   设计要点：
+     - 页宽不设上限：与 Dashboard / Profile / Frp 一致，卡片铺满内容区，
+       靠卡片内部的栅格（.set-grid / .set-cols）分列，而不是把整页挤成一条窄栏；
+     - 字段按 2 / 3 列并排，别让一个短输入框占满整行。
+   ========================================================================== */
+
+/* ------------------------------------------------------------------ 表单栅格
+   卡片通栏之后，字段如果还各占一整行，输入框就会被拉到整屏宽 ——
+   这里按 2 列并排（≥1500px 再升到 3 列，列数跟着宽度走而不是把输入框拉长）。
+   列数写死而不交给 auto-fit：auto-fit 在只剩一个字段时会把它拉成横贯整行的
+   长条，那比留白更难看。
+   ------------------------------------------------------------------ */
+
+.set-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+  align-items: start;
+}
+
+.set-grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* 说明一长段、需要独占整行的字段（如 Cloud-Init DNS、友情链接编辑器）。
+   第二条选择器是给「套着 .dyn-row 壳」的字段用的：display:contents 只改盒子树、
+   不改 DOM，`.set-grid > .is-wide` 匹配不到壳里的字段，得顺着 DOM 层级写。 */
+.set-grid > .is-wide,
+.set-grid > .dyn-row > .is-wide {
+  grid-column: 1 / -1;
+}
+
+/* 站点信息这类分区还保留着「一个字段套一层 .dyn-row」的旧结构：
+   用 display:contents 把这层壳拆掉，字段直接落进栅格，
+   不必为了排版重写整段 JSX（壳本身没有边框背景，拆掉不丢任何东西）。 */
+.set-grid > .dyn-row {
+  display: contents;
+}
+
+/* 分组标题、整行提示条永远占满一行，不参与分列 */
+.set-grid > .set-form-block-head,
+.set-grid > .notice {
+  grid-column: 1 / -1;
+}
+
+/* ------------------------------------------------------------------ 左右两栏
+   一边放输入，一边放「读数 / 链接预览 / 备选说明」。这些内容原本挤在卡片
+   下半部分或干脆不存在，现在挪到右侧把空着的半边用真东西填上 —— 靠内容
+   撑满，而不是靠拉伸控件。
+   ------------------------------------------------------------------ */
+
+.set-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 18px 24px;
+  align-items: start;
+}
+
+.set-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* 分段控件不该跟着栏宽一起长：三个选项各摊到 300px 就成了三块大色块，
+   选项之间的「相邻关系」反而看不出来了 */
+.set-col .segmented {
+  max-width: 460px;
+}
+
+/* 卡片通栏之后，列数得跟着可用宽度走，否则宽屏上每个输入框会被拉成一条长带。
+   站点信息是 6 个字段 + 1 条整行、邮箱表单是 6 个字段，3 列都刚好两行排完。 */
+@media (min-width: 1500px) {
+  .set-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1080px) {
+  .set-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .set-grid,
+  .set-grid--3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ------------------------------------------------------------------ 读数条
+   额度这类「填的数字 + 现在还剩多少」：读数紧跟输入框，不再飘在分组末尾。
+   ------------------------------------------------------------------ */
+
+.set-readout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: -4px;
+  padding: 6px 11px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.set-readout b {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.set-readout .set-readout-warn {
+  color: var(--warning);
+}
+
+/* ------------------------------------------------------------------ 备选说明
+   登录验证那三种方式：把「选了别的会怎样」摊开写在右侧，比只留一句 hint 好判断。
+   ------------------------------------------------------------------ */
+
+.set-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.set-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.set-option.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-dim);
+  color: var(--text-secondary);
+}
+
+.set-option-mark {
+  flex: none;
+  margin-top: 1px;
+  color: var(--border);
+}
+
+.set-option.is-active .set-option-mark {
+  color: var(--accent);
+}
+
+.set-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.set-option-name {
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+}
+
+.set-option.is-active .set-option-name {
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ 链接预览
+   面板全局地址填了什么，邮件里就会长什么样 —— 直接摊出来看。
+   ------------------------------------------------------------------ */
+
+.set-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+}
+
+.set-preview-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.set-preview-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.set-preview-url {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  word-break: break-all;
+}

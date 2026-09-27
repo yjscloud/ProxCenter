@@ -1,0 +1,12 @@
+# ripgrep 会读取本文件（无论是否为 git 仓库），CodeBuddy 的 Codebase 索引
+# 与文件搜索都走 ripgrep，因此这里是"索引层"最硬的排除，优先级高于编辑器设置。
+# 目的：不让 AI 索引去扫描这些几万文件 / 上百 MB 的目录（会把扩展宿主内存顶穿）。
+node_modules/
+.venv/
+logs/
+dist/
+backup/
+__pycache__/
+*.pyc
+*.log
+backend/data/

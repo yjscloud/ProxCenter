@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover 让 env(safe-area-inset-*) 生效，刘海屏下内容才不会被压住。
+         刻意不加 maximum-scale：禁用缩放会伤害可访问性，输入框的放大问题
+         由 responsive.css 里把表单字号抬到 16px 来解决。 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f3f6f9" />
+    <meta name="description" content="ProxCenter - Proxmox VE 集群管理面板" />
+    <title>ProxCenter — Proxmox VE 管理面板</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

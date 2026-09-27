@@ -1,0 +1,960 @@
+/* ==========================================================================
+   ProxCenter — 产品官网（公开首页 /）· 第 1 块：设计系统与顶栏
+   ==========================================================================
+
+   设计语言：腾讯云「浅色科技风」的克制版，落点是**蓝图纸感**而不是发光感。
+
+   三条硬规则（改样式前先读）：
+     · 层次只由「细描边 + 极轻投影 + 冷灰蓝底色」表达。禁止玻璃拟态、禁止霓虹
+       发光、禁止大面积渐变铺底 —— 那是通用 AI 科技风的特征，不是腾讯云的特征。
+     · 彩色出现即代表强调。整页只有一支品牌蓝（#0052d9）与一支辅助青蓝
+       （#00a4ff）；绿 / 橙 / 红只用于状态，不用于装饰。
+     · 科技感来自**制图语言**：等宽小标、区块编号、四角刻度、点阵底纹、细引线。
+       它们承载「这是工程工具的界面」这层信息，而不是纯粹的装饰。
+
+   作用域：所有规则限定在 .lp-root 内，令牌以 --lp-* 声明；后台主题令牌
+   （theme.css 的 --accent / --bg-*）与这里互不影响。
+
+   文件划分（按页面自上而下）：
+     landing.css           本文件 —— 令牌 / 排版 / 容器 / 按钮 / 顶栏 / 能力面板 / 抽屉
+     landing-sections.css  首屏与中段 —— Hero / 数字带 / 能力矩阵 / 架构图谱
+     landing-detail.css    后段 —— 控制台实况 / 重点能力 / 安全合规 / 场景 / 上手
+     landing-tail.css      收尾与断点 —— FAQ / CTA / 页脚 / 回到顶部 / 响应式
+   ========================================================================== */
+
+/* ==========================================================================
+   0. 令牌
+   ========================================================================== */
+
+.lp-root {
+  /* ---- 底色层次：页面底 → 面板 → 下沉槽 → 悬停 ---- */
+  --lp-bg: #f2f5fa;
+  --lp-bg-soft: #f7fafc;
+  --lp-card: #ffffff;
+  --lp-sunken: #f5f8fc;
+  --lp-hover: #f1f6fe;
+
+  /* ---- 描边：细，且带蓝调，避免灰扑扑 ---- */
+  --lp-line: #e4eaf2;
+  --lp-line-2: #d5dfeb;
+  --lp-line-3: #c3cfdd;
+
+  /* ---- 文字三级灰阶 ---- */
+  --lp-ink: #0c1a2c;
+  --lp-text: #1d2c40;
+  --lp-muted: #5b6d84;
+  --lp-dim: #8b99ac;
+
+  /* ---- 品牌色 ---- */
+  --lp-blue: #0052d9;
+  --lp-blue-2: #0a6cf5;
+  --lp-blue-deep: #003cab;
+  --lp-cyan: #00a4ff;
+  --lp-green: #22a06b;
+  --lp-amber: #e37318;
+  --lp-red: #d54941;
+
+  --lp-tint: rgba(0, 82, 217, 0.05);
+  --lp-tint-2: rgba(0, 82, 217, 0.09);
+  --lp-tint-line: rgba(0, 82, 217, 0.18);
+
+  /* ---- 深色重音区（安全合规）---- */
+  --lp-night: #0a1a30;
+  --lp-night-2: #102a4c;
+  --lp-night-line: rgba(255, 255, 255, 0.11);
+  --lp-night-text: #ffffff;
+  --lp-night-muted: rgba(214, 229, 250, 0.7);
+
+  --lp-grad: linear-gradient(118deg, #0052d9 0%, #00a4ff 100%);
+  --lp-grad-text: linear-gradient(100deg, #003cab 0%, #0a6cf5 46%, #00a4ff 100%);
+
+  /* ---- 投影：全部带蓝调，量级刻意压小 ---- */
+  --lp-sh-xs: 0 1px 2px rgba(12, 26, 44, 0.05);
+  --lp-sh-sm: 0 1px 2px rgba(12, 26, 44, 0.04), 0 6px 16px -12px rgba(12, 26, 44, 0.28);
+  --lp-sh-md: 0 2px 4px rgba(12, 26, 44, 0.04), 0 18px 40px -26px rgba(0, 82, 217, 0.42);
+  --lp-sh-lg: 0 30px 70px -38px rgba(0, 52, 140, 0.5);
+  --lp-sh-btn: 0 10px 22px -12px rgba(0, 82, 217, 0.75);
+
+  /* ---- 圆角：腾讯云偏硬，这里取 6 / 10 / 14 三档 ---- */
+  --lp-r-xs: 4px;
+  --lp-r-sm: 6px;
+  --lp-r: 10px;
+  --lp-r-lg: 14px;
+
+  /* ---- 点阵底纹 ---- */
+  --lp-dot: rgba(19, 54, 100, 0.075);
+  --lp-dot-size: 26px;
+
+  --lp-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial,
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: var(--lp-text);
+  background: var(--lp-bg);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'tnum' 0;
+}
+
+/* 后台主题给 a:hover 加了下划线，官网上要彻底摆脱 */
+.lp-root a,
+.lp-root a:hover,
+.lp-root button {
+  text-decoration: none;
+}
+
+/* 点阵底纹：只在页面最外层铺一次，越往下越淡，滚到底不会出现接缝 */
+.lp-root::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(var(--lp-dot) 1px, transparent 1px);
+  background-size: var(--lp-dot-size) var(--lp-dot-size);
+  mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.35) 46%, transparent 84%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.35) 46%, transparent 84%);
+}
+
+.lp-root > * {
+  position: relative;
+  z-index: 1;
+}
+
+.lp-root ::selection {
+  background: rgba(0, 82, 217, 0.16);
+}
+
+.lp-root :focus-visible {
+  outline: 2px solid var(--lp-blue-2);
+  outline-offset: 2px;
+  border-radius: var(--lp-r-xs);
+}
+
+/* 锚点落位时给固定顶栏让出高度。顶栏 62px，再留一点呼吸。
+   没有这一条，点导航「能力矩阵」会停在标题被顶栏盖住的位置。
+   （JS 里的 scrollToSection 会自己减偏移，这里兜的是原生 href="#id" 的那批链接。） */
+.lp-root main[id],
+.lp-root section[id] {
+  scroll-margin-top: 78px;
+}
+
+/* ==========================================================================
+   1. 排版
+   ========================================================================== */
+
+.lp-h1 {
+  margin: 0;
+  font-size: clamp(34px, 4.3vw, 58px);
+  line-height: 1.1;
+  letter-spacing: -0.032em;
+  font-weight: 800;
+  color: var(--lp-ink);
+}
+
+.lp-h2 {
+  margin: 0;
+  font-size: clamp(25px, 2.5vw, 36px);
+  line-height: 1.2;
+  letter-spacing: -0.024em;
+  font-weight: 750;
+  color: var(--lp-ink);
+}
+
+.lp-h3 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.42;
+  letter-spacing: -0.01em;
+  font-weight: 650;
+  color: var(--lp-ink);
+}
+
+.lp-lead {
+  margin: 0;
+  font-size: 15.5px;
+  line-height: 1.78;
+  color: var(--lp-muted);
+}
+
+.lp-p {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.76;
+  color: var(--lp-muted);
+}
+
+.lp-p + .lp-p {
+  margin-top: 10px;
+}
+
+/* 眉题：等宽 + 字距拉开的全大写小字，整页的「制图标注」基调由它定 */
+.lp-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--lp-blue);
+}
+
+.lp-eyebrow::before {
+  content: '';
+  width: 16px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.lp-grad {
+  background: var(--lp-grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   2. 版面骨架
+   ========================================================================== */
+
+.lp-container {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 28px;
+}
+
+/* 通栏区块：默认白底，与点阵底纹形成「纸」与「桌面」的层次 */
+.lp-section {
+  position: relative;
+  padding: 92px 0;
+  background: var(--lp-card);
+}
+
+/* 冷灰蓝底的区块，与白底区块交替，制造纵向节奏 */
+.lp-section-tint {
+  background: var(--lp-bg-soft);
+}
+
+/* 区块顶部的细线：全宽，作为「图纸分幅线」 */
+.lp-section.is-ruled,
+.lp-section-tint.is-ruled {
+  border-top: 1px solid var(--lp-line);
+}
+
+/* 区块标题组 */
+.lp-section-head {
+  max-width: 720px;
+  margin-bottom: 40px;
+}
+
+.lp-section-head.is-center {
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+}
+
+.lp-section-head.is-center .lp-eyebrow {
+  justify-content: center;
+}
+
+.lp-section-head .lp-h2 {
+  margin-top: 14px;
+}
+
+.lp-section-head .lp-p {
+  margin-top: 16px;
+  max-width: 660px;
+}
+
+.lp-section-head.is-center .lp-p {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 区块编号：右上角的等宽序号，强化「这一页有目录」的工程感 */
+.lp-head-index {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.lp-head-index-num {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--lp-blue);
+  padding: 2px 7px;
+  border: 1px solid var(--lp-tint-line);
+  background: var(--lp-tint);
+  border-radius: var(--lp-r-xs);
+}
+
+.lp-head-index-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--lp-line);
+}
+
+/* 居中标题下，编号与眉题居中对齐，尾部引线没有落点，直接不画 */
+.lp-section-head.is-center .lp-head-index {
+  justify-content: center;
+}
+
+.lp-section-head.is-center .lp-head-index-rule {
+  display: none;
+}
+
+/* ==========================================================================
+   3. 面板：四角刻度
+   ==========================================================================
+   四角刻度是这套设计语言的签名 —— 它把普通白卡片标记成「图纸上的一块」。
+   只画四条 L 形短边，不画整圈，避免与卡片自身的描边重复。
+   ========================================================================== */
+
+.lp-ticks::before,
+.lp-ticks::after {
+  content: '';
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  pointer-events: none;
+  border-color: var(--lp-line-3);
+  border-style: solid;
+  border-width: 0;
+  transition: border-color var(--lp-ease) 180ms;
+}
+
+.lp-ticks::before {
+  top: 6px;
+  left: 6px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+
+.lp-ticks::after {
+  right: 6px;
+  bottom: 6px;
+  border-right-width: 1px;
+  border-bottom-width: 1px;
+}
+
+.lp-ticks:hover::before,
+.lp-ticks:hover::after {
+  border-color: var(--lp-blue);
+}
+
+/* ==========================================================================
+   4. 按钮与文字链接
+   ========================================================================== */
+
+.lp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: var(--lp-r-sm);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--lp-ease) 160ms,
+    border-color var(--lp-ease) 160ms,
+    color var(--lp-ease) 160ms,
+    box-shadow var(--lp-ease) 160ms,
+    transform var(--lp-ease) 160ms;
+}
+
+.lp-btn-sm {
+  height: 32px;
+  padding: 0 13px;
+  font-size: 13px;
+}
+
+.lp-btn-lg {
+  height: 46px;
+  padding: 0 22px;
+  font-size: 15px;
+}
+
+.lp-btn-primary {
+  color: #fff;
+  background: var(--lp-blue);
+  box-shadow: var(--lp-sh-btn);
+}
+
+.lp-btn-primary:hover {
+  background: var(--lp-blue-2);
+  transform: translateY(-1px);
+}
+
+.lp-btn-primary:active {
+  background: var(--lp-blue-deep);
+  transform: translateY(0);
+}
+
+.lp-btn-ghost {
+  color: var(--lp-text);
+  background: var(--lp-card);
+  border-color: var(--lp-line-2);
+  box-shadow: var(--lp-sh-xs);
+}
+
+.lp-btn-ghost:hover {
+  color: var(--lp-blue);
+  border-color: var(--lp-tint-line);
+  background: var(--lp-hover);
+  transform: translateY(-1px);
+}
+
+/* 深色区里的实心白按钮与描边按钮 */
+.lp-btn-light {
+  color: var(--lp-night);
+  background: #fff;
+  box-shadow: 0 12px 26px -16px rgba(0, 0, 0, 0.7);
+}
+
+.lp-btn-light:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px -16px rgba(0, 0, 0, 0.75);
+}
+
+.lp-btn-outline {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.lp-btn-outline:hover {
+  border-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ==========================================================================
+   5. 小元素：胶囊 / 标签 / 状态点 / 图标底座
+   ========================================================================== */
+
+.lp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--lp-line);
+  border-radius: 999px;
+  background: var(--lp-card);
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--lp-muted);
+  white-space: nowrap;
+}
+
+.lp-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lp-green);
+  box-shadow: 0 0 0 3px rgba(34, 160, 107, 0.16);
+}
+
+.lp-chip.is-accent {
+  color: var(--lp-blue);
+  border-color: var(--lp-tint-line);
+  background: var(--lp-tint);
+}
+
+.lp-chip.is-green {
+  color: var(--lp-green);
+  border-color: rgba(34, 160, 107, 0.28);
+  background: rgba(34, 160, 107, 0.08);
+}
+
+.lp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lp-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 25px;
+  padding: 0 10px;
+  border-radius: var(--lp-r-xs);
+  background: var(--lp-sunken);
+  border: 1px solid var(--lp-line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--lp-muted);
+  white-space: nowrap;
+}
+
+.lp-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lp-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.lp-status.is-ok {
+  color: var(--lp-green);
+}
+.lp-status.is-warn {
+  color: var(--lp-amber);
+}
+.lp-status.is-bad {
+  color: var(--lp-red);
+}
+.lp-status.is-info {
+  color: var(--lp-blue);
+}
+
+/* 图标底座：能力矩阵与顶栏面板共用，保证所有图标有同一套呼吸 */
+.lp-icon-box {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: var(--lp-r-xs);
+  border: 1px solid var(--lp-line);
+  background: var(--lp-sunken);
+  color: var(--lp-blue);
+  transition:
+    background-color var(--lp-ease) 160ms,
+    border-color var(--lp-ease) 160ms,
+    color var(--lp-ease) 160ms;
+}
+
+/* ==========================================================================
+   6. 顶栏
+   ========================================================================== */
+
+.lp-nav {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  background: rgba(247, 250, 252, 0.82);
+  backdrop-filter: saturate(150%) blur(14px);
+  -webkit-backdrop-filter: saturate(150%) blur(14px);
+  border-bottom: 1px solid transparent;
+  transition:
+    background-color var(--lp-ease) 200ms,
+    border-color var(--lp-ease) 200ms,
+    box-shadow var(--lp-ease) 200ms;
+}
+
+.lp-nav.is-scrolled {
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom-color: var(--lp-line);
+  box-shadow: 0 8px 24px -22px rgba(12, 26, 44, 0.6);
+}
+
+.lp-nav-inner {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 62px;
+}
+
+.lp-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  color: var(--lp-ink);
+}
+
+.lp-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--lp-r-sm);
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line);
+  box-shadow: var(--lp-sh-xs);
+}
+
+.lp-brand-name {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.lp-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.lp-nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--lp-r-sm);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--lp-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--lp-ease) 140ms,
+    background-color var(--lp-ease) 140ms;
+}
+
+.lp-nav-link:hover {
+  color: var(--lp-ink);
+  background: var(--lp-hover);
+}
+
+.lp-nav-link.is-active {
+  color: var(--lp-blue);
+  background: var(--lp-tint);
+}
+
+.lp-nav-caret {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform var(--lp-ease) 160ms;
+}
+
+.lp-nav-caret.is-open {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+.lp-nav-mega-wrap {
+  position: relative;
+}
+
+/* 全部能力面板 */
+.lp-mega {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: -12px;
+  width: min(920px, calc(100vw - 56px));
+  padding: 18px;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r-lg);
+  box-shadow: var(--lp-sh-md);
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition:
+    opacity var(--lp-ease) 170ms,
+    transform var(--lp-ease) 170ms,
+    visibility 170ms;
+}
+
+.lp-mega.is-open {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.lp-mega-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px 14px;
+  border-bottom: 1px solid var(--lp-line);
+}
+
+.lp-mega-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--lp-ink);
+}
+
+.lp-mega-count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--lp-dim);
+}
+
+.lp-mega-close {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r-xs);
+  background: var(--lp-card);
+  color: var(--lp-muted);
+  cursor: pointer;
+}
+
+.lp-mega-close:hover {
+  color: var(--lp-red);
+  border-color: rgba(213, 73, 65, 0.35);
+  background: rgba(213, 73, 65, 0.06);
+}
+
+.lp-mega-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px 14px;
+  padding-top: 14px;
+}
+
+.lp-mega-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--lp-r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lp-mega-col-head:hover {
+  background: var(--lp-hover);
+}
+
+.lp-mega-col-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--lp-blue);
+}
+
+.lp-mega-col-body {
+  min-width: 0;
+}
+
+.lp-mega-col-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--lp-ink);
+  white-space: nowrap;
+}
+
+.lp-mega-col-en {
+  display: block;
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lp-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lp-mega-col-head > svg {
+  flex: none;
+  margin-left: auto;
+  color: var(--lp-dim);
+}
+
+.lp-mega-list {
+  margin: 2px 0 10px;
+  padding: 0 0 0 8px;
+  list-style: none;
+}
+
+.lp-mega-list button {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--lp-r-xs);
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--lp-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.lp-mega-list button:hover {
+  color: var(--lp-blue);
+  background: var(--lp-tint);
+}
+
+.lp-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.lp-nav-docs {
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--lp-muted);
+  padding: 0 6px;
+}
+
+.lp-nav-docs:hover {
+  color: var(--lp-blue);
+}
+
+.lp-nav-toggle {
+  display: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--lp-line-2);
+  border-radius: var(--lp-r-sm);
+  background: var(--lp-card);
+  color: var(--lp-text);
+  cursor: pointer;
+}
+
+/* 移动端抽屉 */
+.lp-drawer {
+  display: none;
+  border-top: 1px solid var(--lp-line);
+  background: var(--lp-card);
+  box-shadow: var(--lp-sh-sm);
+}
+
+.lp-drawer-inner {
+  padding-top: 16px;
+  padding-bottom: 20px;
+}
+
+.lp-drawer-group + .lp-drawer-group {
+  margin-top: 18px;
+}
+
+.lp-drawer-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lp-dim);
+  margin-bottom: 10px;
+}
+
+.lp-drawer-links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.lp-drawer-link {
+  display: flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--lp-line);
+  border-radius: var(--lp-r-sm);
+  background: var(--lp-card);
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--lp-text);
+}
+
+.lp-drawer-link:hover {
+  color: var(--lp-blue);
+  border-color: var(--lp-tint-line);
+  background: var(--lp-hover);
+}
+
+.lp-drawer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lp-drawer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--lp-line);
+  border-radius: 999px;
+  background: var(--lp-card);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--lp-muted);
+  cursor: pointer;
+}
+
+.lp-drawer-chip:hover {
+  color: var(--lp-blue);
+  border-color: var(--lp-tint-line);
+  background: var(--lp-tint);
+}
+
+/* ==========================================================================
+   7. 入场动效
+   ==========================================================================
+   .lp-reveal 由 useReveal() 在进入视口时加上 .is-visible，动画结束后 JS 会把
+   reveal 标记整个摘掉 —— 不摘掉的话这里的 transform 会一直压住组件自身的悬停
+   反馈。因此下面的 transition 只管「怎么进来」，不管「悬停怎么动」。
+   ========================================================================== */
+
+.lp-reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 0.5s var(--lp-ease),
+    transform 0.5s var(--lp-ease);
+}
+
+.lp-reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-reveal,
+  .lp-reveal.is-visible {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .lp-root * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

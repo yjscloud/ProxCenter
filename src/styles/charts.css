@@ -1,0 +1,450 @@
+/* ==========================================================================
+   ProxCenter — 图表补充样式
+   ========================================================================== */
+
+.chart-tooltip {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  padding: 8px 10px;
+  font-size: var(--font-size-sm);
+  min-width: 130px;
+}
+
+.chart-tooltip-label {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  margin-bottom: 5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 1px 0;
+}
+
+.chart-tooltip-name {
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+}
+
+.chart-tooltip-value {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* 环形图中心文字 */
+.donut-wrap {
+  position: relative;
+  width: 100%;
+}
+
+/* 图例占了底部 28px，圆心因此比容器中点高 14px —— 中心文字要跟着上移，
+   否则会比圆环的视觉中心低一截（差得不明显，但一眼看得出「没对齐」）。 */
+.donut-wrap.has-legend .donut-center {
+  top: calc(50% - 14px);
+}
+
+.donut-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -60%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.donut-center-value {
+  font-size: var(--font-size-2xl);
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+
+.donut-center-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* recharts 容器避免溢出 */
+.recharts-wrapper {
+  overflow: visible;
+}
+
+.recharts-surface {
+  overflow: visible;
+}
+
+/* ---------------------------------------------------------------------------
+   节点概览行（仪表盘）
+   --------------------------------------------------------------------------- */
+
+.node-overview {
+  display: block;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  border: 1px solid var(--border-muted);
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.node-overview:hover {
+  border-color: var(--accent-border);
+  background: var(--bg-elevated);
+}
+
+.node-overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+/* 表格铺满卡片（无内边距卡片内） */
+.table-flush {
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
+}
+
+.table-flush thead th:first-child,
+.table-flush tbody td:first-child {
+  padding-left: 18px;
+}
+
+.table-flush thead th:last-child,
+.table-flush tbody td:last-child {
+  padding-right: 18px;
+}
+
+/* ---------------------------------------------------------------------------
+   详情页两列布局
+   --------------------------------------------------------------------------- */
+
+.detail-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .detail-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 跨两列的一块（指标条、全宽表格）。窄屏下网格只剩一列，这条规则同样成立。 */
+.detail-full {
+  grid-column: 1 / -1;
+}
+
+/* 两列等高：概览页左「基本信息」、右「磁盘 + 网络」两组内容天然一长一短，
+   默认的 align-items:start 会让短的那列底下空出一截，看着像少了一块。
+   这里让两列都撑满行高，并让每列最后一张卡吃掉剩余高度，两侧就以同一个
+   底边收尾了。只用在概览页，其它页签的「一列一张卡」布局不受影响。 */
+.detail-columns.is-balanced {
+  align-items: stretch;
+}
+
+.detail-columns.is-balanced > .detail-column > .card:last-child {
+  flex: 1 1 auto;
+}
+
+/* 基本信息独占左列：键值对排成一列而不是两列。
+   半宽栏里本来就放不下两列像样的键值对（值会被挤到换行），排一列之后
+   值有整行可写长名称、长标签，高度也更接近右列的「磁盘 + 网络」。 */
+.vm-basic-info .info-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.detail-column {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* 硬件列表项 */
+.hw-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.hw-item:last-child {
+  border-bottom: none;
+}
+
+.hw-item-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.hw-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.hw-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hw-item-label {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.hw-item-value {
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hw-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* 监控网格 */
+.monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+@media (max-width: 1000px) {
+  .monitor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   监控卡片：标题区直接给出「当前值」，不必再去曲线上猜读数
+   --------------------------------------------------------------------------- */
+
+.chart-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chart-stats {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.chart-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chart-stat-value {
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  text-shadow: none;
+}
+
+.chart-stat-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+/* 监控网格内的卡片收紧上下留白，把空间让给曲线 */
+.monitor-grid .card {
+  padding: 16px 18px 8px;
+  transition: border-color var(--transition, .18s ease), box-shadow var(--transition, .18s ease);
+}
+
+.monitor-grid .card:hover {
+  border-color: var(--accent-border);
+}
+
+/* 横跨整行的监控卡片。
+   .monitor-grid 是两列，四张曲线卡正好 2×2；再往里塞单独一张会在末行留下
+   一个填不满的空洞，所以这类卡片整行铺满。 */
+.monitor-span {
+  grid-column: 1 / -1;
+}
+
+/* ---------------------------------------------------------------------------
+   客户机磁盘用量（经 Guest Agent 执行 df 取回）
+   --------------------------------------------------------------------------- */
+
+.fs-source {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+/* 用 flex 而不是 grid：分区数量不定，flex 会把每一行都撑满，
+   grid 则会在末行留下空位（例如 5 个分区按 3 列排，第 2 行空一格）。 */
+.fs-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  padding-bottom: 8px;
+}
+
+.fs-tile {
+  /* 基准 240px：宽屏一行 2~3 个，窄屏自动换行，且每行都会被撑满 */
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.fs-tile-head,
+.fs-tile-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fs-tile-foot {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+/* 数值优先显示完整，设备名长了就省略号截断 */
+.fs-tile-foot > span:first-child {
+  flex-shrink: 0;
+}
+
+.fs-tile-foot > span:last-child {
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   曲线可读性：压暗网格、提亮刻度、加粗高亮
+   --------------------------------------------------------------------------- */
+
+.recharts-cartesian-grid line {
+  stroke: var(--border-muted);
+}
+
+.recharts-cartesian-axis-tick text {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.recharts-tooltip-cursor {
+  stroke: var(--accent-border);
+  stroke-dasharray: 4 4;
+}
+
+/* ---------------------------------------------------------------------------
+   节点概览行：母机负载一眼可见
+   --------------------------------------------------------------------------- */
+
+.node-overview {
+  background: var(--bg-base);
+  border: 1px solid var(--border-muted);
+  border-left: 2px solid var(--accent-border);
+}
+
+.node-overview:hover {
+  border-color: var(--accent-border);
+  border-left-color: var(--accent);
+  box-shadow: 0 0 22px -6px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.node-overview .progress-track {
+  background: var(--bg-hover);
+}
+
+.node-overview .progress-label {
+  color: var(--text-secondary);
+}
+
+.node-overview .progress-value {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* ---------------------------------------------------------------------------
+   实时刷新指示：脉冲圆点，让「数据是活的」这件事看得见
+   --------------------------------------------------------------------------- */
+
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--success) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 0%, transparent);
+  }
+}
+
+/* 读数变化时的轻微高亮，强化「刚刚更新」的感知 */
+.chart-stat-value {
+  transition: color var(--transition);
+}
+/* 监控读数再放大，远距离盯屏也能一眼读到 */
+.chart-stat-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+.chart-stats { gap: 32px; }
+.monitor-grid { gap: 20px; }
+.chart-title { font-size: 15px; }

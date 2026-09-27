@@ -1,0 +1,77 @@
+/* ==========================================================================
+   ProxCenter — 主题令牌
+   浅色（腾讯云控制台设计语言），面板只有这一套主题。
+   所有颜色都走 CSS 变量，组件样式不写死色值。
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   与主题无关的常量：字体 / 圆角 / 尺寸 / 动效 / 层级
+   圆角刻意收小（4 / 6 / 10px）：腾讯云用偏硬的直角感表达专业与克制。
+   --------------------------------------------------------------------------- */
+:root {
+  --radius-sm:4px; --radius:6px; --radius-lg:10px; --radius-pill:999px;
+  --font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,'PingFang SC','Microsoft YaHei',sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;
+  --font-size-xs:12px; --font-size-sm:12px; --font-size-base:13px; --font-size-md:14px; --font-size-lg:16px; --font-size-xl:20px; --font-size-2xl:26px;
+  --font-weight-normal:400; --font-weight-medium:500; --font-weight-semibold:600; --font-weight-bold:700;
+  --sidebar-width:240px; --sidebar-width-collapsed:64px; --topbar-height:56px; --content-padding:24px;
+  /* 字段的「标签行高 + 标签与控件的间距」：行内按钮靠这个偏移和输入框对齐 */
+  --field-label-line:18px; --field-gap:6px;
+  --transition-fast:120ms ease; --transition:180ms ease; --z-sidebar:100; --z-topbar:90; --z-dropdown:200; --z-modal:300; --z-toast:400;
+}
+
+/* ==========================================================================
+   浅色主题 — 腾讯云设计语言
+   冷灰蓝底 + 纯白面板 + 单一品牌蓝；层次靠「细边框 + 极轻阴影」表达，
+   而不是靠发光或玻璃，这是腾讯云控制台最显著的特征。
+   ========================================================================== */
+:root {
+  /* 背景层次：底 → 面板 → 抬升 → 悬停 */
+  --bg-base:#f3f6f9;
+  --bg-surface:#ffffff;
+  --bg-elevated:#f7f9fc;
+  --bg-hover:#eef2f8;
+
+  --border:#dcdde5; --border-muted:#e9ebef;
+
+  /* 腾讯云正文是 0.9 黑 / 0.6 灰 / 0.4 灰的三级灰阶 */
+  --text-primary:#1a1a1a; --text-secondary:#5c5c5c; --text-muted:#8c8c8c;
+
+  /* 品牌蓝（Tencent Cloud Blue）+ 科技青蓝做渐变辅助 */
+  --accent:#0052d9; --accent-hover:#003cab; --accent-dim:rgba(0,82,217,.08); --accent-border:rgba(0,82,217,.3);
+  --accent-2:#00a4ff; --accent-2-dim:rgba(0,164,255,.1);
+
+  --success:#2ba471; --success-dim:rgba(43,164,113,.1);
+  --warning:#e37318; --warning-dim:rgba(227,115,24,.1);
+  --danger:#d54941; --danger-dim:rgba(213,73,65,.1);
+  --info:#0052d9; --info-dim:rgba(0,82,217,.08);
+  --usage-low:#0052d9; --usage-mid:#e37318; --usage-high:#d54941;
+
+  /* 光晕：浅色下只做轻微彩色投影 */
+  --glow-accent:0 4px 14px -6px rgba(0,82,217,.4);
+  --glow-success:0 4px 14px -6px rgba(43,164,113,.4);
+  --glow-warning:0 4px 14px -6px rgba(227,115,24,.4);
+  --glow-danger:0 4px 14px -6px rgba(213,73,65,.4);
+
+  --grad-accent:linear-gradient(135deg,#0052d9,#00a4ff);
+  --grad-hairline:linear-gradient(90deg,rgba(0,82,217,.7),rgba(0,164,255,.22) 62%,transparent);
+  --grad-panel:linear-gradient(160deg,rgba(0,82,217,.03),rgba(0,164,255,.018) 44%,transparent 80%);
+  --grid-line:rgba(0,82,217,.045); --grid-size:44px;
+
+  /* 顶栏 / 侧栏：接近实色的轻微半透明，不再做重玻璃 */
+  --glass-bg:rgba(255,255,255,.88);
+  --glass-blur:12px;
+
+  --shell-glow-1:color-mix(in srgb, var(--accent) 7%, transparent);
+  --shell-glow-2:color-mix(in srgb, var(--accent-2) 5%, transparent);
+
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:0 4px 12px rgba(0,0,0,.08);
+  --shadow-lg:0 8px 24px rgba(0,0,0,.12);
+
+  --stripe:rgba(0,0,0,.016); --overlay:rgba(0,0,0,.4); --focus-ring:rgba(0,82,217,.12);
+
+  color-scheme: light;
+  scrollbar-color: #c9cdd4 transparent;
+  scrollbar-width: thin;
+}

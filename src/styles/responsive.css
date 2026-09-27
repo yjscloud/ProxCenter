@@ -1,0 +1,593 @@
+/* ==========================================================================
+   ProxCenter — 移动端 / 窄屏适配
+   --------------------------------------------------------------------------
+   单独收口成一个文件，而不是继续散落到各样式表末尾。原因是这些规则彼此
+   牵连：输入框字号会改变表单高度、安全区会牵动固定定位、抽屉宽度会影响
+   内容区推挤，集中放置便于整体推演与回滚。
+
+   断点沿用项目既有的 767px（与 Layout.tsx 的 MOBILE_BREAKPOINT 一致），
+   不再引入新的断点，避免出现「某个宽度下两边规则打架」的空档。
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   1. 视口高度：移动端浏览器地址栏会伸缩
+   ---------------------------------------------------------------------------
+   100vh 在手机上取的是「地址栏收起时」的高度，于是底部会被顶出可视区，
+   出现一根永远滚不到的空白。dvh 跟随可视区域实时变化。
+   不支持的浏览器仍由各处的 100vh 兜底，所以这里只是增强，不是替换。 */
+
+@supports (height: 100dvh) {
+  .app-shell,
+  .sidebar,
+  .app-main {
+    height: 100dvh;
+  }
+
+  .modal {
+    max-height: calc(100dvh - 24px);
+  }
+
+  .modal-full {
+    height: calc(100dvh - 24px);
+  }
+
+  /* 认证页与 404 页是整屏容器，同样受地址栏伸缩影响 */
+  .login-page,
+  .notfound {
+    min-height: 100dvh;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   2. iOS 输入框自动缩放
+   ---------------------------------------------------------------------------
+   Safari 在聚焦 font-size < 16px 的输入框时会把整页放大，且失焦后不会自动
+   缩回 —— 用户点一次搜索框，整个面板就一直糊着。项目基准字号是 13px，
+   必然触发，所以这里抬到 16px。
+
+   用 @supports (-webkit-touch-callout: none) 限定为触屏 Safari：Android 没有
+   这个问题，没必要跟着把表单字号撑大、平白牺牲一屏的信息密度。 */
+
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 767px) {
+    .input,
+    .select,
+    .textarea {
+      font-size: 16px;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   3. 触控目标
+   ---------------------------------------------------------------------------
+   手指的可靠点击面积约 36–44px。桌面上的 .btn-sm 只有 28px、图标按钮 30px，
+   在手机上点起来很别扭（尤其表格行内的操作按钮）。 */
+
+@media (max-width: 767px) {
+  .btn-sm {
+    height: 34px;
+    padding: 0 12px;
+  }
+
+  .btn-icon-only {
+    width: 34px;
+    height: 34px;
+  }
+
+  /* 图标按钮之间留出间距，避免误触到相邻的那个 */
+  .btn-group {
+    gap: 6px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   4. 控制台骨架
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  /* 抽屉式侧栏：320px 的屏上 240px 会占掉四分之三，收窄后右侧能露出内容，
+     让用户意识到「这是个抽屉，点外面能关掉」 */
+  .sidebar,
+  .sidebar.is-collapsed {
+    width: min(272px, 80vw);
+  }
+
+  .topbar {
+    gap: 8px;
+  }
+
+  /* 状态文案在手机上收掉（900px 起就已经隐藏），只留一个状态点：
+     它只占 8px，却能让「后端挂了 / PVE 断了」在任意页面都看得见。
+     这一点比文字提示更值得留在顶栏。 */
+  .topbar-stat-label {
+    display: none;
+  }
+
+  .topbar-title {
+    font-size: var(--font-size-base);
+  }
+
+  /* 内容区内边距收窄，小屏上多留一点给正文；
+     底部额外留出安全区，避免最后一排内容被 iPhone 的横条压住 */
+  .app-content {
+    --content-pad-top: 14px;
+    padding: var(--content-pad-top) 12px calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .page {
+    gap: 14px;
+  }
+
+  .page-header {
+    gap: 10px;
+  }
+
+  /* 页面标题在手机上不必撑到 20px，那会把副标题挤下去 */
+  .page-title {
+    font-size: var(--font-size-lg);
+  }
+
+  .card-padded {
+    padding: 14px;
+  }
+
+  /* 卡片头部默认有 14px 的上下留白，手机上可以再紧一点 */
+  .card-header {
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+  }
+
+  /* 四列 / 五列栅格在窄屏下排两列，而不是塌成单列。
+     全站 8 个页面的 grid-4 装的都是 KPI 数字卡（一个指标 + 一个大数字），
+     单卡本来就不高：排一列要滚四屏才看完指标，排两列一眼看全。
+     grid-2 / grid-3 装的通常是有正文内容的卡片，它们塌成单列是对的。 */
+  .grid-4,
+  .grid-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* 只读横条固定在底部，同样要避开安全区 */
+  .readonly-bar {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+
+  /* 侧边栏底部固定区（个人中心 + 收起按钮）贴在抽屉最下方，
+     同样要躲开 iPhone 的横条 */
+  .sidebar-footer {
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   5. 表格：宽表格在窄屏上横向滑动
+   ---------------------------------------------------------------------------
+   不改成「卡片化」展示 —— 面板里的表格动辄十几列、行内还有操作按钮，
+   推倒重做的收益不如风险大。这里只把滑动体验做顺。 */
+
+@media (max-width: 767px) {
+  .table-container {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* 收紧单元格：同样的屏宽能多露出一列，减少滑动次数 */
+  .table thead th {
+    padding: 8px 10px;
+  }
+
+  .table tbody td {
+    padding: 9px 10px;
+  }
+
+  /* 提示这一列还能往右滑：在容器右内缘压一道极淡的阴影。
+     用 inset 阴影而不是浮层元素 —— 它跟随滚动容器边界，不需要额外的
+     DOM 或定位技巧，在窄屏上也不会跟 sticky 表头打架。
+     颜色取自前景色，深浅主题下都成立。 */
+  .table-container {
+    box-shadow: inset -10px 0 10px -10px
+      color-mix(in srgb, var(--text-primary) 20%, transparent);
+  }
+
+  /* 工具栏保持横向换行，不改成纵向堆叠。
+     踩过的坑：改成 column + stretch 后，搜索框被 flex 拉成一大块空白，
+     截图里占了半屏。这类「若干筛选控件」用换行排布才是对的，
+     原先的 flex-wrap 已经够用，这里只是收紧间距。 */
+  .toolbar {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .toolbar-left,
+  .toolbar-right {
+    flex-wrap: wrap;
+  }
+
+  /* 控件按内容宽度排布，不要被拉伸 */
+  .toolbar .input-wrap,
+  .toolbar .select {
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   6. 弹层与抽屉
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  .modal-layer,
+  .drawer-layer {
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .modal {
+    max-height: calc(100vh - 24px);
+    border-radius: var(--radius);
+  }
+
+  /* 全屏弹窗在手机上就该铺满，留 12px 边距是为了透出背后的遮罩 */
+  .modal-full {
+    max-width: 100%;
+    height: calc(100vh - 24px);
+  }
+
+  .modal-header,
+  .modal-body,
+  .modal-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  /* 底部按钮换行排列，主操作仍靠右，单手拇指够得着 */
+  .modal-footer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .drawer {
+    width: 100%;
+  }
+
+  /* 通知在窄屏上通栏，贴住底部 */
+  .toast-viewport {
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .toast {
+    width: 100%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   7. 用户菜单与下拉
+   ---------------------------------------------------------------------------
+   下拉在窄屏上容易超出右边界，改成吸附两侧并给一个高度上限，内容多了
+   自己滚动，而不是被裁掉。 */
+
+@media (max-width: 767px) {
+  .user-menu {
+    max-width: calc(100vw - 24px);
+  }
+
+  .dropdown-item {
+    /* 下拉项也是触控目标 */
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   8. 表单
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  /* 两列表单在手机上排成一列，否则输入框窄到看不清填了什么 */
+  .form-grid-2,
+  .dyn-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 并排的字段在窄屏上换成上下排列；固定宽度的字段改回撑满，
+     行尾按钮的「对齐输入框」偏移这时也不需要了 */
+  .field-row {
+    gap: 12px;
+  }
+
+  .field-row > .field,
+  .field-row > .field-fixed {
+    flex: 1 1 100%;
+  }
+
+  .field-row > .btn {
+    margin-top: 0;
+  }
+
+  /* 防火墙配置行：标签独占一行，控件另起一行铺满 */
+  .fw-config-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .fw-config-key {
+    flex: 0 0 auto;
+  }
+
+  .fw-config-val,
+  .fw-target {
+    width: 100%;
+  }
+
+  /* 登录审计的搜索框：窄屏占满一行，统计说明不再右浮 */
+  .ha-search {
+    width: 100%;
+  }
+
+  .ha-meta {
+    margin-left: 0;
+  }
+
+  /* SSH 作用域切换条：标题与药丸各占一行，右侧统计不再右浮 */
+  .ssh-scope-bar {
+    gap: 10px;
+  }
+
+  /* 「作用域」竖线分隔在换行后就不成立了 */
+  .ssh-scope-label {
+    padding-right: 0;
+    border-right: none;
+  }
+
+  .ssh-pills {
+    width: 100%;
+  }
+
+  .ssh-scope-meta {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  /* 分组标题在窄屏上折成两行：标题一行，说明一行，右侧细线去掉 */
+  .section-block {
+    gap: 12px;
+  }
+
+  .section-title {
+    flex-wrap: wrap;
+  }
+
+  .section-title::after {
+    display: none;
+  }
+
+  .section-hint {
+    flex-basis: 100%;
+    margin-left: 23px;
+    white-space: normal;
+  }
+
+  /* jail 的统计数字换行到 jail 名下面，别把名字挤没 */
+  .ssh-jail-stats {
+    margin-left: 0;
+    width: 100%;
+    gap: 10px;
+  }
+
+  /* 手动封禁：输入框吃掉剩余宽度 */
+  .ssh-ban-bar > .field {
+    flex: 1 1 140px;
+    width: auto;
+  }
+
+  /* 键值对在窄屏下改成上下排列，长值不再被挤成一条 */
+  .info-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  /* 编辑器行（友链等）同理 */
+  .link-editor-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 向导里的并排卡片（创建方式 / 克隆方式）与监控小图：
+     它们的列宽是写死的两列，窄屏下每格只剩一百多像素，文字会碎成一片 */
+  .choice-cards,
+  .clone-methods,
+  .monitor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 多 PVE 连接行：原本是「左信息 / 右操作」两列 grid，按钮占据右侧一列。
+     窄屏下右侧放不下三个按钮，于是把左侧的名称与地址挤成了省略号，
+     按钮自己也叠在一起。改成上下两段。 */
+  .set-conn-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .set-conn-actions {
+    grid-column: 1;
+    grid-row: auto;
+    justify-content: flex-start;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   9. 产品官网与登录页
+   ---------------------------------------------------------------------------
+   落地页本身已有 980 / 640 两档断点（hero 塌成单列、页脚改纵向），
+   这里只补它没覆盖到的触控尺寸与安全区。 */
+
+@media (max-width: 767px) {
+  /* 两侧留白收窄，把横向空间让给品牌名与右侧 CTA */
+  .lp-container {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  /* 官网按钮加大到接近 44px，拇指更容易点中 */
+  .lp-btn {
+    min-height: 42px;
+  }
+
+  .lp-footer {
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  }
+
+  /* 页脚三栏链接并排。
+     落地页自己的 640px 规则把 .lp-footer-grid 整个塌成单列，
+     「产品功能 / 快速入口 / 技术栈」各占一行 —— 每栏只有一个标题加两三个
+     短链接，竖着堆四行既长又松散。改成品牌区独占一行、三栏并排。 */
+  .lp-footer-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px 14px;
+  }
+
+  /* 品牌与简介横跨整行，保持单栏时的呼吸感 */
+  .lp-footer-grid > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  /* 认证页页脚与 404 页贴底时避开 iPhone 的横条 */
+  .login-footer {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .notfound {
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   10. 列表行与自适应栅格：窄屏重排
+   ---------------------------------------------------------------------------
+   这两类东西在宽屏上是「每个指标钉在同一列、跨行可比」的表格替代品，但它们
+   不是表格 —— 外面没有 .table-container 那种横向滚动容器，轨道里又写着固定的
+   px 最小值，于是手机上会直接把卡片顶宽（320px 的屏上能撑出上百像素的横向
+   滚动，整页跟着晃）。这里把它们改成「两行铺满」，而不是再套一层滚动容器：
+   手机上要看的是「谁挂了 / CPU 多高」，两行两列比横向拖拽快得多。
+
+   为什么用自动布局就够：≤900px（节点列表）与 ≤1280px（仪表盘节点）的规则
+   已经用 display:none 收掉了磁盘、运行时长、备注与箭头，剩下的格子按顺序
+   自动落位，正好排成「名称 状态」+「CPU 内存」。 */
+
+@media (max-width: 767px) {
+  /* 节点页的列表视图 */
+  .node-list-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    row-gap: 8px;
+    padding: 10px 12px;
+  }
+
+  /* 仪表盘的紧凑节点列表：名称独占第一行（它连着「运行 3 天 · 连接名」），
+     CPU / 内存排在第二行，跳转箭头留在第一行末尾 */
+  .dash-node-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 14px;
+    row-gap: 8px;
+  }
+
+  .dash-node-row > *:nth-child(1) {
+    grid-column: 1 / 3;
+    grid-row: 1;
+  }
+
+  .dash-node-row > *:nth-child(5) {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .dash-node-row > *:nth-child(2) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .dash-node-row > *:nth-child(3) {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  /* auto-fill 栅格：minmax 的下限（280–320px）比手机上的卡片内宽还大
+     （320px 屏约 276px），浏览器只能照着最小值把卡片撑开，进而推宽整页。
+     这类「一屏一张卡」的排布在手机上本来就是单列，直接写死更省事。 */
+  .grid-auto-280,
+  .grid-auto-320,
+  .alert-grid,
+  .set-conn-grid,
+  .set-diag-grid,
+  .baseline-host-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Top 资源占用：名称列原本固定 24% 且最小 132px，窄屏上把进度条挤到几十
+     像素（进度条本身还带着数值文字）。手机上让名称参与伸缩、把近一半宽度
+     留给进度条，长机器名交给 truncate 收尾。 */
+  .top-vm {
+    gap: 10px;
+    padding: 8px 8px;
+    margin: 0 -8px;
+  }
+
+  .top-vm-name {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .top-vm-bar {
+    flex: 0 0 46%;
+  }
+
+  /* 硬件行（磁盘 / 网卡）：右侧「迁移到…」下拉加两个图标按钮约占 180px，
+     左侧名称在手机上只剩一格省略号。整行折成两段，操作区另起一行靠右。 */
+  .hw-item {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .hw-item-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   11. 极窄屏（≤ 400px）二次收窄
+   ---------------------------------------------------------------------------
+   小屏安卓机与 iPhone SE 一类设备，栅格间距与卡片留白还能再挤一挤。 */
+
+@media (max-width: 400px) {
+  .app-content {
+    --content-pad-top: 12px;
+    padding: var(--content-pad-top) 10px calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .card-padded {
+    padding: 12px;
+  }
+
+  .grid {
+    gap: 12px;
+  }
+
+  /* 弹层铺满，12px 的边距在小屏上显得浪费 */
+  .modal-layer,
+  .drawer-layer {
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+
+  /* 页脚三栏在 360px 一线会挤，收紧间距并降一档字号，
+     免得「React 18 + TypeScript」这种长条目折成三行 */
+  .lp-footer-grid {
+    gap: 18px 10px;
+  }
+
+  .lp-footer-title,
+  .lp-footer-link {
+    font-size: 12px;
+  }
+}

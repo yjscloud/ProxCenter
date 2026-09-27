@@ -8,7 +8,18 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from .. import captcha, defaults, faq, mailer, panel_url, quota, security, site, store
+from .. import (
+    captcha,
+    defaults,
+    faq,
+    mailer,
+    panel_url,
+    quota,
+    security,
+    site,
+    store,
+    ui,
+)
 from ..config import settings
 from ..pve import (
     PveConnection,
@@ -27,6 +38,7 @@ from ..schemas import (
     MailTestIn,
     PanelUrlIn,
     SiteInfoIn,
+    UiPrefsIn,
     VmDefaultsIn,
     VmQuotaIn,
 )
@@ -650,6 +662,40 @@ async def put_login_captcha(
         detail={"mode": mode, "label": captcha.MODE_LABEL.get(mode, mode)},
     )
     return {"mode": mode}
+
+
+# ============================================================ 面板界面开关
+# 即「设置 → 导航栏功能开关」（见 app/ui.py）：逐项关闭导航栏里的入口。
+# 它决定每个用户的控制台里能看见哪些入口，所以读取只要求登录 —— 控制台外壳
+# 在渲染前就得拿到它，只给管理员读的话，被关掉的入口对其他用户依然可见。
+# 写入要求 settings.manage：这个开关对所有用户生效。
+
+
+@router.get("/config/ui")
+async def get_ui_prefs(
+    user: Dict[str, Any] = Depends(security.get_current_user),
+) -> Dict[str, Any]:
+    """面板界面开关。无需特权：控制台布局在每个用户登录后立即需要。"""
+    return await ui.get_ui_prefs()
+
+
+@router.put("/config/ui")
+async def put_ui_prefs(
+    payload: UiPrefsIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
+) -> Dict[str, Any]:
+    """保存面板界面开关（被关闭的导航栏入口）。保存后立即对所有人生效。"""
+    saved = await ui.set_ui_prefs(nav_disabled=payload.nav_disabled)
+    await security.audit(
+        request,
+        user,
+        "config.ui_prefs",
+        target="ui-prefs",
+        # 关掉了哪些入口是这次改动的全部内容，审计日志里必须能看出来
+        detail={"nav_disabled": saved["nav_disabled"]},
+    )
+    return saved
 
 
 # =============================================================== site info

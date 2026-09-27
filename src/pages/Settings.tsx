@@ -29,6 +29,13 @@ import {
   saveSettings,
 } from '../api/endpoints';
 import { PageShell } from '../components/Layout';
+import {
+  ALWAYS_OPEN_PATHS,
+  FOOTER_NAV_ITEMS,
+  NAV_SECTIONS,
+  isPathDisabled,
+} from '../components/Sidebar';
+import { DEFAULT_UI_PREFS } from '../hooks/useUiPrefs';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
@@ -64,6 +71,7 @@ import {
   IconBell,
   IconLink,
   IconMonitor,
+  IconMenu,
 } from '../components/Icons';
 import { formatDateTime } from '../utils/format';
 import { useToast } from '../hooks/useToast';
@@ -82,6 +90,7 @@ import type {
   PanelSettings,
   SiteInfo,
   SiteLink,
+  UiPrefs,
 } from '../api/types';
 
 /* ---------------------------------------------------------------------------
@@ -190,6 +199,15 @@ export function Settings() {
       icon: <IconVm size={16} />,
       adminOnly: true,
       render: () => <VMCreateDefaultsSection />,
+    },
+    {
+      id: 'sidebar',
+      group: '服务端配置',
+      label: '导航栏功能开关',
+      desc: '导航栏里每一个入口的开关，关掉的项直接输 URL 也进不去',
+      icon: <IconMenu size={16} />,
+      adminOnly: true,
+      render: () => <SidebarNavSection />,
     },
     {
       id: 'site',
@@ -1162,7 +1180,191 @@ function SiteInfoSection() {
 }
 
 /* ---------------------------------------------------------------------------
-   区块 4.4：登录验证方式（服务端设置，作用于登录页）
+   区块 4.1：导航栏功能开关（服务端开关，作用于所有用户）
+   ---------------------------------------------------------------------------
+   导航栏里的每一个入口各一个开关，写进 settings 表、对所有用户立即生效
+   （后端见 app/ui.py）。关掉后该入口从导航栏、顶栏头像菜单、Ctrl / ⌘ + K
+   全局搜索里一起消失，直接输 URL 也会被弹回一个还开着的页面
+   （见 Sidebar.isPathDisabled 与 Layout 里的路由拦截）。
+
+   导航栏本身没有总开关：这里关的始终是「里面的某个功能入口」。整条导航栏
+   只剩折叠（每个用户自己那一个收起按钮），不提供成批关闭。
+
+   与「登录验证」同样的交互约定：不设「保存」按钮，点一下即时生效，失败就
+   弹回原值（Switch 是受控的，状态只在服务端确认后才改）。
+
+   为什么把入口留在「服务端配置」而不是「面板偏好」：它写进 settings 表、
+   对所有用户生效，不是「当前这台浏览器」的偏好。改完立刻作数 —— 不需要
+   重启，也不需要用户刷新页面。
+   --------------------------------------------------------------------------- */
+
+/** 关不掉的入口：它是重新打开这些开关的唯一地方（见 Sidebar.ALWAYS_OPEN_PATHS） */
+const LOCKED_NAV_PATHS = new Set(ALWAYS_OPEN_PATHS);
+
+function SidebarNavSection() {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission('settings.manage');
+
+  const [prefs, setPrefs] = useState<UiPrefs>(DEFAULT_UI_PREFS);
+  const [busy, setBusy] = useState(false);
+  /* 只在首次拿到服务端值时回填，之后不再覆盖用户正在操作的开关 */
+  const loadedRef = useRef(false);
+
+  const query = useQuery({
+    queryKey: ['config', 'ui'],
+    queryFn: configApi.getUiPrefs,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!query.data || loadedRef.current) return;
+    loadedRef.current = true;
+    setPrefs(query.data);
+  }, [query.data]);
+
+  /* 整份提交：后端对缺省字段的处理是「保持原值」，只发半份状态容易两边
+     各改一半、互相覆盖。 */
+  const save = async (next: UiPrefs, okTitle: string, okHint: string) => {
+    if (!canManage || busy) return;
+    setBusy(true);
+    try {
+      const saved = await configApi.saveUiPrefs(next);
+      setPrefs(saved);
+      /* 控制台外壳（Layout）、侧边栏、顶栏菜单、命令面板读的都是同一份
+         query：当场写回，开关一按各处立刻跟着变，不用等它自己过期。 */
+      queryClient.setQueryData(['config', 'ui'], saved);
+      void queryClient.invalidateQueries({ queryKey: ['config', 'ui'] });
+      toast.success(okTitle, okHint);
+    } catch (err) {
+      /* 失败时不动 prefs：Switch 是受控的，会自己弹回原值 */
+      toast.error('保存失败', errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleItem = (to: string, label: string, next: boolean) =>
+    void save(
+      {
+        ...prefs,
+        nav_disabled: next
+          ? prefs.nav_disabled.filter((path) => path !== to)
+          : [...prefs.nav_disabled, to],
+      },
+      next ? `已开启「${label}」` : `已关闭「${label}」`,
+      next
+        ? '该入口在所有用户的控制台里恢复显示'
+        : '该入口从侧边栏、顶栏菜单与全局搜索里一起消失，直接输地址也会被弹回',
+    );
+
+  /* 分组与顺序直接取侧边栏那一份（末尾补上底部账号区的项）：设置页看到的
+     分组必须和用户在侧边栏里看到的一致，另维护一份清单迟早会对不上。 */
+  const groups = [
+    ...NAV_SECTIONS.map((section) => ({
+      title: section.title,
+      items: section.items,
+    })),
+    { title: '账号', items: FOOTER_NAV_ITEMS },
+  ];
+
+  const closedCount = prefs.nav_disabled.length;
+
+  return (
+    <Card>
+      <CardHeader
+        title="导航栏功能开关"
+        subtitle="导航栏里每一个入口的开关；关掉的项对所有用户立即生效"
+        icon={<IconMenu size={17} />}
+        actions={
+          busy ? (
+            <Badge variant="info" size="sm">
+              保存中…
+            </Badge>
+          ) : undefined
+        }
+      />
+
+      {/* 逐项开关：分组与顺序与侧边栏完全一致 */}
+      {groups.map((group) => {
+        const closed = group.items.filter((item) =>
+          isPathDisabled(item.to, prefs.nav_disabled),
+        ).length;
+        return (
+          <div className="dyn-list mt-16" key={group.title}>
+            <div className="set-form-block-head">
+              <span className="set-form-block-icon">
+                <IconMenu size={15} />
+              </span>
+              <span className="set-form-block-title">{group.title}</span>
+              <span className="set-form-block-hint">
+                {closed > 0 ? `${closed} 项已关闭` : '全部开启'}
+              </span>
+            </div>
+
+            <div className="set-grid set-grid--3">
+              {group.items.map((item) => {
+                /* 恢复入口不能关：关掉之后界面上再没有地方能把这些开关打开 */
+                const locked = LOCKED_NAV_PATHS.has(item.to);
+                return (
+                  <Switch
+                    key={item.to}
+                    checked={!isPathDisabled(item.to, prefs.nav_disabled)}
+                    onChange={(next) => toggleItem(item.to, item.label, next)}
+                    disabled={!canManage || busy || locked}
+                    label={item.label}
+                    hint={locked ? '恢复入口，始终保留' : item.to}
+                    ariaLabel={`显示「${item.label}」入口`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      <Notice tone="info" title="关掉的入口会被彻底隐藏">
+        从导航栏、顶栏头像菜单、Ctrl / ⌘ + K 全局搜索里一起消失，直接输地址也会被弹回
+        第一个还开着的页面。它关的是入口，不是授权 —— 对应接口的权限仍由角色决定。
+      </Notice>
+
+      {closedCount > 0 ? (
+        <div className="set-action-bar">
+          <Button
+            variant="secondary"
+            onClick={() =>
+              void save(
+                { ...prefs, nav_disabled: [] },
+                '已恢复全部入口',
+                '所有侧边栏入口在所有用户的控制台里重新显示',
+              )
+            }
+            disabled={!canManage || busy}
+          >
+            恢复全部入口
+          </Button>
+          <span className="set-action-spacer" />
+          <span className="fs-sm text-warning">
+            {closedCount} 个入口已关闭
+          </span>
+        </div>
+      ) : null}
+
+      {!canManage ? (
+        <div className="mt-16">
+          <Notice tone="info" title="只读">
+            当前账号对该设置只有查看权限，修改需要管理员（settings.manage 权限）。
+          </Notice>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   区块 4.5：登录验证方式（服务端设置，作用于登录页）
    ---------------------------------------------------------------------------
    三档：关闭 / 图形验证码 / 拖动滑块。
 
@@ -1317,7 +1519,7 @@ function LoginCaptchaSection() {
 }
 
 /* ---------------------------------------------------------------------------
-   区块 4.5：面板全局地址（邮件 / 飞书回调里拼链接用的外部域名）
+   区块 4.3：面板全局地址（邮件 / 飞书回调里拼链接用的外部域名）
    --------------------------------------------------------------------------- */
 
 function PanelUrlSection() {

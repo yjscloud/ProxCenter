@@ -204,6 +204,18 @@ class LoginCaptchaIn(BaseModel):
     mode: str
 
 
+class UiPrefsIn(BaseModel):
+    """面板级界面开关（服务端，全局生效，见 app/ui.py）。
+
+    ``nav_disabled``：这些路径对应的导航栏入口被关闭（隐藏 + 路由弹回）。
+
+    允许缺省（``None`` = 保持当前值），这样前端只提交改过的那一项也不会把
+    其余设置重置。
+    """
+
+    nav_disabled: Optional[List[str]] = None
+
+
 # -------------------------------------------------------------------- vms
 class DiskSpec(BaseModel):
     storage: str

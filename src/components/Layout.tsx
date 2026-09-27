@@ -3,12 +3,18 @@
    ========================================================================== */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
-import { Sidebar, canAccessNav } from './Sidebar';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import {
+  Sidebar,
+  canAccessNav,
+  firstAvailableNavPath,
+  isPathDisabled,
+} from './Sidebar';
 import { Topbar } from './Topbar';
 import { CommandPalette } from './CommandPalette';
 import { ErrorBoundary } from './ErrorBoundary';
 import { useAuth } from '../hooks/useAuth';
+import { useUiPrefs } from '../hooks/useUiPrefs';
 import { useTaskStream } from '../hooks/useWebSocket';
 
 const COLLAPSE_KEY = 'pve_sidebar_collapsed';
@@ -18,6 +24,16 @@ const TABLET_BREAKPOINT = 1280;
 export function Layout() {
   const location = useLocation();
   const { canWrite, user } = useAuth();
+
+  /* 面板级开关（见 app/ui.py）：由管理员在「设置 → 导航栏功能开关」里逐项
+     关闭入口，对所有用户生效。导航栏本身始终渲染，关的是里面的功能入口。 */
+  const navDisabled = useUiPrefs().nav_disabled;
+
+  /* 当前所在的页面是不是已被关闭的入口。是的话不渲染它，弹回一个还开着的
+     页面 —— 与导航栏「看不见的项就是进不去」保持一致，避免出现「导航栏里
+     没有，手输 URL 却进得去」的两套规则。 */
+  const pathBlocked = isPathDisabled(location.pathname, navDisabled);
+  const fallbackPath = firstAvailableNavPath(navDisabled, user);
 
   /* 侧边栏折叠状态 */
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -107,9 +123,24 @@ export function Layout() {
         />
 
         <main className="app-content" id="main-content">
-          <ErrorBoundary>
-            <Outlet />
-          </ErrorBoundary>
+          {pathBlocked ? (
+            fallbackPath ? (
+              <Navigate to={fallbackPath} replace />
+            ) : (
+              /* 一个还开着的页面都没有（管理员把所有入口都关了）：
+                 不跳转，直接说明情况 —— 反复弹回会变成死循环。 */
+              <div className="notfound">
+                <div className="text-secondary">
+                  所有页面入口都已被管理员关闭，请联系管理员在
+                  「系统设置 → 导航栏功能开关」中重新开启。
+                </div>
+              </div>
+            )
+          ) : (
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
+          )}
         </main>
 
         {!canWrite ? (

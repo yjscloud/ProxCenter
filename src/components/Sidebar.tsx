@@ -35,6 +35,7 @@ import {
   IconChevronDown,
 } from './Icons';
 import { useSiteInfo } from '../hooks/useSiteInfo';
+import { useUiPrefs } from '../hooks/useUiPrefs';
 import { BrandLogo } from './BrandLogo';
 
 export interface NavItem {
@@ -245,6 +246,76 @@ export function isPathInSection(section: NavSection, pathname: string): boolean 
   });
 }
 
+/* ---------------------------------------------------------------------------
+   面板级「入口开关」（服务端配置，所有用户共享）
+   ---------------------------------------------------------------------------
+   管理员在「设置 → 导航栏功能开关」里逐个关闭入口。判据只有一份、写在这里：
+   侧边栏、顶栏菜单、全局搜索、路由拦截都调它 —— 各处自己写一套的话，
+   迟早出现「侧边栏里没有了，Ctrl+K 还搜得到」这种半关状态。
+
+   匹配按**前缀**走：关掉 /nodes 时，它的子页面（/nodes/connections、
+   /nodes/<节点名>）一起关 —— 用户心智里那些页面本来就属于同一个功能。
+   --------------------------------------------------------------------------- */
+
+/**
+ * 无论配置如何都保持可达的路径。
+ *
+ * 目前只有「系统设置」：它是重新打开这些开关的唯一入口，把它一起关掉之后，
+ * 界面上就再没有地方能恢复了（只能改数据库）。
+ */
+export const ALWAYS_OPEN_PATHS = ['/settings'];
+
+/** 该路径对应的入口是否已被面板级开关关闭。 */
+export function isPathDisabled(
+  pathname: string,
+  disabled: readonly string[],
+): boolean {
+  if (
+    ALWAYS_OPEN_PATHS.some(
+      (open) => pathname === open || pathname.startsWith(`${open}/`),
+    )
+  ) {
+    return false;
+  }
+  return disabled.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+}
+
+/**
+ * 侧边栏底部（账号区）的入口。不属于任何分组，但同样是「侧边栏的一项」，
+ * 所以同样参与开关、搜索与路由拦截。
+ *
+ * 注意：它必须与下面 footer 里真实渲染的链接保持一致（加一项就补一项）。
+ */
+export const FOOTER_NAV_ITEMS: NavItem[] = [
+  { to: '/profile', label: '个人中心', icon: null },
+];
+
+/** 侧边栏里所有入口（按显示顺序），供「逐项开关」与兜底跳转共用。 */
+export function allNavItems(): NavItem[] {
+  return [...NAV_SECTIONS.flatMap((section) => section.items), ...FOOTER_NAV_ITEMS];
+}
+
+/**
+ * 被关闭的入口被直接访问时，该弹回哪个页面。
+ *
+ * 取「第一个当前用户有权看、且还开着」的入口。特意在这里就把权限算进去：
+ * 弹回一个该用户进不去的页面，会被那个页面的权限守卫再弹一次，几个来回
+ * 就是死循环。一个都没有时返回空串，由调用方渲染一句说明。
+ */
+export function firstAvailableNavPath(
+  disabled: readonly string[],
+  user: { role?: string; permissions?: string[] } | null | undefined,
+): string {
+  for (const item of allNavItems()) {
+    if (!canAccessNav(item, user)) continue;
+    if (isPathDisabled(item.to, disabled)) continue;
+    return item.to;
+  }
+  return '';
+}
+
 export interface SidebarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
@@ -264,6 +335,8 @@ export function Sidebar({
 }: SidebarProps) {
   const site = useSiteInfo();
   const { pathname } = useLocation();
+  /* 被管理员关闭的入口：与权限过滤一样，属于「这一项该不该出现」的判断 */
+  const disabledPaths = useUiPrefs().nav_disabled;
   const [collapsedSections, setCollapsedSections] = useState<string[]>(readCollapsedSections);
 
   /* 持久化折叠偏好 */
@@ -323,7 +396,9 @@ export function Sidebar({
         {/* 导航 */}
         <nav className="sidebar-nav">
           {NAV_SECTIONS.map((section) => {
-            const items = section.items.filter(canAccess);
+            const items = section.items
+              .filter(canAccess)
+              .filter((item) => !isPathDisabled(item.to, disabledPaths));
             if (items.length === 0) return null;
 
             /* 折叠态（64px）下没有标题栏可点，也放不下箭头：直接展开，
@@ -395,21 +470,25 @@ export function Sidebar({
             挪到这里既省掉一个分组，也和顶栏头像菜单的位置语义一致（都在「我的」上）。
             对 viewer / operator 来说它仍是唯一可见入口，所以不能只留顶栏那份。 */}
         <div className="sidebar-footer">
-          <NavLink
-            to="/profile"
-            className={({ isActive }) => `nav-item ${isActive ? 'is-active' : ''}`}
-            onClick={onCloseMobile}
-            title={collapsed ? '个人中心' : undefined}
-          >
-            <span className="nav-icon" aria-hidden="true">
-              <IconUser size={18} />
-            </span>
-            {!collapsed ? (
-              <span className="nav-label">个人中心</span>
-            ) : (
-              <span className="sr-only">个人中心</span>
-            )}
-          </NavLink>
+          {/* 与「个人中心」这一项对应的开关：路径取自 FOOTER_NAV_ITEMS，
+              两处必须一致（那边是给设置页与兜底跳转用的） */}
+          {isPathDisabled(FOOTER_NAV_ITEMS[0].to, disabledPaths) ? null : (
+            <NavLink
+              to={FOOTER_NAV_ITEMS[0].to}
+              className={({ isActive }) => `nav-item ${isActive ? 'is-active' : ''}`}
+              onClick={onCloseMobile}
+              title={collapsed ? FOOTER_NAV_ITEMS[0].label : undefined}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                <IconUser size={18} />
+              </span>
+              {!collapsed ? (
+                <span className="nav-label">{FOOTER_NAV_ITEMS[0].label}</span>
+              ) : (
+                <span className="sr-only">{FOOTER_NAV_ITEMS[0].label}</span>
+              )}
+            </NavLink>
+          )}
 
           <button
             type="button"

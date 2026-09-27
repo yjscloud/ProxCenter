@@ -20,8 +20,14 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { searchApi } from '../api/endpoints';
-import { NAV_SECTIONS, canAccessNav, type NavItem } from './Sidebar';
+import {
+  NAV_SECTIONS,
+  canAccessNav,
+  isPathDisabled,
+  type NavItem,
+} from './Sidebar';
 import { useAuth } from '../hooks/useAuth';
+import { useUiPrefs } from '../hooks/useUiPrefs';
 import { IconSearch, IconChevronRight } from './Icons';
 
 /** 输入停顿多久才去搜后端。太短会把每个字符都发一趟请求。 */
@@ -55,6 +61,9 @@ export interface CommandPaletteProps {
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  /* 被管理员关闭的入口同样不在这里出现：Ctrl+K 是页面的第二个入口，
+     它漏出来就等于「关掉了但还进得去」。 */
+  const disabledPaths = useUiPrefs().nav_disabled;
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -90,11 +99,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   /* ---- 本地页面项 ---- */
   const pages = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const items = [...NAV_SECTIONS.flatMap((s) => s.items), ...EXTRA_PAGES].filter(
-      (item) => canAccessNav(item, user),
-    );
+    const items = [...NAV_SECTIONS.flatMap((s) => s.items), ...EXTRA_PAGES]
+      .filter((item) => canAccessNav(item, user))
+      .filter((item) => !isPathDisabled(item.to, disabledPaths));
     return items.filter((item) => !q || item.label.toLowerCase().includes(q));
-  }, [query, user]);
+  }, [query, user, disabledPaths]);
 
   /* ---- 合并成一个扁平列表，供键盘上下移动 ---- */
   const rows = useMemo<Row[]>(() => {

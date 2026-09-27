@@ -115,6 +115,7 @@ import type {
   Paginated,
   PanelSettings,
   SiteInfo,
+  UiPrefs,
   RrdPoint,
   ZfsPool,
   RrdTimeframe,
@@ -324,6 +325,16 @@ export const configApi = {
   getLoginCaptcha: () => get<{ mode: LoginCaptchaMode }>('/config/login-captcha'),
   saveLoginCaptcha: (mode: LoginCaptchaMode) =>
     put<{ mode: LoginCaptchaMode }>('/config/login-captcha', { mode }),
+  /**
+   * 面板界面开关（导航栏里被逐个关闭的入口）。
+   * 读取只要求登录：控制台外壳在每个用户登录后立刻要用。写入需要
+   * settings.manage，但不需要二次确认 —— 它不降低安全门槛，只改新版式。
+   *
+   * 提交时两个字段都带上：后端对缺省字段的处理是「保持原值」，前端显式给全，
+   * 免得两份状态各改一半。
+   */
+  getUiPrefs: () => get<UiPrefs>('/config/ui'),
+  saveUiPrefs: (prefs: UiPrefs) => put<UiPrefs>('/config/ui', prefs),
   /**
    * 虚拟机下发总配额（全局容量上限）。
    * `quota` 传 null 表示「不限制」；传 0 表示普通用户完全不能下发。

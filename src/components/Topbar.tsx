@@ -7,6 +7,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { healthApi } from '../api/endpoints';
 import { useAuth } from '../hooks/useAuth';
+import { useUiPrefs } from '../hooks/useUiPrefs';
+import { isPathDisabled } from './Sidebar';
 import { Badge } from './ui/Badge';
 import { IconButton } from './ui/Button';
 import {
@@ -31,6 +33,7 @@ const SHORTCUT =
     : 'Ctrl K';
 
 export interface TopbarProps {
+  /** 打开移动端导航抽屉（窄屏时导航栏收进抽屉里） */
   onOpenMobileNav: () => void;
   /** 打开命令面板（全局搜索） */
   onOpenSearch?: () => void;
@@ -41,6 +44,10 @@ export interface TopbarProps {
 export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
   const { user, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
+  /* 这个菜单是个人中心 / 系统设置 / 用户管理的第二个入口。
+     被面板级开关关闭的入口这里也要跟着消失 —— 否则「侧边栏里关掉了，
+     头像菜单里还点得进去」，两套规则并存。 */
+  const disabledPaths = useUiPrefs().nav_disabled;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -149,19 +156,21 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
                 </Badge>
               </div>
               <div className="user-dropdown-divider" />
-              {/* 所有用户可用：改邮箱与密码 */}
-              <button
-                type="button"
-                role="menuitem"
-                className="dropdown-item"
-                onClick={() => {
-                  setMenuOpen(false);
-                  navigate('/profile');
-                }}
-              >
-                <IconUser size={15} />
-                <span>个人中心</span>
-              </button>
+              {/* 所有用户可用：改邮箱与密码。入口被关闭时整项不出现 */}
+              {isPathDisabled('/profile', disabledPaths) ? null : (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="dropdown-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    navigate('/profile');
+                  }}
+                >
+                  <IconUser size={15} />
+                  <span>个人中心</span>
+                </button>
+              )}
               {/* 「系统管理」下的页面仅管理员可见，普通用户菜单里不出现 */}
               {isAdmin ? (
                 <>
@@ -177,18 +186,21 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
                     <IconSettings size={15} />
                     <span>系统设置</span>
                   </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="dropdown-item"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      navigate('/users');
-                    }}
-                  >
-                    <IconUsers size={15} />
-                    <span>用户管理</span>
-                  </button>
+                  {/* 用户管理：入口被关掉时这里也不出现 */}
+                  {isPathDisabled('/users', disabledPaths) ? null : (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="dropdown-item"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        navigate('/users');
+                      }}
+                    >
+                      <IconUsers size={15} />
+                      <span>用户管理</span>
+                    </button>
+                  )}
                 </>
               ) : null}
               <div className="user-dropdown-divider" />

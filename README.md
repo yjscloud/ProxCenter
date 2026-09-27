@@ -10,6 +10,20 @@ cloud-init 模板流水线、网络配置、监控大盘、快照备份、浏览
 
 ---
 
+## 在线演示
+
+<https://prox.yjscloud.com>
+
+**产品官网**（免登录）
+
+![ProxCenter 产品官网首页](docs/screenshots/landing.png)
+
+**控制台仪表盘**（登录后）
+
+![ProxCenter 控制台仪表盘](docs/screenshots/dashboard.png)
+
+---
+
 ## 一、快速开始
 
 ### 1. 准备 Proxmox API Token
@@ -808,6 +822,7 @@ SMTP 密码用 `SECRET_KEY` 加密后落库，接口只回 `password_set`，明�
 
 ```
 proxcenter/
+├── docs/screenshots/              README「在线演示」用到的界面截图
 ├── deploy.sh                      一键部署：建虚拟环境 + 装依赖 + 生成 .env + 构建前端
 │                                  + 装 systemd 服务 + 健康自检（幂等，可重复执行）
 ├── start.sh                       开发模式：后端 + Vite 开发服务器一起拉起

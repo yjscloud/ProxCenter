@@ -5,7 +5,10 @@
 
 * **默认全开**：升级后不能突然少收到本该收到的告警；
 * **未知来源放行**：调用点把来源名写错时宁可多推一条，也不要整类告警静默；
-* **停推只停推送**：巡检与告警历史必须照常，否则「静默」就变成了「失明」。
+* **静默要真的安静**：来源被停推后，命中的告警整条丢弃（不落库、不留站内
+  消息），告警历史与工作台待办里都不该再出现它们 —— 数字降不下去，用户只会
+  以为这个开关没生效；
+* **别把真送达的抹掉**：唯一的例外是已经成功投递的记录，那种时间差不该被丢弃。
 
 模块层用 ``asyncio.run`` + ``db`` 夹具（只建表、不起 app），接口层用 ``api``
 夹具的 TestClient。两层不混用：TestClient 的全局连接池绑在它自己的事件循环上，
@@ -46,6 +49,12 @@ async def _shutdown_pool(coro):
 
 def _run(coro):
     return asyncio.run(_shutdown_pool(coro))
+
+
+async def _collect(agen) -> List[Any]:
+    """把异步生成器收成列表。必须在同一个事件循环里消费，
+    所以要和 _run 一起用（``_collect(gen())`` 交给 _run 跑）。"""
+    return [item async for item in agen]
 
 
 @pytest.fixture()
@@ -316,18 +325,19 @@ class TestPushGate:
         assert rec.calls["inbox"] == 1
         assert _history_count() == before + 1
 
-    def test_muted_is_recorded_as_muted_not_failed(self, db, monkeypatch) -> None:
-        """停推写进历史的是 muted，不是 failed。
+    def test_muted_record_is_discarded(self, db, monkeypatch) -> None:
+        """停推的告警整条丢弃：不落库、不留站内消息。
 
-        两者都不算送达，但意义相反：前者是运维自己关的，后者是真出问题了。
-        混成 failed 会让割接窗口一过，历史页的「发送失败」红成一片 —— 真故障
-        反而淹没在里面，而它才是最该被一眼看到的。
+        旧版本的做法是「历史照写、只标 muted」，代价是告警历史里堆着一批用户
+        明确说过不要的记录，首页工作台的「N 条异常告警待处理」也长期降不下来 ——
+        静默开关的意义正是让这个数字归零，留一份痕反而把它顶住了。
         """
-        _Recorder(monkeypatch)
+        rec = _Recorder(monkeypatch)
         _run(alerting.save_notify_sources({SOURCE: False}))
         cfg = _all_channels_on()
+        before = _history_count()
 
-        # 走完整链路：dispatch 判定停推 → 调用点据此写 failed → record 归一化成 muted
+        # 走完整链路：dispatch 判定停推 → 调用点拿到 failed → record 应当直接丢弃
         ok, detail = _run(
             alerting.dispatch(
                 "admin", cfg["feishu"], cfg["email"], "t", "b", {}, source=SOURCE
@@ -337,12 +347,12 @@ class TestPushGate:
 
         _run(alerting.record(_entry(result="failed", detail=detail), source=SOURCE))
 
-        row = _last_history()
-        assert row["result"] == alerting.RESULT_MUTED == "muted"
-        assert row["detail"] == alerting.MUTED_DETAIL
+        assert _history_count() == before, "停推的记录不该落库"
+        assert _notification_count() == 0, "停推的记录不该留站内消息"
+        assert rec.calls == {"feishu": 0, "email": 0, "webhook": 0, "inbox": 0}
 
-    def test_real_failure_is_not_relabelled(self, db, monkeypatch) -> None:
-        """来源没关时，真失败必须老实标 failed —— 归一化不能顺手把故障也吞掉。"""
+    def test_real_failure_is_not_swallowed(self, db, monkeypatch) -> None:
+        """来源没关时，真失败照写、老实标 failed —— 丢弃只针对被停推的来源。"""
         _Recorder(monkeypatch)
         # 三个通道全关：dispatch 会返回「告警通知已停用，仅记录」
         _run(
@@ -355,17 +365,54 @@ class TestPushGate:
         assert row["result"] == "failed"
         assert row["detail"] == "告警通知已停用，仅记录"
 
-    def test_already_sent_is_never_relabelled(self, db, monkeypatch) -> None:
-        """已经送达的记录不因「现在开关关了」而追溯改写。
+    def test_already_sent_is_kept(self, db, monkeypatch) -> None:
+        """已经送达的记录照旧落库，不因「此刻开关是关的」被一起丢掉。
 
-        归一化的条件是「停推 **且** 确实没送达」。少了后半句，一个把 source 传给
-        record 却忘了传给 dispatch 的调用点，会把真发出去的告警错标成静默。
+        丢弃的条件是「来源被停推 **且** 确实没送达」。少了后半句，一个把 source
+        传给 record 却没传给 dispatch 的调用点，会把真发出去的告警一并抹掉；
+        开关在投递之后才被关掉的时间差也不该有这种后果。
         """
         _Recorder(monkeypatch)
         _run(alerting.save_notify_sources({SOURCE: False}))
 
         _run(alerting.record(_entry(result="sent"), source=SOURCE))
         assert _last_history()["result"] == "sent"
+
+    def test_history_hides_legacy_muted_rows(self, db) -> None:
+        """旧版本留下的 muted 记录不再对外输出。
+
+        新版本不会产生这种行，但升级前的库里可能已经有了。读取端把它们滤掉，
+        告警页的历史列表与首页工作台的待处理条数就同时干净了 —— 过滤写在
+        history() 这一处，两个消费方不必各滤一遍，也不会有人漏滤。
+        """
+        _run(alerting.record(_entry(), source=SOURCE))
+        # 直接插一条旧版本会写的记录（新代码已经没有这条写路径了）
+        _exec(
+            "INSERT INTO alert_history (username, rule_id, rule_name, target_type,"
+            " target, metric, value, threshold, result, detail, kind, ts)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                "admin",
+                "ssh-fail",
+                "旧版本记录",
+                "ssh",
+                "1.2.3.4",
+                "ssh_fail",
+                12.0,
+                10.0,
+                alerting.RESULT_MUTED,
+                alerting.MUTED_DETAIL,
+                "alarm",
+                1,
+            ),
+        )
+        assert _history_count() == 2, "库里确实有两条"
+
+        rows = _run(alerting.history(50))
+        assert [r["result"] for r in rows] == ["sent"]
+
+        exported = _run(_collect(alerting.stream_history()))
+        assert [r["result"] for r in exported] == ["sent"], "导出同样不该带上静默记录"
 
     def test_record_writes_a_real_inbox_row(self, db) -> None:
         """不打桩跑一遍：确认 record 确实往站内通知表里落了行。

@@ -250,13 +250,20 @@ SOURCE_BACKUPGUARD = "backupguard"
 
 NOTIFY_SOURCES_KEY = "alert_notify_sources"
 
-# 停推时统一用这一句，前端和历史列表都靠它认出「这不是发送失败，是被关掉了」
-MUTED_DETAIL = "该来源已停止推送告警（仅记录历史）"
+# 停推时统一用这一句，区分「主动静默」与「发送失败」。
+# 记录整条会被丢弃，所以它主要出现在日志与测试里，但仍要说清楚：
+# 不是发失败了，是这类告警被关掉了。
+MUTED_DETAIL = "该来源已停止推送告警（静默，不记录历史）"
 
-# 告警历史的投递结果。``muted`` 是「主动静默」而不是「发失败」：
-# 两者都不算送达，但意义完全相反 —— 前者是运维自己关的，后者是真出问题了。
-# 混成一个 failed 会让割接窗口结束后历史页红成一片，真正的发送故障反而淹没
-# 在里面，这正是最该被一眼看到的东西。
+# 告警历史的投递结果。
+#
+# ``sent`` = 至少有一个通道送达。
+#
+# ``muted`` 是**旧版本**对「来源被停推」的标记：那时停推的告警仍会落库
+# （result=muted），供事后追溯。新版本改为整条丢弃、不再产生这种记录
+# （见 record）。常量与两处读取端的过滤都留着，是为了让升级前已经在库里的那些
+# 行不再冒出来 —— 它们既不该出现在告警历史里，也不该被算进首页工作台的待处理
+# 条数。读取端过滤而不是删库：升级不该悄悄动用户的历史数据。
 RESULT_SENT = "sent"
 RESULT_MUTED = "muted"
 
@@ -1191,19 +1198,21 @@ async def record(entry: Dict[str, Any], *, source: str = "") -> None:
     「这条告警发生了」与「该有人知道」。分开写迟早会出现「历史里有、铃铛上没有」
     这种漏报 —— 而铃铛正是外部通道没配或发失败时的兜底。
 
-    例外只有一个：来源被停推（``source`` 对应的开关关掉了）。这时**历史照写、
-    站内消息不发** —— 停推的语义是「彻底静默」，只留一份可事后追溯的记录。
-    历史仍然照写很关键：否则「停推期间到底有没有出事」就无从查证，那就不是
-    静默而是失明了。
+    来源被停推（``source`` 对应的开关关掉了）时**整条丢弃**：不写历史、不留站内
+    消息。停推是「这一类告警我不要了」的明确说法，再往告警历史里塞记录，会连带
+    把首页工作台的「N 条异常告警待处理」一直顶在高位 —— 关掉开关本就是为了让这个
+    数字降下去，结果数字一分不少，那这个开关等于没关。
+
+    唯一的例外是 ``result=sent``：这条其实已经投递出去了，说明开关是在投递之后
+    才关的。这种时间差不该把一条真发出去的记录抹掉，所以照写。
     """
-    # 归一化投递结果放在这里，而不是让十个调用点各自判断：record 是历史唯一的
-    # 写入口，判定只写一遍就不会出现「有的地方标 muted、有的地方标 failed」。
-    # 条件是「来源被停推 **且** 确实没送达」—— 后者不能省：万一某个调用点把
-    # source 传给了 record 却忘了传给 dispatch，告警其实真发失败了，不能被
-    # 错标成主动静默。
-    muted = bool(source) and not await push_enabled(source)
-    if muted and entry.get("result") != RESULT_SENT:
-        entry["result"] = RESULT_MUTED
+    # 判定放在最前面、且是入库前唯一的门禁：record 是告警历史唯一的写入口，
+    # 五个来源（resource / portguard / sshguard / sshremote / backupguard）
+    # 的十个调用点都从这里过，拦住一次就等于全拦住。
+    # 先比 result 再查开关：已经送达的记录不必为了丢弃去读一次设置。
+    already_sent = entry.get("result") == RESULT_SENT
+    if source and not already_sent and not await push_enabled(source):
+        return
 
     sql = (
         "INSERT INTO alert_history (username, rule_id, rule_name, target_type, target, metric,"
@@ -1230,8 +1239,6 @@ async def record(entry: Dict[str, Any], *, source: str = "") -> None:
         )
         await db.commit()
 
-    if muted:
-        return
     await notifications.push_alert(entry, created=at)
 
 
@@ -1264,11 +1271,16 @@ async def clear_active(key: str) -> None:
 
 
 async def history(limit: int = 100, owner: Optional[str] = None) -> List[Dict[str, Any]]:
-    """告警历史：``owner=None``（管理员）返回全部，否则只返回该用户的。"""
-    sql = "SELECT * FROM alert_history"
-    params: List[Any] = []
+    """告警历史：``owner=None``（管理员）返回全部，否则只返回该用户的。
+
+    滤掉 ``result='muted'`` 的旧记录（见 RESULT_MUTED）。这一步放在读取端，
+    对调用方透明：告警页的历史列表与首页工作台的待处理条数都用这一个函数，
+    过滤写在这里就不存在「某个消费方忘了滤」的可能。
+    """
+    sql = "SELECT * FROM alert_history WHERE result <> ?"
+    params: List[Any] = [RESULT_MUTED]
     if owner is not None:
-        sql += " WHERE username = ?"
+        sql += " AND username = ?"
         params.append(owner)
     sql += " ORDER BY ts DESC LIMIT ?"
     params.append(max(1, min(1000, limit)))
@@ -1289,8 +1301,9 @@ async def stream_history(
     与 :func:`history` 同一套归属口径（``owner=None`` = 管理员看全部），
     但走键集分页，不受 ``history`` 那个 1000 条上限约束。
     """
-    where: List[str] = []
-    params: List[Any] = []
+    # 与 history() 同一口径：旧版本写下的静默记录不对外输出（含导出）
+    where: List[str] = ["result <> ?"]
+    params: List[Any] = [RESULT_MUTED]
     if owner is not None:
         where.append("username = ?")
         params.append(owner)

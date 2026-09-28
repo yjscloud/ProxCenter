@@ -212,7 +212,9 @@ export function Workbench() {
     }
 
     /* 5) 异常告警：与告警页同一口径 —— 除「恢复」外的历史记录都算告警，
-       兼容后端老记录里 kind 缺失的情况。 */
+       兼容后端老记录里 kind 缺失的情况。
+       来源被静默（停推）的那类告警不会到这里：后端在写历史时就整条丢弃了，
+       接口也不会回旧版本留下的静默记录（见 alerting.record / history）。 */
     const alarmCount = (alertsQuery.data?.history ?? []).filter(
       (r) => r.kind !== 'recovery',
     ).length;

@@ -440,6 +440,92 @@ class TestPushGate:
         assert rec.calls["feishu"] == 1
 
 
+# ============================================================ 收敛
+class TestConvergence:
+    """告警收敛：一个「事件」在历史里占一条，而不是每个巡检周期一条。"""
+
+    def test_repeat_rounds_do_not_write_history(self, db, monkeypatch) -> None:
+        """持续告警期间的重复轮次：只提醒、不落库。
+
+        这是「一个 node 的 CPU 规则在 27 小时里刷出 40 条历史」的直接对策：
+        首轮落一条，之后冷却到点又触发的那几次都不再写历史，也不再建站内消息
+        （外部提醒由调用方的 dispatch 照常发，那才是冷却管的事）。
+        """
+        rec = _Recorder(monkeypatch)
+        before = _history_count()
+
+        _run(alerting.record(_entry(), source=SOURCE))
+        _run(alerting.record(_entry(), source=SOURCE, repeat=True))
+        _run(alerting.record(_entry(), source=SOURCE, repeat=True))
+
+        assert _history_count() == before + 1, "只有首轮该落库"
+        assert rec.calls["inbox"] == 1, "重复轮次不该再建站内消息"
+
+    def test_recovery_is_never_treated_as_repeat(self, db) -> None:
+        """恢复通知是事件的终点，不是重复轮次：调用方即使传了 repeat 也照写。"""
+        before = _history_count()
+        _run(alerting.record(_entry(kind="recovery"), source=SOURCE, repeat=True))
+        assert _history_count() == before + 1
+
+    def test_recovery_needs_consecutive_quiet_cycles(self, db) -> None:
+        """回落要连续 N 轮正常才认定恢复，且再次告警时计数归零。"""
+        key = alerting.alarm_key("admin", "ssh-fail", "1.2.3.4")
+        state = {
+            "username": "admin",
+            "rule_id": "ssh-fail",
+            "target": "1.2.3.4",
+            "ts": 1_700_000_000,
+        }
+
+        _run(alerting.mark_active(key, state))
+        confirmed = [
+            _run(alerting.recovery_confirmed(key, _run(alerting.load_active())[key]))
+            for _ in range(alerting.RECOVERY_CONFIRM_CYCLES)
+        ]
+        assert confirmed == [False] * (alerting.RECOVERY_CONFIRM_CYCLES - 1) + [True]
+
+        # 又告警了：mark_active 顺手把计数复位，恢复判定重新开始数
+        _run(alerting.mark_active(key, state))
+        assert int(_run(alerting.load_active())[key]["quiet_cycles"]) == 0
+
+    def test_visible_active_skips_muted_sources(self, db) -> None:
+        """「正在告警」清单要排除已静默的来源，否则待办里全是这类告警。"""
+        key = alerting.alarm_key("admin", "port-open", "host-a")
+        _run(
+            alerting.mark_active(
+                key,
+                {
+                    "username": "admin",
+                    "rule_id": "port-open",
+                    "target": "host-a",
+                    "ts": 1_700_000_000,
+                    "notify_source": SOURCE,
+                },
+            )
+        )
+        assert [r["alarm_key"] for r in _run(alerting.visible_active())] == [key]
+        # 别人的告警：按归属过滤（普通用户看不到他人的）
+        assert _run(alerting.visible_active("someone-else")) == []
+
+        _run(alerting.save_notify_sources({SOURCE: False}))
+        assert _run(alerting.visible_active()) == []
+
+        # 来源缺失（升级前写下的旧行）照常展示：宁可多显示一条，也别把真告警藏起来
+        legacy = alerting.alarm_key("admin", "port-susp", "host-b")
+        _run(
+            alerting.mark_active(
+                legacy,
+                {
+                    "username": "admin",
+                    "rule_id": "port-susp",
+                    "target": "host-b",
+                    "ts": 1_700_000_001,
+                },
+            )
+        )
+        assert [r["alarm_key"] for r in _run(alerting.visible_active())] == [legacy]
+
+
 # ============================================================ 接口
 class TestNotifySourcesApi:
     def test_overview_exposes_registry_and_state(self, api) -> None:
@@ -448,6 +534,8 @@ class TestNotifySourcesApi:
             alerting.NOTIFY_SOURCE_IDS
         )
         assert body["notify_enabled"] == alerting.default_notify_sources()
+        # 首页待办看的是 active（尚未恢复的），不是 history 的条数
+        assert body["active"] == []
 
     def test_put_requires_admin(self, api) -> None:
         admin = auth_headers(api)

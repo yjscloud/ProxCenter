@@ -80,6 +80,9 @@ async def get_alerts(
         "account_email": (await store.get_user(_own(user)) or {}).get("email") or "",
         "rules": alerting.visible_rules(await alerting.load_rules(), scope),
         "history": await alerting.history(80, scope),
+        # 此刻还没恢复的告警。与 history 的区别：history 是「发生过什么」，
+        # 这里是「还有几件事没解决」—— 首页工作台的待办数量以它为准。
+        "active": await alerting.visible_active(scope),
         "metrics": alerting.METRIC_LABELS,
         # 推送来源开关是**全局**（跨用户）设置，读取不设门槛 —— 每个能看告警页的
         # 人都该知道「现在这类告警是被关掉的」，否则会误以为系统没告警能力。

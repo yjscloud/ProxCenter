@@ -728,7 +728,9 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
             ip = row["ip"]
             key = alerting.alarm_key(target_owner, "ssh-fail", f"{label}:{ip}")
             still.add(key)
-            last = float((active.get(key) or {}).get("ts") or 0)
+            # prev 非空 = 上一轮就在告警中，这一轮只是重复提醒（不写新历史）
+            prev = active.get(key) or {}
+            last = float(prev.get("ts") or 0)
             if now - last < cooldown:
                 continue
             card = alerting.build_card(
@@ -772,6 +774,7 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 "ip": ip,
                 "vmid": None,
                 "ts": int(now),
+                "notify_source": alerting.SOURCE_SSHREMOTE,
             }
             await alerting.mark_active(key, state)
             active[key] = dict(state, alarm_key=key)
@@ -781,7 +784,9 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 "detail": detail,
                 "kind": "alarm",
             }
-            await alerting.record(entry, source=alerting.SOURCE_SSHREMOTE)
+            await alerting.record(
+                entry, source=alerting.SOURCE_SSHREMOTE, repeat=bool(prev)
+            )
             entry["text"] = text
             fired.append(entry)
 
@@ -791,6 +796,8 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
             continue
         if ":" not in str(row.get("target") or ""):
             continue  # 本机告警由 sshguard 处理
+        if not await alerting.recovery_confirmed(key, row):
+            continue  # 本轮只是回落到阈值以下，还没到「连续 N 轮正常」的恢复门槛
         card = alerting.build_recovery_card(row, None, at=now)
         text = f"{row.get('target')} 的 SSH 登录失败次数已回落到阈值以下，告警解除"
         ok, detail = await alerting.dispatch(

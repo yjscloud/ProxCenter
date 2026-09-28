@@ -211,19 +211,24 @@ export function Workbench() {
       }
     }
 
-    /* 5) 异常告警：与告警页同一口径 —— 除「恢复」外的历史记录都算告警，
-       兼容后端老记录里 kind 缺失的情况。
-       来源被静默（停推）的那类告警不会到这里：后端在写历史时就整条丢弃了，
-       接口也不会回旧版本留下的静默记录（见 alerting.record / history）。 */
-    const alarmCount = (alertsQuery.data?.history ?? []).filter(
-      (r) => r.kind !== 'recovery',
-    ).length;
-    if (alarmCount > 0) {
+    /* 5) 待处理告警：**只数还没恢复的**。
+       早先这里数的是历史条数（除「恢复」外的都算），但历史回答的是「发生过
+       什么」—— 实测过：某个时刻一个对象都没在告警，待办却挂着 50 条，全是
+       过去 27 小时里反复触发的旧记录。
+       改用后端给的 active（正在告警中的对象）：它已经排除了已恢复的，以及
+       来源被静默（停推）的。按目标去重，同一台机器的 CPU 与内存两条规则也
+       只算一个对象。 */
+    const activeAlarms = alertsQuery.data?.active ?? [];
+    const alarmingTargets = Array.from(
+      new Set(activeAlarms.map((a) => String(a.target || '')).filter(Boolean)),
+    );
+    if (alarmingTargets.length > 0) {
+      const shown = alarmingTargets.slice(0, 3).join('、');
       items.push({
         id: 'alerts',
         tone: 'warning',
-        title: `${alarmCount} 条异常告警待处理`,
-        detail: '含指标越线与安全巡检推送，可到告警页逐条确认',
+        title: `${alarmingTargets.length} 个对象正在告警`,
+        detail: `${shown}${alarmingTargets.length > 3 ? ' 等' : ''}（已恢复的不计入）`,
         to: '/alerts',
         icon: <IconBell size={16} />,
       });

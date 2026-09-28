@@ -183,7 +183,127 @@ class TestBuildVmConfig:
         assert config["cores"] == 4
         assert config["scsi0"] == "local-lvm:32"
         assert config["net0"] == "virtio,bridge=vmbr0"
+        # 磁盘 → 光驱（没挂 ISO 就没有这一项）→ 网卡，照抄 PVE 自己的默认顺序
+        assert config["boot"] == "order=scsi0;net0"
+
+    def test_iso_is_included_in_the_boot_order(self) -> None:
+        """安装光驱必须进启动名单，否则新机器永远进不去安装界面。
+
+        PVE 只给 ``order=`` 里列出的设备打 ``bootindex``，同时把
+        ``-boot strict=on`` 交给固件 —— ``order=scsi0`` 于是等于「只准从这块
+        空盘引导」，SeaBIOS 直接报没有可引导设备（实测 qm showcmd：只有 scsi0
+        拿到 bootindex，光驱没有）。PVE 自己建的机器是
+        ``order=scsi0;ide2;net0``，这里照抄成「磁盘 → 光驱 → 网卡」。
+        """
+        config = vmconfig.build_vm_config(
+            self._request(iso="local:iso/alpine.iso"), vmid=101
+        )
+        assert config["ide0"] == "local:iso/alpine.iso,media=cdrom"
+        assert config["boot"] == "order=scsi0;ide0;net0"
+
+    def test_iso_slot_follows_the_config(self) -> None:
+        """光驱落在哪一格，启动名单里就得写哪一格（不能写死 ide0）。"""
+        config = vmconfig.build_vm_config(
+            self._request(iso="local:iso/alpine.iso", disks=[
+                DiskSpec(storage="local-lvm", size=8, interface="ide0"),
+            ]),
+            vmid=101,
+        )
+        assert config["ide1"] == "local:iso/alpine.iso,media=cdrom"
+        assert config["boot"] == "order=ide0;ide1;net0"
+
+    def test_boot_order_without_iso_or_network(self) -> None:
+        config = vmconfig.build_vm_config(
+            self._request(networks=[]), vmid=101
+        )
         assert config["boot"] == "order=scsi0"
+
+    def test_boot_order_uses_only_the_first_disk(self) -> None:
+        config = vmconfig.build_vm_config(
+            self._request(disks=[
+                DiskSpec(storage="local-lvm", size=8, interface="scsi0"),
+                DiskSpec(storage="local-lvm", size=8, interface="scsi1"),
+            ]),
+            vmid=101,
+        )
+        assert config["boot"] == "order=scsi0;net0"
+
+    def test_cloudinit_takes_the_next_free_ide_slot(self) -> None:
+        """光驱与 cloud-init 盘共用 IDE 槽位：各占一格，且启动名单指向光驱。"""
+        config = vmconfig.build_vm_config(
+            self._request(
+                iso="local:iso/alpine.iso",
+                cloudinit=CloudInitSpec(enabled=True, user="ubuntu"),
+            ),
+            vmid=101,
+        )
+        assert config["ide0"] == "local:iso/alpine.iso,media=cdrom"
+        assert config["ide1"] == "cloudinit"
+        assert config["boot"] == "order=scsi0;ide0;net0"
+
+    def test_explicit_boot_order_wins(self) -> None:
+        config = vmconfig.build_vm_config(
+            self._request(iso="local:iso/alpine.iso", boot_order="scsi0;ide0;net0"),
+            vmid=101,
+        )
+        assert config["boot"] == "order=scsi0;ide0;net0"
+
+    def test_imported_cloud_image_boots_from_its_disk(self) -> None:
+        """导入云镜像时没有安装介质，系统盘就是导入进来的那块。"""
+        config = vmconfig.build_vm_config(
+            self._request(), vmid=101, import_disk=True
+        )
+        assert config["boot"] == "order=scsi0"
+
+    def test_boot_order_gets_the_order_prefix(self) -> None:
+        """裸设备名必须补 ``order=``。
+
+        PVE 9 的 boot 格式是 ``[[legacy=]<[acdn]{1,4}>] [,order=...]``：不带
+        键名的值会被当成 ``legacy`` 解析，而 legacy 只收 a/c/d/n，于是设备名
+        ``scsi0`` 会被拒（实测报 ``boot.legacy: value does not match the regex
+        pattern``）。前端的默认值恰好就是 ``scsi0``，所以这一条不过，
+        PVE 9 上就建不了虚拟机。
+        """
+        config = vmconfig.build_vm_config(
+            self._request(boot_order="scsi0"), vmid=101
+        )
+        assert config["boot"] == "order=scsi0"
+
+    def test_boot_order_list_is_cleaned(self) -> None:
+        config = vmconfig.build_vm_config(
+            self._request(boot_order=" scsi0 ; ; net0 ; "), vmid=101
+        )
+        assert config["boot"] == "order=scsi0;net0"
+
+    def test_boot_order_already_prefixed_keeps_working(self) -> None:
+        config = vmconfig.build_vm_config(
+            self._request(boot_order="order=scsi0;net0"), vmid=101
+        )
+        assert config["boot"] == "order=scsi0;net0"
+        # 结尾多余的分号也清掉
+        config = vmconfig.build_vm_config(
+            self._request(boot_order="order=scsi0;"), vmid=101
+        )
+        assert config["boot"] == "order=scsi0"
+
+    def test_boot_order_with_extra_subkeys_is_left_alone(self) -> None:
+        """用户显式写的多子键写法不做猜测，原样交给 PVE 校验。"""
+        config = vmconfig.build_vm_config(
+            self._request(boot_order="order=scsi0,legacy=cdn"), vmid=101
+        )
+        assert config["boot"] == "order=scsi0,legacy=cdn"
+
+    def test_legacy_boot_shorthand_is_rejected_with_a_hint(self) -> None:
+        """``cdn`` 是 PVE 旧版语法：补成 order=cdn 只会换来「设备不存在」。"""
+        with pytest.raises(ValueError, match="旧版"):
+            vmconfig.build_vm_config(self._request(boot_order="cdn"), vmid=101)
+        with pytest.raises(ValueError, match="旧版"):
+            vmconfig.normalize_boot_order("acdn")
+
+    def test_empty_boot_order_is_rejected(self) -> None:
+        for value in ("", "   ", ";", "order="):
+            with pytest.raises(ValueError):
+                vmconfig.normalize_boot_order(value)
 
     def test_agent_and_onboot_flags_are_ints(self) -> None:
         config = vmconfig.build_vm_config(

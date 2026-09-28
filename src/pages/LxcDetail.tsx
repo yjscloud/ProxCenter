@@ -54,7 +54,7 @@ import {
   IconLayers,
   IconEdit,
 } from '../components/Icons';
-import { formatBytes, formatUptimeShort, parseTags, toPercent } from '../utils/format';
+import { formatBytes, formatDateTime, formatUptimeShort, parseTags, toPercent } from '../utils/format';
 import { isRunning, isTransient, vmStatusMeta } from '../utils/status';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
@@ -705,6 +705,13 @@ export function LxcDetail() {
                 <InfoRow label="类型" value={ct.unprivileged ? '非特权容器' : '特权容器'} />
                 <InfoRow label="状态" value={status.label} />
                 <InfoRow label="运行时长" value={formatUptimeShort(ct.uptime)} />
+                <InfoRow
+                  label="创建时间"
+                  /* 容器实测都没有 meta，通常是「—」；留着是为了以后 PVE 补上时
+                     自动显示，不必再改一次界面 */
+                  title="PVE 记录的创建时间（config 的 meta.ctime）；容器普遍没有这个记录"
+                  value={ct.created ? formatDateTime(ct.created) : '—'}
+                />
                 <InfoRow label="CPU 核心" value={String(ct.cpus ?? '-')} />
                 <InfoRow label="内存" value={`${formatBytes(toNumber(ct.maxmem))}`} />
                 <InfoRow label="Swap" value={`${formatBytes(toNumber(ct.maxswap))}`} />

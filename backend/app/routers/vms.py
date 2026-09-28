@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import bulk, defaults, ownership, quota, security, store, vmconfig
+from .. import bulk, defaults, guest_created, ownership, quota, security, store, vmconfig
 from ..formatters import (
     decode_agent_output,
     normalize_agent_interfaces,
@@ -250,6 +250,12 @@ async def collect_vms(
                 "disk": vm.get("disk"),
                 "maxdisk": vm.get("maxdisk"),
                 "uptime": vm.get("uptime"),
+                # PVE 记录的创建时间（config 的 meta.ctime）。列表接口本身不带
+                # 这个值，命中缓存时这里直接填好，否则由下面的 fill() 补；
+                # 克隆 / 恢复出来的机器会继承来源机器的时间，见 app/guest_created.py。
+                "created": guest_created.cached(
+                    cid, vm.get("node"), vm.get("vmid"), vm.get("type") or "qemu"
+                ),
                 "tags": vm.get("tags") or vm.get("tag") or "",
                 "pool": vm.get("pool"),
                 "lock": vm.get("lock"),
@@ -270,6 +276,11 @@ async def collect_vms(
             )
             for item, ip in zip(items, resolved):
                 item["ip"] = ip if isinstance(ip, str) else ""
+
+        # 创建时间：缓存里没有的逐台读一次 config（每台一次请求 + 进程内缓存，
+        # 一轮有预算上限），取不到就留空 —— 它不比 IP 重要，不值得拖慢列表。
+        if items:
+            await guest_created.fill(client, items)
 
         result.extend(items)
 
@@ -364,6 +375,8 @@ async def get_vm(
         "template": pve_flag(config.get("template", 0)) == 1,
         "status": status.get("status", "unknown"),
         "uptime": status.get("uptime"),
+        # 创建时间：详情本来就已经把 config 取在手里了，这里是零成本
+        "created": guest_created.parse_created(config),
         "cpu": status.get("cpu"),
         "cpus": status.get("cpus"),
         "mem": status.get("mem"),

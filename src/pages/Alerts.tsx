@@ -290,13 +290,11 @@ export function Alerts() {
     setHook({ ...hook, template: preset.template, headers: preset.headers });
   }
 
-  /* 「已静默（仅记录）」不进历史列表。
-     来源开关被关掉时，面板仍会落库一条 result="muted" 的记录（用于事后追溯），
-     但用户既然主动静默了，就不该再被这些条目占满历史视图 —— 那属于审计信息，
-     不是待处理的告警。数量在卡片副标题里给一句说明，免得数字对不上让人以为丢数据。 */
-  const rawRecords = query.data?.history ?? [];
-  const records = rawRecords.filter((r) => r.result !== "muted");
-  const hiddenMutedCount = rawRecords.length - records.length;
+  /* 历史列表直接用服务端给的数据。
+     来源被静默（停推）的告警不会再进这张表 —— 后端在写入口就整条丢弃了
+     （见 alerting.record），所以这里既不需要过滤，也不用再解释「隐藏了几条」：
+     静默期间就是干净的零条。 */
+  const records = query.data?.history ?? [];
   // 告警按用户隔离：通知通道永远是自己那一份，管理员额外能看到全部规则与历史
   const ownUsername = String(query.data?.own_username ?? "");
   const isAdmin = !!query.data?.is_admin;
@@ -361,7 +359,7 @@ export function Alerts() {
         tone: "success",
         text: next
           ? `已恢复推送：${label}`
-          : `已停止推送：${label}（巡检与告警历史不受影响）`,
+          : `已停止推送：${label}（巡检照常，命中也不记入告警历史）`,
       });
     } catch (err) {
       const detail = (err as any)?.response?.data?.detail;
@@ -424,11 +422,14 @@ export function Alerts() {
       ) : null}
 
       {/* 停推是最危险的静默失败：出事了却没人收到通知。所以在页面顶端持续提醒，
-          而不是只让开关自己显示成灰色 —— 那张卡可能在屏幕外。 */}
+          而不是只让开关自己显示成灰色 —— 那张卡可能在屏幕外。
+          措辞要说全「也不记录」：否则用户会以为历史里还能翻到，实际上这些告警
+          连库都不会进（见 alerting.record），事后是真的查不到。 */}
       {mutedSources.length > 0 ? (
         <Notice tone="warning" title="部分告警已停止推送">
           {mutedSources.map((item) => item.label).join("、")}
-          ：这些来源的告警当前不会发出（仍照常记录历史）。到下方「告警推送开关」可恢复。
+          ：这些来源的告警当前既不会发出，也不会记入告警历史（工作台待办里同样不会出现）。
+          到下方「告警推送开关」可恢复。
         </Notice>
       ) : null}
 
@@ -469,7 +470,7 @@ export function Alerts() {
       <Card className="page-block" id={`${SECTION_PREFIX}notify`}>
         <CardHeader
           title="告警推送开关"
-          subtitle="按来源决定是否发送告警。关掉之后该来源的巡检照常运行、告警历史照常记录，但飞书 / 邮件 / 通用 Webhook 与站内消息都不再发出"
+          subtitle="按来源决定是否发送告警。关掉之后该来源的巡检照常运行，但命中的告警整条丢弃：飞书 / 邮件 / 通用 Webhook 与站内消息都不再发出，也不会写进告警历史与工作台待办"
           icon={<IconBell size={16} />}
         />
         <div className="grid grid-auto-320">
@@ -1171,10 +1172,7 @@ export function Alerts() {
           subtitle={
             records.length > 0
               ? `共 ${records.length} 条 · 告警 ${alarmCount} · 恢复 ${recoveryCount}` +
-                (failCount > 0 ? ` · 发送失败 ${failCount}` : "") +
-                (hiddenMutedCount > 0
-                  ? ` · 已隐藏 ${hiddenMutedCount} 条静默记录`
-                  : "")
+                (failCount > 0 ? ` · 发送失败 ${failCount}` : "")
               : undefined
           }
           icon={<IconAlert size={16} />}
@@ -1184,7 +1182,7 @@ export function Alerts() {
               size="sm"
               icon={<IconTrash size={14} />}
               loading={busy === "clear"}
-              disabled={rawRecords.length === 0}
+              disabled={records.length === 0}
               onClick={() => setClearHistoryOpen(true)}
             >
               清除历史
@@ -1286,12 +1284,7 @@ export function Alerts() {
             })}
           </div>
         ) : (
-          <div className="text-secondary fs-sm">
-            暂无告警记录。
-            {hiddenMutedCount > 0
-              ? `另有 ${hiddenMutedCount} 条静默记录已按设置隐藏。`
-              : ""}
-          </div>
+          <div className="text-secondary fs-sm">暂无告警记录。</div>
         )}
       </Card>
 
@@ -1300,7 +1293,7 @@ export function Alerts() {
         danger
         title="清除告警历史"
         confirmText="清除"
-        message={`将删除全部 ${rawRecords.length} 条记录（含 ${hiddenMutedCount} 条当前被隐藏的静默记录），此操作不可撤销。正在告警中的对象不受影响，指标恢复时仍会推送恢复通知。`}
+        message={`将清空告警历史：列表中的 ${records.length} 条，以及更早版本留下、已不再展示的静默记录。此操作不可撤销。正在告警中的对象不受影响，指标恢复时仍会推送恢复通知。`}
         onCancel={() => setClearHistoryOpen(false)}
         onConfirm={clearHistory}
       />

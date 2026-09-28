@@ -20,7 +20,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
-from app import sshguard  # noqa: E402
+from app import alerting, sshguard  # noqa: E402
 from test_api_routes import ADMIN, api, auth_headers  # noqa: E402,F401
 
 FIXED_NOW = 1_790_000_000.0  # 固定参照点：纯解析用例用它，不依赖当前时间
@@ -466,8 +466,17 @@ class TestSshApi:
         second = api.post("/api/ssh/check", headers=headers).json()
         assert not any(item.get("metric") == "ssh_fail" for item in second["fired"])
 
-        # 攻击停了：下一次检查发恢复通知
+        # 攻击停了：回落要连续 RECOVERY_CONFIRM_CYCLES 轮都正常才发恢复通知 ——
+        # 单次回落就宣布恢复，会在阈值附近抖动时刷出成对的「告警 / 恢复」。
         log_file([line_iso(NOW, "Accepted password for root from 10.0.0.9 port 22 ssh2", 9)])
+        quiet = [
+            api.post("/api/ssh/check", headers=headers).json()
+            for _ in range(alerting.RECOVERY_CONFIRM_CYCLES - 1)
+        ]
+        assert not any(
+            item.get("kind") == "recovery" for result in quiet for item in result["fired"]
+        )
+
         third = api.post("/api/ssh/check", headers=headers).json()
         assert any(item.get("kind") == "recovery" for item in third["fired"])
 

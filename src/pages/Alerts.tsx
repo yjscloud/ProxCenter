@@ -315,6 +315,23 @@ export function Alerts() {
   const alarmCount = records.length - recoveryCount;
   const failCount = records.filter((r) => r.result !== "sent").length;
 
+  /* 「正在告警」与「历史条数」是两个数，混着看必然误会（「50 条待处理」里有
+     一大半是早就恢复了的旧记录）。所以副标题把两者并列写出来：前者是还没解决
+     的对象数（首页待办同口径，已排除静默来源），后者是这段时间发生过多少事。 */
+  const activeAlarms = query.data?.active ?? [];
+  const activeTargets = new Set(
+    activeAlarms.map((a) => String(a.target || "")).filter(Boolean),
+  );
+  const historySubtitle = [
+    activeTargets.size > 0 ? `正在告警 ${activeTargets.size} 个对象` : "",
+    records.length > 0 ? `共 ${records.length} 条` : "",
+    records.length > 0 ? `告警 ${alarmCount}` : "",
+    records.length > 0 ? `恢复 ${recoveryCount}` : "",
+    failCount > 0 ? `发送失败 ${failCount}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   async function clearHistory() {
     const ok = await run(
       "clear",
@@ -1169,12 +1186,7 @@ export function Alerts() {
       <Card className="page-block" id={`${SECTION_PREFIX}history`}>
         <CardHeader
           title="告警历史"
-          subtitle={
-            records.length > 0
-              ? `共 ${records.length} 条 · 告警 ${alarmCount} · 恢复 ${recoveryCount}` +
-                (failCount > 0 ? ` · 发送失败 ${failCount}` : "")
-              : undefined
-          }
+          subtitle={historySubtitle || undefined}
           icon={<IconAlert size={16} />}
           actions={
             <Button

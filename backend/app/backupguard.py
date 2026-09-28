@@ -352,7 +352,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             continue
         key = alerting.alarm_key(target_owner, "backup-protect", volid)
         still_alarming.add(key)
-        last = float((active.get(key) or {}).get("ts") or 0)
+        # prev 非空 = 上一轮就在告警中，这一轮只是重复提醒（不写新历史）
+        prev = active.get(key) or {}
+        last = float(prev.get("ts") or 0)
         if now - last < cooldown:
             continue
         text = _alert_text(record)
@@ -378,11 +380,14 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             "ip": "",
             "vmid": record["vmid"] or None,
             "ts": int(now),
+            "notify_source": alerting.SOURCE_BACKUPGUARD,
         }
         await alerting.mark_active(key, state)
         active[key] = dict(state, alarm_key=key)
         entry = {**state, "result": "sent" if ok else "failed", "detail": detail, "kind": "alarm"}
-        await alerting.record(entry, source=alerting.SOURCE_BACKUPGUARD)
+        await alerting.record(
+            entry, source=alerting.SOURCE_BACKUPGUARD, repeat=bool(prev)
+        )
         entry["text"] = text
         fired.append(entry)
 
@@ -393,6 +398,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         current = records.get(volid)
         if current and current["state"] == "unknown":
             continue  # 读不到存储时不要误报「已恢复」
+        if not await alerting.recovery_confirmed(key, row):
+            continue  # 还没到「连续 N 轮可核对」的恢复门槛
         card = alerting.build_recovery_card(row, None, at=now)
         text = f"受保护备份 {volid} 已恢复可核对状态，告警解除"
         ok, detail = await alerting.dispatch(

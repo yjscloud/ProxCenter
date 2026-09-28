@@ -2266,6 +2266,31 @@ export interface AlertRecord {
   ts: number;
 }
 
+/**
+ * 当前处于告警状态、尚未恢复的对象。
+ *
+ * 与 AlertRecord（历史记录）的区别：历史是「发生过什么」，含早就恢复的；
+ * 这里是「此刻还有几件事没解决」，首页工作台的待办数量以它为准。
+ * 已停推（静默）的来源不会出现在这里。
+ */
+export interface AlertActiveItem {
+  alarm_key: string;
+  username?: string;
+  rule_id?: string;
+  rule_name?: string;
+  target_type?: string;
+  target?: string;
+  metric?: string;
+  value?: number;
+  threshold?: number;
+  node?: string;
+  ip?: string;
+  vmid?: string | number | null;
+  ts?: number;
+  /** 写这条状态的来源（NOTIFY_SOURCE_IDS 之一），后端过滤静默来源时用 */
+  notify_source?: string;
+}
+
 /** 告警概览（含可见性信息，用于区分「自己的」与「别人的」） */
 export interface AlertsOverview {
   feishu: Record<string, any>;
@@ -2289,6 +2314,8 @@ export interface AlertsOverview {
   account_email: string;
   rules: AlertRule[];
   history: AlertRecord[];
+  /** 尚未恢复的告警（待办数量看这个，不是 history 的条数） */
+  active: AlertActiveItem[];
   metrics: Record<string, string>;
   /** 可开关的告警来源清单（后端注册表，前端照着渲染开关） */
   notify_sources: AlertNotifySource[];

@@ -341,7 +341,28 @@ ACTIVE_COLUMNS = (
     "ip",
     "vmid",
     "ts",
+    # 连续「正常」的巡检周期数，回落防抖用（见 recovery_confirmed）。
+    # 放在状态表里而不是内存里：报警状态本身就是为了跨重启识别恢复，
+    # 计数丢了会让恢复通知要么迟到要么抖动。
+    "quiet_cycles",
+    # 这条状态是哪个来源写进来的（NOTIFY_SOURCE_IDS 之一）。
+    # 「谁正在告警」要看它才拦得住停推的来源：状态本身还得继续维护（冷却时间戳），
+    # 但对外的清单（visible_active）与首页待办必须把已静默的来源排除掉。
+    # 列名不叫 source —— 那是 MySQL 关键字，容易踩。
+    "notify_source",
 )
+
+# 这几个整数列由代码维护、调用点不必传：没给就落 0，不能落 NULL（列是 NOT NULL）
+ACTIVE_INT_COLUMNS = ("quiet_cycles",)
+
+# 回落要连续这么多个巡检周期都正常，才认定「恢复了」。
+#
+# 取 3 是因为各来源的周期差别不小：资源告警 / SSH 巡检是 60 秒（约 3 分钟确认），
+# 端口与备份核对是 300 秒（约 15 分钟确认）。指标贴着阈值抖动时（CPU 79%↔81%），
+# 单次回落就宣布恢复，会让「告警 / 恢复」成对刷屏 —— 实测过 10:46 恢复 →
+# 10:47 又告警 → 10:49 又恢复，一小时就刷出几十条。恢复通知不是救火通道，
+# 这点延迟可以接受。
+RECOVERY_CONFIRM_CYCLES = 3
 
 
 # 主键 / 索引列定长，需要默认值的列不能用 TEXT（MySQL 的 TEXT 不允许 DEFAULT）
@@ -378,6 +399,8 @@ CREATE TABLE IF NOT EXISTS alert_active (
     ip          VARCHAR(64),
     vmid        VARCHAR(32),
     ts          BIGINT,
+    quiet_cycles INT NOT NULL DEFAULT 0,
+    notify_source VARCHAR(32),
     PRIMARY KEY (alarm_key),
     KEY idx_alert_active_owner (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -402,6 +425,16 @@ async def init_table() -> None:
         if "username" not in columns:
             await db.execute(
                 "ALTER TABLE alert_active ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT ''"
+            )
+        if "quiet_cycles" not in columns:
+            # 旧库补列：回落防抖的计数（老行默认 0 = 还没正常过，恢复照常走流程）
+            await db.execute(
+                "ALTER TABLE alert_active ADD COLUMN quiet_cycles INT NOT NULL DEFAULT 0"
+            )
+        if "notify_source" not in columns:
+            # 旧库补列：可空 —— 升级前写下的行为 NULL，按「来源未知」处理（照常展示）
+            await db.execute(
+                "ALTER TABLE alert_active ADD COLUMN notify_source VARCHAR(32)"
             )
         # 归属进了主键，key 会变长（旧表的 191 位不够装）
         cursor = await db.execute(
@@ -1191,12 +1224,20 @@ async def send_feishu(card: Dict[str, Any], owner: str = "") -> Tuple[bool, str]
     return True, "已发送"
 
 
-async def record(entry: Dict[str, Any], *, source: str = "") -> None:
+async def record(
+    entry: Dict[str, Any], *, source: str = "", repeat: bool = False
+) -> None:
     """记一条告警历史，并给规则归属者留一条站内消息。
 
     两件事放在一处，是因为它们描述的是同一个事件、且必须同时发生：
     「这条告警发生了」与「该有人知道」。分开写迟早会出现「历史里有、铃铛上没有」
     这种漏报 —— 而铃铛正是外部通道没配或发失败时的兜底。
+
+    ``repeat=True`` 表示这是**同一对象持续告警期间的重复轮次**（上一轮的状态还在
+    库里，冷却到点后又走到这里）。这种轮次只更新状态、不落库也不建站内消息：
+    一个「事件」在历史里占一条，重复轮次只是提醒 —— 通知照发（由调用方的
+    dispatch 负责），但历史不该被同一个对象的每分钟提醒刷满。
+    实测过：一个 node 的 CPU 规则在 27 小时里写下 40 条历史 + 20 条恢复。
 
     来源被停推（``source`` 对应的开关关掉了）时**整条丢弃**：不写历史、不留站内
     消息。停推是「这一类告警我不要了」的明确说法，再往告警历史里塞记录，会连带
@@ -1206,9 +1247,13 @@ async def record(entry: Dict[str, Any], *, source: str = "") -> None:
     唯一的例外是 ``result=sent``：这条其实已经投递出去了，说明开关是在投递之后
     才关的。这种时间差不该把一条真发出去的记录抹掉，所以照写。
     """
-    # 判定放在最前面、且是入库前唯一的门禁：record 是告警历史唯一的写入口，
-    # 五个来源（resource / portguard / sshguard / sshremote / backupguard）
-    # 的十个调用点都从这里过，拦住一次就等于全拦住。
+    # 门禁一：重复轮次不落库（恢复通知不算重复轮次，它是事件的终点）
+    if repeat and entry.get("kind", "alarm") == "alarm":
+        return
+
+    # 门禁二：判定放在入库前、且是唯一的写入口 —— record 是告警历史唯一的写点，
+    # 五个来源（resource / portguard / sshguard / sshremote / backupguard）的
+    # 十个调用点都从这里过，拦住一次就等于全拦住。
     # 先比 result 再查开关：已经送达的记录不必为了丢弃去读一次设置。
     already_sent = entry.get("result") == RESULT_SENT
     if source and not already_sent and not await push_enabled(source):
@@ -1243,16 +1288,58 @@ async def record(entry: Dict[str, Any], *, source: str = "") -> None:
 
 
 async def load_active() -> Dict[str, Dict[str, Any]]:
-    """读取当前处于告警状态的对象。"""
+    """读取当前处于告警状态的对象（含已静默来源的，供冷却与恢复判定使用）。"""
     async with database.connect() as db:
         cursor = await db.execute("SELECT * FROM alert_active")
         rows = await cursor.fetchall()
     return {str(r["alarm_key"]): dict(r) for r in rows}
 
 
+async def visible_active(owner: Optional[str] = None) -> List[Dict[str, Any]]:
+    """对外可见的「正在告警」清单：还没恢复、且来源没被停推的对象。
+
+    与 :func:`history` 的分工要说清楚，两者经常被混着用：
+      * ``history`` 是**发生过什么**（含早就恢复的），用于复盘与统计；
+      * 这里回答**此刻还有几件事没解决** —— 首页工作台的待办数量以它为准。
+    拿 history 当待办会虚高：实测过某个时刻一个对象都没在告警，待办却挂着
+    50 条（都是过去 27 小时里反复触发的历史记录）。
+
+    停推（静默）的来源要排除：用户已经说了不要这类告警，却还占着待办，
+    等于那个开关没生效。来源缺失（升级前的旧行）按「来源未知」照常展示 ——
+    宁可多显示一条，也不要因为一个空字段把真告警藏起来。
+    """
+    active = await load_active()
+    sources = await load_notify_sources()
+    rows: List[Dict[str, Any]] = []
+    for row in active.values():
+        if owner is not None and str(row.get("username") or "") != owner:
+            continue
+        source = str(row.get("notify_source") or "")
+        if source and sources.get(source) is False:
+            continue
+        rows.append(dict(row))
+    return sorted(rows, key=lambda r: int(r.get("ts") or 0), reverse=True)
+
+
+def _active_value(row: Dict[str, Any], col: str) -> Any:
+    """取写入 alert_active 的值。
+
+    整数统计列（quiet_cycles）调用点不传时必须落 0 而不是 NULL：列是 NOT NULL，
+    显式写 NULL 在 MySQL 严格模式下会直接报错（而不是回落到默认值）。
+    """
+    value = row.get(col)
+    if col in ACTIVE_INT_COLUMNS:
+        return int(value or 0)
+    return value
+
+
 async def mark_active(key: str, row: Dict[str, Any]) -> None:
-    """记录 / 刷新某个对象的告警状态（同时充当冷却时间戳）。"""
-    values = [key] + [row.get(col) for col in ACTIVE_COLUMNS[1:]]
+    """记录 / 刷新某个对象的告警状态（同时充当冷却时间戳）。
+
+    走到这里就说明这个对象**又告警了**，所以顺手把连续正常周期数归零 ——
+    回落防抖的计数（quiet_cycles）就靠这一句复位，不必让五个来源各记一遍。
+    """
+    values = [key] + [_active_value(row, col) for col in ACTIVE_COLUMNS[1:]]
     sql = database.upsert_sql(
         "alert_active",
         list(ACTIVE_COLUMNS),
@@ -1268,6 +1355,29 @@ async def clear_active(key: str) -> None:
     async with database.connect() as db:
         await db.execute("DELETE FROM alert_active WHERE alarm_key = ?", (key,))
         await db.commit()
+
+
+async def recovery_confirmed(key: str, row: Dict[str, Any]) -> bool:
+    """该对象现在可以判定为「已恢复」了吗。
+
+    回落不是看一眼就作数：必须连续 ``RECOVERY_CONFIRM_CYCLES`` 个巡检周期都
+    正常。指标贴着阈值抖动时（CPU 79% ↔ 81%），单次回落就发恢复通知，会得到
+    「告警 / 恢复」成对刷屏的列表；而且恢复会清掉告警状态，等于把冷却也一起
+    清零，下一分钟立刻又告警 —— 这正是历史里几十条记录只对应一个对象的原因。
+
+    计数落在 alert_active.quiet_cycles 上（重启不丢），对象再次越线时由
+    :func:`mark_active` 归零。返回 False 表示「再等等」，调用方本轮什么都别做。
+    """
+    cycles = int(row.get("quiet_cycles") or 0) + 1
+    if cycles >= RECOVERY_CONFIRM_CYCLES:
+        return True
+    async with database.connect() as db:
+        await db.execute(
+            "UPDATE alert_active SET quiet_cycles = ? WHERE alarm_key = ?",
+            (cycles, key),
+        )
+        await db.commit()
+    return False
 
 
 async def history(limit: int = 100, owner: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1564,7 +1674,10 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 measured[key] = value
                 alarming.add(key)
                 # 冷却时间以库里的告警状态为准，重启后不会重复轰炸
-                last = float((active.get(key) or {}).get("ts") or 0)
+                # prev 非空 = 上一轮它就在告警中，这一轮属于「重复轮次」：
+                # 该提醒还是提醒，但历史不再记第二条（见 record 的 repeat 参数）
+                prev = active.get(key) or {}
+                last = float(prev.get("ts") or 0)
                 if now - last < cooldown:
                     continue
                 metric_label = METRIC_LABELS.get(rule.get("metric"), str(rule.get("metric")))
@@ -1657,6 +1770,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     # 详情页是两套。mark_active 按固定列写库，多出来的键会被忽略，
                     # 但它会留在内存里的 active 行上，恢复通知也能用上。
                     "guest_type": res.get("type") if target_type == "vm" else "",
+                    "notify_source": SOURCE_RESOURCE,
                 }
                 await mark_active(key, state)
                 active[key] = dict(state, alarm_key=key)
@@ -1666,7 +1780,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     "detail": detail,
                     "kind": "alarm",
                 }
-                await record(entry, source=SOURCE_RESOURCE)
+                await record(entry, source=SOURCE_RESOURCE, repeat=bool(prev))
                 entry["text"] = text
                 fired.append(entry)
 
@@ -1686,6 +1800,10 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         if str(row.get("rule_id")) not in enabled_by_owner.get(row_owner, set()):
             # 规则被停用或删除：静默清理状态，不打扰用户
             await clear_active(key)
+            continue
+        if not await recovery_confirmed(key, row):
+            # 只是本轮掉回阈值下方，还没到「连续 N 轮正常」的确认门槛：
+            # 不发恢复通知、也不清状态（清了等于连冷却一起丢掉，下一轮立刻又告警）
             continue
         value = measured.get(key)
         card = build_recovery_card(row, value, at=now)

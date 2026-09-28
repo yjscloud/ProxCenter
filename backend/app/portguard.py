@@ -1294,7 +1294,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             if not value:
                 continue
             still_alarming.add(key)
-            last = float((active.get(key) or {}).get("ts") or 0)
+            # prev 非空 = 上一轮就在告警中，这一轮只是重复提醒（不写新历史）
+            prev = active.get(key) or {}
+            last = float(prev.get("ts") or 0)
             if now - last < cooldown:
                 continue
             text = _finding_text(report, kind)
@@ -1320,11 +1322,14 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 "ip": report.get("address") or "",
                 "vmid": None,
                 "ts": int(now),
+                "notify_source": alerting.SOURCE_PORTGUARD,
             }
             await alerting.mark_active(key, state)
             active[key] = dict(state, alarm_key=key)
             entry = {**state, "result": "sent" if ok else "failed", "detail": detail, "kind": "alarm"}
-            await alerting.record(entry, source=alerting.SOURCE_PORTGUARD)
+            await alerting.record(
+                entry, source=alerting.SOURCE_PORTGUARD, repeat=bool(prev)
+            )
             entry["text"] = text
             fired.append(entry)
 
@@ -1332,6 +1337,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     for key, row in list(active.items()):
         if key in still_alarming:
             continue
+        if not await alerting.recovery_confirmed(key, row):
+            continue  # 本轮只是没命中，还没到「连续 N 轮正常」的恢复门槛
         card = alerting.build_recovery_card(row, None, at=now)
         text = f"{row.get('target')} 的{row.get('rule_name')}已恢复正常，告警解除"
         ok, detail = await alerting.dispatch(

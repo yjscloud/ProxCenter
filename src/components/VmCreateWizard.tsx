@@ -48,6 +48,8 @@ import {
   OSTYPE_OPTIONS,
   SCSIHW_OPTIONS,
   TPM_VERSION_OPTIONS,
+  initAgentName,
+  isWindowsOstype,
   ostypeLabel,
 } from '../utils/status';
 import { formatBytes } from '../utils/format';
@@ -72,6 +74,10 @@ const STEPS = [
   'Cloud-Init',
   '确认创建',
 ] as const;
+
+/* 第 5 步（初始化）在 STEPS 里的下标。它的标题要随客户机系统变，步骤条与确认页
+   共用这个下标，避免各处硬编码 4。 */
+const CI_STEP = 4;
 
 type StepIndex = 0 | 1 | 2 | 3 | 4 | 5;
 
@@ -240,6 +246,28 @@ const CPUSET_RE = /^\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$/;
 
 const isCpuset = (value: string) => CPUSET_RE.test(value.trim());
 
+/* ---------------------------------------------------------------------------
+   初始化配置（Cloud-Init / Cloudbase-Init）：实际会不会下发
+   ---------------------------------------------------------------------------
+   判据只能有一处 —— 提交、校验、确认页各写一遍必然漂移（早先确认页看的是开关、
+   提交看的是「开关 ∨ 有静态 IP」，于是出现过「确认页写着未启用、实际下发了」）。
+   Windows 只认开关本身：那边跑的是 Cloudbase-Init，要客户机内先装好，
+   面板默认替用户打开只会建出一台拿不到 IP 的机器。 */
+
+/** 网卡里是否填了静态 IP */
+function hasStaticIpOnNics(form: FormState): boolean {
+  return form.networks.some((n) => {
+    const ip = (n.ip || '').trim().toLowerCase();
+    return ip !== '' && ip !== 'dhcp';
+  });
+}
+
+/** 这次创建实际会不会下发初始化配置 */
+function initActive(form: FormState): boolean {
+  if (form.mode !== 'new') return form.ciEnabled;
+  return form.ciEnabled || (hasStaticIpOnNics(form) && !isWindowsOstype(form.ostype));
+}
+
 function validateStep(
   step: StepIndex,
   form: FormState,
@@ -310,8 +338,12 @@ function validateStep(
     });
   }
 
-  if (step === 4 && form.ciEnabled) {
-    if (!form.ciUser.trim()) e.ciUser = '请输入 Cloud-Init 用户名';
+  // 用 initActive 而不是开关本身：网卡填了静态 IP 时开关可能是关的，但配置
+  // 确实会下发，用户名就必须校验。
+  if (step === CI_STEP && initActive(form)) {
+    if (!form.ciUser.trim()) {
+      e.ciUser = `请输入 ${initAgentName(form.ostype)} 用户名`;
+    }
     // 全新创建时 IP 在「磁盘与网络」的网卡里配置，这里只校验克隆模式下的 IP 列表。
     if (form.mode !== 'new') {
       form.ciIps.forEach((row, i) => {
@@ -661,6 +693,34 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     });
   }, []);
 
+  /* ---- 客户机初始化工具：Cloud-Init / Cloudbase-Init ----
+     Windows 上跑的**不是** cloud-init（官方版装不上 Windows 原生系统，换成
+     Cloudbase-Init），所以名字与默认值都得按系统分流。派生值在这里算一次，
+     步骤条 / 表单 / 确认页共用，免得某处漏改又冒出「Windows 的 cloud-init」。 */
+  const windowsGuest = isWindowsOstype(form.ostype);
+  const ciName = initAgentName(form.ostype);
+
+  /* 网卡是否填了静态 IP（确认页用它区分「Windows 不会自动下发 IP」） */
+  const netHasStaticIp = hasStaticIpOnNics(form);
+  /* 实际是否下发初始化配置：与提交、校验共用 initActive，只有一处判据 */
+  const ciActive = initActive(form);
+
+  /* 切换操作系统：换了体系（Windows ↔ Linux）就复位初始化开关与默认用户名。
+     同体系内换版本（win10 → win11）不动用户已经填过的东西。
+     用户名只在「还是对面体系默认值」时才跟着换，用户改过的名字不覆盖。 */
+  const changeOstype = (value: string) => {
+    setForm((f) => {
+      const wasWindows = isWindowsOstype(f.ostype);
+      const nowWindows = isWindowsOstype(value);
+      const next: FormState = { ...f, ostype: value };
+      if (wasWindows === nowWindows) return next;
+      next.ciEnabled = false;
+      if (nowWindows && f.ciUser.trim() === 'ubuntu') next.ciUser = 'Administrator';
+      if (!nowWindows && f.ciUser.trim() === 'Administrator') next.ciUser = 'ubuntu';
+      return next;
+    });
+  };
+
   /* ---- 步骤导航 ---- */
   const goNext = () => {
     const e = validateStep(step, form, takenVmids);
@@ -692,13 +752,12 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       return;
     }
 
-    // 全新创建：IP 在网卡上配置，折叠进 cloud-init 下发；克隆：使用 Cloud-Init 步骤的 IP 列表。
+    // 全新创建：IP 在网卡上配置，折叠进初始化下发；克隆：用初始化步骤里的 IP 列表。
+    // ciActive（实际是否下发）在组件体里算好了 —— 确认页显示的就是同一个值。
     const netIpConfigs = form.networks.map((n) => ({
       ip: (n.ip || '').trim() || 'dhcp',
       gateway: (n.gateway || '').trim(),
     }));
-    const hasStaticIp = netIpConfigs.some((c) => c.ip.toLowerCase() !== 'dhcp');
-    const ciActive = form.mode === 'new' ? form.ciEnabled || hasStaticIp : form.ciEnabled;
 
     const cloudinit: CloudInitConfig | undefined = ciActive
       ? {
@@ -894,10 +953,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         ...f,
         networks: f.networks.map((n) => (n.key === key ? { ...n, ...patch } : n)),
       };
-      // 网卡填了静态 IP 就必须走 cloud-init 下发，自动打开 Cloud-Init。
+      // 网卡填了静态 IP 就得靠初始化工具下发，自动打开这一开关 —— Windows 除外：
+      // 那边跑的是 Cloudbase-Init，要客户机内先装好，不能默认替用户打开。
       if (patch.ip !== undefined) {
         const static_ = patch.ip.trim() !== '' && patch.ip.trim().toLowerCase() !== 'dhcp';
-        if (static_) next.ciEnabled = true;
+        if (static_ && !isWindowsOstype(next.ostype)) next.ciEnabled = true;
       }
       return next;
     });
@@ -948,6 +1008,10 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         tpmEnabled: true,
         tpmStorage: f.tpmStorage || fallback,
         tpmVersion: 'v2.0',
+        // Windows 走的是 Cloudbase-Init，必须客户机内先装好 —— 默认关掉，
+        // 用户装好之后自己到第 5 步打开（顺带把默认用户名换成 Administrator）。
+        ciEnabled: false,
+        ciUser: f.ciUser.trim() === 'ubuntu' ? 'Administrator' : f.ciUser,
       };
     });
     setErrors((e) => {
@@ -1046,7 +1110,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             <span className="wizard-step-num" aria-hidden="true">
               {i < step ? <IconCheck size={12} /> : i + 1}
             </span>
-            <span className="wizard-step-label">{label}</span>
+            <span className="wizard-step-label">
+              {i === CI_STEP ? ciName : label}
+            </span>
             {i < STEPS.length - 1 ? (
               <span
                 className={`wizard-connector ${i < step ? 'is-done' : ''}`}
@@ -1330,12 +1396,12 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               <Select
                 label="客户机操作系统类型"
                 value={form.ostype}
-                onChange={(e) => update('ostype', e.target.value)}
+                onChange={(e) => changeOstype(e.target.value)}
                 options={OSTYPE_OPTIONS.map((o) => ({
                   label: o.label,
                   value: o.value,
                 }))}
-                hint="影响 Proxmox 的硬件模拟与优化策略"
+                hint="影响 Proxmox 的硬件模拟与优化策略；Windows 与 Linux 的初始化工具不同（Cloudbase-Init / Cloud-Init），第 5 步会跟着变"
               />
               <Select
                 label="BIOS"
@@ -1787,7 +1853,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             placeholder="dhcp 或 192.168.1.10/24"
                             error={errors[`net-ip-${i}`]}
                             mono
-                            hint="填静态地址将自动启用 Cloud-Init 下发"
+                            hint={
+                              windowsGuest
+                                ? 'Windows 不会自动下发：需在第 5 步手动开启 Cloudbase-Init'
+                                : '填静态地址将自动启用 Cloud-Init 下发'
+                            }
                           />
                           <Input
                             label="网关"
@@ -1858,7 +1928,10 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   <br />· 若该网段已有 DHCP 服务（如路由器），填 <code>dhcp</code> 即可自动获取；
                   <br />· 否则请填写<b>静态 IP</b>（如 <code>192.168.1.10/24</code>）并填网关；也可以从上方
                   「地址池」下拉里挑一个<b>未被使用</b>的地址，会自动填入 IP 与网关；
-                  <br />· 静态 IP 通过 Cloud-Init 下发，需要虚拟机使用支持 cloud-init 的镜像，填写后会自动启用第 5 步的 Cloud-Init。
+                  <br />· 静态 IP 通过 {ciName} 下发：
+                  {windowsGuest
+                    ? 'Windows 客户机需要先装好 Cloudbase-Init（官方 cloud-init 不支持 Windows 原生系统），所以这里填了也不会自动开启第 5 步 —— 装好之后请手动打开。'
+                    : '需要虚拟机使用支持 cloud-init 的镜像，填写后会自动启用第 5 步的 Cloud-Init。'}
                 </Notice>
 
                 {/* --- ISO --- */}
@@ -1894,19 +1967,31 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
           </div>
         ) : null}
 
-        {/* ================= 第 5 步：Cloud-Init ================= */}
-        {step === 4 ? (
+        {/* ================= 第 5 步：初始化（Cloud-Init / Cloudbase-Init） ================= */}
+        {step === CI_STEP ? (
           <div className="wizard-section">
             <Switch
               checked={form.ciEnabled}
               onChange={(v) => update('ciEnabled', v)}
-              label="启用 Cloud-Init"
-              hint="通过 cloud-init 镜像自动完成初始化（用户、SSH 密钥、网络）"
+              label={`启用 ${ciName}`}
+              hint={
+                windowsGuest
+                  ? 'Windows 客户机里跑的是 Cloudbase-Init：需要你先在系统内装好它，面板只预置用户与网络元数据，不会替你安装'
+                  : '通过 cloud-init 镜像自动完成初始化（用户、SSH 密钥、网络）'
+              }
             />
 
             {!form.ciEnabled ? (
-              <Notice tone="info" title="未启用 Cloud-Init">
-                虚拟机创建后将使用镜像内的默认账号。若需要自动配置用户与网络，请在上方开启。
+              <Notice tone="info" title={`未启用 ${ciName}`}>
+                {windowsGuest ? (
+                  <>
+                    Windows 装完后不会自动初始化：账号与网络都要在系统里手动配。
+                    Cloudbase-Init <b>需要你在客户机内自行安装</b>（官方 cloud-init
+                    不支持 Windows 原生系统），装好之后再回到这里打开开关，才会下发用户与网络配置。
+                  </>
+                ) : (
+                  <>虚拟机创建后将使用镜像内的默认账号。若需要自动配置用户与网络，请在上方开启。</>
+                )}
               </Notice>
             ) : (
               <>
@@ -1916,8 +2001,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     required
                     value={form.ciUser}
                     onChange={(e) => update('ciUser', e.target.value)}
-                    placeholder="ubuntu"
+                    placeholder={windowsGuest ? 'Administrator' : 'ubuntu'}
                     error={errors.ciUser}
+                    hint={
+                      windowsGuest
+                        ? 'Cloudbase-Init 会配置这个账号，Windows 上通常是 Administrator'
+                        : undefined
+                    }
                   />
                   <Input
                     label="密码"
@@ -1936,7 +2026,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   value={form.ciSshKeys}
                   onChange={(e) => update('ciSshKeys', e.target.value)}
                   placeholder="ssh-ed25519 AAAAC3Nza... user@host"
-                  hint="每行一个公钥，将写入 ~/.ssh/authorized_keys"
+                  hint={
+                    windowsGuest
+                      ? '每行一个公钥；Windows 需客户机内已装 OpenSSH，Cloudbase-Init 才会写入 authorized_keys'
+                      : '每行一个公钥，将写入 ~/.ssh/authorized_keys'
+                  }
                 />
 
                 <Input
@@ -2036,9 +2130,19 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 )}
 
                 <Notice tone="warning" title="前置条件">
-                  Cloud-Init 需要虚拟机使用支持 cloud-init 的镜像（如 Ubuntu Cloud
-                  Image、Debian Generic Cloud），并挂载 Cloud-Init 驱动。若使用普通
-                  ISO 安装，可跳过此步骤。
+                  {windowsGuest ? (
+                    <>
+                      Cloudbase-Init 需要你在 Windows 客户机内预先安装（官方 cloud-init
+                      装不到 Windows 原生系统上），面板只负责预置用户名 / 口令 / 网络元数据，
+                      不会替你安装。用 ISO 全新安装、且不打算自动初始化时，保持关闭即可。
+                    </>
+                  ) : (
+                    <>
+                      Cloud-Init 需要虚拟机使用支持 cloud-init 的镜像（如 Ubuntu Cloud
+                      Image、Debian Generic Cloud），并挂载 Cloud-Init 驱动。若使用普通
+                      ISO 安装，可跳过此步骤。
+                    </>
+                  )}
                 </Notice>
               </>
             )}
@@ -2136,8 +2240,10 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               </div>
 
               <div className="summary-group">
-                <div className="summary-group-title">Cloud-Init</div>
-                {form.ciEnabled ? (
+                {/* 名字随系统变；状态用 ciActive（实际会不会下发）而不是开关本身 ——
+                    网卡填了静态 IP 时开关可能是关的，但配置确实下发了。 */}
+                <div className="summary-group-title">{ciName}</div>
+                {ciActive ? (
                   <>
                     <SummaryRow label="状态" value="已启用" />
                     <SummaryRow label="用户" value={form.ciUser || '—'} mono />
@@ -2170,7 +2276,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     ))}
                   </>
                 ) : (
-                  <SummaryRow label="状态" value="未启用" />
+                  <SummaryRow
+                    label="状态"
+                    value={
+                      windowsGuest && netHasStaticIp
+                        ? '未启用（Windows 不会自动下发 IP，需在系统内手动配置）'
+                        : '未启用'
+                    }
+                  />
                 )}
               </div>
             </div>

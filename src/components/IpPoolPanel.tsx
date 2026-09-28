@@ -127,9 +127,10 @@ export function IpPoolPanel() {
 
       <Notice tone="info" title="它是怎么工作的">
         这里只维护「可用地址范围」，<b>不需要 DHCP / SDN</b>。面板会扫描各虚拟机的
-        cloud-init / 网卡静态配置统计已占用地址，创建或克隆虚拟机时，在网络配置里
-        就能从池中选择一个<b>未被使用</b>的 IP（写入 cloud-init 静态地址）。
-        需要虚拟机使用支持 cloud-init 的镜像才会生效。
+        cloud-init / Cloudbase-Init 与网卡静态配置统计已占用地址，创建或克隆虚拟机时，
+        在网络配置里就能从池中选择一个<b>未被使用</b>的 IP（写入初始化静态地址）。
+        需要客户机支持初始化下发才会生效：Linux 用带 cloud-init 的镜像，
+        Windows 需在系统内装好 Cloudbase-Init。
       </Notice>
 
       {query.isError ? (

@@ -30,6 +30,11 @@ VALID_OSTYPES = {
     "l24", "l26", "other", "wxp", "w2k", "w2k3", "w2k8", "wvista",
     "win7", "win8", "win10", "win11", "solaris",
 }
+# Windows 系客户机。判据只留这一处：有些地方要按系统分流（串口控制台、初始化
+# 工具名字），而 `ostype.startswith("win")` 会漏掉 wxp / w2k / wvista 这些老系统。
+WINDOWS_OSTYPES = frozenset(
+    {"wxp", "w2k", "w2k3", "w2k8", "wvista", "win7", "win8", "win10", "win11"}
+)
 VALID_CPU_TYPES = {
     "host", "kvm64", "kvm32", "qemu64", "x86-64-v2", "x86-64-v2-AES",
     "x86-64-v3", "x86-64-v4", "Broadwell", "Skylake-Client", "EPYC", "EPYC-Rome",
@@ -49,6 +54,11 @@ _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 def normalize_ostype(value: Optional[str]) -> str:
     value = (value or "l26").strip().lower()
     return value if value in VALID_OSTYPES else "l26"
+
+
+def is_windows_ostype(value: Optional[str]) -> bool:
+    """是不是 Windows 系客户机（归一化之后再比，避免大小写/空值漏判）。"""
+    return normalize_ostype(value) in WINDOWS_OSTYPES
 
 
 def normalize_cpu_type(value: Optional[str]) -> str:
@@ -368,8 +378,14 @@ def build_vm_config(
                     config[key] = "cloudinit"
                     break
         config.update(build_cloudinit_config(ci, network_count=len(req.networks)))
-        config.setdefault("serial0", "socket")
-        config.setdefault("vga", "serial0")
+        # 串口控制台是给 Linux 云镜像看的：它们把内核日志打到 ttyS0，把 vga 指到
+        # serial0 才能在控制台里看到启动过程。**Windows 不往串口输出**，对它这么设
+        # 只会让图形控制台黑屏 —— 而 Windows 客户机的初始化是 Cloudbase-Init，
+        # 用户装好它、打开这个开关后第一件事就是去看控制台装系统。
+        # 云盘照旧挂载：Cloudbase-Init 也是从这块 config drive 读元数据的。
+        if not is_windows_ostype(req.ostype):
+            config.setdefault("serial0", "socket")
+            config.setdefault("vga", "serial0")
 
     return config
 

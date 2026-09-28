@@ -233,6 +233,32 @@ class TestBuildVmConfig:
         assert config["vga"] == "serial0"
         assert config["ciuser"] == "ubuntu"
 
+    def test_windows_cloudinit_keeps_graphical_display(self) -> None:
+        """Windows 走 Cloudbase-Init：云盘照挂，但不该把 vga 指到串口。
+
+        `serial0` + `vga=serial0` 是给 Linux 云镜像看的（内核日志打在 ttyS0）。
+        Windows 默认不往串口输出，对它这么设等于让图形控制台黑屏 —— 而用户装好
+        Cloudbase-Init、打开开关之后，第一件事正是去控制台装系统。
+        """
+        config = vmconfig.build_vm_config(
+            self._request(
+                ostype="win11",
+                cloudinit=CloudInitSpec(enabled=True, user="Administrator"),
+            ),
+            vmid=101,
+        )
+        assert config["ide0"] == "cloudinit"  # 元数据盘仍然要挂
+        assert config["ciuser"] == "Administrator"
+        assert "serial0" not in config
+        assert "vga" not in config
+
+    def test_windows_ostype_covers_legacy_names(self) -> None:
+        """判据要显式列举：`startswith("win")` 会漏掉 wxp / w2k8 / wvista。"""
+        for value in ("win11", "WIN10", "win7", "wxp", "w2k8", "wvista", " w2k3 "):
+            assert vmconfig.is_windows_ostype(value), value
+        for value in ("l26", "l24", "other", "solaris", "", None, "winxp"):
+            assert not vmconfig.is_windows_ostype(value), value
+
     def test_disk_gets_format_segment_only_on_dir_storage(self) -> None:
         config = vmconfig.build_vm_config(
             self._request(

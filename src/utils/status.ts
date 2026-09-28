@@ -273,6 +273,36 @@ export function ostypeLabel(ostype?: string | null): string {
   return OSTYPE_LABEL[ostype] ?? ostype;
 }
 
+/** PVE 的 Windows 系 ostype（与后端 vmconfig.VALID_OSTYPES 中的那批对齐） */
+const WINDOWS_OSTYPES = new Set([
+  'wxp',
+  'w2k',
+  'w2k3',
+  'w2k8',
+  'wvista',
+  'win7',
+  'win8',
+  'win10',
+  'win11',
+]);
+
+/**
+ * 是不是 Windows 系客户机。
+ *
+ * 不只是显示问题：**官方 cloud-init 装不到 Windows 原生系统上**，Windows 上跑
+ * 初始化的是 Cloudbase-Init。文案、默认开关、能不能下发静态 IP 都要按它分流，
+ * 所以判断只留这一处（别在各页面里写 `ostype.startsWith('win')` —— `wxp`/`w2k8`
+ * 这些老系统就漏了）。
+ */
+export function isWindowsOstype(ostype?: string | null): boolean {
+  return WINDOWS_OSTYPES.has(String(ostype ?? '').trim().toLowerCase());
+}
+
+/** 客户机初始化工具的正式名字：Windows 是 Cloudbase-Init，其余是 Cloud-Init */
+export function initAgentName(ostype?: string | null): string {
+  return isWindowsOstype(ostype) ? 'Cloudbase-Init' : 'Cloud-Init';
+}
+
 /* ---------------------------------------------------------------------------
    磁盘总线 / 网卡型号常量（向导用）
    --------------------------------------------------------------------------- */

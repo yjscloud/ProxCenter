@@ -947,9 +947,12 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
            手动值是回落，只在平台确实拿不到时顶上来。 */
         const shown = auto || manual;
         const fromManual = !auto && Boolean(manual);
+        /* 虚拟机这条提示不写「Cloud-Init」：Windows 客户机用的是 Cloudbase-Init，
+           而列表接口里没有 ostype（只有详情接口有），判断不出该叫哪个名字，
+           所以按「初始化」统称，两种都覆盖。 */
         const missingHint = isLxc
           ? '未获取到 IP：容器只有 DHCP，没有静态地址配置'
-          : '未获取到 IP：Guest Agent 未运行，且没有 Cloud-Init 静态地址配置';
+          : '未获取到 IP：Guest Agent 未运行，且没有初始化静态地址配置（cloud-init / Cloudbase-Init）';
         return (
           <div className="ip-cell" onClick={(e) => e.stopPropagation()}>
             {shown ? (

@@ -394,11 +394,29 @@ export interface ConnectionConfigInput {
   node_default: string;
 }
 
+/** 测试连接时后端回报的一个可见节点（PVE `/nodes` 的裁剪版） */
+export interface ConnectionTestNode {
+  /** 节点名（后端把 PVE 的 node 字段映射过来的） */
+  name?: string;
+  /** online / offline 等 */
+  status?: string;
+  /** PVE 原始 type，节点恒为 node */
+  type?: string;
+}
+
 export interface ConnectionTestResult {
   ok: boolean;
   version: string;
   release: string;
-  nodes: string[];
+  /**
+   * 可见节点。
+   *
+   * 是**对象数组**而不是字符串数组：后端 `/config/connection/test` 在把 PVE 的
+   * `node` 映射成 `name` 时顺带带上了 `status` / `type`（见 routers/config.py）。
+   * 这里曾经写成 `string[]`，类型说谎让「把对象当子节点渲染」没被 TS 拦住，
+   * 一点「测试连接」就抛 React #31（object with keys {name, status, type}）。
+   */
+  nodes: ConnectionTestNode[];
   message?: string;
 }
 

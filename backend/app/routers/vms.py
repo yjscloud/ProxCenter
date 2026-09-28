@@ -665,9 +665,14 @@ async def create_vm(
     # --- build config -------------------------------------------------
     storage_types = await _storage_type_map(payload.node)
     import_disk = bool(payload.cloud_image)
-    config = vmconfig.build_vm_config(
-        payload, vmid=vmid, storage_types=storage_types, import_disk=import_disk
-    )
+    try:
+        config = vmconfig.build_vm_config(
+            payload, vmid=vmid, storage_types=storage_types, import_disk=import_disk
+        )
+    except ValueError as exc:
+        # 参数本身就不合法（如启动顺序写成旧版的 cdn）：当场说清楚，
+        # 别等 PVE 回一句看不懂的格式错误。
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         result = await client.qemu_create(payload.node, config)
@@ -890,7 +895,9 @@ async def _import_cloud_image(
         post_steps.append(result)
 
     # 3. boot from the imported disk + cloud-init prerequisites
-    boot: Dict[str, Any] = {"boot": "order=scsi0,c=scsi0"}
+    # 只写 order=：``c=scsi0`` 这种子键不在 PVE 的 boot 格式里（PVE 9 的格式是
+    # [[legacy=]<[acdn]{1,4}>][,order=...]），留着会让 PVE 9 直接拒绝整个请求。
+    boot: Dict[str, Any] = {"boot": "order=scsi0"}
     if payload.cloudinit and payload.cloudinit.enabled:
         boot.update(
             {
@@ -1061,6 +1068,15 @@ async def update_vm_config(
 
     if not data:
         raise HTTPException(status_code=400, detail="没有需要更新的配置项")
+
+    # 启动顺序同样要归一：界面上可以直接改 config 的 boot，用户照着旧习惯写
+    # ``scsi0`` 时，PVE 9 会把它当 legacy 值而拒绝整个更新。
+    # 空串是「清掉这一项、回到 PVE 默认」，不能拦，原样放行。
+    if data.get("boot"):
+        try:
+            data["boot"] = vmconfig.normalize_boot_order(str(data["boot"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         result = await client.qemu_set_config(node, vmid, data)

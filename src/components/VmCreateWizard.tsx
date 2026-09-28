@@ -198,7 +198,10 @@ const initialState: FormState = {
   sockets: 1,
   memory: 2048,
   startOnBoot: false,
-  bootOrder: 'scsi0',
+  /* 启动顺序留空 = 让后端按第一块磁盘的总线自动设置（boot=order=<磁盘>）。
+     刻意不写死 scsi0：磁盘总线是用户可改的，一旦从 scsi 换成 sata（Windows
+     就必须换），引导顺序还指着不存在的 scsi0，表现就是「装系统时看不到盘」。 */
+  bootOrder: '',
 
   numaEnabled: false,
   numaAffinity: '',
@@ -1752,8 +1755,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 label="启动顺序"
                 value={form.bootOrder}
                 onChange={(e) => update('bootOrder', e.target.value)}
-                placeholder="如 scsi0;net0"
-                hint="按顺序尝试引导设备，分号分隔"
+                placeholder="留空即自动（磁盘 → 光驱 → 网卡）"
+                hint="按顺序尝试引导设备，分号分隔。留空最稳：面板按「磁盘 → 光驱 → 网卡」设置，空盘时才能从安装 ISO 启动"
               />
             </div>
             <Switch
@@ -2246,7 +2249,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 <SummaryRow label="SCSI 控制器" value={form.scsihw} mono />
                 <SummaryRow label="CPU" value={`${form.cpuType} · ${form.cores} 核 × ${form.sockets} 插槽`} mono />
                 <SummaryRow label="内存" value={`${form.memory} MB (${formatBytes(form.memory * 1024 ** 2)})`} mono />
-                <SummaryRow label="启动顺序" value={form.bootOrder || '—'} mono />
+                <SummaryRow
+                  label="启动顺序"
+                  value={form.bootOrder || '自动（磁盘 → 光驱 → 网卡）'}
+                  mono
+                />
                 <SummaryRow
                   label="开机自启"
                   value={form.startOnBoot ? '是' : '否'}

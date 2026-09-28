@@ -78,6 +78,57 @@ def normalize_net_model(value: Optional[str]) -> str:
     return value if value in VALID_NET_MODELS else "virtio"
 
 
+# PVE 9 把 boot 的格式改成了
+#     [[legacy=]<[acdn]{1,4}>] [,order=<device[;device...]>]
+# 也就是**不带键名的值会被当成 ``legacy`` 解析**，而 legacy 只接受 a/c/d/n 这四个
+# 字母组成的 1–4 位字符串（软盘/硬盘/光驱/网络）。面板给的是设备名列表
+# （``scsi0`` / ``scsi0;net0``），于是 PVE 9 回：
+#     boot: invalid format - format error
+#     boot.legacy: value does not match the regex pattern
+# PVE 8 的格式里没有 legacy 子键，裸写法能过 —— 所以这个坑只在 PVE 9 上暴露，
+# 而且只要动手建虚拟机就必然踩到（前端的默认值就是 ``scsi0``）。
+_LEGACY_BOOT_RE = re.compile(r"^[acdn]{1,4}$")
+
+
+def normalize_boot_order(value: Optional[str]) -> str:
+    """把「启动顺序」归一成 PVE 9 也认的 ``order=<设备列表>`` 写法。
+
+    三件事：
+
+    * 设备列表（``scsi0`` / ``scsi0; net0``）补上 ``order=``，顺手去掉空段；
+    * 已经带 ``order=`` 的原样规整（``order=scsi0;`` 这种多余分号也清掉）；
+    * 显式写了多个子键（``order=scsi0,legacy=cdn``）或别的键名时**不碰** ——
+      那是用户自己知道在写什么，交给 PVE 校验，别替他猜。
+
+    单独拦下 ``cdn`` 这类纯 a/c/d/n 组合：那是 PVE 旧版语法（先光驱、再硬盘、
+    再网络）。补成 ``order=cdn`` 只会让 PVE 回一句「设备 cdn 不存在」，同样看
+    不懂，不如在这里说清楚「请写设备名」。
+    """
+    # 折叠空白：用户从别处粘过来的值常常带换行或多余空格
+    text = " ".join((value or "").split())
+    if not text:
+        raise ValueError("启动顺序不能为空（例如 scsi0;net0）")
+    if _LEGACY_BOOT_RE.match(text):
+        raise ValueError(
+            f"启动顺序 {text!r} 是 PVE 旧版的写法（a/c/d/n 依次表示软盘、硬盘、"
+            "光驱、网络）；请直接写设备名，例如 scsi0;net0"
+        )
+
+    prefix = "order="
+    if "=" not in text:
+        body = text
+    elif text.startswith(prefix) and "," not in text:
+        body = text[len(prefix):]
+    else:
+        # 多个子键 / 其它键名：原样交给 PVE 校验
+        return text
+
+    devices = [item.strip() for item in body.split(";") if item.strip()]
+    if not devices:
+        raise ValueError("启动顺序不能为空（例如 scsi0;net0）")
+    return prefix + ";".join(devices)
+
+
 def normalize_disk_format(value: Optional[str], storage_type: str = "") -> str:
     value = (value or "raw").strip().lower()
     if value not in VALID_DISK_FORMATS:
@@ -348,23 +399,42 @@ def build_vm_config(
     for idx, net in enumerate(req.networks):
         config[f"net{idx}"] = format_network_spec(net)
 
-    # ---- boot order ----
-    if req.boot_order:
-        config["boot"] = req.boot_order
-    elif req.disks and not import_disk:
-        # Boot from the first disk by default.
-        config["boot"] = f"order={req.disks[0].interface or 'scsi0'}"
-    elif import_disk:
-        config["boot"] = "order=scsi0"
-
     # ---- ISO / CD-ROM ----
+    cd_key = ""
     if req.iso:
         # Place the CD-ROM on the first free IDE slot.
         for slot in range(4):
             key = f"ide{slot}"
             if key not in config:
                 config[key] = f"{req.iso},media=cdrom"
+                cd_key = key
                 break
+
+    # ---- boot order ----
+    #
+    # 必须把安装光驱也列进去。PVE 只给 ``order=`` 里出现的设备打 ``bootindex``，
+    # 并把 ``-boot strict=on`` 一并交给固件 —— 于是 ``order=scsi0`` 的含义是
+    # 「**只准从 scsi0 引导**」：新建的机器那块盘是空的、光驱又不在名单里，
+    # SeaBIOS 直接报没有可引导设备，用 ISO 装系统永远进不去安装界面。
+    # （实测 `qm showcmd`：只有 scsi0 拿到 bootindex，光驱一个都没有。）
+    #
+    # 顺序照抄 PVE 自己的默认值 ``order=scsi0;ide2;net0``（磁盘 → 光驱 → 网卡）：
+    # 盘上装了系统就从盘引导，空盘时落到光驱装系统，两者都没有才走 PXE。
+    # OVMF 那套之所以没暴露这个问题，是因为 OVMF 自己枚举所有设备，不看这份名单。
+    if req.boot_order:
+        # 用户显式写了就照他的来，只做归一（裸设备名在 PVE 9 上会被当成
+        # legacy 值而报格式错，见 normalize_boot_order 的说明）。
+        config["boot"] = normalize_boot_order(req.boot_order)
+    elif import_disk:
+        # 导入的云镜像本身就是系统盘，没有安装介质可言
+        config["boot"] = "order=scsi0"
+    elif req.disks:
+        devices = [req.disks[0].interface or "scsi0"]
+        if cd_key:
+            devices.append(cd_key)
+        if req.networks:
+            devices.append("net0")
+        config["boot"] = f"order={';'.join(devices)}"
 
     # ---- cloud-init drive ----
     ci = req.cloudinit

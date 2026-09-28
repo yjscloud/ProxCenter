@@ -920,14 +920,22 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
                         <>
                           {/* 集群一多，把节点名用「、」拼成一段文本就既看不出
                               总数、也找不到某个名字。改成计数 + 芯片列表，
-                              高度封顶后滚动 —— 十几个节点也不会把页面顶开。 */}
+                              高度封顶后滚动 —— 十几个节点也不会把页面顶开。
+
+                              注意这里拿到的是对象（name/status/type），不是
+                              字符串：早先按字符串渲染，直接抛 React #31。
+                              status 挂到 title 上，不额外加样式。 */}
                           <span className="fs-sm text-muted">
                             {testResult.nodes.length} 个
                           </span>
                           <div className="conn-nodes">
-                            {testResult.nodes.map((name) => (
-                              <span className="conn-node-chip" key={name}>
-                                {name}
+                            {testResult.nodes.map((node, index) => (
+                              <span
+                                className="conn-node-chip"
+                                key={node.name ?? index}
+                                title={node.status ? `状态：${node.status}` : undefined}
+                              >
+                                {node.name ?? '（未命名）'}
                               </span>
                             ))}
                           </div>

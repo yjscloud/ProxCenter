@@ -184,14 +184,17 @@ export function InfoRow({
   value,
   mono = false,
   className,
+  title,
 }: {
   label: ReactNode;
   value: ReactNode;
   mono?: boolean;
   className?: string;
+  /** 整行的悬停说明：用来交代这个值是怎么来的、有什么前提 */
+  title?: string;
 }) {
   return (
-    <div className={`info-row ${className ?? ''}`}>
+    <div className={`info-row ${className ?? ''}`} title={title}>
       <span className="info-label">{label}</span>
       <span className={`info-value ${mono ? 'mono' : ''}`}>{value}</span>
     </div>

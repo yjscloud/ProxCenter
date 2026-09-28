@@ -1089,6 +1089,13 @@ export interface VmSummary {
   disk?: number;
   maxdisk?: number;
   uptime?: number;
+  /**
+   * 创建时间（秒级 Unix 时间戳），来自 PVE 写在 config 里的 `meta.ctime`。
+   * 取不到时为 `null`：PVE 8 之前建的机器、以及容器都没有这个值。
+   * **克隆 / 恢复出来的机器会继承来源机器的时间**，别当审计时间用。
+   * 细节见 backend/app/guest_created.py。
+   */
+  created?: number | null;
   template?: number | boolean;
   tags?: string;
   /**
@@ -1243,6 +1250,8 @@ export interface VmDetail {
   disk?: number;
   maxdisk?: number;
   uptime?: number;
+  /** 创建时间（`meta.ctime`）；老机器没有记录时为 null */
+  created?: number | null;
   disks: VmDiskConfig[];
   networks: VmNetworkConfig[];
   /** 配置里是否启用了 QEMU Guest Agent（agent: 1 / enabled=1）*/
@@ -1463,6 +1472,8 @@ export interface LxcDetail {
   swap?: number;
   maxswap?: number;
   uptime?: number;
+  /** 创建时间（`meta.ctime`）；容器实测都没有记录，通常为 null */
+  created?: number | null;
   netin?: number;
   netout?: number;
   diskread?: number;

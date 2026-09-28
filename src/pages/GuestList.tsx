@@ -78,6 +78,7 @@ import {
 } from '../components/Icons';
 import {
   formatBytes,
+  formatDateTime,
   formatUptimeShort,
   parseTags,
   toPercent,
@@ -1057,6 +1058,22 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       ),
       sortable: true,
       sortValue: (vm) => vm.uptime ?? 0,
+    },
+    {
+      key: 'created',
+      header: '创建时间',
+      width: 150,
+      /* 表头悬停说明：PVE 只在建机时写下这个时间，克隆 / 恢复出来的机器会
+         继承来源机器的那一份 —— 不说清楚，用户会以为面板记错了。 */
+      title:
+        'PVE 记录的创建时间（config 的 meta.ctime）。克隆 / 恢复出来的机器会继承来源机器的时间；PVE 8 之前创建的机器与容器没有这个记录，显示为 —',
+      render: (vm) => (
+        <span className="mono fs-sm text-secondary">
+          {vm.created ? formatDateTime(vm.created) : '—'}
+        </span>
+      ),
+      sortable: true,
+      sortValue: (vm) => vm.created ?? 0,
     },
     {
       key: 'tags',

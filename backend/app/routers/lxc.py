@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import defaults, ownership, quota, security, store, vmconfig
+from .. import defaults, guest_created, ownership, quota, security, store, vmconfig
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -151,6 +151,9 @@ async def list_containers(
                 "disk": ct.get("disk"),
                 "maxdisk": ct.get("maxdisk"),
                 "uptime": ct.get("uptime"),
+                # PVE 记录的创建时间（config 的 meta.ctime）；同 /vms，见
+                # app/guest_created.py 里关于「克隆继承」的说明。
+                "created": guest_created.cached(cid, ct.get("node"), ct.get("vmid"), "lxc"),
                 "tags": ct.get("tags") or ct.get("tag") or "",
                 "pool": ct.get("pool"),
                 "lock": ct.get("lock"),
@@ -172,6 +175,10 @@ async def list_containers(
             )
             for item, ip in zip(items, resolved):
                 item["ip"] = ip if isinstance(ip, str) else ""
+
+        # 创建时间：同 /vms，缓存未命中时逐台读一次 config。
+        if items:
+            await guest_created.fill(client, items)
 
         result.extend(items)
 
@@ -273,6 +280,8 @@ async def get_container(
         "template": pve_flag(config.get("template", 0)) == 1,
         "status": status.get("status", "unknown"),
         "uptime": status.get("uptime"),
+        # 创建时间：详情本来就已经把 config 取在手里了，这里是零成本
+        "created": guest_created.parse_created(config),
         "cpu": status.get("cpu"),
         "cpus": config.get("cores"),
         "maxcpu": config.get("cores"),

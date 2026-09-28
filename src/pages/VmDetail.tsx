@@ -872,6 +872,12 @@ function OverviewTab({
             />
             <InfoRow label="运行时长" value={running ? formatUptime(vm.uptime) : '未运行'} />
             <InfoRow
+              label="创建时间"
+              /* PVE 8 之前建的机器没有 meta，克隆出来的机器继承来源的时间 */
+              title="PVE 记录的创建时间（config 的 meta.ctime）；克隆 / 恢复出来的机器会继承来源机器的时间"
+              value={vm.created ? formatDateTime(vm.created) : '—'}
+            />
+            <InfoRow
               label="开机自启"
               value={vm.config.onboot ? '是' : '否'}
             />

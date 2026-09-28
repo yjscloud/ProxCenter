@@ -1009,7 +1009,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         await alerting.mark_active(key, state)
         active[key] = dict(state, alarm_key=key)
         entry = {**state, "result": "sent" if ok else "failed", "detail": detail, "kind": "alarm"}
-        await alerting.record(entry, source=alerting.SOURCE_SSHGUARD)
+        await alerting.record(entry, source=alerting.SOURCE_SSHGUARD, repeat=bool(prev))
         entry["text"] = text
         fired.append(entry)
 

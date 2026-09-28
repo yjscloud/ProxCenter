@@ -971,6 +971,15 @@
   border-color: var(--danger);
 }
 
+/* 禁用态：表单里被系统锁定的项（例：Windows 客户机的磁盘总线固定为 SATA）。
+   底色换一档 + 文字压暗即可 —— 值本身仍要看得清，否则用户会以为「这里坏了」，
+   而不是「这里不让改」。 */
+.select:disabled {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  cursor: not-allowed;
+}
+
 .select option {
   background: var(--bg-elevated);
   color: var(--text-primary);

@@ -235,6 +235,43 @@ const initialState: FormState = {
   ciIps: [{ key: uid(), ip: 'dhcp', gateway: '' }],
 };
 
+/**
+ * 把 Windows 认不出的那两处 virtio 硬件换成「客户机自带驱动」的型号。
+ *
+ * Windows 安装介质只带通用驱动，两个 virtio 设备它都不认识：
+ *
+ * * **磁盘**：virtio-scsi / virtio-blk 没有驱动 → 装到「你想将 Windows 安装
+ *   在哪里？」那一步一个分区都列不出来。换成 SATA（Windows 自带 AHCI 驱动）。
+ * * **网卡**：virtio-net 没有驱动 → 系统装完是「没有网络适配器」，还得回头补
+ *   驱动。换成 Intel E1000（Windows 自带 e1000 驱动，装完即用）。
+ *
+ * 两处都只动 virtio 系，用户自己选的 SATA / IDE / E1000 / vmxnet3 一概不动 ——
+ * 换过去会损失一点性能，这是「先能用」的取舍，不是要把高级用户的选择抹掉。
+ *
+ * 启动顺序里的设备名必须跟着磁盘一起改：`boot=order=scsi0` 配上只有 sata0 的
+ * 机器会变成「没有可引导设备」，比看不到盘更难排查。
+ */
+function applyWindowsCompat(next: FormState): void {
+  const renamed = new Map<string, string>();
+  next.disks = next.disks.map((disk) => {
+    if (!/^(scsi|virtio)\d+$/.test(disk.interface)) return disk;
+    // 保留原有编号（scsi1 → sata1）而不是按下标重排：编号是磁盘的身份，
+    // 照搬能保证「换完之后键名依旧互不相同」，也不会撞上别人已经占着的 sata0。
+    const target = `sata${disk.interface.replace(/\D/g, '')}`;
+    renamed.set(disk.interface, target);
+    return { ...disk, interface: target };
+  });
+  if (renamed.size > 0 && next.bootOrder.trim()) {
+    next.bootOrder = next.bootOrder
+      .split(';')
+      .map((part) => renamed.get(part.trim()) ?? part.trim())
+      .join(';');
+  }
+  next.networks = next.networks.map((net) =>
+    net.model === 'virtio' ? { ...net, model: 'e1000' } : net,
+  );
+}
+
 /* ---------------------------------------------------------------------------
    校验
    --------------------------------------------------------------------------- */
@@ -700,14 +737,22 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
   const windowsGuest = isWindowsOstype(form.ostype);
   const ciName = initAgentName(form.ostype);
 
+  /* Windows 客户机的磁盘总线固定 SATA、网卡固定 Intel E1000（安装介质里没有
+     virtio 驱动）：切换系统与「一键推荐配置」都由 applyWindowsCompat 自动换好，
+     第 4 步这两个选择框只读 —— 用户看不到、也改不了那两个会让他装不上/连不上的
+     选项，但 Linux 侧仍然完全可选。 */
+  /* 启动顺序留空时后端会按「磁盘 → 光驱 → 网卡」自动设置（见
+     backend/app/vmconfig.py 的 boot 注释：光驱必须进名单，否则空盘时引导不起来）。 */
+
   /* 网卡是否填了静态 IP（确认页用它区分「Windows 不会自动下发 IP」） */
   const netHasStaticIp = hasStaticIpOnNics(form);
   /* 实际是否下发初始化配置：与提交、校验共用 initActive，只有一处判据 */
   const ciActive = initActive(form);
 
-  /* 切换操作系统：换了体系（Windows ↔ Linux）就复位初始化开关与默认用户名。
-     同体系内换版本（win10 → win11）不动用户已经填过的东西。
-     用户名只在「还是对面体系默认值」时才跟着换，用户改过的名字不覆盖。 */
+  /* 切换操作系统：换了体系（Windows ↔ Linux）就复位初始化开关与默认用户名，
+     并把 virtio 的磁盘 / 网卡换成 SATA / E1000（Windows 认不出 virtio 硬件，
+     见 applyWindowsCompat）。同体系内换版本（win10 → win11）不动用户已经填过
+     的东西；用户名只在「还是对面体系默认值」时才跟着换，用户改过的名字不覆盖。 */
   const changeOstype = (value: string) => {
     setForm((f) => {
       const wasWindows = isWindowsOstype(f.ostype);
@@ -717,6 +762,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       next.ciEnabled = false;
       if (nowWindows && f.ciUser.trim() === 'ubuntu') next.ciUser = 'Administrator';
       if (!nowWindows && f.ciUser.trim() === 'Administrator') next.ciUser = 'ubuntu';
+      if (nowWindows) applyWindowsCompat(next);
       return next;
     });
   };
@@ -908,7 +954,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
           key: uid(),
           storage: f.disks[0]?.storage ?? '',
           size: 20,
-          interface: `scsi${f.disks.length}`,
+          // Windows 必须 SATA：新盘也得跟着系统走。否则「选择框已锁成 SATA」
+          // 而新加的盘是 scsi —— 用户改不动，装系统时这盘又看不见。
+          interface: `${isWindowsOstype(f.ostype) ? 'sata' : 'scsi'}${f.disks.length}`,
           format: 'qcow2',
         },
       ],
@@ -931,7 +979,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         {
           key: uid(),
           bridge: f.networks[0]?.bridge ?? 'vmbr0',
-          model: 'virtio',
+          // 同 addDisk：Windows 必须 E1000，否则新网卡是 virtio，而选择框已锁死
+          model: isWindowsOstype(f.ostype) ? 'e1000' : 'virtio',
           vlan_tag: '',
           firewall: true,
           macaddr: '',
@@ -991,11 +1040,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       numaNodes: f.numaNodes.map((n) => (n.key === key ? { ...n, ...patch } : n)),
     }));
 
-  /** 一键把「Windows 11 必需」的那几项一起设好（OVMF + q35 + EFI + TPM）。 */
+  /** 一键把「Windows 11 必需」的那几项一起设好（OVMF + q35 + EFI + TPM + SATA 磁盘）。 */
   const applyWindows11Preset = () => {
     setForm((f) => {
       const fallback = f.disks[0]?.storage ?? '';
-      return {
+      const next: FormState = {
         ...f,
         ostype: 'win11',
         bios: 'ovmf',
@@ -1013,6 +1062,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         ciEnabled: false,
         ciUser: f.ciUser.trim() === 'ubuntu' ? 'Administrator' : f.ciUser,
       };
+      // 磁盘换 SATA、网卡换 E1000：Windows 安装介质里没有 virtio 驱动
+      applyWindowsCompat(next);
+      return next;
     });
     setErrors((e) => {
       const next = { ...e };
@@ -1022,7 +1074,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     });
     toast.success(
       '已应用 Windows 11 推荐配置',
-      'BIOS=OVMF、机型=q35、CPU=host，并启用 EFI 盘与虚拟 TPM',
+      'BIOS=OVMF、机型=q35、CPU=host，启用 EFI 盘与虚拟 TPM，磁盘改 SATA、网卡改 Intel E1000',
     );
   };
 
@@ -1756,6 +1808,16 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                           />
                           <Select
                             label="总线/接口"
+                            /* Windows 客户机锁死 SATA：安装程序没有 virtio 驱动，
+                               挂在 virtio 上会卡在「选择安装位置」一个分区都看不到。
+                               与其让用户踩进去再解释，不如这里不让改（切换系统时
+                               已由 applyWindowsCompat 自动换好，所以显示的必然是 SATA）。*/
+                            disabled={windowsGuest}
+                            hint={
+                              windowsGuest
+                                ? 'Windows 安装程序不认 virtio 磁盘（要自备 virtio-win 驱动盘才能加载），已固定为 SATA'
+                                : undefined
+                            }
                             value={disk.interface.replace(/\d+$/, '')}
                             onChange={(e) =>
                               patchDisk(disk.key, {
@@ -1823,6 +1885,15 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                           />
                           <Select
                             label="网卡型号"
+                            /* Windows 同样锁死 E1000：安装介质里没有 virtio-net
+                               驱动，装完系统会是没有网络适配器的状态。切换系统时
+                               已由 applyWindowsCompat 换好，所以显示的必然是 E1000。*/
+                            disabled={windowsGuest}
+                            hint={
+                              windowsGuest
+                                ? 'Windows 没有 virtio 网卡驱动（装完连不上网），已固定为 Intel E1000（系统自带驱动）'
+                                : undefined
+                            }
                             value={net.model}
                             onChange={(e) => patchNet(net.key, { model: e.target.value })}
                             options={NET_MODEL_OPTIONS.map((o) => ({

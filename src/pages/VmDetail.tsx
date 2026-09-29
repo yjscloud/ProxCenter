@@ -83,6 +83,7 @@ import {
   parseSizeToBytes,
   toPercent,
   usageColor,
+  usageTone,
 } from '../utils/format';
 import {
   isRunning,
@@ -761,7 +762,7 @@ function OverviewTab({
           label="CPU 使用率"
           value={`${cpuPct.toFixed(1)}%`}
           icon={<IconCpu size={16} />}
-          tone={cpuPct >= 85 ? 'danger' : cpuPct >= 65 ? 'warning' : 'accent'}
+          tone={usageTone(cpuPct)}
           progress={cpuPct}
           progressColor={usageColor(cpuPct)}
           hint={
@@ -776,7 +777,7 @@ function OverviewTab({
           label="内存使用率"
           value={`${memPct.toFixed(1)}%`}
           icon={<IconMemory size={16} />}
-          tone={memPct >= 85 ? 'danger' : memPct >= 65 ? 'warning' : 'accent'}
+          tone={usageTone(memPct)}
           progress={memPct}
           progressColor={usageColor(memPct)}
           hint={
@@ -796,15 +797,7 @@ function OverviewTab({
             diskUsage ? `${diskUsage.percent.toFixed(1)}%` : formatBytes(diskTotal, 0)
           }
           icon={<IconDisk size={16} />}
-          tone={
-            diskUsage
-              ? diskUsage.percent >= 85
-                ? 'danger'
-                : diskUsage.percent >= 65
-                  ? 'warning'
-                  : 'accent'
-              : 'neutral'
-          }
+          tone={diskUsage ? usageTone(diskUsage.percent) : 'neutral'}
           progress={diskUsage ? diskUsage.percent : undefined}
           progressColor={diskUsage ? usageColor(diskUsage.percent) : undefined}
           loading={fsBusy && !diskUsage}
@@ -874,7 +867,7 @@ function OverviewTab({
             <InfoRow
               label="创建时间"
               /* PVE 8 之前建的机器没有 meta，克隆出来的机器继承来源的时间 */
-              title="PVE 记录的创建时间（config 的 meta.ctime）；克隆 / 恢复出来的机器会继承来源机器的时间"
+              title="面板发起的新建 / 克隆 / 恢复按实际时刻记录；其余取 PVE config 里的 meta.ctime（PVE 克隆 / 恢复会继承来源机器的时间）"
               value={vm.created ? formatDateTime(vm.created) : '—'}
             />
             <InfoRow
@@ -2911,7 +2904,23 @@ function BackupsTab({
           </Button>
           <IconButton
             label="下载备份文件"
-            onClick={() => window.open(backupsApi.downloadUrl(b.volid), '_blank')}
+            onClick={() => {
+              /* 宿主机上的路径由「存储路径 + 归档名」拼出，缺存储信息就下不了。
+                 连接不用带：下载链接是浏览器直接打开的，带不了请求头，后端会按
+                 节点归属推断（这台机器在哪个 PVE 上）。 */
+              if (!b.storage) {
+                toast.error('无法下载', '这条归档缺少存储信息，请刷新后重试');
+                return;
+              }
+              window.open(
+                backupsApi.downloadUrl({
+                  node: b.node ?? node,
+                  storage: b.storage,
+                  volid: b.volid,
+                }),
+                '_blank',
+              );
+            }}
           >
             <IconBackup size={15} />
           </IconButton>
@@ -3246,7 +3255,7 @@ function MonitorTab({
             label="CPU 使用率"
             value={`${latestCpu.toFixed(1)}%`}
             tone={
-              latestCpu >= 85 ? 'danger' : latestCpu >= 65 ? 'warning' : 'accent'
+              usageTone(latestCpu)
             }
             progress={latestCpu}
             progressColor={usageColor(latestCpu)}
@@ -3257,7 +3266,7 @@ function MonitorTab({
             value={formatBytes(memUsed, 0)}
             hint={<span className="mono">/ {formatBytes(memTotal, 0)}</span>}
             tone={
-              latestMem >= 85 ? 'danger' : latestMem >= 65 ? 'warning' : 'accent'
+              usageTone(latestMem)
             }
             progress={latestMem}
             progressColor={usageColor(latestMem)}

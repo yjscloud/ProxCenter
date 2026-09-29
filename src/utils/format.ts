@@ -88,21 +88,45 @@ export function toPercent(value?: number | null): number {
 }
 
 /**
+ * 使用率分档阈值（百分比）：``< 50`` 蓝、``50 ~ 70`` 橙、``>= 70`` 红。
+ *
+ * 这两个数**只在这里定义**：节点页的三条资源、仪表盘的 KPI、告警记录的填充色、
+ * 以及创建向导里节点下拉的百分比，颜色标准必须一致 —— 早年这几个地方各抄了一
+ * 份 65 / 85，改档位时只改一处就会出现「进度条是橙的、状态却说正常」。
+ */
+export const USAGE_WARN_PERCENT = 50;
+export const USAGE_HIGH_PERCENT = 70;
+
+/**
  * 使用率 → 主题色（蓝 → 橙 → 红）
  */
 export function usageColor(percent: number): string {
-  if (percent >= 85) return 'var(--usage-high)';
-  if (percent >= 65) return 'var(--usage-mid)';
+  if (percent >= USAGE_HIGH_PERCENT) return 'var(--usage-high)';
+  if (percent >= USAGE_WARN_PERCENT) return 'var(--usage-mid)';
   return 'var(--usage-low)';
 }
 
 /**
- * 使用率 → 语义状态
+ * 使用率 → 语义状态（与 :func:`usageColor` 同一套阈值）
  */
 export function usageLevel(percent: number): 'ok' | 'warn' | 'danger' {
-  if (percent >= 85) return 'danger';
-  if (percent >= 65) return 'warn';
+  if (percent >= USAGE_HIGH_PERCENT) return 'danger';
+  if (percent >= USAGE_WARN_PERCENT) return 'warn';
   return 'ok';
+}
+
+/**
+ * 使用率 → KPI 卡 / 数值的色调，与 :func:`usageColor` 同一套阈值。
+ *
+ * 页面里那些「按使用率给文字 / 卡片上色」的地方都用它，别再各写一遍
+ * ``x >= 85 ? ... : x >= 65 ? ...`` —— 那样改档位时一定会漏掉几处，
+ * 出现「进度条是橙的、标签还是蓝的」。
+ */
+export function usageTone(percent: number): 'accent' | 'warning' | 'danger' {
+  const level = usageLevel(percent);
+  if (level === 'danger') return 'danger';
+  if (level === 'warn') return 'warning';
+  return 'accent';
 }
 
 function pad(n: number): string {

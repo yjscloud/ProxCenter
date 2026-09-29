@@ -47,6 +47,7 @@ import {
   formatRelative,
   toPercent,
   usageColor,
+  usageTone,
 } from '../utils/format';
 import { taskStatusMeta, nodeStatusMeta } from '../utils/status';
 import type { DashboardTop, NodeInfo, TaskInfo } from '../api/types';
@@ -548,13 +549,7 @@ export function Dashboard() {
           label="CPU 使用率"
           value={`${nodeStats.cpuAvg.toFixed(1)}%`}
           icon={<IconCpu size={16} />}
-          tone={
-            nodeStats.cpuAvg >= 85
-              ? 'danger'
-              : nodeStats.cpuAvg >= 65
-                ? 'warning'
-                : 'accent'
-          }
+          tone={usageTone(nodeStats.cpuAvg)}
           loading={nodesQuery.isLoading}
           progress={nodeStats.cpuAvg}
           progressColor={usageColor(nodeStats.cpuAvg)}
@@ -569,13 +564,7 @@ export function Dashboard() {
           label="内存使用率"
           value={`${nodeStats.memPercent.toFixed(1)}%`}
           icon={<IconMemory size={16} />}
-          tone={
-            nodeStats.memPercent >= 85
-              ? 'danger'
-              : nodeStats.memPercent >= 65
-                ? 'warning'
-                : 'accent'
-          }
+          tone={usageTone(nodeStats.memPercent)}
           loading={nodesQuery.isLoading}
           progress={nodeStats.memPercent}
           progressColor={usageColor(nodeStats.memPercent)}
@@ -590,13 +579,7 @@ export function Dashboard() {
           label="存储使用率"
           value={`${storageStats.percent.toFixed(1)}%`}
           icon={<IconStorage size={16} />}
-          tone={
-            storageStats.percent >= 85
-              ? 'danger'
-              : storageStats.percent >= 65
-                ? 'warning'
-                : 'accent'
-          }
+          tone={usageTone(storageStats.percent)}
           loading={storagesQuery.isLoading}
           progress={storageStats.percent}
           progressColor={usageColor(storageStats.percent)}

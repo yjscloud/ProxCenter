@@ -32,7 +32,7 @@ import {
 } from "../components/Icons";
 import { useSectionSpy } from "../hooks/useSectionSpy";
 import { useSiteInfo } from "../hooks/useSiteInfo";
-import { formatRelative } from "../utils/format";
+import { formatRelative, usageColor } from "../utils/format";
 import { isRunning } from "../utils/status";
 import type {
   AlertEmailConfig,
@@ -1213,8 +1213,8 @@ export function Alerts() {
               const value = Number(r.value ?? 0);
               const threshold = Number(r.threshold ?? 0);
               const pct = Math.min(100, Math.max(0, value));
-              const fillColor =
-                value >= 85 ? "var(--usage-high)" : value >= 65 ? "var(--usage-mid)" : "var(--usage-low)";
+              /* 与全站同一套分档（见 utils/format 的 usageColor） */
+              const fillColor = usageColor(value);
               const targetLabel =
                 (r.target_type === "node" ? "宿主机 " : "虚拟机 ") + (r.target ?? "");
               const badgeText = sent

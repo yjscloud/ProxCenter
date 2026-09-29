@@ -24,6 +24,7 @@ import {
   IconSearch,
 } from '../../components/Icons';
 import { CAPABILITY_TOTAL } from './content';
+import { USAGE_HIGH_PERCENT, USAGE_WARN_PERCENT } from '../../utils/format';
 
 /* ---------------------------------------------------------------------------
    Hero
@@ -171,8 +172,9 @@ const BOARD_FEED = [
 ];
 
 function loadTone(pct: number): string {
-  if (pct >= 85) return ' is-high';
-  if (pct >= 65) return ' is-warn';
+  /* 阈值取自全站那一份（utils/format），免得落地页演示的颜色规则和面板里不一样 */
+  if (pct >= USAGE_HIGH_PERCENT) return ' is-high';
+  if (pct >= USAGE_WARN_PERCENT) return ' is-warn';
   return '';
 }
 

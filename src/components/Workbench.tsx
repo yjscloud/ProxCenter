@@ -131,12 +131,20 @@ export function Workbench() {
     enabled: canAlert,
   });
 
-  /* 基线体检会并发去 SSH 每台受管主机，不轻，所以只在允许时请求、缓存久一点、
-     不做轮询 —— 一天里基线项不会自己变多。 */
+  /* 基线体检会并发去 SSH 每台受管主机（实测 3 秒，主机不可达时几十秒）—— 它是
+     待办里**最不紧急**的一项，所以三件事一起做，别让它拖慢首页：
+
+     * `stale=1`：有旧值就先返回、真扫放到后台（后端 reportcache 的 stale 通路），
+       于是几乎每次打开都是毫秒级；
+     * 缓存留久一点（staleTime 10 分钟、gcTime 30 分钟），来回切页面不重扫；
+     * 不轮询、不在挂载 / 聚焦时重取。 */
   const baselineQuery = useQuery({
     queryKey: ['baseline', 'fleet'],
-    queryFn: () => baselineApi.fleet(),
-    staleTime: 5 * 60_000,
+    queryFn: () => baselineApi.fleet(false, true),
+    staleTime: 10 * 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     enabled: canBaseline,
   });
 
@@ -353,13 +361,16 @@ export function Workbench() {
   }, [actions, navigate]);
 
   /* 首屏还在等数据（且暂时没有待办可展示）时才铺骨架屏；
-     已有待办就先显示，剩下的慢慢补，避免整块区域闪烁。 */
+     已有待办就先显示，剩下的慢慢补，避免整块区域闪烁。
+
+     这里**刻意不算基线体检**：那一项要 SSH 每台主机（几秒到几十秒），而它是
+     待办里最不紧急的一条 —— 因为它把整块待办按住、让「连接断了」这种真正
+     阻塞工作的事一起等，是本末倒置。它到了自己会补上来。 */
   const loading =
     todos.length === 0 &&
     ((isAdmin && (connectionsQuery.isPending || pendingQuery.isPending)) ||
       quotaQuery.isPending ||
-      (canAlert && alertsQuery.isPending) ||
-      (canBaseline && baselineQuery.isPending));
+      (canAlert && alertsQuery.isPending));
 
   if (todos.length === 0 && actions.length === 0) return null;
 
@@ -388,6 +399,11 @@ export function Workbench() {
               {[0, 1].map((i) => (
                 <div key={i} className="skeleton wb-skeleton" />
               ))}
+            </div>
+          ) : todos.length === 0 && baselineQuery.isPending ? (
+            /* 体检还没回来：这时候不能先说「待办已清空」—— 它随时可能带出一条 */
+            <div className="wb-list">
+              <div className="skeleton wb-skeleton" />
             </div>
           ) : todos.length === 0 ? (
             <div className="wb-clear">

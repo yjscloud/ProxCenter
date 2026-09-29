@@ -20,6 +20,10 @@
    而不是「拿旧数据糊弄人」；报告本身的采集时间由 ``generated_at`` 如实回给前端。
 3. **写操作要清缓存**：改巡检策略、处置 / 撤销、加固之后判定口径已经变了，
    再发旧报告就是自相矛盾。调用方在这些地方显式 :func:`clear`。
+4. **「先看个大概」另有通路**：:func:`peek_stale` + :func:`refresh_later`
+   允许调用方拿旧值先应答、把真扫放到后台。首页工作台只想知道「有没有不合格
+   项」，为它 SSH 每台主机（几秒到几十秒）不值得；报告页仍然走 :func:`get_or_scan`
+   等真结果 —— 那边要的是准确数据，不是个概数。
 
 多 worker 部署时每个 worker 各持一份，命中率按 worker 摊薄，但「N 次打开 →
 1 次巡检」的收益仍然成立。真要做跨进程共享得落到数据库或 Redis，对一块自建
@@ -28,8 +32,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, FrozenSet, Iterable, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, FrozenSet, Iterable, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 # 缓存有效期（秒）。比前端 staleTime 短，理由见模块说明第 2 条。
 TTL_SECONDS = 120.0
@@ -37,6 +44,8 @@ TTL_SECONDS = 120.0
 # key -> (写入时间, 报告)；key -> 正在巡检时用的锁
 _cache: Dict[Any, Tuple[float, Any]] = {}
 _locks: Dict[Any, asyncio.Lock] = {}
+# 后台重扫的任务引用：不留住会被 GC 掉（见 refresh_later）
+_tasks: Set[asyncio.Task] = set()
 
 
 def scope_key(
@@ -74,6 +83,36 @@ def peek(key: ScopeKey) -> Optional[Any]:
 def store(key: ScopeKey, payload: Any) -> None:
     """记下一轮巡检的结果。"""
     _cache[key] = (time.time(), payload)
+
+
+def peek_stale(key: ScopeKey) -> Optional[Any]:
+    """取**任意**缓存值，包括已经过期的；一条都没有返回 ``None``。
+
+    与 :func:`peek` 的差别就在一个 TTL：调用方要的是「先有个大概、别让人等」，
+    而不是准确数据 —— 首页工作台的待办只关心「有没有不合格项」。
+    """
+    hit = _cache.get(key)
+    return hit[1] if hit else None
+
+
+def refresh_later(
+    key: ScopeKey, produce: Callable[[], Awaitable[Any]]
+) -> None:
+    """后台重扫一轮：调用方先用旧值应答，这一轮的结果留给下一次请求。
+
+    并发安全与去重交给 :func:`get_or_scan`（锁 + 命中检查）：缓存没过期时它
+    **不会**真扫，所以反复调用也不会变成反复巡检。
+    """
+
+    async def _runner() -> None:
+        try:
+            await get_or_scan(key, produce)
+        except Exception:  # noqa: BLE001 - 后台任务的异常不能冒到事件循环里
+            logger.debug("后台巡检失败（key=%s）", key, exc_info=True)
+
+    task = asyncio.create_task(_runner())
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
 
 
 async def get_or_scan(

@@ -40,6 +40,7 @@ async def targets(
 async def fleet(
     request: Request,
     refresh: bool = False,
+    stale: bool = False,
     user: Dict[str, Any] = Depends(VIEW),
 ) -> Dict[str, Any]:
     """全平台总览：并发体检可见主机，每台只回摘要（最需要处理的排最前）。
@@ -48,6 +49,10 @@ async def fleet(
     主机集合分键的短 TTL 缓存：同一时刻的重复打开只跑一轮。``refresh=1``
     绕过缓存 —— 页面上的「重新体检」走的就是这条路。缓存理由与边界见
     :mod:`app.reportcache`。
+
+    ``stale=1`` 是给首页工作台的：它只想知道「有没有不合格项」这一句，
+    为它现场 SSH 一轮（实测 3 秒，主机不可达时几十秒）不值得 —— 有旧值就先
+    返回，真扫放到后台，下一次再打开就是新的。报告页不要用这个参数。
     """
     allowed = await hostscope.allowed_host_ids(user)
     key = reportcache.scope_key("baseline", allowed)
@@ -56,6 +61,19 @@ async def fleet(
         payload = await baseline.fleet_overview(allowed)
         reportcache.store(key, payload)
         cached = False
+    elif stale:
+        # 只用 peek_stale：peek() 遇到过期条目会**顺手删掉**，写成
+        # ``peek(key) or peek_stale(key)`` 的话，过期的那一刻反而什么都拿不到、
+        # 退化成同步等一轮 —— 正是这条通路要避免的。
+        payload = reportcache.peek_stale(key)
+        if payload is None:
+            # 一条都没有（进程刚起来）：只能老实等一轮，待办区届时会补上
+            payload, cached = await reportcache.get_or_scan(
+                key, lambda: baseline.fleet_overview(allowed)
+            )
+        else:
+            cached = True
+            reportcache.refresh_later(key, lambda: baseline.fleet_overview(allowed))
     else:
         payload, cached = await reportcache.get_or_scan(
             key, lambda: baseline.fleet_overview(allowed)

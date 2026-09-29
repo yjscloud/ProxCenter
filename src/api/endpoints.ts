@@ -763,8 +763,17 @@ export const lxcApi = {
 
   detail: (node: string, vmid: number) => get<LxcDetail>(`/lxc/${node}/${vmid}`),
 
-  delete: (node: string, vmid: number, purge = true, force = false) =>
-    del<TaskResponse>(`/lxc/${node}/${vmid}`, { params: { purge, force } }),
+  delete: (
+    node: string,
+    vmid: number,
+    purge = true,
+    force = false,
+    connectionId?: string,
+  ) =>
+    del<TaskResponse>(`/lxc/${node}/${vmid}`, {
+      params: { purge, force },
+      ...scoped(connectionId),
+    }),
 
   /* 电源操作（容器没有 hibernate） */
   start: (node: string, vmid: number) =>
@@ -786,8 +795,20 @@ export const lxcApi = {
   /* 配置 */
   updateConfig: (node: string, vmid: number, body: LxcConfigUpdate) =>
     put<TaskResponse>(`/lxc/${node}/${vmid}/config`, body),
-  clone: (node: string, vmid: number, body: LxcCloneRequest) =>
-    post<TaskResponse>(`/lxc/${node}/${vmid}/clone`, body),
+  clone: (
+    node: string,
+    vmid: number,
+    body: LxcCloneRequest,
+    connectionId?: string,
+  ) => post<TaskResponse>(`/lxc/${node}/${vmid}/clone`, body, scoped(connectionId)),
+
+  /** 容器转模板（PVE 的 `pct template`；要求容器已关机） */
+  toTemplate: (node: string, vmid: number, connectionId?: string) =>
+    post<TaskResponse>(
+      `/lxc/${node}/${vmid}/template`,
+      undefined,
+      scoped(connectionId),
+    ),
   migrate: (node: string, vmid: number, body: LxcMigrateRequest) =>
     post<TaskResponse>(`/lxc/${node}/${vmid}/migrate`, body),
   /** 扩容 rootfs / mpN。容器只支持增容 */
@@ -939,25 +960,57 @@ export const tokensApi = {
    --------------------------------------------------------------------------- */
 
 export const backupsApi = {
-  list: (params: { node?: string; storage?: string; vmid?: number } = {}) =>
-    get<BackupItem[]>('/backups', { params }),
-  /** 最近 N 天的备份任务成败统计，跨所有已保存的 PVE */
+  /**
+   * 备份归档列表。
+   *
+   * ``connectionId`` 对**节点作用域**的接口是必需的：不带时后端会落到「面板当前
+   * 连接」，选出别的 PVE 上的节点名就会变成在错误的主机上找节点 —— PVE 直接回
+   * ``hostname lookup 'pve9' failed``。页面从聚合节点列表里取该节点自己的连接。
+   */
+  list: (
+    params: { node?: string; storage?: string; vmid?: number } = {},
+    connectionId?: string,
+  ) => get<BackupItem[]>('/backups', { params, ...scoped(connectionId) }),
+  /** 最近 N 天的备份任务成败统计，跨所有已保存的 PVE（本身就汇总，不带连接） */
   stats: (days = 7) =>
     get<BackupStats>('/backups/stats', { params: { days } }),
-  create: (body: BackupCreateRequest) => post<TaskResponse>('/backups', body),
-  restore: (body: BackupRestoreRequest) =>
-    post<TaskResponse>('/backups/restore', body),
+  create: (body: BackupCreateRequest, connectionId?: string) =>
+    post<TaskResponse>('/backups', body, scoped(connectionId)),
+  restore: (body: BackupRestoreRequest, connectionId?: string) =>
+    post<TaskResponse>('/backups/restore', body, scoped(connectionId)),
   /** 删除备份归档（后端按 notes 归属标记做用户隔离） */
-  remove: (params: { node: string; storage: string; volid: string }) =>
-    del<{ deleted: string }>('/backups', { params }),
-  jobs: () => get<BackupJob[]>('/backups/jobs'),
-  createJob: (body: BackupJobInput) =>
-    post<{ job_id: string | number }>('/backups/jobs', body),
-  deleteJob: (jobId: string | number) =>
-    del<{ ok: boolean }>(`/backups/jobs/${jobId}`),
-  /** 下载直链（供 <a download> 使用）*/
-  downloadUrl: (volid: string) =>
-    `${http.defaults.baseURL}/backups/download?volid=${encodeURIComponent(volid)}`,
+  remove: (
+    params: { node: string; storage: string; volid: string },
+    connectionId?: string,
+  ) => del<{ deleted: string }>('/backups', { params, ...scoped(connectionId) }),
+  jobs: (connectionId?: string) =>
+    get<BackupJob[]>('/backups/jobs', scoped(connectionId)),
+  createJob: (body: BackupJobInput, connectionId?: string) =>
+    post<{ job_id: string | number }>('/backups/jobs', body, scoped(connectionId)),
+  deleteJob: (jobId: string | number, connectionId?: string) =>
+    del<{ ok: boolean }>(`/backups/jobs/${jobId}`, scoped(connectionId)),
+  /**
+   * 下载直链（浏览器直接打开：会话在 HttpOnly Cookie 里，链接带不了请求头）。
+   *
+   * 因为带不了 ``X-PVE-Connection``，连接只能从 URL 参数推断：已知就传
+   * ``connectionId``，否则后端按节点归属自己找。``node`` / ``storage`` 也**必须**
+   * 带上 —— 归档在宿主机上的路径是 ``<存储路径>/dump/<归档名>``，只有 volid
+   * 拼不出来（后端的 ``/storage`` 才拿得到存储的 path）。
+   */
+  downloadUrl: (params: {
+    node: string;
+    storage: string;
+    volid: string;
+    connectionId?: string;
+  }) => {
+    const query = new URLSearchParams({
+      node: params.node,
+      storage: params.storage,
+      volid: params.volid,
+    });
+    if (params.connectionId) query.set('connection', params.connectionId);
+    return `${http.defaults.baseURL}/backups/download?${query.toString()}`;
+  },
 };
 
 /* ---------------------------------------------------------------------------
@@ -1254,8 +1307,18 @@ export const frpApi = {
         FrpServer & { restarted?: boolean; restart_error?: string }
       >("/frp/server", payload),
     start: () => post<FrpStatus>("/frp/server/start"),
+    /** 停止 frpc。后端会同时关掉「自动拉起」，返回值里的 auto_restart 即最新状态 */
     stop: () => post<FrpStatus>("/frp/server/stop"),
     install: () => post<{ binary: string }>("/frp/server/install"),
+    /**
+     * 开关「frpc 停止后自动拉起」。开启时若 frpc 当前没在跑会**立刻**拉起一次，
+     * 不用等看护的下一个周期；失败原因在 start_error 里。
+     */
+    autoRestart: (enabled: boolean) =>
+      post<FrpStatus & { started?: boolean; start_error?: string }>(
+        "/frp/server/auto-restart",
+        { enabled },
+      ),
   },
   rules: {
     list: () => get<FrpRuleList>("/frp/rules"),
@@ -1636,10 +1699,18 @@ export const baselineApi = {
    *
    * 后端对这份报告有一层 2 分钟的 TTL 缓存（同一时刻的重复打开只跑一轮体检），
    * `refresh` = 绕过缓存强制重新体检 —— 页面上的「重新体检」用它。
+   *
+   * `stale` = 有旧值（哪怕已过期）就先返回、真扫放到后台 —— 首页工作台用它：
+   * 一轮体检要 SSH 每台主机（实测 3 秒，主机不可达时几十秒），不该让首页等着。
+   * 体检报告**不要**传这个参数，那边要的是准确数据。
    */
-  fleet: (refresh = false) =>
+  fleet: (refresh = false, stale = false) =>
     get<BaselineFleetReport>(
-      refresh ? '/baseline/fleet?refresh=1' : '/baseline/fleet',
+      refresh
+        ? '/baseline/fleet?refresh=1'
+        : stale
+          ? '/baseline/fleet?stale=1'
+          : '/baseline/fleet',
     ),
   /** 单台服务器的完整体检报告（hostId 为 local 或受管主机 id） */
   host: (hostId: string) =>

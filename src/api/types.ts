@@ -1090,9 +1090,13 @@ export interface VmSummary {
   maxdisk?: number;
   uptime?: number;
   /**
-   * 创建时间（秒级 Unix 时间戳），来自 PVE 写在 config 里的 `meta.ctime`。
-   * 取不到时为 `null`：PVE 8 之前建的机器、以及容器都没有这个值。
-   * **克隆 / 恢复出来的机器会继承来源机器的时间**，别当审计时间用。
+   * 创建时间（秒级 Unix 时间戳）。两个来源，面板侧优先：
+   *
+   * 1. 面板发起的新建 / 克隆 / 恢复 —— 操作那一刻记下，**准确**；
+   * 2. PVE 写在 config 里的 `meta.ctime` —— 存量机器用这个，但**克隆 / 恢复会
+   *    继承来源机器的时间**（面板自身发起的克隆已按实际时刻纠正）。
+   *
+   * 两处都取不到时为 `null`（PVE 8 之前建的机器、以及容器普遍如此），界面显示「—」。
    * 细节见 backend/app/guest_created.py。
    */
   created?: number | null;
@@ -1250,7 +1254,7 @@ export interface VmDetail {
   disk?: number;
   maxdisk?: number;
   uptime?: number;
-  /** 创建时间（`meta.ctime`）；老机器没有记录时为 null */
+  /** 创建时间；面板记录优先，其次 PVE 的 `meta.ctime`，都没有时为 null */
   created?: number | null;
   disks: VmDiskConfig[];
   networks: VmNetworkConfig[];
@@ -1472,7 +1476,7 @@ export interface LxcDetail {
   swap?: number;
   maxswap?: number;
   uptime?: number;
-  /** 创建时间（`meta.ctime`）；容器实测都没有记录，通常为 null */
+  /** 创建时间；面板记录优先，容器普遍没有 PVE 的 `meta` 记录，通常为 null */
   created?: number | null;
   netin?: number;
   netout?: number;
@@ -1696,6 +1700,11 @@ export interface TemplateItem {
   name: string;
   status: string;
   template: boolean;
+  /**
+   * 是虚拟机模板（qemu）还是容器模板（lxc）—— PVE 对两者都给 ``template=1``。
+   * 前端据此决定克隆 / 删除走哪套接口：两者的参数与能力不同（容器没有链接克隆）。
+   */
+  guest_type?: 'qemu' | 'lxc';
   /** 客户机 OS 类型；后端当前未填充，保留以便与 VmSummary 对齐 */
   type?: string;
   maxcpu?: number;
@@ -2248,6 +2257,12 @@ export interface FrpStatus {
   server_addr: string;
   server_port: number;
   proxy_count: number;
+  /**
+   * 「frpc 停了自动拉起」是否开启。开启时面板的看护作业会把它重新拉起来，
+   * 面板重启后也会按这个开关恢复。手动点「停止穿透」会把它一起关掉
+   * （否则点了停止却被看护立刻拉回来）。
+   */
+  auto_restart?: boolean;
 }
 
 /* 以下保留向后兼容 —— 旧前端 / 老 API 兼容字段。 */

@@ -12,7 +12,7 @@ import { Badge } from './ui/Badge';
 import { Table, type Column } from './ui/Table';
 import { EmptyState } from './ui/EmptyState';
 import { IconDisk, IconStorage } from './Icons';
-import { formatBytes } from '../utils/format';
+import { formatBytes, usageColor } from '../utils/format';
 import type { DiskHealth } from '../api/types';
 
 /** 健康状态 → 徽标样式与文案 */
@@ -301,7 +301,7 @@ export function DiskHealthPanel({
                       className="inline-meter-fill"
                       style={{
                         width: `${Math.min(100, pct)}%`,
-                        background: pct >= 85 ? 'var(--usage-high)' : 'var(--accent)',
+                        background: usageColor(pct),
                       }}
                     />
                   </div>

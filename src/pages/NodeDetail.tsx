@@ -67,6 +67,7 @@ import {
   formatUptimeShort,
   toPercent,
   usageColor,
+  usageTone,
 } from '../utils/format';
 import {
   contentLabel,
@@ -1547,9 +1548,7 @@ function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
           <KpiCard
             label="CPU 使用率"
             value={`${latestCpu.toFixed(1)}%`}
-            tone={
-              latestCpu >= 85 ? 'danger' : latestCpu >= 65 ? 'warning' : 'accent'
-            }
+            tone={usageTone(latestCpu)}
             progress={latestCpu}
             progressColor={usageColor(latestCpu)}
             hint={<span className="text-secondary">最近一次采样</span>}
@@ -1558,9 +1557,7 @@ function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
             label="内存已用"
             value={formatBytes(memUsed, 0)}
             hint={<span className="mono">/ {formatBytes(memTotal, 0)}</span>}
-            tone={
-              latestMem >= 85 ? 'danger' : latestMem >= 65 ? 'warning' : 'accent'
-            }
+            tone={usageTone(latestMem)}
             progress={latestMem}
             progressColor={usageColor(latestMem)}
           />

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .. import defaults, ownership, security, store, vmconfig
 from ..formatters import pve_flag
@@ -89,9 +89,13 @@ async def _await(client: Any, result: Any, timeout: float = 600.0) -> str:
 # ------------------------------------------------------------------ listing
 @router.get("/templates")
 async def list_templates(
+    guest_type: Optional[str] = Query(
+        default=None, pattern="^(qemu|lxc)$",
+        description="只列某一类模板：qemu（虚拟机）或 lxc（容器）；不传则两类都返回",
+    ),
     user: Dict[str, Any] = Depends(security.require_permission("template.view")),
 ) -> List[Dict[str, Any]]:
-    """Cluster-wide VM templates, aggregated across every saved PVE host.
+    """Cluster-wide templates (VMs and containers), aggregated across every saved PVE host.
 
     面板支持保存多台 PVE。未显式指定 ``X-PVE-Connection`` 时合并所有连接
     （与 ``/api/vms`` 行为一致），单台 PVE 读取失败只跳过它自己，不让整个
@@ -99,6 +103,8 @@ async def list_templates(
 
     每项都带 ``connection_id`` / ``connection_name``：不同 PVE 上可能有
     相同的节点名与 VMID（例如两边都有 100），前端必须靠它区分归属。
+    ``guest_type`` 用来按类型收窄：**虚拟机克隆只该看到虚拟机模板**（容器模板
+    克隆出来的是容器，放进虚拟机的克隆源里选了必然失败），模板页则两类都要。
     """
     requested = requested_connection()
     if requested:
@@ -128,8 +134,10 @@ async def list_templates(
             # 模板有两种：虚拟机模板（qemu）与容器模板（lxc）。PVE 的
             # /cluster/resources 对两者都给 ``template=1``，但这里原本只放行
             # qemu —— 实测本机 110 / 111 两台容器都是模板，界面上却看不到。
-            guest_type = vm.get("type")
-            if guest_type not in ("qemu", "lxc"):
+            kind = vm.get("type")
+            if kind not in ("qemu", "lxc"):
+                continue
+            if guest_type and kind != guest_type:
                 continue
             if pve_flag(vm.get("template", 0)) != 1:
                 continue
@@ -140,8 +148,10 @@ async def list_templates(
                     "name": vm.get("name") or f"Template {vm.get('vmid')}",
                     "status": vm.get("status", "stopped"),
                     "template": True,
-                    # 前端据此区分克隆 / 删除该走哪套接口（qemu 与 lxc 的参数不同）
-                    "guest_type": guest_type,
+                    # 前端据此区分克隆 / 删除该走哪套接口（qemu 与 lxc 的参数不同）。
+                    # 必须是这台机器自己的类型 kind，不是上面那个查询参数 ——
+                    # 写成 guest_type 的话，不传参数时整份列表的类型都会是 None。
+                    "guest_type": kind,
                     "maxcpu": vm.get("maxcpu"),
                     "maxmem": vm.get("maxmem"),
                     "maxdisk": vm.get("maxdisk"),

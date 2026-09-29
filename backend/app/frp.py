@@ -20,6 +20,15 @@ from . import store
 from .config import DATA_DIR
 
 SETTING_KEY = "frp_config"
+# 「进程停了自动拉起」开关。与配置分开存：配置是「连去哪」，这是「要不要一直跑」。
+AUTOSTART_KEY = "frp_auto_restart"
+
+# 连续拉起失败时的退避间隔（秒）。配置填错 / 服务端不通时不退避的话，
+# 每 60 秒拉一次又崩一次，日志会被刷爆、真正的报错反而被淹掉。
+_RETRY_DELAYS = [60.0, 120.0, 300.0, 600.0, 900.0]
+
+_failures = 0
+_next_attempt_at = 0.0
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "server_addr": "",
@@ -255,11 +264,27 @@ def _pid() -> Optional[int]:
 
 
 def _alive(pid: int) -> bool:
+    """这个 pid 是不是还活着，**而且确实是 frpc**。
+
+    只看 ``os.kill(pid, 0)`` 有两个坑，都会让「自动拉起」形同虚设：
+
+    * **僵尸进程**：frpc 是本进程 Popen 出来的子进程，它退出后没人 wait，
+      会一直以僵尸形态挂着 —— ``os.kill`` 对僵尸照样返回成功，于是界面显示
+      「运行中」，可穿透其实早就断了；
+    * **PID 复用**：面板重启后 PID 文件里那个号可能已经被系统分给别的进程。
+
+    僵尸的 ``/proc/<pid>/cmdline`` 是空的，被复用的进程则不是 frpc —— 核一下
+    命令行这两个坑一起填掉。
+    """
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    try:
+        cmdline = Path("/proc").joinpath(str(pid), "cmdline").read_bytes()
+    except OSError:
+        return True  # 读不到（不是 Linux / 没权限）：退回只判存活
+    return b"frpc" in cmdline
 
 
 def is_running() -> bool:
@@ -267,8 +292,94 @@ def is_running() -> bool:
     return bool(pid and _alive(pid))
 
 
+def _reap() -> None:
+    """收掉我们自己拉起过的那个子进程（如果有）。
+
+    frpc 退出后会变成僵尸等父进程来收；不收的话 ``os.kill`` 仍认为它活着，
+    看护就永远不会去拉起 —— 所以每次判断是否要拉起之前先收一次。
+    """
+    global _process
+    if _process is None:
+        return
+    try:
+        _process.poll()  # 已退出则顺带回收，未退出则只是查状态
+        if _process.poll() is not None:
+            _process = None
+    except Exception:  # noqa: BLE001 - 回收失败不影响后续判断
+        _process = None
+
+
+def _log(line: str) -> None:
+    """往 frpc 日志里补一行。
+
+    自动拉起的痕迹要能在「日志」页看到：否则用户只看到进程在跑，不知道它
+    崩过、又被谁拉起来了 —— 而「为什么断了又好了」正是要排查的东西。
+    """
+    try:
+        BIN_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_PATH, "ab") as log:
+            log.write(f"{stamp} [看护] {line}\n".encode("utf-8"))
+    except OSError:
+        pass
+
+
+async def auto_restart_enabled() -> bool:
+    """「停止后自动拉起」开关。存 settings，所以面板重启后依然记得。"""
+    raw = await store.get_setting(AUTOSTART_KEY)
+    return str(raw or "").strip() in ("1", "true", "yes", "on")
+
+
+async def set_auto_restart(enabled: bool) -> bool:
+    await store.set_setting(AUTOSTART_KEY, "1" if enabled else "0")
+    return enabled
+
+
+async def watchdog() -> Dict[str, Any]:
+    """看护一轮：开关开着、而 frpc 不在，就重新拉起。
+
+    返回值交给调度器做摘要（界面上看得到这一轮干了什么）。失败按
+    :data:`_RETRY_DELAYS` 逐步退避；异常照抛，调度器会把作业标成 error，
+    别把「一直在崩」伪装成正常运行。
+    """
+    global _failures, _next_attempt_at
+
+    if not await auto_restart_enabled():
+        _failures = 0
+        _next_attempt_at = 0.0
+        return {"action": "skipped"}
+
+    _reap()  # 先把可能已经变成僵尸的旧进程收掉，否则永远判定成「还在跑」
+    if is_running():
+        _failures = 0
+        _next_attempt_at = 0.0
+        return {"action": "running"}
+
+    now = time.time()
+    if now < _next_attempt_at:
+        return {"action": "backoff", "failures": _failures}
+
+    cfg = await effective()
+    try:
+        # start() 里有写配置、Popen 和 1.5 秒的探活等待 —— 放进线程执行，
+        # 别把事件循环里其它作业一起堵住。
+        await asyncio.to_thread(start, cfg)
+    except FrpError as exc:
+        _failures += 1
+        _next_attempt_at = (
+            now + _RETRY_DELAYS[min(_failures - 1, len(_RETRY_DELAYS) - 1)]
+        )
+        _log(f"自动拉起失败（第 {_failures} 次）：{exc}")
+        raise
+    _log("检测到 frpc 已停止，已自动拉起")
+    _failures = 0
+    _next_attempt_at = 0.0
+    return {"action": "restarted"}
+
+
 def start(cfg: Dict[str, Any]) -> None:
     """写出 frpc.toml 并拉起 frpc 进程。"""
+    global _process
     binary = frpc_binary()
     if not binary:
         raise FrpError('未找到 frpc 可执行文件，请先点击「下载安装 frpc」。')
@@ -278,6 +389,7 @@ def start(cfg: Dict[str, Any]) -> None:
         raise FrpError('请至少添加一条穿透规则。')
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(render_toml(cfg), encoding='utf-8')
+    _reap()  # 收掉上一轮的僵尸，否则 is_running() 会把它当成还活着
     if is_running():
         stop()
     stamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -291,6 +403,7 @@ def start(cfg: Dict[str, Any]) -> None:
             cwd=str(BIN_DIR),
         )
     PID_PATH.write_text(str(proc.pid), encoding='utf-8')
+    _process = proc  # 记下来：将来它退出时要靠 _reap() 回收（否则变僵尸）
     time.sleep(1.5)
     if proc.poll() is not None:
         PID_PATH.unlink(missing_ok=True)

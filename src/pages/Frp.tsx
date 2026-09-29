@@ -17,7 +17,7 @@ import { Card, CardHeader } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
 import { Button, IconButton } from "../components/ui/Button";
 import { Notice } from "../components/ui/EmptyState";
-import { Input } from "../components/ui/Input";
+import { Input, Switch } from "../components/ui/Input";
 import { Modal } from "../components/ui/Modal";
 import {
   IconNetwork,
@@ -91,7 +91,7 @@ function HeaderActions() {
         try {
           if (running) {
             await frpApi.server.stop();
-            toast.success("已停止内网穿透");
+            toast.success("已停止内网穿透", "自动拉起已同时关闭");
           } else {
             await frpApi.server.start();
             toast.success("frpc 已启动");
@@ -427,6 +427,46 @@ function ProcessCard() {
           >
             下载安装 frpc
           </Button>
+        ) : null}
+        {canManage ? (
+          <div className="flex items-center justify-between gap-16">
+            <div className="flex flex-col gap-2">
+              <span className="fs-sm">停止后自动拉起</span>
+              <span className="fs-xs text-muted">
+                frpc 进程不在时由面板重新拉起（面板重启后也按此开关恢复）；
+                手动点「停止穿透」会顺带关掉它，免得停了又被拉起来。
+              </span>
+            </div>
+            <Switch
+              checked={statusQuery.data?.auto_restart ?? false}
+              disabled={busy || statusQuery.isLoading || !available}
+              ariaLabel="停止后自动拉起"
+              onChange={async (next) => {
+                setBusy(true);
+                try {
+                  const res = await frpApi.server.autoRestart(next);
+                  if (res.start_error) {
+                    toast.warning(
+                      "已开启自动拉起",
+                      "但立即启动失败：" + res.start_error,
+                    );
+                  } else if (res.started) {
+                    toast.success("已开启自动拉起", "frpc 已启动");
+                  } else {
+                    toast.success(
+                      next ? "已开启自动拉起" : "已关闭自动拉起",
+                      next ? "进程停止后会被重新拉起" : undefined,
+                    );
+                  }
+                  void qc.invalidateQueries({ queryKey: ["frp"] });
+                } catch (err) {
+                  toast.error("操作失败", errorMessage(err));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            />
+          </div>
         ) : null}
         {canManage ? (
           <p className="fs-xs text-muted">

@@ -88,6 +88,7 @@ from .routers import frp as frp_router
 from . import backupguard
 from . import portguard
 from . import database
+from . import guest_created
 from .store import init_db, purge_expired_tokens
 
 logging.basicConfig(
@@ -104,6 +105,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await ownership.init_table()
     # 受保护备份登记表（防删 / 防篡改核对）
     await backupguard.init_table()
+    # 面板发起的建机 / 克隆 / 恢复记录（创建时间字段的准确来源，见 app.guest_created）
+    await guest_created.init_table()
     await password_reset.init_table()
     # 监控历史表：「监控历史采样」作业到点后开始往里写点
     await metrics_history.init_table()
@@ -646,6 +649,11 @@ METRICS_INTERVAL = max(int(settings.metrics_sample_interval), 1)
 PURGE_INTERVAL = 3600
 # API Token 的过期行清理：一天一次
 TOKEN_PURGE_INTERVAL = 86_400
+# 内网穿透看护：一分钟看一次。frpc 断掉意味着所有穿透一起断，等太久没意义；
+# 一次检查只是读一个 pid 文件，代价可以忽略（拉起失败另有退避，见 app/frp.py）
+FRP_WATCHDOG_INTERVAL = 60
+# 首次延迟 20 秒：启动时要先跑配置迁移与数据库初始化，别抢在前面
+FRP_WATCHDOG_FIRST_DELAY = 20
 
 
 def _job(
@@ -698,6 +706,22 @@ def _sample_summary(result: Any) -> str:
     except (TypeError, ValueError):
         return ""
     return f"落库 {written} 个点" if written else "本轮无数据"
+
+
+def _frp_summary(result: Any) -> str:
+    """内网穿透看护只回一个动作，翻成一句人话。"""
+    if not isinstance(result, dict):
+        return ""
+    action = str(result.get("action") or "")
+    if action == "restarted":
+        return "检测到 frpc 已停止，已自动拉起"
+    if action == "backoff":
+        return f"退避中（已连续失败 {int(result.get('failures') or 0)} 次）"
+    if action == "skipped":
+        return "未开启自动拉起"
+    if action == "running":
+        return "frpc 运行中"
+    return ""
 
 
 def _purge_summary(result: Any) -> str:
@@ -807,6 +831,18 @@ scheduler.register(
         CERT_INTERVAL,
         summarize=_cert_summary,
         first_delay=CERT_FIRST_DELAY,
+    )
+)
+scheduler.register(
+    _job(
+        "frp_watchdog",
+        "内网穿透看护",
+        "服务看护",
+        "frpc 进程不在时自动拉起（仅在「自动拉起」开启时生效）",
+        frp.watchdog,
+        FRP_WATCHDOG_INTERVAL,
+        summarize=_frp_summary,
+        first_delay=FRP_WATCHDOG_FIRST_DELAY,
     )
 )
 scheduler.register(

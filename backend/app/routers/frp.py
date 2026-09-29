@@ -188,7 +188,7 @@ async def start_frpc(
         await security.audit(request, user, "frp.server.start", "frp/server", "failed", str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await security.audit(request, user, "frp.server.start", "frp/server", "success", "启动 frpc")
-    return frp.status(cfg)
+    return {**frp.status(cfg), "auto_restart": await frp.auto_restart_enabled()}
 
 
 @router.post("/server/stop")
@@ -196,10 +196,61 @@ async def stop_frpc(
     request: Request,
     user: Dict[str, Any] = Depends(security.require_permission(_PERM_ADMIN)),
 ) -> Dict[str, Any]:
+    """停止 frpc。
+
+    手动停止**同时关掉「自动拉起」**：否则看护会在一分钟内又把它拉起来 ——
+    用户明明点了停止却停不掉，比没有看护更让人困惑。要恢复就再把开关打开。
+    """
     frp.stop()
-    await security.audit(request, user, "frp.server.stop", "frp/server", "success", "停止 frpc")
+    await frp.set_auto_restart(False)
+    await security.audit(
+        request, user, "frp.server.stop", "frp/server", "success",
+        "停止 frpc，并关闭自动拉起",
+    )
     cfg = await frp.effective()
-    return frp.status(cfg)
+    return {**frp.status(cfg), "auto_restart": False}
+
+
+@router.post("/server/auto-restart")
+async def set_auto_restart(
+    payload: Dict[str, Any],
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission(_PERM_ADMIN)),
+) -> Dict[str, Any]:
+    """开关「frpc 停止后自动拉起」。
+
+    开启后由调度器的 frp_watchdog 作业看护；而开启这一下如果 frpc 当前没在跑，
+    就**立刻**拉一次 —— 用户按了开关却要等一分钟才看到效果，不像话。
+    """
+    enabled = str(payload.get("enabled", False)).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    await frp.set_auto_restart(enabled)
+
+    started = False
+    error = ""
+    if enabled and not frp.is_running():
+        cfg = await frp.effective()
+        try:
+            # start() 里有一段探活等待，放进线程，别堵住事件循环
+            await asyncio.to_thread(frp.start, cfg)
+            started = True
+        except frp.FrpError as exc:
+            error = str(exc)
+
+    await security.audit(
+        request, user, "frp.server.auto_restart", "frp/server",
+        "failed" if error else "success",
+        f"{'开启' if enabled else '关闭'}自动拉起"
+        + (f"；立即启动失败：{error}" if error else ("；已立即启动" if started else "")),
+    )
+    cfg = await frp.effective()
+    return {
+        **frp.status(cfg),
+        "auto_restart": enabled,
+        "started": started,
+        "start_error": error,
+    }
 
 
 # ===========================================================================
@@ -362,7 +413,7 @@ async def get_status(
     server = await _load_server()
     rules = await _load_rules()
     cfg = frp.effective_config(server, _scope_rules(rules, _visible_username(user)))
-    return frp.status(cfg)
+    return {**frp.status(cfg), "auto_restart": await frp.auto_restart_enabled()}
 
 
 @router.get("/logs")

@@ -1,15 +1,19 @@
-"""创建时间（PVE 写进 config 的 ``meta.ctime``）的解析与缓存。
+"""创建时间的解析、面板记录与缓存。
 
-覆盖三件最容易出错的事：
+覆盖四件最容易出错的事：
 
 * ``meta`` 是 PVE 的「属性字符串」，里面既有版本号（``creation-qemu=9.2.0``）
   也有时间戳（``ctime=...``）—— 只认后者，且必须落在合理区间里；
-* 缓存要能区分「这台机器确实没有 meta」与「这次没问到」：前者按 6 小时过期、
+* **面板记录优先于 PVE 的 meta**：PVE 克隆 / 恢复会整体复制 config，``meta.ctime``
+  跟着模板走（实测克隆出来的机器显示的是模板时间），面板自己那份才是准确的；
+* 缓存要能区分「这台机器确实没有 meta」与「这次没问到」：前者按 15 分钟过期、
   后者按 5 分钟过期，但两种都**不能每轮轮询都重复去问 PVE**；
 * 缓存键必须带连接与节点 —— 实测本机两台 PVE 上各有一个 ``vmid=100``，
-  少一段就会把别人家的创建时间显示到这台机器上。
+  少一段就会把别人家的创建时间显示到这台机器上；而且 VMID 会被回收，
+  「本轮已经不存在的键」必须清掉，否则重建的同号机器会显示上一台的时间。
 
-用例全部不碰数据库与真实 PVE（``_FakeClient`` 顶替），因此不依赖 MySQL。
+用例全部不碰数据库与真实 PVE（``_FakeClient`` 顶替、记录表与审计回填打桩），
+因此不依赖 MySQL。
 """
 from __future__ import annotations
 
@@ -71,9 +75,37 @@ def _item(vmid: int, guest_type: str = "qemu", conn: str = "c1", node: str = "pv
 
 
 @pytest.fixture(autouse=True)
-def clean_cache():
-    """模块级缓存跨用例共享，前后都清干净，避免互相串味。"""
+def clean_cache(monkeypatch):
+    """模块级缓存跨用例共享，前后都清干净，避免互相串味。
+
+    同时把「碰面板库」的两条路打桩：单元测试不依赖 MySQL，也不该去连 PVE
+    列节点（审计回填要判断节点名是否唯一）。需要验证记录优先的用例自己覆盖
+    ``_records_for``，见 :class:`TestPanelRecord`。
+    """
     guest_created.clear()
+
+    async def _no_records(_conn_id: str = "") -> Dict[str, int]:
+        return {}
+
+    async def _no_backfill(*_a: Any, **_kw: Any) -> Optional[int]:
+        return None
+
+    async def _no_drop(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    class _NoDatabase:
+        """任何数据库访问都直接失败：单元测试不该连 MySQL（连连接池都不建）。"""
+
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("单元测试不接数据库")
+
+        async def __aexit__(self, *_exc: Any) -> bool:
+            return False
+
+    monkeypatch.setattr(guest_created.database, "connect", lambda: _NoDatabase())
+    monkeypatch.setattr(guest_created, "_records_for", _no_records)
+    monkeypatch.setattr(guest_created, "_backfill_from_audit", _no_backfill)
+    monkeypatch.setattr(guest_created, "_drop_stale_records", _no_drop)
     yield
     guest_created.clear()
 
@@ -178,7 +210,7 @@ class TestFill:
         key = guest_created.cache_key("c1", "pve", 100, "qemu")
         expires_at, value = guest_created._cache[key]
         assert value is None
-        # 失败条目的过期时间明显早于「确认没有」的 6 小时
+        # 失败条目的过期时间明显早于「确认没有」的 MISS_TTL
         assert expires_at - time.time() <= guest_created.ERROR_TTL_SECONDS + 1
         assert expires_at - time.time() < guest_created.MISS_TTL_SECONDS
 
@@ -269,3 +301,125 @@ class TestClear:
         )
         guest_created.clear()
         assert guest_created.cached("c1", "pve", 100, "qemu") is None
+
+
+class TestPanelRecord:
+    """面板记录优先于 PVE 的 ``meta`` —— 克隆 / 恢复出来的机器靠它才对。"""
+
+    def test_record_beats_inherited_meta(self, monkeypatch) -> None:
+        """克隆场景：PVE 的 meta 是模板的时间，面板记录才是实际创建时间。
+
+        实测 pve9 上克隆出来的 104：``meta`` 完全等于模板的（连
+        ``creation-qemu=9.2.0`` 都是模板的版本号），而克隆实际发生在几天后。
+        """
+        template_ctime = 1789814562  # 2026-09-19 18:42:42（模板的时间）
+        clone_ctime = template_ctime + 9 * 86400 + 4321  # 克隆实际发生的时刻
+
+        async def records(_conn_id: str = "") -> Dict[str, int]:
+            return {guest_created.cache_key("c1", "pve", 104, "qemu"): clone_ctime}
+
+        monkeypatch.setattr(guest_created, "_records_for", records)
+        client = _FakeClient(
+            {104: {"meta": f"creation-qemu=9.2.0,ctime={template_ctime}"}}
+        )
+        items = [_item(104)]
+        asyncio.run(guest_created.fill(client, items))
+        assert items[0]["created"] == clone_ctime
+        assert client.asked == [], "有面板记录就不该再去读 config"
+
+    def test_record_seeds_cache_and_forget_clears(self) -> None:
+        """record() 顺手写缓存（不必等 PVE 写出 meta），forget() 立刻失效。
+
+        这里刻意不接数据库：落库失败也要保证这一个进程立刻能显示正确日期，
+        所以缓存写在落库之前。
+        """
+        asyncio.run(
+            guest_created.record("c1", "pve", 200, "qemu", when=CTIME, source="create")
+        )
+        assert guest_created.cached("c1", "pve", 200, "qemu") == CTIME
+
+        guest_created.forget("c1", "pve", 200, "qemu")
+        assert guest_created.cached("c1", "pve", 200, "qemu") is None
+
+    def test_resolve_prefers_record_then_meta(self, monkeypatch) -> None:
+        """详情页：面板记录优先；没有记录才用 config 里的 meta。"""
+        key = guest_created.cache_key("c1", "pve", 104, "qemu")
+
+        async def records(_conn_id: str = "") -> Dict[str, int]:
+            return {key: CTIME + 100}
+
+        monkeypatch.setattr(guest_created, "_records_for", records)
+        config = {"meta": f"ctime={CTIME}"}
+        assert asyncio.run(
+            guest_created.resolve("c1", "pve", 104, "qemu", config)
+        ) == CTIME + 100
+
+        async def none(_conn_id: str = "") -> Dict[str, int]:
+            return {}
+
+        monkeypatch.setattr(guest_created, "_records_for", none)
+        assert asyncio.run(
+            guest_created.resolve("c1", "pve", 105, "qemu", config)
+        ) == CTIME
+        assert asyncio.run(
+            guest_created.resolve("c1", "pve", 106, "qemu", {"cores": 2})
+        ) is None
+
+
+class TestBackfillGuard:
+    """审计回填的两条硬性前提 —— 缺一条就该保持「—」而不是编一个日期。"""
+
+    def test_skips_when_there_is_no_meta(self) -> None:
+        """没有 meta 时不回填。
+
+        实测踩到过：pve9/101 今天新建的**容器**被回填成了昨天那台**虚拟机**的
+        建机时间 —— 审计 target 只有「节点/VMID」，VMID 复用时分不清是哪一台。
+        没有 meta 就没有任何证据说明那条审计属于当前这台机器。
+        """
+        assert asyncio.run(
+            guest_created._backfill_from_audit("c1", "pve", 101, "lxc", None)
+        ) is None
+        # 也不标记「问过了」：等 PVE 补上 meta（克隆场景）之后还能再纠正一次
+        assert guest_created.cache_key("c1", "pve", 101, "lxc") not in guest_created._backfilled
+
+    def test_requires_a_unique_node_name(self, monkeypatch) -> None:
+        """同名节点分不清属于哪台 PVE，宁可不填（填错日期比空着更糟）。"""
+
+        async def counts() -> Dict[str, int]:
+            return {"pve": 2}
+
+        monkeypatch.setattr(guest_created, "_node_names_are_unique", counts)
+        assert asyncio.run(
+            guest_created._backfill_from_audit("c1", "pve", 104, "qemu", CTIME)
+        ) is None
+
+
+class TestEviction:
+    """VMID 会被回收：本轮列表里已经不存在的机器，旧值不能留。"""
+
+    def test_stale_value_is_dropped(self) -> None:
+        stale_key = guest_created.cache_key("c1", "pve", 999, "qemu")
+        guest_created._cache[stale_key] = (time.time() + 3600, CTIME)
+        client = _FakeClient({100: {"meta": f"ctime={CTIME}"}})
+        asyncio.run(guest_created.fill(client, [_item(100)]))
+        assert stale_key not in guest_created._cache
+
+    def test_other_scopes_are_untouched(self) -> None:
+        """只查 qemu 的一轮不该动容器的缓存；别的节点、别的连接也不动。"""
+        keep = [
+            guest_created.cache_key("c1", "pve", 999, "lxc"),
+            guest_created.cache_key("c1", "other", 999, "qemu"),
+            guest_created.cache_key("c2", "pve", 999, "qemu"),
+        ]
+        for key in keep:
+            guest_created._cache[key] = (time.time() + 3600, CTIME)
+        client = _FakeClient({100: {"meta": f"ctime={CTIME}"}})
+        asyncio.run(guest_created.fill(client, [_item(100)]))
+        for key in keep:
+            assert key in guest_created._cache, f"{key} 不该被清掉"
+
+    def test_miss_ttl_is_short(self) -> None:
+        """「确认没有 meta」的缓存必须短：建机瞬间 PVE 可能还没写好 meta，
+        长缓存会让这台机器长期显示「—」（实测踩到过）。"""
+        assert guest_created.MISS_TTL_SECONDS <= 30 * 60
+        assert guest_created.MISS_TTL_SECONDS > guest_created.ERROR_TTL_SECONDS

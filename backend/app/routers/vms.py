@@ -376,7 +376,9 @@ async def get_vm(
         "status": status.get("status", "unknown"),
         "uptime": status.get("uptime"),
         # 创建时间：详情本来就已经把 config 取在手里了，这里是零成本
-        "created": guest_created.parse_created(config),
+        "created": await guest_created.resolve(
+            _op_connection(), node, vmid, "qemu", config
+        ),
         "cpu": status.get("cpu"),
         "cpus": status.get("cpus"),
         "mem": status.get("mem"),
@@ -690,6 +692,18 @@ async def create_vm(
         detail=", ".join(f"{k}={v}" for k, v in config.items()),
     )
 
+    # 创建时间：面板自己记一份。PVE 的 meta.ctime 在建机瞬间可能还没写好（列表
+    # 轮询先读到就会显示「没有创建时间」），克隆 / 恢复时又会被继承 —— 见
+    # app/guest_created.py。这里记的是准确的建机时刻。
+    await guest_created.record(
+        _op_connection(),
+        payload.node,
+        vmid,
+        "qemu",
+        source="import" if import_disk else "create",
+        username=str(user.get("username") or ""),
+    )
+
     # --- post-create steps that must finish before the VM is usable ----
     post_steps: List[str] = []
     if import_disk:
@@ -829,6 +843,17 @@ async def _create_from_clone(
         request, user, "vm.clone",
         target=f"{clone.node}/{clone.vmid} -> {target_node}/{vmid}",
         detail={**overrides, "started": started},
+    )
+
+    # 创建时间：**必须记面板这一份** —— PVE 克隆是整体复制模板的 config，
+    # meta.ctime 也带过来了（实测克隆出来的机器显示的是模板的时间）。
+    await guest_created.record(
+        _op_connection(),
+        target_node,
+        vmid,
+        "qemu",
+        source="clone",
+        username=str(user.get("username") or ""),
     )
 
     # 记录归属：克隆出来的虚拟机同样归创建者所有
@@ -999,6 +1024,9 @@ async def delete_vm(
 
     task = result if isinstance(result, str) else (result or {}).get("task", "")
     await security.audit(request, user, "vm.delete", target=f"{node}/{vmid}")
+    # 连同创建时间记录一起删掉：VMID 会被回收，旧记录贴到重建的同号机器上
+    # 比「显示 —」更难发现。
+    await guest_created.drop_record(_op_connection(), node, vmid, "qemu")
     return {"task": task}
 
 

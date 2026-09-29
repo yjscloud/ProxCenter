@@ -281,7 +281,9 @@ async def get_container(
         "status": status.get("status", "unknown"),
         "uptime": status.get("uptime"),
         # 创建时间：详情本来就已经把 config 取在手里了，这里是零成本
-        "created": guest_created.parse_created(config),
+        "created": await guest_created.resolve(
+            _op_connection(), node, vmid, "lxc", config
+        ),
         "cpu": status.get("cpu"),
         "cpus": config.get("cores"),
         "maxcpu": config.get("cores"),
@@ -410,6 +412,17 @@ async def create_container(
         str(user.get("username") or ""),
     )
 
+    # 创建时间：面板自己记一份（PVE 的 meta.ctime 建机瞬间可能还没写好，
+    # 见 app/guest_created.py）
+    await guest_created.record(
+        _op_connection(),
+        payload.node,
+        vmid,
+        "lxc",
+        source="create",
+        username=str(user.get("username") or ""),
+    )
+
     return {
         "task": upid,
         "vmid": vmid,
@@ -493,6 +506,8 @@ async def delete_container(
 
     task = result if isinstance(result, str) else (result or {}).get("task", "")
     await security.audit(request, user, "ct.delete", target=f"{node}/{vmid}")
+    # 连同创建时间记录一起删：VMID 回收后旧记录会贴到新建的同号容器上
+    await guest_created.drop_record(_op_connection(), node, vmid, "lxc")
     return {"task": task}
 
 
@@ -861,7 +876,53 @@ async def clone_container(
         request, user, "ct.clone", target=f"{node}/{vmid} -> {payload.newid}",
         detail={"hostname": payload.hostname},
     )
+    # 创建时间：克隆会继承来源容器的 meta，必须记面板这一份
+    await guest_created.record(
+        _op_connection(),
+        target_node,
+        payload.newid,
+        "lxc",
+        source="clone",
+        username=str(user.get("username") or ""),
+    )
     return {"task": task, "vmid": payload.newid, "node": target_node}
+
+
+@router.post("/lxc/{node}/{vmid}/template")
+async def convert_container_to_template(
+    node: str,
+    vmid: int,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("template.manage")),
+) -> Dict[str, Any]:
+    """把容器转成模板 —— 与 :func:`app.routers.vms.convert_to_template` 对等。
+
+    PVE 的容器能转模板（``pct template``，见 pct(1)），只是这条端点没出现在
+    API 索引里，面板此前据此判定「容器不能转模板」并隐藏了入口 —— 那是错的，
+    实测 8.4 / 9.2 上这条端点都在。转换要求容器处于关机状态。
+    """
+    client = get_client()
+
+    try:
+        status = await client.lxc_status(node, vmid)
+    except ProxmoxError as exc:
+        _raise(exc)
+
+    if status.get("status") == "running":
+        raise HTTPException(status_code=409, detail="转换为模板前必须先关闭容器")
+
+    try:
+        result = await client.lxc_to_template(node, vmid)
+    except ProxmoxError as exc:
+        await security.audit(
+            request, user, "template.convert", target=f"{node}/{vmid}",
+            result="failed", detail=exc.message,
+        )
+        _raise(exc)
+
+    task = result if isinstance(result, str) else (result or {}).get("task", "")
+    await security.audit(request, user, "template.convert", target=f"{node}/{vmid}")
+    return {"task": task}
 
 
 # ================================================================ snapshots

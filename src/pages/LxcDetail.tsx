@@ -709,7 +709,7 @@ export function LxcDetail() {
                   label="创建时间"
                   /* 容器实测都没有 meta，通常是「—」；留着是为了以后 PVE 补上时
                      自动显示，不必再改一次界面 */
-                  title="PVE 记录的创建时间（config 的 meta.ctime）；容器普遍没有这个记录"
+                  title="面板发起的新建 / 克隆按实际时刻记录；容器普遍没有 PVE 的 meta 记录，取不到时显示 —"
                   value={ct.created ? formatDateTime(ct.created) : '—'}
                 />
                 <InfoRow label="CPU 核心" value={String(ct.cpus ?? '-')} />

@@ -1066,7 +1066,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       /* 表头悬停说明：PVE 只在建机时写下这个时间，克隆 / 恢复出来的机器会
          继承来源机器的那一份 —— 不说清楚，用户会以为面板记错了。 */
       title:
-        'PVE 记录的创建时间（config 的 meta.ctime）。克隆 / 恢复出来的机器会继承来源机器的时间；PVE 8 之前创建的机器与容器没有这个记录，显示为 —',
+        '面板发起的新建 / 克隆 / 恢复按实际时刻记录；其余机器取 PVE config 里的 meta.ctime。注意 PVE 克隆 / 恢复会继承来源机器的时间（面板自身发起的克隆已按实际时刻纠正），PVE 8 之前创建的机器与容器没有这个记录，显示为 —',
       render: (vm) => (
         <span className="mono fs-sm text-secondary">
           {vm.created ? formatDateTime(vm.created) : '—'}

@@ -40,6 +40,10 @@ from .pve import (
 
 logger = logging.getLogger(__name__)
 
+_NODE_OWNER_TTL = 60.0
+# node -> (命中时间, 连接 id)；只缓存成功结果
+_node_owner_cache: Dict[str, Tuple[float, str]] = {}
+
 _PROBE_TTL = 60.0
 _TASK_TTL = 300.0
 # (node, vmid) -> (命中时间, 连接 id)；只缓存成功结果
@@ -88,6 +92,45 @@ async def resolve_vm_connection(node: str, vmid: Any, owner: Optional[str]) -> s
         if len(refs) == 1:
             return _normalize(refs[0][0])
     return await _probe_connection(node, vmid)
+
+
+async def resolve_node_connection(node: str) -> str:
+    """节点名 → 拥有该节点的连接 id；无法确定时返回空串（沿用当前连接）。
+
+    节点名在每台 PVE 上都是**本地的**。多主机场景下前端常常只拿得到节点名
+    （存储页、备份下载链接…），请求落到「当前连接」而该连接上没有这个节点时，
+    PVE 会把这个名字当主机名去解析并报 ``hostname lookup 'x' failed``。
+
+    先问当前连接：绝大多数节点都在当前主机上，命中即可跳过对其余主机的探测。
+    结果缓存 :data:`_NODE_OWNER_TTL` 秒，避免一次页面加载把每台主机问一遍。
+    """
+    cached = _node_owner_cache.get(node)
+    if cached and time.time() - cached[0] < _NODE_OWNER_TTL:
+        return cached[1]
+
+    from .pve import get_client
+    from .store import get_active_connection_id
+
+    try:
+        nodes = await get_client().nodes() or []
+    except ProxmoxError:
+        nodes = []
+    if any(n.get("node") == node for n in nodes):
+        cid = str(get_active_connection_id() or "")
+        _node_owner_cache[node] = (time.time(), cid)
+        return cid
+
+    for profile, client in all_connection_clients():
+        try:
+            nodes = await client.nodes() or []
+        except ProxmoxError:
+            continue
+        if any(n.get("node") == node for n in nodes):
+            cid = str(profile.get("id") or "")
+            _node_owner_cache[node] = (time.time(), cid)
+            return cid
+
+    return ""
 
 
 async def bind_vm_connection(

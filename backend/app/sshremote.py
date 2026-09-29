@@ -356,6 +356,31 @@ async def run_command(row: Dict[str, Any], command: str, timeout: float = DEFAUL
     return await asyncio.to_thread(run_command_sync, row, command, timeout)
 
 
+async def open_command(
+    row: Dict[str, Any], command: str, timeout: float = DEFAULT_TIMEOUT
+) -> Tuple[paramiko.SSHClient, Any, Any]:
+    """打开一条远程命令，返回 ``(client, stdout, stderr)`` 供调用方边读边转发。
+
+    与 :func:`run_command` 的区别是**不把输出读进内存**：备份归档动辄几个 GB，
+    整份读进来会把面板内存吃光。三条约定：
+
+    * 读取请用 ``await asyncio.to_thread(stdout.read, chunk)`` —— paramiko 的读取
+      是阻塞的，直接在事件循环里调用会卡住所有请求；
+    * 命令的退出码要在读完 stdout 之后用 ``stdout.channel.recv_exit_status()`` 取，
+      失败信息在 ``stderr``；
+    * 调用方必须在 ``finally`` 里 ``client.close()``，否则连接会一直挂着。
+    """
+    client, _ = await asyncio.to_thread(_connect, row)
+    try:
+        _stdin, stdout, stderr = await asyncio.to_thread(
+            client.exec_command, command, timeout=timeout
+        )
+    except Exception:  # noqa: BLE001 - 打开失败也要把连接关掉
+        client.close()
+        raise
+    return client, stdout, stderr
+
+
 async def write_file_sync(row: Dict[str, Any], path: str, content: str) -> Tuple[bool, str]:
     """写远程文件：先用 SFTP，失败再退回 sudo tee（口令 / 非 root 场景）。"""
     client, _ = _connect(row)

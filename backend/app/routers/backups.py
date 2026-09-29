@@ -18,13 +18,17 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
+import shlex
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
-from .. import backupguard, ownership, security, store
+from .. import backupguard, guest_created, ownership, security, sshremote, store
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -32,7 +36,9 @@ from ..pve import (
     connection_label,
     get_client,
     requested_connection,
+    set_request_connection,
 )
+from ..vm_scope import resolve_node_connection
 from ..schemas import (
     BackupCreate,
     BackupJobCreate,
@@ -42,6 +48,8 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/api", tags=["backups"])
+
+logger = logging.getLogger(__name__)
 
 
 # ================================================================ 备份统计
@@ -466,6 +474,16 @@ async def restore_backup(
         request, user, "backup.restore", target=payload.volid,
         detail={"vmid": payload.vmid},
     )
+    # 创建时间：恢复出来的机器同样继承归档里来源机器的 meta.ctime（PVE 整体复制
+    # config），所以面板自己记一份 —— 归档名里的 vzdump-qemu / vzdump-lxc 决定类型。
+    await guest_created.record(
+        _active_connection(),
+        payload.node,
+        payload.vmid,
+        "lxc" if "vzdump-lxc" in payload.volid else "qemu",
+        source="restore",
+        username=str(user.get("username") or ""),
+    )
     return {"task": task}
 
 
@@ -498,6 +516,205 @@ async def delete_backup(
 
     await security.audit(request, user, "backup.delete", target=volid)
     return {"deleted": volid}
+
+
+# ------------------------------------------------------------------ 下载归档
+#
+# 为什么绕道 SSH：**PVE 的 API 没有「下载整卷」这个能力**。实测：
+#
+#   * ``file-restore/download`` 只支持 PBS —— 对 dir 存储直接回
+#     ``{"errors":{"storage":"Only PBS storages supported for file-restore."}}``；
+#   * ``GET /nodes/{node}/storage/{st}/content/{volid}`` 返回的是 JSON 元数据
+#     （``{"data":{"size":…,"protected":…}}``），不是文件内容；
+#   * 也没有 ``?download=1`` 之类的开关（会被 schema 拒绝）。
+#
+# 于是目录型（dir）存储上的 vzdump 只能在宿主机上读 —— 复用面板已有的 SSH 通道
+# （主机管理里那份凭据）。宿主路径从 PVE 的 ``/storage`` 定义里取：只有数据中心
+# 级的这个接口返回 ``path``（``/nodes/{node}/storage`` 与 storage status 都不返回），
+# 所以自定义 path 的存储也能正确拼出 ``<path>/dump/<归档名>``。
+
+# 归档名白名单：PVE 生成的是 ``vzdump-qemu-115-2026_09_22-21_52_29.vma.zst`` 这类。
+# 严格限定字符集是防注入的第一道闸 —— 这个值最终会拼进远程命令，配合
+# shlex.quote 做第二道；``..``、``/``、空格、分号一律进不来。
+_ARCHIVE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+async def _dir_storage_path(client: Any, storage: str) -> str:
+    """目录型（dir）存储的宿主路径；不是 dir 或读不到时返回空串。"""
+    try:
+        items = await client.get("/storage")
+    except ProxmoxError:
+        return ""
+    for item in items or []:
+        if str(item.get("storage")) != storage:
+            continue
+        if str(item.get("type")) != "dir":
+            return ""
+        return str(item.get("path") or "").rstrip("/")
+    return ""
+
+
+@router.get("/backups/download")
+async def download_backup(
+    request: Request,
+    node: str = Query(...),
+    storage: str = Query(...),
+    volid: str = Query(...),
+    connection: Optional[str] = Query(
+        None, description="目标 PVE 连接 id（浏览器直接开链接，带不了请求头）"
+    ),
+    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+) -> StreamingResponse:
+    """把归档文件流给浏览器下载。
+
+    与其它接口不同，这个链接是**浏览器直接打开**的（``window.open``），发不出
+    ``X-PVE-Connection`` 头，所以连接按顺序推断：查询参数 → 节点归属 → 当前连接。
+    前端知道连接时传 ``connection``；只拿得到节点名（虚拟机详情页）时靠节点归属。
+    """
+    active = str(store.get_active_connection_id() or "")
+    if connection and connection != active:
+        set_request_connection(connection)
+    elif not requested_connection():
+        conn_id = await resolve_node_connection(node)
+        if conn_id and conn_id != active:
+            set_request_connection(conn_id)
+
+    client = get_client()
+
+    # 下载等于把整台机器的镜像交出去，与删除 / 恢复同一个权限与归属口径
+    await assert_backup_access(user, node, storage, volid)
+
+    name = volid.rsplit("/", 1)[-1]
+    if not volid.startswith(f"{storage}:") or not _ARCHIVE_NAME_RE.match(name):
+        # 归档名会被拼进远程命令，不合法的一律拒绝并留痕（试探 volid 是常见手法）
+        await security.audit(
+            request, user, "backup.download", target=volid, result="failed",
+            detail="归档标识不合法",
+        )
+        raise HTTPException(status_code=400, detail=f"归档标识不合法：{volid}")
+
+    host_path = await _dir_storage_path(client, storage)
+    if not host_path:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"存储 {storage} 不是目录型（dir）存储，面板无法直接下载它的归档。"
+                "PVE 的 API 不提供整卷下载（file-restore 仅支持 PBS），"
+                "这份备份请改用 PBS / PVE 自带的方式取。"
+            ),
+        )
+    remote = f"{host_path}/dump/{name}"
+
+    row = await sshremote.find_by_address(str(client.conn.host))
+    if not row:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"这台 PVE（{client.conn.host}）还没配置 SSH 凭据，读不到宿主机上的归档。"
+                "下载走的是面板已有的 SSH 通道：请到「主机管理」添加该地址的主机"
+                "（地址写法要与 PVE 连接里的一致），再回来点下载。"
+            ),
+        )
+
+    # 先 stat：归档被清理过时给一句清楚的话，而不是让浏览器收一个空文件
+    ok, out = await sshremote.run_command(
+        row, f"stat -c %s -- {shlex.quote(remote)}", timeout=20
+    )
+    if not ok:
+        await security.audit(
+            request, user, "backup.download", target=volid, result="failed",
+            detail=f"宿主机上读不到 {remote}",
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"宿主机上读不到 {remote}：{out.strip()[:200]}",
+        )
+    try:
+        size = int(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        size = 0
+
+    # 支持单段 Range（断点续传 / 只取一段）。浏览器下载用不到，但网络中断后
+    # 重试能从断点继续，也方便排查「下到一半的包是不是对的」。
+    quoted = shlex.quote(remote)
+    start, end, status_code = 0, max(size - 1, 0), 200
+    spec = ""
+    range_header = request.headers.get("range") or ""
+    if size > 0 and range_header.startswith("bytes=") and "," not in range_header:
+        spec = range_header[len("bytes="):].strip()
+        first, _, last = spec.partition("-")
+        try:
+            if first:
+                start = int(first)
+                end = int(last) if last else size - 1
+            else:
+                start = max(size - int(last), 0)
+            if start > end or start >= size:
+                raise ValueError("range out of bounds")
+            status_code = 206
+        except ValueError:
+            raise HTTPException(
+                status_code=416,
+                detail="请求的字节范围超出文件大小",
+                headers={"Content-Range": f"bytes */{size}"},
+            )
+
+    length = size - start if size > 0 else 0
+    if status_code == 206:
+        length = end - start + 1
+        command = (
+            f"dd if={quoted} iflag=skip_bytes,count_bytes "
+            f"skip={start} count={length} status=none"
+        )
+    else:
+        command = f"cat -- {quoted}"
+
+    async def body() -> AsyncIterator[bytes]:
+        """边读 SSH 边吐给浏览器；中途断开也要把 SSH 连接关掉。"""
+        ssh_client = None
+        try:
+            ssh_client, stdout, stderr = await sshremote.open_command(
+                row, command, timeout=60
+            )
+            while True:
+                chunk = await asyncio.to_thread(stdout.read, 512 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            code = await asyncio.to_thread(stdout.channel.recv_exit_status)
+            if code != 0:
+                err = await asyncio.to_thread(stderr.read)
+                logger.warning(
+                    "下载归档 %s 时远程命令退出码 %s：%s",
+                    remote,
+                    code,
+                    err.decode("utf-8", "replace")[:300],
+                )
+        finally:
+            if ssh_client is not None:
+                ssh_client.close()
+
+    await security.audit(request, user, "backup.download", target=volid)
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{name}"',
+        # 边读边发，别让中间层攒完再吐
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-store",
+    }
+    if size > 0:
+        headers["Accept-Ranges"] = "bytes"
+        # 0 表示「远程读不到长度」，这时不给 Content-Length，让浏览器按流处理
+        if length > 0:
+            headers["Content-Length"] = str(length)
+    if status_code == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(
+        body(),
+        status_code=status_code,
+        media_type="application/octet-stream",
+        headers=headers,
+    )
 
 
 # ------------------------------------------------------------- 备份防护（防删）

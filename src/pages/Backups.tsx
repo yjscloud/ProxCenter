@@ -6,7 +6,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { backupsApi, nodesApi, storagesApi, vmsApi } from '../api/endpoints';
+import {
+  backupsApi,
+  connectionsApi,
+  nodesApi,
+  storagesApi,
+  vmsApi,
+} from '../api/endpoints';
 import type { BackupStats } from '../api/types';
 import { errorMessage, isNotImplemented } from '../api/client';
 import { PageShell } from '../components/Layout';
@@ -50,6 +56,22 @@ import type {
    --------------------------------------------------------------------------- */
 
 type TabKey = 'files' | 'jobs' | 'create';
+
+/**
+ * 备份计划行：多台 PVE 的计划合并展示，额外记住它来自哪条连接。
+ *
+ * 任务号是各主机各自编的（两台都可能有 job_id=1），没有这个字段就无法确定
+ * 「删除该发给哪一台」，表格的行键也会撞车。
+ */
+type JobRow = BackupJob & { connection_id?: string };
+
+/**
+ * 备份归档行：多台 PVE 的归档合并展示时记住来源连接。
+ *
+ * 卷标识形如 ``local:backup/vzdump-qemu-100-….vma.zst``，两台 PVE 上完全可能
+ * 重名 —— 表格行键与「删除该发给谁」都靠这个字段区分。
+ */
+type BackupRow = BackupItem & { connection_id?: string };
 
 export function Backups() {
   const [params, setParams] = useSearchParams();
@@ -156,9 +178,16 @@ function BackupCreateTab({ canWrite }: { canWrite: boolean }) {
     }
   }, [node, nodesQuery.data]);
 
+  /* 选中的节点属于哪台 PVE。/api/nodes 是**跨主机聚合**的（每条都带 connection_id），
+     而节点作用域的接口不带连接时会落到「面板当前连接」—— 在别的主机的节点名上
+     会直接报 `hostname lookup 'pve9' failed`。查询键也带上连接：两台 PVE 上的
+     同名节点不能共用一份缓存。 */
+  const connOfNode = (name: string) =>
+    (nodesQuery.data ?? []).find((n) => n.node === name)?.connection_id;
+
   const storagesQuery = useQuery({
-    queryKey: ['storages', node],
-    queryFn: () => storagesApi.list(node || undefined),
+    queryKey: ['storages', connOfNode(node), node],
+    queryFn: () => storagesApi.list(node || undefined, connOfNode(node)),
     enabled: Boolean(node),
     staleTime: 30_000,
   });
@@ -203,15 +232,18 @@ function BackupCreateTab({ canWrite }: { canWrite: boolean }) {
     setBusy(true);
     try {
       await runner.run(
-        backupsApi.create({
-          node,
-          vmid: all ? undefined : Number(vmid),
-          storage,
-          mode,
-          compress,
-          notes: notes.trim() || undefined,
-          all: all || undefined,
-        }),
+        backupsApi.create(
+          {
+            node,
+            vmid: all ? undefined : Number(vmid),
+            storage,
+            mode,
+            compress,
+            notes: notes.trim() || undefined,
+            all: all || undefined,
+          },
+          connOfNode(node),
+        ),
         {
           title: all ? `备份节点 ${node} 上全部虚拟机` : `备份虚拟机 ${vmid}`,
           node,
@@ -450,8 +482,8 @@ function BackupFilesTab({
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const pageSize = 25;
-  const [restoreTarget, setRestoreTarget] = useState<BackupItem | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<BackupItem | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<BackupRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BackupRow | null>(null);
   const [busy, setBusy] = useState(false);
 
   const nodesQuery = useQuery({
@@ -460,13 +492,51 @@ function BackupFilesTab({
     staleTime: 30_000,
   });
 
+  /* 节点属于哪台 PVE（/api/nodes 跨主机聚合，每条带 connection_id）：
+     选中别的 PVE 上的节点时，不带连接的请求会被送到「面板当前连接」，
+     在那边找这个节点名 —— PVE 回 hostname lookup 失败，列表就是空的/报错。 */
+  const connOfNode = (name: string) =>
+    (nodesQuery.data ?? []).find((n) => n.node === name)?.connection_id;
+  const conn = node ? connOfNode(node) : undefined;
+
+  /* 「全部节点」必须跨所有 PVE 取：归档各存各家，只查当前连接会让别的主机的备份
+     凭空消失（而页头的 KPI 是跨主机汇总的，两边会自相矛盾）。每条归档记住来源
+     连接 —— 卷标识（local:backup/xxx）在不同主机上可能重名，删除要知道发给谁。 */
+  const connectionsQuery = useQuery({
+    queryKey: ['connections'],
+    queryFn: connectionsApi.list,
+    staleTime: 60_000,
+  });
+  const connectionIds = (connectionsQuery.data ?? []).map((c) => c.id).join(',');
+
   const listQuery = useQuery({
-    queryKey: ['backups', 'list', node, storage],
-    queryFn: () =>
-      backupsApi.list({
-        node: node || undefined,
-        storage: storage || undefined,
-      }),
+    queryKey: ['backups', 'list', conn, node, storage, connectionIds],
+    queryFn: async () => {
+      if (node) {
+        // 选了具体节点：只问它所在的那台主机
+        return backupsApi.list(
+          { node, storage: storage || undefined },
+          conn,
+        );
+      }
+      const conns = connectionsQuery.data ?? [];
+      const results = await Promise.all(
+        conns.map(async (c) => {
+          try {
+            const list = await backupsApi.list(
+              { storage: storage || undefined },
+              c.id,
+            );
+            return list.map((b) => ({ ...b, connection_id: c.id }));
+          } catch {
+            // 单台主机读失败只跳过它自己，不影响其它主机的归档
+            return [] as BackupRow[];
+          }
+        }),
+      );
+      return results.flat();
+    },
+    enabled: Boolean(node) || connectionsQuery.isSuccess,
     staleTime: 20_000,
   });
 
@@ -532,8 +602,21 @@ function BackupFilesTab({
   }, [listQuery.data]);
 
   /* 下载：新标签页会自动带上 HttpOnly Cookie，不再把令牌拼进 URL */
-  const download = (item: BackupItem) => {
-    window.open(backupsApi.downloadUrl(item.volid), '_blank');
+  const download = (item: BackupRow) => {
+    // 归档在宿主机上的路径由「存储路径 + 归档名」拼出，两个字段缺一不可
+    if (!item.node || !item.storage) {
+      toast.error('无法下载', '这条归档缺少节点或存储信息，请刷新后重试');
+      return;
+    }
+    window.open(
+      backupsApi.downloadUrl({
+        node: item.node,
+        storage: item.storage,
+        volid: item.volid,
+        connectionId: item.connection_id,
+      }),
+      '_blank',
+    );
   };
 
   const copyVolid = async (volid: string) => {
@@ -545,7 +628,7 @@ function BackupFilesTab({
     }
   };
 
-  const columns: Array<Column<BackupItem>> = [
+  const columns: Array<Column<BackupRow>> = [
     {
       key: 'vmid',
       header: '虚拟机',
@@ -762,10 +845,11 @@ function BackupFilesTab({
         />
       ) : (
         <>
-          <Table<BackupItem>
+          <Table<BackupRow>
             columns={columns}
             rows={paged}
-            rowKey={(b) => b.volid}
+            /* 卷标识在不同 PVE 上可能重名，行键必须带上来源连接 */
+            rowKey={(b) => `${b.connection_id ?? ''}:${b.volid}`}
             loading={listQuery.isLoading}
             caption="备份文件列表"
             emptyTitle={search ? '没有匹配的备份' : '暂无备份文件'}
@@ -825,11 +909,16 @@ function BackupFilesTab({
             // 走备份专用接口（vm.backup + 归属校验）。不能用 storages 的
             // 通用卷删除：那条路要求 storage.manage，普通用户角色会被 403。
             await runner.run(
-              backupsApi.remove({
-                node: nodeName,
-                storage: storageName,
-                volid: deleteTarget.volid,
-              }),
+              backupsApi.remove(
+                {
+                  node: nodeName,
+                  storage: storageName,
+                  volid: deleteTarget.volid,
+                },
+                // 归档来自哪台 PVE 就以它为准（列表跨主机合并，卷标识可能重名），
+                // 退一步再按节点名定位连接
+                deleteTarget.connection_id ?? connOfNode(nodeName),
+              ),
               {
                 title: `删除备份 ${deleteTarget.volid}`,
                 node: nodeName,
@@ -877,17 +966,45 @@ function BackupJobsTab({
   const queryClient = useQueryClient();
 
   const [editorOpen, setEditorOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<BackupJob | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<BackupJob | null>(null);
+  const [editTarget, setEditTarget] = useState<JobRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<JobRow | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /* 备份计划是**每台 PVE 各存一份**（standalone 时互不相通）。只查「面板当前
+     连接」的话，给别的 PVE 建完计划在列表里根本看不见 —— 于是这里跨所有连接
+     合并，每条计划带上来源连接，删除时才知道该发给哪一台。 */
+  const connectionsQuery = useQuery({
+    queryKey: ['connections'],
+    queryFn: connectionsApi.list,
+    staleTime: 60_000,
+  });
+
   const jobsQuery = useQuery({
-    queryKey: ['backups', 'jobs'],
-    queryFn: () => backupsApi.jobs(),
+    queryKey: [
+      'backups',
+      'jobs',
+      (connectionsQuery.data ?? []).map((c) => c.id).join(','),
+    ],
+    queryFn: async () => {
+      const conns = connectionsQuery.data ?? [];
+      const results = await Promise.all(
+        conns.map(async (c) => {
+          try {
+            const jobs = await backupsApi.jobs(c.id);
+            return jobs.map((j) => ({ ...j, connection_id: c.id }));
+          } catch {
+            // 单台主机读失败只跳过它自己，不影响其它主机的计划
+            return [] as JobRow[];
+          }
+        }),
+      );
+      return results.flat();
+    },
+    enabled: connectionsQuery.isSuccess,
     staleTime: 30_000,
   });
 
-  const columns: Array<Column<BackupJob>> = [
+  const columns: Array<Column<JobRow>> = [
     {
       key: 'job_id',
       header: '任务 ID',
@@ -1069,10 +1186,11 @@ function BackupJobsTab({
           onRetry={() => void jobsQuery.refetch()}
         />
       ) : (
-        <Table<BackupJob>
+        <Table<JobRow>
           columns={columns}
           rows={jobsQuery.data ?? []}
-          rowKey={(j) => String(j.job_id)}
+          /* 任务号是各主机各自编的，两台 PVE 都可能有 job_id=1 —— 键必须带上连接 */
+          rowKey={(j) => `${j.connection_id ?? ''}:${j.job_id}`}
           loading={jobsQuery.isLoading}
           caption="定时备份计划列表"
           emptyTitle="暂无备份计划"
@@ -1112,7 +1230,9 @@ function BackupJobsTab({
           if (!deleteTarget) return;
           setBusy(true);
           try {
-            await runner.run(backupsApi.deleteJob(deleteTarget.job_id), {
+            await runner.run(
+              backupsApi.deleteJob(deleteTarget.job_id, deleteTarget.connection_id),
+              {
               title: `删除备份计划 ${deleteTarget.job_id}`,
               node: deleteTarget.node ?? '',
               invalidate: [['backups', 'jobs']],
@@ -1179,9 +1299,14 @@ function RestoreDialog({
     setStart(false);
   }, [item]);
 
+  /* 目标节点属于哪台 PVE：归档可能来自别的 PVE（列表跨主机聚合），恢复时必须
+     把请求送到那台主机上，否则会落到「面板当前连接」并在那边找这个节点名。 */
+  const connOfNode = (name: string) =>
+    (nodesQuery.data ?? []).find((n) => n.node === name)?.connection_id;
+
   const storagesQuery = useQuery({
-    queryKey: ['storages', node],
-    queryFn: () => storagesApi.list(node || undefined),
+    queryKey: ['storages', connOfNode(node), node],
+    queryFn: () => storagesApi.list(node || undefined, connOfNode(node)),
     enabled: Boolean(node),
     staleTime: 30_000,
   });
@@ -1217,7 +1342,7 @@ function RestoreDialog({
         force: force || undefined,
         start: start || undefined,
       };
-      await runner.run(backupsApi.restore(body), {
+      await runner.run(backupsApi.restore(body, connOfNode(node)), {
         title: `恢复备份到 VM ${targetVmid}`,
         node,
         invalidate: [['backups'], ['vms'], ['tasks']],
@@ -1373,9 +1498,15 @@ function JobEditor({
     staleTime: 30_000,
   });
 
+  /* 计划落在哪台 PVE 上：按选中的节点定位它的连接（节点下拉是跨主机聚合的），
+     否则计划会被写到「面板当前连接」上、并带上别的主机的节点名。 */
+  const connOfNode = (name: string) =>
+    (nodesQuery.data ?? []).find((n) => n.node === name)?.connection_id;
+  const conn = connOfNode(form.node ?? '');
+
   const storagesQuery = useQuery({
-    queryKey: ['storages', form.node],
-    queryFn: () => storagesApi.list(form.node || undefined),
+    queryKey: ['storages', conn, form.node],
+    queryFn: () => storagesApi.list(form.node || undefined, conn),
     enabled: open && Boolean(form.node),
     staleTime: 30_000,
   });
@@ -1409,12 +1540,15 @@ function JobEditor({
     setBusy(true);
     try {
       await runner.run(
-        backupsApi.createJob({
-          ...form,
-          vmid: form.vmid?.trim() || undefined,
-          notes: form.notes?.trim() || undefined,
-          prune_backups: form.prune_backups?.trim() || undefined,
-        }),
+        backupsApi.createJob(
+          {
+            ...form,
+            vmid: form.vmid?.trim() || undefined,
+            notes: form.notes?.trim() || undefined,
+            prune_backups: form.prune_backups?.trim() || undefined,
+          },
+          conn,
+        ),
         {
           title: job ? '更新备份计划' : '创建备份计划',
           node: form.node ?? '',
@@ -1423,15 +1557,18 @@ function JobEditor({
       );
       if (startNow) {
         await runner.run(
-          backupsApi.create({
-            node: form.node ?? '',
-            vmid: form.vmid ? Number(form.vmid) : undefined,
-            storage: form.storage,
-            mode: form.mode,
-            compress: form.compress,
-            notes: form.notes?.trim() || undefined,
-            all: form.vmid ? undefined : true,
-          }),
+          backupsApi.create(
+            {
+              node: form.node ?? '',
+              vmid: form.vmid ? Number(form.vmid) : undefined,
+              storage: form.storage,
+              mode: form.mode,
+              compress: form.compress,
+              notes: form.notes?.trim() || undefined,
+              all: form.vmid ? undefined : true,
+            },
+            conn,
+          ),
           {
             title: '立即执行一次备份',
             node: form.node ?? '',

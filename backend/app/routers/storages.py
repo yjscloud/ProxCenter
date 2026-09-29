@@ -19,52 +19,10 @@ from ..pve import (
     set_request_connection,
 )
 from ..formatters import normalize_storage, pve_flag
+from ..vm_scope import resolve_node_connection
 from .backups import assert_backup_access
 
 logger = logging.getLogger(__name__)
-
-# node -> (命中时间, 连接 id)。只缓存成功结果。
-# 存储页会按 15 秒轮询，缓存可避免把 /nodes 反复打到每台 PVE 上。
-_node_owner_cache: Dict[str, Tuple[float, str]] = {}
-_NODE_OWNER_TTL = 60.0
-
-
-async def _owner_of_node(node: str) -> str:
-    """节点名 → 拥有该节点的连接 id；无法确定时返回空串（沿用当前连接）。
-
-    节点名在每台 PVE 上是**本地的**。多主机场景下前端只按节点名筛选（它并不知道
-    该名字属于哪台主机），若请求落到「当前连接」，而该连接上没有这个节点，PVE 会
-    把这个名字当主机名去解析并报 ``hostname lookup 'x' failed`` —— 用户在存储页
-    看到的就是「无法加载存储列表」。
-
-    先问当前连接：绝大多数节点都在当前主机上，命中即可跳过对其余主机的探测。
-    """
-    cached = _node_owner_cache.get(node)
-    if cached and time.time() - cached[0] < _NODE_OWNER_TTL:
-        return cached[1]
-
-    from ..store import get_active_connection_id
-
-    try:
-        nodes = await get_client().nodes() or []
-    except ProxmoxError:
-        nodes = []
-    if any(n.get("node") == node for n in nodes):
-        cid = str(get_active_connection_id() or "")
-        _node_owner_cache[node] = (time.time(), cid)
-        return cid
-
-    for profile, client in all_connection_clients():
-        try:
-            nodes = await client.nodes() or []
-        except ProxmoxError:
-            continue
-        if any(n.get("node") == node for n in nodes):
-            cid = str(profile.get("id") or "")
-            _node_owner_cache[node] = (time.time(), cid)
-            return cid
-
-    return ""
 
 
 async def bind_node_connection(node: Optional[str] = None) -> None:
@@ -72,10 +30,11 @@ async def bind_node_connection(node: Optional[str] = None) -> None:
 
     与 :func:`app.vm_scope.bind_vm_connection` 同一套路 —— FastAPI 会把同名的
     查询参数 ``node`` 注入进来；显式带了 ``X-PVE-Connection`` 时一律不干预。
+    推断本身复用 :func:`app.vm_scope.resolve_node_connection`（备份下载也要用）。
     """
     if not node or requested_connection():
         return
-    conn_id = await _owner_of_node(node)
+    conn_id = await resolve_node_connection(node)
     if conn_id:
         set_request_connection(conn_id)
 

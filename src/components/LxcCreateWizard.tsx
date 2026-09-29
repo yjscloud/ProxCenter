@@ -12,13 +12,14 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { lxcApi, nodesApi, storagesApi } from '../api/endpoints';
+import { connectionsApi, lxcApi, nodesApi, storagesApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import { Checkbox, Field, Input, Select, Switch, Textarea } from './ui/Input';
 import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
+import { NodePicker } from './NodePicker';
 import { useToast } from '../hooks/useToast';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import type { LxcCreateNetwork, LxcCreateRequest } from '../api/types';
@@ -133,6 +134,19 @@ export function LxcCreateWizard({
   const [form, setForm] = useState<FormState>(INITIAL);
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * 目标 PVE 主机（必须落到一条具体连接的 id 上）。
+   *
+   * 这个向导原先没有「连接」概念，于是踩了一个坑：节点下拉来自 ``/api/nodes``，
+   * 而那个接口**不带 X-PVE-Connection 时会把所有主机的节点合并返回** —— 用户能在
+   * 下拉里选到 pve9；可读模板 / 读存储 / 读网桥 / 建容器这些接口不带连接时会落到
+   * 「面板当前连接」（另一台 PVE），在那台主机上请求别人的节点名，PVE 直接回：
+   *
+   *     hostname lookup 'pve9' failed - failed to get address info for: pve9
+   *
+   * 所以流程跟虚拟机向导保持一致：先选主机，再选该主机的节点，全程带着连接。
+   */
+  const [targetConn, setTargetConn] = useState('');
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -146,10 +160,39 @@ export function LxcCreateWizard({
   }, [open]);
 
   /* ---- 基础数据 ---- */
-  const nodesQuery = useQuery({
-    queryKey: ['nodes'],
-    queryFn: () => nodesApi.list(),
+  const connectionsQuery = useQuery({
+    queryKey: ['connections'],
+    queryFn: connectionsApi.list,
     enabled: open,
+    staleTime: 60_000,
+  });
+
+  const connectionOptions = useMemo(
+    () =>
+      (connectionsQuery.data ?? []).map((c) => ({
+        label: `${c.name || c.host}${c.active ? '（当前连接）' : ''} · ${c.host}:${c.port}`,
+        value: c.id,
+      })),
+    [connectionsQuery.data],
+  );
+
+  /* 打开时默认落在面板当前连接上（与虚拟机向导一致） */
+  useEffect(() => {
+    if (!open || targetConn) return;
+    const conns = connectionsQuery.data ?? [];
+    const target = conns.find((c) => c.active) ?? conns[0];
+    if (target) setTargetConn(target.id);
+  }, [open, targetConn, connectionsQuery.data]);
+
+  /* 换了主机，节点名不通用（每台 PVE 各有自己的节点），清掉让用户重选 */
+  useEffect(() => {
+    setForm((f) => (f.node ? { ...f, node: '' } : f));
+  }, [targetConn]);
+
+  const nodesQuery = useQuery({
+    queryKey: ['nodes', targetConn],
+    queryFn: () => nodesApi.list(targetConn),
+    enabled: open && Boolean(targetConn),
     staleTime: 60_000,
   });
 
@@ -161,23 +204,23 @@ export function LxcCreateWizard({
   }, [open, nodesQuery.data, form.node]);
 
   const templatesQuery = useQuery({
-    queryKey: ['lxc-templates', form.node],
-    queryFn: () => lxcApi.templates(form.node),
-    enabled: open && Boolean(form.node),
+    queryKey: ['lxc-templates', targetConn, form.node],
+    queryFn: () => lxcApi.templates(form.node, targetConn),
+    enabled: open && Boolean(targetConn) && Boolean(form.node),
     staleTime: 60_000,
   });
 
   const storagesQuery = useQuery({
-    queryKey: ['storages', 'lxc', form.node || 'all'],
-    queryFn: () => storagesApi.list(form.node || undefined),
-    enabled: open,
+    queryKey: ['storages', 'lxc', targetConn, form.node || 'all'],
+    queryFn: () => storagesApi.list(form.node || undefined, targetConn),
+    enabled: open && Boolean(targetConn),
     staleTime: 60_000,
   });
 
   const bridgesQuery = useQuery({
-    queryKey: ['nodes', form.node, 'network'],
-    queryFn: () => nodesApi.network(form.node),
-    enabled: open && Boolean(form.node),
+    queryKey: ['nodes', targetConn, form.node, 'network'],
+    queryFn: () => nodesApi.network(form.node, targetConn),
+    enabled: open && Boolean(targetConn) && Boolean(form.node),
     staleTime: 60_000,
   });
 
@@ -192,11 +235,6 @@ export function LxcCreateWizard({
   const quota = quotaQuery.data;
   /* 额度用尽时直接禁掉最后一步：让用户先看到原因，而不是点完再被拒 */
   const blocked = Boolean(quota && !quota.can_create);
-
-  const nodeOptions = useMemo(
-    () => (nodesQuery.data ?? []).map((n) => ({ label: n.node, value: n.node })),
-    [nodesQuery.data],
-  );
 
   /* 容器只能装在支持 rootdir 内容的存储上（通常是 local-lvm / local / zfspool） */
   const storageOptions = useMemo(() => {
@@ -294,8 +332,10 @@ export function LxcCreateWizard({
 
     setSubmitting(true);
     try {
-      /* 先拿到创建结果（后端会回自动分配的 VMID），再交给 runner 等后台任务 */
-      const created = await lxcApi.create(payload);
+      /* 先拿到创建结果（后端会回自动分配的 VMID），再交给 runner 等后台任务。
+         必须带上目标连接：不带的话请求会落到「面板当前连接」，在别人的节点名上
+         建容器 —— PVE 会回 hostname lookup 失败。 */
+      const created = await lxcApi.create(payload, targetConn);
       await runner.run(Promise.resolve(created), {
         title: `创建容器「${payload.name}」`,
         node: form.node,
@@ -401,13 +441,29 @@ export function LxcCreateWizard({
             <div className="wizard-section-title">节点与名称</div>
             <div className="form-grid">
               <Select
+                label="目标 PVE 主机"
+                value={targetConn}
+                onChange={(e) => setTargetConn(e.target.value)}
+                options={connectionOptions}
+                hint="决定容器建在哪台 PVE 上；切换后节点、模板、存储会按该主机重新读取"
+              />
+              <Field
                 label="节点"
                 required
-                value={form.node}
-                onChange={(e) => update('node', e.target.value)}
-                options={[{ label: '请选择节点', value: '' }, ...nodeOptions]}
                 error={errors.node}
-              />
+                hint={
+                  nodesQuery.isError
+                    ? errorMessage(nodesQuery.error)
+                    : '容器将在此节点上创建；卡片上是各节点当前的资源占用'
+                }
+              >
+                <NodePicker
+                  nodes={nodesQuery.data ?? []}
+                  value={form.node}
+                  onChange={(node) => update('node', node)}
+                  loading={nodesQuery.isLoading}
+                />
+              </Field>
               <Input
                 label="VMID"
                 hint="留空自动取下一个可用 ID"

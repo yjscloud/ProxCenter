@@ -1122,11 +1122,15 @@ export const auditApi = {
 
 export const templatesApi = {
   /**
-   * 集群内所有模板（不按归属过滤 —— 模板是共享资源，普通用户也能用于部署）。
+   * 集群内的模板（不按归属过滤 —— 模板是共享资源，普通用户也能用于部署）。
    * connectionId 可选：指定在另一台 PVE 主机上读取。
+   * guestType 可选：只取某一类（虚拟机克隆源只要 qemu；模板页两类都要，不传）。
    */
-  list: (connectionId?: unknown) =>
-    get<TemplateItem[]>('/templates', scoped(connectionId)),
+  list: (connectionId?: unknown, guestType?: 'qemu' | 'lxc') =>
+    get<TemplateItem[]>('/templates', {
+      ...(guestType ? { params: { guest_type: guestType } } : {}),
+      ...scoped(connectionId),
+    }),
   /** 某节点上可用的 cloud 镜像（.img/.qcow2）*/
   images: (node: string) =>
     get<CloudImageItem[]>('/templates/images', { params: { node } }),

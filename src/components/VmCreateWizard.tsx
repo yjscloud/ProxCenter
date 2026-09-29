@@ -474,7 +474,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
      （/api/vms 对普通用户按归属过滤，模板都归属管理员，取不到） */
   const templatesQuery = useQuery({
     queryKey: ['templates', 'all', targetConn],
-    queryFn: () => templatesApi.list(targetConn),
+    /* 只要虚拟机模板：容器模板克隆出来的是容器，混进虚拟机的克隆源里必然失败 */
+    queryFn: () => templatesApi.list(targetConn, 'qemu'),
     enabled: open,
     staleTime: 30_000,
   });
@@ -660,10 +661,17 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
      PVE 认可的、被「冻结」过的干净基线。没有模板时宁可让克隆源为空并给出提示，
      也不要给出一堆看着能用、实际会出问题的选项。 */
   const cloneSources = useMemo(() => {
-    /* 模板必须来自「即将创建虚拟机的那台 PVE」：不同主机的节点名与 VMID 不通用，
-       混入别家的模板会导致克隆打到错误的连接上 */
+    /* 两道过滤：
+
+       * 类型 —— 只能克隆虚拟机模板。后端已按 ``guest_type=qemu`` 收窄，这里再挡
+         一次是为了兜住缓存里的旧响应（模板页与本向导共用 ``/templates``，改口径
+         时先到的那份数据可能还混着容器模板）；
+       * 归属 —— 模板必须来自「即将创建虚拟机的那台 PVE」：不同主机的节点名与
+         VMID 不通用，混入别家的模板会导致克隆打到错误的连接上。 */
     return (templatesQuery.data ?? []).filter(
-      (t) => !targetConn || !t.connection_id || t.connection_id === targetConn,
+      (t) =>
+        (t.guest_type ?? 'qemu') !== 'lxc' &&
+        (!targetConn || !t.connection_id || t.connection_id === targetConn),
     );
   }, [templatesQuery.data, targetConn]);
 

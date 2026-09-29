@@ -768,6 +768,15 @@ class ProxmoxClient:
             payload["force"] = 1
         return await self.delete(f"/nodes/{node}/lxc/{vmid}", params=payload)
 
+    async def lxc_to_template(self, node: str, vmid: int) -> Any:
+        """容器转模板，等价于 ``pct template <vmid>``（见 pct(1)）。
+
+        这个端点与 qemu 的一样**没有列在 PVE 的 API 索引里**，用索引探测会误判
+        成「不存在」—— 面板以前就是这么断定容器不能转模板的，而 pct(1) 里
+        明明白白有这条命令。
+        """
+        return await self.post(f"/nodes/{node}/lxc/{vmid}/template")
+
     async def lxc_clone(
         self,
         node: str,

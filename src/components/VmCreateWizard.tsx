@@ -27,6 +27,7 @@ import {
 } from './ui/Input';
 import { Notice } from './ui/EmptyState';
 import { Badge } from './ui/Badge';
+import { NodePicker } from './NodePicker';
 import {
   IconPlus,
   IconTrash,
@@ -608,24 +609,6 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         })),
     ],
     [storagesQuery.data],
-  );
-
-  const nodeOptions = useMemo(
-    () => [
-      { label: '请选择节点', value: '' },
-      ...(nodesQuery.data ?? []).map((n) => {
-        const offline = n.status !== 'online';
-        const cores = typeof n.maxcpu === 'number' && n.maxcpu > 0 ? `${n.maxcpu} 核` : '';
-        const load =
-          typeof n.cpu === 'number' ? `负载 ${(n.cpu * 100).toFixed(0)}%` : '';
-        const extra = [cores, load].filter(Boolean).join(' · ');
-        return {
-          label: `${n.node}${offline ? '（离线）' : ''}${extra ? ` · ${extra}` : ''}`,
-          value: n.node,
-        };
-      }),
-    ],
-    [nodesQuery.data],
   );
 
   /* 「目标 PVE 主机」：始终对应一条具体连接。
@@ -1231,12 +1214,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 options={connectionOptions}
                 hint="可在已配置的多台 PVE 之间选择，默认使用面板当前连接"
               />
-              <Select
+              <Field
                 label="节点"
                 required
-                value={form.node}
-                onChange={(e) => update('node', e.target.value)}
-                options={nodeOptions}
                 error={
                   errors.node ??
                   (nodesQuery.isError ? '读取节点失败，请检查该主机的连接' : undefined)
@@ -1244,9 +1224,16 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 hint={
                   nodesQuery.isError
                     ? errorMessage(nodesQuery.error)
-                    : '虚拟机将在此节点上创建'
+                    : '虚拟机将在此节点上创建；卡片上是各节点当前的资源占用'
                 }
-              />
+              >
+                <NodePicker
+                  nodes={nodesQuery.data ?? []}
+                  value={form.node}
+                  onChange={(node) => update('node', node)}
+                  loading={nodesQuery.isLoading}
+                />
+              </Field>
               <Input
                 label="标签"
                 value={form.tags}

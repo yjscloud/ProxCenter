@@ -125,7 +125,13 @@ async def list_templates(
         cid = str(profile.get("id") or "") if profile else str(requested_connection() or "")
         label = connection_label(profile) if profile else ""
         for vm in resources or []:
-            if vm.get("type") != "qemu" or pve_flag(vm.get("template", 0)) != 1:
+            # 模板有两种：虚拟机模板（qemu）与容器模板（lxc）。PVE 的
+            # /cluster/resources 对两者都给 ``template=1``，但这里原本只放行
+            # qemu —— 实测本机 110 / 111 两台容器都是模板，界面上却看不到。
+            guest_type = vm.get("type")
+            if guest_type not in ("qemu", "lxc"):
+                continue
+            if pve_flag(vm.get("template", 0)) != 1:
                 continue
             output.append(
                 {
@@ -134,6 +140,8 @@ async def list_templates(
                     "name": vm.get("name") or f"Template {vm.get('vmid')}",
                     "status": vm.get("status", "stopped"),
                     "template": True,
+                    # 前端据此区分克隆 / 删除该走哪套接口（qemu 与 lxc 的参数不同）
+                    "guest_type": guest_type,
                     "maxcpu": vm.get("maxcpu"),
                     "maxmem": vm.get("maxmem"),
                     "maxdisk": vm.get("maxdisk"),

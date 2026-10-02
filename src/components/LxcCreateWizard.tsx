@@ -8,24 +8,46 @@
 冒出一堆条件渲染，改哪边都容易碰坏另一边。
 
 流程：基本信息 → 资源 → 网络与初始化 → 后台任务执行。
+
+同一个弹窗里还有一个「快速部署」模式（QuickDeployForm）：选规格 → 选位置 →
+起名即可下发，适合标准容器。两者用一个开关切换 —— 入口只有一个，用户不必
+先想清楚「我该进哪个页面」。
 */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { connectionsApi, lxcApi, nodesApi, storagesApi } from '../api/endpoints';
+import {
+  configApi,
+  connectionsApi,
+  lxcApi,
+  nodesApi,
+  storagesApi,
+} from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
-import { Checkbox, Field, Input, Select, Switch, Textarea } from './ui/Input';
+import {
+  Checkbox,
+  Field,
+  Input,
+  SegmentedControl,
+  Select,
+  Switch,
+  Textarea,
+} from './ui/Input';
 import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
 import { NodePicker } from './NodePicker';
+import { QuickDeployForm } from './QuickDeployForm';
 import { useToast } from '../hooks/useToast';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import type { LxcCreateNetwork, LxcCreateRequest } from '../api/types';
 
 const STEPS = ['基本信息', '资源', '网络与初始化'] as const;
 type StepIndex = 0 | 1 | 2;
+
+/** 两种下单方式：快速（选规格）与自定义（逐步填写） */
+type CreateMode = 'quick' | 'custom';
 
 /** 容器可选特性。nesting 用来在容器里跑 Docker，keyctl 是它的常见搭档。 */
 const FEATURE_OPTIONS = [
@@ -148,6 +170,19 @@ export function LxcCreateWizard({
    */
   const [targetConn, setTargetConn] = useState('');
 
+  /**
+   * 快速部署 / 自定义部署。默认选快速 —— 绝大多数创建都是「标准机器」；
+   * 管理员还没定义任何规格时退回自定义（否则一进来就是个空的选择区）。
+   * 用户手动切过之后，就不再被自动改回去。
+   */
+  const [mode, setMode] = useState<CreateMode>('quick');
+  const modeTouchedRef = useRef(false);
+  /** 用户主动切换：记下来，别再被「有没有规格」的自动判断覆盖 */
+  const pickMode = (next: CreateMode) => {
+    modeTouchedRef.current = true;
+    setMode(next);
+  };
+
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
@@ -157,6 +192,8 @@ export function LxcCreateWizard({
     setStep(0);
     setForm(INITIAL);
     setErrors({});
+    setMode('quick');
+    modeTouchedRef.current = false;
   }, [open]);
 
   /* ---- 基础数据 ---- */
@@ -166,6 +203,24 @@ export function LxcCreateWizard({
     enabled: open,
     staleTime: 60_000,
   });
+
+  /* 规格表：只为「默认用哪种模式」而读。表单自己也读同一份，react-query 缓存
+     共用，不会多一次请求 */
+  const specsQuery = useQuery({
+    queryKey: ['config', 'specs'],
+    queryFn: configApi.getSpecs,
+    enabled: open,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!open || modeTouchedRef.current || !specsQuery.data) return;
+    const usable = specsQuery.data.specs.filter(
+      (s) => s.kind === 'lxc' || s.kind === 'both',
+    );
+    setMode(usable.length > 0 ? 'quick' : 'custom');
+  }, [open, specsQuery.data]);
 
   const connectionOptions = useMemo(
     () =>
@@ -359,6 +414,8 @@ export function LxcCreateWizard({
       description="容器比虚拟机更轻，适合跑服务；系统模板需先放到节点的 vztmpl 存储"
       size="lg"
       footer={
+        /* 快速模式自带提交按钮（在表单末尾），这里不再重复一套 footer */
+        mode === 'quick' ? undefined : (
         <div className="wizard-footer">
           {/* 左侧放进度：底部只有两个按钮时整条 footer 会显得很空，
               而「第几步 / 共几步」正是向导里最该一直看得见的信息 */}
@@ -390,8 +447,38 @@ export function LxcCreateWizard({
             )}
           </div>
         </div>
+        )
       }
     >
+      {/* ---- 快速 / 自定义：入口只有一个，不必先想清楚该进哪个页面 ---- */}
+      <div className="flex items-center gap-12 flex-wrap mb-16">
+        <SegmentedControl<CreateMode>
+          value={mode}
+          onChange={pickMode}
+          ariaLabel="创建方式"
+          options={[
+            { label: '快速部署', value: 'quick' },
+            { label: '自定义部署', value: 'custom' },
+          ]}
+        />
+        <span className="fs-sm text-muted">
+          {mode === 'quick'
+            ? '选规格、选位置、起名即下发；规格由管理员在「设置 → 资源规格」里定义'
+            : `逐步填写：${STEPS.join(' → ')}`}
+        </span>
+      </div>
+
+      {mode === 'quick' ? (
+        /* 快速模式自带提交按钮（在表单末尾），所以上面的 footer 让位 */
+        <QuickDeployForm
+          open={open}
+          kind="lxc"
+          onCreated={onCreated}
+          onClose={onClose}
+          onSwitchToCustom={() => pickMode('custom')}
+        />
+      ) : (
+        <>
       {/* ---- 步骤条 ---- */}
       <div className="wizard-steps" role="list" aria-label="创建步骤">
         {STEPS.map((label, i) => (
@@ -700,6 +787,8 @@ export function LxcCreateWizard({
           步骤 {step + 1} / {STEPS.length}
         </span>
       </div>
+        </>
+      )}
     </Modal>
   );
 }

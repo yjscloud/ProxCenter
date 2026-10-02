@@ -17,6 +17,7 @@ from .. import (
     quota,
     security,
     site,
+    specs,
     store,
     ui,
 )
@@ -623,6 +624,40 @@ async def put_vm_defaults(
         detail={"dns": saved["dns"] or "(空)"},
     )
     return saved
+
+
+# ==================================================== 资源规格（管理员定义）
+# 用户下单时挑「几核几 G 多大盘」，规格由管理员在设置页维护。
+# 读取只要求登录（下单页要用它渲染规格卡片，且它不含敏感信息）；
+# 写入要求 settings.manage —— 与 IP 池、创建默认值同一档。
+@router.get("/config/specs")
+async def get_specs(
+    user: Dict[str, Any] = Depends(security.get_current_user),
+) -> Dict[str, Any]:
+    """全量资源规格。从未保存过时返回默认那几档（1C2G / 2C4G / 4C8G / 8C16G）。"""
+    return {"specs": await specs.list_specs()}
+
+
+@router.put("/config/specs")
+async def put_specs(
+    payload: List[Dict[str, Any]],
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
+) -> Dict[str, Any]:
+    """整份覆盖保存（前端本地编辑完一次性提交，与 IP 池同一契约）。
+
+    不合法的条目会被逐条丢掉而不是整份拒绝（见 :func:`app.specs.normalise`），
+    返回值就是真正落库的那份，前端据此回显。
+    """
+    saved = await specs.save_specs(payload)
+    await security.audit(
+        request,
+        user,
+        "config.specs",
+        target="resource-specs",
+        detail={"count": len(saved), "names": [s["name"] for s in saved][:8]},
+    )
+    return {"specs": saved}
 
 
 # ============================================================ 登录验证方式

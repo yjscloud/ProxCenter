@@ -170,6 +170,10 @@ export function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         {/* 个人中心：所有登录用户可用（改邮箱、改密码） */}
         <Route path="/profile" element={<Profile />} />
+        {/* 没有单独的 /deploy 页：快速部署是创建弹窗里的一个模式，
+            见 components/QuickDeployForm.tsx。旧书签 / 收藏仍会指到这里，
+            转去虚拟机列表（「创建虚拟机」默认就是快速模式），不给 404。 */}
+        <Route path="/deploy" element={<Navigate to="/vms" replace />} />
         <Route path="/vms" element={<VirtualMachines />} />
         <Route path="/vms/:node/:vmid" element={<VmDetail />} />
         {/* LXC 容器：与虚拟机完全独立的一套页面（PVE 上是两套端点） */}

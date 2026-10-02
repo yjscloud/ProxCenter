@@ -32,6 +32,7 @@ import type {
   LoginCaptchaMode,
   VmDefaults,
   VmQuotaInfo,
+  ResourceSpec,
   VmMetaEntry,
   VmMetaListResult,
   FrpEffective,
@@ -318,6 +319,14 @@ export const configApi = {
   /** 面板级创建默认值（当前只有默认 DNS），创建向导向所有用户预填 */
   getVmDefaults: () => get<VmDefaults>('/config/vm-defaults'),
   saveVmDefaults: (dns: string) => put<VmDefaults>('/config/vm-defaults', { dns }),
+  /**
+   * 资源规格（套餐）。管理员在设置页维护、下单页读取，因此**读取只要求登录**；
+   * 保存是整份覆盖（与 IP 池同一契约），需要 settings.manage，
+   * 不合法的条目会被后端逐条丢弃，返回值才是真正落库的那份。
+   */
+  getSpecs: () => get<{ specs: ResourceSpec[] }>('/config/specs'),
+  saveSpecs: (specs: ResourceSpec[]) =>
+    put<{ specs: ResourceSpec[] }>('/config/specs', specs),
   /**
    * 登录页的验证方式：关闭 / 图形验证码 / 拖动滑块。
    * 读取只要求登录（设置页要显示当前值）；写入需要 settings.manage + 二次确认。
@@ -1132,8 +1141,11 @@ export const templatesApi = {
       ...scoped(connectionId),
     }),
   /** 某节点上可用的 cloud 镜像（.img/.qcow2）*/
-  images: (node: string) =>
-    get<CloudImageItem[]>('/templates/images', { params: { node } }),
+  images: (node: string, connectionId?: unknown) =>
+    get<CloudImageItem[]>('/templates/images', {
+      params: { node },
+      ...scoped(connectionId),
+    }),
   /** 流水线：从 cloud 镜像构建模板（后端逐步执行并等待每步完成）*/
   buildFromImage: (body: TemplateFromImageRequest) =>
     post<TemplateBuildResult>('/templates/from-image', body),

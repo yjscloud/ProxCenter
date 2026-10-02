@@ -1314,6 +1314,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 { label: '更多批量操作…', value: '' },
                 { label: '批量打标签', value: 'tag' },
                 { label: '批量迁移到其他节点', value: 'migrate' },
+                { label: '批量设置内存气球', value: 'balloon' },
                 { label: '批量创建快照', value: 'snapshot' },
               ]}
               aria-label="更多批量操作"
@@ -2082,6 +2083,8 @@ function BulkParamsDialog({
   const [snapName, setSnapName] = useState('');
   const [snapDesc, setSnapDesc] = useState('');
   const [vmstate, setVmstate] = useState(false);
+  /** 内存气球的最低保留量（MB）。空 = 没填（不能提交）；0 = 关闭气球驱动 */
+  const [balloon, setBalloon] = useState('');
 
   useEffect(() => {
     if (!action) return;
@@ -2092,6 +2095,7 @@ function BulkParamsDialog({
     setSnapName(`snap-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`);
     setSnapDesc('');
     setVmstate(false);
+    setBalloon('');
   }, [action]);
 
   const nodeOptions = nodes.map((n) => ({ label: n, value: n }));
@@ -2100,25 +2104,38 @@ function BulkParamsDialog({
       ? '快照名需以字母开头，只能包含字母、数字、- 和 _'
       : undefined;
 
+  /* 内存气球：必须填，且是 >= 0 的整数（0 表示关掉气球驱动） */
+  const balloonValue = balloon.trim() === '' ? NaN : Number(balloon);
+  const balloonError =
+    balloon.trim() === '' || !Number.isFinite(balloonValue) || balloonValue < 0
+      ? '请填写不小于 0 的整数（0 = 关闭气球驱动）'
+      : balloonValue > 0 && balloonValue < 128
+        ? '至少 128 MB，或填 0 关闭气球驱动'
+        : undefined;
+
   const canSubmit =
     action === 'tag'
       ? Boolean(tags.trim())
       : action === 'migrate'
         ? Boolean(target)
-        : action === 'snapshot'
-          ? Boolean(snapName) && !snapNameError
-          : false;
+        : action === 'balloon'
+          ? !balloonError
+          : action === 'snapshot'
+            ? Boolean(snapName) && !snapNameError
+            : false;
 
   const submit = () => {
     if (!action || !canSubmit) return;
     if (action === 'tag') onSubmit({ tags: tags.trim(), tag_mode: tagMode });
     else if (action === 'migrate') onSubmit({ target_node: target, online });
+    else if (action === 'balloon') onSubmit({ balloon: balloonValue });
     else onSubmit({ name: snapName, description: snapDesc, vmstate });
   };
 
   const titles: Record<string, string> = {
     tag: '批量打标签',
     migrate: '批量迁移',
+    balloon: '批量设置内存气球',
     snapshot: '批量创建快照',
   };
 
@@ -2185,6 +2202,33 @@ function BulkParamsDialog({
             后端不会替你过滤：已经在目标节点的机器 PVE 会直接报错，
             结果清单里会写明是哪几台。
           </Notice>
+        </div>
+      ) : null}
+
+      {action === 'balloon' ? (
+        <div className="flex flex-col gap-16">
+          <Input
+            label="最低保留内存（MB）"
+            required
+            type="number"
+            min={0}
+            step={256}
+            value={balloon}
+            onChange={(e) => setBalloon(e.target.value)}
+            error={balloon.trim() === '' ? undefined : balloonError}
+            placeholder="如 1024（至少保留 1G）"
+            hint="填 0 = 关闭气球驱动；PVE 默认（不设）等于整份内存不回收"
+          />
+          <Notice tone="info" title="这是在改什么">
+            内存气球让宿主机在客户机空闲时把那部分内存收回去。不填这个值时 PVE
+            按「整份内存」算，宿主机即使看到客户机空闲也收不回。生效前提是客户机里
+            装了气球驱动（Linux 通常自带，<code>lsmod | grep balloon</code> 可查）。
+          </Notice>
+          {hasContainer ? (
+            <Notice tone="warning" title="容器不支持内存气球">
+              选中的容器会逐台失败（LXC 的内存是硬上限），虚拟机会正常改。
+            </Notice>
+          ) : null}
         </div>
       ) : null}
 

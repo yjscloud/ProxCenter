@@ -47,6 +47,7 @@ ACTION_PERMISSION: Dict[str, str] = {
     "delete": "vm.delete",
     "tag": "vm.config",
     "migrate": "vm.config",
+    "balloon": "vm.config",
     "snapshot": "vm.snapshot",
 }
 
@@ -63,6 +64,7 @@ ACTION_LABELS: Dict[str, str] = {
     "delete": "删除",
     "tag": "打标签",
     "migrate": "迁移",
+    "balloon": "设置内存气球",
     "snapshot": "创建快照",
 }
 
@@ -129,6 +131,17 @@ def validate_action(action: str, params: BulkParams) -> None:
 
     if action == "tag" and params.tag_mode not in ("replace", "append"):
         raise HTTPException(status_code=400, detail="标签写入方式只能是 replace 或 append")
+
+    if action == "balloon":
+        if params.balloon is None:
+            raise HTTPException(status_code=400, detail="批量设置内存气球需要填写保留量（MB）")
+        # 0 是有效值（关掉气球驱动）;负数 PVE 会拒，早点拦下来给一条清楚的话
+        if params.balloon < 0:
+            raise HTTPException(status_code=400, detail="内存气球不能小于 0")
+        if params.balloon > 0 and params.balloon < 128:
+            raise HTTPException(
+                status_code=400, detail="内存气球至少 128 MB，或填 0 关闭气球驱动"
+            )
 
 
 async def _resolve(conn_id_hint: str, node: str, vmid: int, owner: Optional[str]) -> str:
@@ -220,6 +233,13 @@ async def _run_one(
                 str(current.get("tags") or ""), _split_tags(params.tags), params.tag_mode
             )
             result = await setter(node, vmid, {"tags": merged})
+
+        elif action == "balloon":
+            # 容器没有内存气球（LXC 的内存是硬上限，PVE 也没有 balloon 这个键）。
+            # 逐台报错而不是静默跳过 —— 用户打了勾的机器必须有个交代。
+            if gtype != "qemu":
+                raise ProxmoxError(f"{vmid} 是容器，容器不支持内存气球", 400)
+            result = await client.qemu_set_config(node, vmid, {"balloon": params.balloon})
 
         elif action == "migrate":
             target_node = (params.target_node or "").strip()

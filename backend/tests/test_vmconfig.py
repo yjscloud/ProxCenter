@@ -161,6 +161,24 @@ class TestCloudInit:
         assert config["ipconfig0"] == "ip=dhcp"
         assert config["ipconfig1"] == "ip=dhcp"
 
+    def test_never_asks_for_a_package_upgrade_on_boot(self) -> None:
+        """绝不下发 ``ciupgrade``。
+
+        那是 PVE 的「每次开机升级软件包」：客户机每次启动都会跑一遍 dnf/apt 全量
+        升级（实测开机头几分钟 CPU 平均 36%、峰值 59%，内存也被 rpm/dnf 顶上去），
+        而面板里从来没有对应的入口 —— 曾经的 ``upgrade`` 字段与这段代码都已删除，
+        这里守住它别被人加回来。
+        """
+        ci = CloudInitSpec(
+            enabled=True,
+            user="ubuntu",
+            password="secret",
+            ip_configs=[IpConfig(ip="dhcp")],
+        )
+        config = vmconfig.build_cloudinit_config(ci)
+        assert "ciupgrade" not in config
+        assert not hasattr(ci, "upgrade")
+
 
 class TestBuildVmConfig:
     def _request(self, **overrides: object) -> VmCreateRequest:
@@ -185,6 +203,20 @@ class TestBuildVmConfig:
         assert config["net0"] == "virtio,bridge=vmbr0"
         # 磁盘 → 光驱（没挂 ISO 就没有这一项）→ 网卡，照抄 PVE 自己的默认顺序
         assert config["boot"] == "order=scsi0;net0"
+
+    def test_balloon_is_written_only_when_given(self) -> None:
+        """内存气球：只在下发时才写这个键，且 0 是有效值。
+
+        PVE 在没有这个键时按「整份内存」算（实测 qemu/109 的 balloon == maxmem），
+        宿主机收不回客户机的空闲内存；给了更低的值才有回收空间。
+        """
+        assert "balloon" not in vmconfig.build_vm_config(self._request(), vmid=101)
+        assert (
+            vmconfig.build_vm_config(self._request(balloon=1024), vmid=101)["balloon"]
+            == 1024
+        )
+        # 0 = 显式关掉气球驱动，不能被当成「没填」丢掉
+        assert vmconfig.build_vm_config(self._request(balloon=0), vmid=101)["balloon"] == 0
 
     def test_iso_is_included_in_the_boot_order(self) -> None:
         """安装光驱必须进启动名单，否则新机器永远进不去安装界面。

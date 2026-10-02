@@ -243,6 +243,9 @@ async def build_template_from_image(
         "name": payload.name,
         "memory": payload.memory,
         "cores": payload.cores,
+        # 模板上的气球最低保留量会被每一个克隆继承：不设（或不填）就等于
+        # 「整份内存不回收」，克隆出来的机器也就没有可回收的余量。
+        **({"balloon": payload.balloon} if payload.balloon is not None else {}),
         "cpu": vmconfig.normalize_cpu_type(payload.cpu_type),
         "ostype": vmconfig.normalize_ostype(payload.ostype),
         "scsihw": vmconfig.normalize_scsihw(payload.scsihw),
@@ -528,6 +531,10 @@ async def clone_template(
         overrides["memory"] = payload.memory
     if payload.cores:
         overrides["cores"] = payload.cores
+    # 内存气球：模板自带的值（或 PVE 默认的「整份内存」）不该绑死克隆体。
+    # 只跳过 None —— 0 是有效值（显式关掉气球驱动）。
+    if payload.balloon is not None:
+        overrides["balloon"] = payload.balloon
     overrides.update(
         vmconfig.build_cloudinit_for_clone(
             ci_user=payload.ci_user,

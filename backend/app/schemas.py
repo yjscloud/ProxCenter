@@ -265,7 +265,6 @@ class CloudInitSpec(BaseModel):
     ip_configs: List[IpConfig] = Field(default_factory=list)
     nameserver: Optional[str] = None
     searchdomain: Optional[str] = None
-    upgrade: bool = False
 
 
 class CloneSpec(BaseModel):
@@ -349,6 +348,11 @@ class VmCreateRequest(BaseModel):
     boot_order: Optional[str] = None
     start_on_boot: bool = False
     agent: bool = True
+    # 内存气球的最低保留量（MiB）。PVE 在配置里没有这个键时按「整份内存」算 ——
+    # 宿主机即使看到客户机空闲也收不回内存（实测 qemu/109 的 balloon = maxmem）。
+    # 语义：None = 不下发，沿用 PVE 默认（不回收）；0 = 显式关掉气球驱动；
+    # 其它值 = 保留这么多，余量可在宿主机内存紧张时收回（客户机需装气球驱动）。
+    balloon: Optional[int] = None
     tags: Optional[str] = None
     description: Optional[str] = None
     cloudinit: Optional[CloudInitSpec] = None
@@ -674,6 +678,8 @@ class BulkParams(BaseModel):
     tags: Optional[str] = None
     # replace = 覆盖原标签；append = 在原有标签后追加
     tag_mode: str = "replace"
+    # balloon：内存气球的最低保留量（MiB）。0 = 关掉气球驱动；只对虚拟机有效
+    balloon: Optional[int] = None
     # migrate
     target_node: Optional[str] = None
     online: bool = True
@@ -1162,6 +1168,8 @@ class TemplateFromImage(BaseModel):
     storage: str                    # where the VM disk lands
     memory: int = 2048
     cores: int = 2
+    # 内存气球的最低保留量（MiB）。模板设了它，克隆出来的机器才有可回收的余量
+    balloon: Optional[int] = None
     cpu_type: str = "host"
     ostype: str = "l26"
     disk_size: Optional[int] = None  # GB, to grow the imported disk
@@ -1197,6 +1205,8 @@ class TemplateClone(BaseModel):
     storage: Optional[str] = None
     memory: Optional[int] = None
     cores: Optional[int] = None
+    # 内存气球的最低保留量（MiB）：模板/来源机器自带的值会绑死克隆体，这里可覆盖
+    balloon: Optional[int] = None
     ci_user: Optional[str] = None
     ci_password: Optional[str] = None
     ssh_keys: Optional[str] = None

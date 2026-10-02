@@ -271,6 +271,57 @@ class TestDispatch:
         assert item["error"]
 
 
+# --------------------------------------------------------------- 内存气球
+class TestBalloon:
+    """批量改内存气球：值必须真的落到配置里，容器要逐台说清楚为什么不行。"""
+
+    def test_requires_a_value(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            bulk.validate_action("balloon", BulkParams())
+        assert "保留量" in exc.value.detail
+
+    def test_rejects_negative_and_tiny_values(self) -> None:
+        """0 是有效值（显式关掉气球驱动），负数和 128 以下则没有意义。"""
+        with pytest.raises(HTTPException):
+            bulk.validate_action("balloon", BulkParams(balloon=-1))
+        with pytest.raises(HTTPException):
+            bulk.validate_action("balloon", BulkParams(balloon=64))
+        bulk.validate_action("balloon", BulkParams(balloon=0))
+        bulk.validate_action("balloon", BulkParams(balloon=1024))
+
+    def test_sets_balloon_on_a_vm(self, monkeypatch) -> None:
+        client = FakeClient(kind="qemu")
+        _install(monkeypatch, client)
+        item = run(
+            bulk._run_one(
+                _request(),
+                _user(),
+                "balloon",
+                BulkTarget(node="pve", vmid=100, type="qemu"),
+                BulkParams(balloon=1024),
+            )
+        )
+        assert item["ok"] is True
+        assert ("qemu_set_config", "pve", 100, {"balloon": 1024}) in client.calls
+
+    def test_container_is_refused_per_item(self, monkeypatch) -> None:
+        """容器没有气球（LXC 内存是硬上限）：逐台失败并说明原因，不静默跳过。"""
+        client = FakeClient(kind="lxc")
+        _install(monkeypatch, client)
+        item = run(
+            bulk._run_one(
+                _request(),
+                _user(),
+                "balloon",
+                BulkTarget(node="pve", vmid=101, type="lxc"),
+                BulkParams(balloon=1024),
+            )
+        )
+        assert item["ok"] is False
+        assert "容器" in item["error"]
+        assert not any(call[0] == "lxc_set_config" for call in client.calls)
+
+
 # --------------------------------------------------------------- 删除守卫
 class TestDelete:
     def test_running_guest_is_refused(self, monkeypatch) -> None:

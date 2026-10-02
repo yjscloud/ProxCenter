@@ -23,6 +23,7 @@ import { EmptyState } from './ui/EmptyState';
 import { ErrorState } from './ui/EmptyState';
 import { formatBytes, formatTimeLabel, toPercent } from '../utils/format';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
+import { useT } from '../i18n';
 
 /* ---------------------------------------------------------------------------
    主题色常量（与 theme.css 的令牌色保持一致）
@@ -93,6 +94,7 @@ export function ChartCard({
   children,
   className,
 }: ChartCardProps) {
+  const t = useT();
   return (
     <div className={`chart-wrap ${className ?? ''}`}>
       <div className="chart-header">
@@ -138,15 +140,13 @@ export function ChartCard({
         <ChartSkeleton height={height} />
       ) : error ? (
         <ErrorState
-          title="加载监控数据失败"
-          message={
-            error instanceof Error ? error.message : '无法获取 RRD 数据'
-          }
+          title={t('metric.loadFailed')}
+          message={error instanceof Error ? error.message : t('metric.noRrd')}
         />
       ) : empty ? (
         <EmptyState
-          title="暂无监控数据"
-          description="该时间范围内没有采集到数据点。"
+          title={t('metric.empty')}
+          description={t('metric.emptyDesc')}
           compact
         />
       ) : (
@@ -225,6 +225,7 @@ export function CpuChart({
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   /* Proxmox 的 cpu 是 0~1，也可能是多核累加值 → 归一化 */
   const data = points.map((p) => ({
     time: p.time,
@@ -237,14 +238,14 @@ export function CpuChart({
 
   return (
     <ChartCard
-      title="CPU 使用率"
+      title={t('metric.cpu')}
       stats={[
         {
-          label: '当前',
+          label: t('metric.current'),
           value: `${animatedLast.toFixed(1)}%`,
           color: CHART_COLORS.accent,
         },
-        { label: '峰值', value: `${peak.toFixed(1)}%` },
+        { label: t('metric.peak'), value: `${peak.toFixed(1)}%` },
       ]}
       legend={[{ label: 'CPU', color: CHART_COLORS.accent }]}
       loading={loading}
@@ -305,6 +306,7 @@ export function MemoryChart({
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   const data = points.map((p) => ({
     time: p.time,
     used: p.memused ?? p.mem ?? 0,
@@ -323,10 +325,10 @@ export function MemoryChart({
 
   return (
     <ChartCard
-      title="内存使用"
+      title={t('metric.mem')}
       stats={[
         {
-          label: hasTotal ? '已用 / 总量' : '已用',
+          label: hasTotal ? t('metric.memUsedTotal') : t('metric.used'),
           value: hasTotal
             ? `${formatBytes(animUsed, 0)} / ${formatBytes(animTotal, 0)}`
             : formatBytes(animUsed, 0),
@@ -334,8 +336,10 @@ export function MemoryChart({
         },
       ]}
       legend={[
-        { label: '已用', color: CHART_COLORS.cyan },
-        ...(hasTotal ? [{ label: '总量', color: CHART_COLORS.grey }] : []),
+        { label: t('metric.used'), color: CHART_COLORS.cyan },
+        ...(hasTotal
+          ? [{ label: t('metric.total'), color: CHART_COLORS.grey }]
+          : []),
       ]}
       loading={loading}
       error={error}
@@ -366,7 +370,7 @@ export function MemoryChart({
           <Area
             type="monotone"
             dataKey="used"
-            name="已用"
+            name={t('metric.used')}
             stroke={CHART_COLORS.cyan}
             strokeWidth={2.4}
             fill="url(#gradMemUsed)"
@@ -376,7 +380,7 @@ export function MemoryChart({
             <Area
               type="monotone"
               dataKey="total"
-              name="总量"
+              name={t('metric.total')}
               stroke={CHART_COLORS.grey}
               strokeWidth={1.4}
               strokeDasharray="5 5"
@@ -403,6 +407,7 @@ export function NetworkChart({
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   const data = points.map((p) => ({
     time: p.time,
     netin: p.netin ?? 0,
@@ -417,22 +422,22 @@ export function NetworkChart({
 
   return (
     <ChartCard
-      title="网络 I/O"
+      title={t('metric.net')}
       stats={[
         {
-          label: '入站',
+          label: t('metric.in'),
           value: `${formatBytes(animIn, 0)}/s`,
           color: CHART_COLORS.netIn,
         },
         {
-          label: '出站',
+          label: t('metric.out'),
           value: `${formatBytes(animOut, 0)}/s`,
           color: CHART_COLORS.netOut,
         },
       ]}
       legend={[
-        { label: '入站', color: CHART_COLORS.netIn },
-        { label: '出站', color: CHART_COLORS.netOut },
+        { label: t('metric.in'), color: CHART_COLORS.netIn },
+        { label: t('metric.out'), color: CHART_COLORS.netOut },
       ]}
       loading={loading}
       error={error}
@@ -466,7 +471,7 @@ export function NetworkChart({
           <Area
             type="monotone"
             dataKey="netin"
-            name="入站"
+            name={t('metric.in')}
             stroke={CHART_COLORS.netIn}
             fill="url(#gradNetIn)"
             strokeWidth={2.2}
@@ -475,7 +480,7 @@ export function NetworkChart({
           <Area
             type="monotone"
             dataKey="netout"
-            name="出站"
+            name={t('metric.out')}
             stroke={CHART_COLORS.netOut}
             fill="url(#gradNetOut)"
             strokeWidth={2.2}
@@ -500,6 +505,7 @@ export function DiskIoChart({
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   const data = points.map((p) => ({
     time: p.time,
     read: p.diskread ?? 0,
@@ -514,22 +520,22 @@ export function DiskIoChart({
 
   return (
     <ChartCard
-      title="磁盘 I/O"
+      title={t('metric.disk')}
       stats={[
         {
-          label: '读',
+          label: t('metric.read'),
           value: `${formatBytes(animRead, 0)}/s`,
           color: CHART_COLORS.diskRead,
         },
         {
-          label: '写',
+          label: t('metric.write'),
           value: `${formatBytes(animWrite, 0)}/s`,
           color: CHART_COLORS.diskWrite,
         },
       ]}
       legend={[
-        { label: '读', color: CHART_COLORS.diskRead },
-        { label: '写', color: CHART_COLORS.diskWrite },
+        { label: t('metric.read'), color: CHART_COLORS.diskRead },
+        { label: t('metric.write'), color: CHART_COLORS.diskWrite },
       ]}
       loading={loading}
       error={error}
@@ -563,7 +569,7 @@ export function DiskIoChart({
           <Area
             type="monotone"
             dataKey="read"
-            name="读"
+            name={t('metric.read')}
             stroke={CHART_COLORS.diskRead}
             fill="url(#gradDiskRead)"
             strokeWidth={2.2}
@@ -572,7 +578,7 @@ export function DiskIoChart({
           <Area
             type="monotone"
             dataKey="write"
-            name="写"
+            name={t('metric.write')}
             stroke={CHART_COLORS.diskWrite}
             fill="url(#gradDiskWrite)"
             strokeWidth={2.2}
@@ -616,12 +622,13 @@ export function DonutChart({
    */
   showLegend?: boolean;
 }) {
+  const t = useT();
   const total = data.reduce((sum, d) => sum + d.value, 0);
 
   if (total === 0) {
     return (
       <div style={{ height }} className="flex items-center justify-center">
-        <EmptyState title="暂无数据" compact />
+        <EmptyState title={t('metric.noData')} compact />
       </div>
     );
   }
@@ -721,6 +728,7 @@ function PercentAreaChart({
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   const data = points.map((p) => ({
     time: p.time,
     value: Math.min(100, Math.max(0, valueOf(p) ?? 0)),
@@ -734,8 +742,8 @@ function PercentAreaChart({
     <ChartCard
       title={title}
       stats={[
-        { label: '当前', value: `${animatedLast.toFixed(1)}%`, color },
-        { label: '峰值', value: `${peak.toFixed(1)}%` },
+        { label: t('metric.current'), value: `${animatedLast.toFixed(1)}%`, color },
+        { label: t('metric.peak'), value: `${peak.toFixed(1)}%` },
       ]}
       legend={[{ label: title, color }]}
       loading={loading}
@@ -785,9 +793,10 @@ export function IowaitChart(props: {
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   return (
     <PercentAreaChart
-      title="IO 等待"
+      title={t('metric.iowait')}
       valueOf={(p) => toPercent(p.iowait ?? 0)}
       color={CHART_COLORS.warning}
       gradientId="gradIowait"
@@ -802,9 +811,10 @@ export function FilesystemChart(props: {
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   return (
     <PercentAreaChart
-      title="根分区使用率"
+      title={t('metric.filesystem')}
       valueOf={(p) =>
         p.roottotal && p.roottotal > 0
           ? ((p.rootused ?? 0) / p.roottotal) * 100
@@ -823,13 +833,14 @@ export function SwapChart(props: {
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   const hasSwap = props.points.some((p) => (p.swaptotal ?? 0) > 0);
   /* 没启用 swap 的机器（swaptotal 恒为 0）不画这张图：
      一条永远贴着 0 的直线没有任何信息量，只是占地方。 */
   if (!hasSwap) return null;
   return (
     <PercentAreaChart
-      title="Swap 使用率"
+      title={t('metric.swap')}
       valueOf={(p) =>
         p.swaptotal && p.swaptotal > 0
           ? ((p.swapused ?? 0) / p.swaptotal) * 100
@@ -848,6 +859,7 @@ export function LoadChart(props: {
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   const data = props.points.map((p) => {
     const raw = Array.isArray(p.loadavg) ? p.loadavg[0] : p.loadavg;
     return { time: p.time, load: Number(raw) || 0 };
@@ -859,16 +871,16 @@ export function LoadChart(props: {
 
   return (
     <ChartCard
-      title="系统负载"
+      title={t('metric.load')}
       stats={[
         {
-          label: '当前',
+          label: t('metric.current'),
           value: animatedLast.toFixed(2),
           color: CHART_COLORS.accent,
         },
-        { label: '峰值', value: peak.toFixed(2) },
+        { label: t('metric.peak'), value: peak.toFixed(2) },
       ]}
-      legend={[{ label: '负载', color: CHART_COLORS.accent }]}
+      legend={[{ label: t('metric.loadSeries'), color: CHART_COLORS.accent }]}
       loading={props.loading}
       error={props.error}
       empty={data.length === 0}
@@ -893,7 +905,7 @@ export function LoadChart(props: {
           <Area
             type="monotone"
             dataKey="load"
-            name="负载"
+            name={t('metric.loadSeries')}
             stroke={CHART_COLORS.accent}
             strokeWidth={2.4}
             fill="url(#gradLoad)"
@@ -917,6 +929,7 @@ export function PressureChart(props: {
   loading?: boolean;
   error?: unknown;
 }) {
+  const t = useT();
   const hasPressure = props.points.some(
     (p) =>
       p.pressurecpusome !== undefined ||
@@ -939,16 +952,20 @@ export function PressureChart(props: {
 
   return (
     <ChartCard
-      title="资源压力（PSI）"
+      title={t('metric.pressure')}
       stats={[
         { label: 'CPU', value: `${animCpu.toFixed(1)}%`, color: CHART_COLORS.accent },
         { label: 'IO', value: `${animIo.toFixed(1)}%`, color: CHART_COLORS.warning },
-        { label: '内存', value: `${animMem.toFixed(1)}%`, color: CHART_COLORS.purple },
+        {
+          label: t('metric.memory'),
+          value: `${animMem.toFixed(1)}%`,
+          color: CHART_COLORS.purple,
+        },
       ]}
       legend={[
         { label: 'CPU', color: CHART_COLORS.accent },
         { label: 'IO', color: CHART_COLORS.warning },
-        { label: '内存', color: CHART_COLORS.purple },
+        { label: t('metric.memory'), color: CHART_COLORS.purple },
       ]}
       loading={props.loading}
       error={props.error}
@@ -991,7 +1008,7 @@ export function PressureChart(props: {
           <Area
             type="monotone"
             dataKey="mem"
-            name="内存"
+            name={t('metric.memory')}
             stroke={CHART_COLORS.purple}
             strokeWidth={2}
             fillOpacity={0}

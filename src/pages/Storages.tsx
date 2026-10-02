@@ -31,21 +31,23 @@ import {
   formatDateTime,
   usageColor,
 } from '../utils/format';
-import { contentLabel, storageStatusMeta } from '../utils/status';
+import { contentLabel, storageStatusMeta } from '../utils/status'
+import { useT, type MessageKey } from '../i18n';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import type { Storage, StorageContent } from '../api/types';
 
-const CONTENT_FILTERS = [
-  { label: '全部内容', value: '' },
-  { label: 'VM 磁盘 (vm)', value: 'vm' },
-  { label: 'ISO 镜像 (iso)', value: 'iso' },
-  { label: '备份 (backup)', value: 'backup' },
-  { label: '代码片段 (snippets)', value: 'snippets' },
+const CONTENT_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
+  { label: 'storages.contentAll', value: '' },
+  { label: 'storages.contentVm', value: 'vm' },
+  { label: 'storages.contentIso', value: 'iso' },
+  { label: 'storages.contentBackup', value: 'backup' },
+  { label: 'storages.contentSnippets', value: 'snippets' },
 ];
 
 export function Storages() {
+  const t = useT();
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
   const toast = useToast();
@@ -74,13 +76,13 @@ export function Storages() {
      带上来源连接后，请求才会精确落到所选的那台主机上。 */
   const nodeOptions = useMemo(
     () => [
-      { label: '全部节点', value: '' },
+      { label: t('common.allNodes'), value: '' },
       ...(nodesQuery.data ?? []).map((n) => ({
         label: n.connection_name ? `${n.node}（${n.connection_name}）` : n.node,
         value: n.connection_id ? `${n.connection_id}::${n.node}` : n.node,
       })),
     ],
-    [nodesQuery.data],
+    [nodesQuery.data, t],
   );
 
   const [filterConn, filterNode] = useMemo(() => {
@@ -150,7 +152,7 @@ export function Storages() {
   const columns: Array<Column<Storage>> = [
     {
       key: 'storage',
-      header: '名称',
+      header: t('storages.colName'),
       render: (s) => (
         <div className="flex items-center gap-8">
           <IconStorage size={15} />
@@ -162,7 +164,7 @@ export function Storages() {
     },
     {
       key: 'type',
-      header: '类型',
+      header: t('storages.colType'),
       render: (s) => (
         <Badge variant="neutral" size="sm">
           {s.type}
@@ -174,7 +176,7 @@ export function Storages() {
     },
     {
       key: 'node',
-      header: '节点',
+      header: t('common.node'),
       render: (s) => <span className="fs-sm mono">{s.node}</span>,
       width: 110,
       sortable: true,
@@ -182,13 +184,13 @@ export function Storages() {
     },
     {
       key: 'content',
-      header: '内容类型',
-      render: (s) => <span className="fs-sm">{contentLabel(s.content)}</span>,
+      header: t('storages.colContent'),
+      render: (s) => <span className="fs-sm">{contentLabel(s.content, t)}</span>,
       width: 200,
     },
     {
       key: 'total',
-      header: '总量',
+      header: t('storages.colTotal'),
       align: 'right',
       width: 100,
       render: (s) => <span className="mono fs-sm">{formatBytes(s.total)}</span>,
@@ -197,7 +199,7 @@ export function Storages() {
     },
     {
       key: 'used',
-      header: '已用',
+      header: t('storages.colUsed'),
       align: 'right',
       width: 100,
       render: (s) => <span className="mono fs-sm">{formatBytes(s.used)}</span>,
@@ -206,7 +208,7 @@ export function Storages() {
     },
     {
       key: 'avail',
-      header: '可用',
+      header: t('storages.colAvail'),
       align: 'right',
       width: 100,
       render: (s) => (
@@ -217,7 +219,7 @@ export function Storages() {
     },
     {
       key: 'usage',
-      header: '使用率',
+      header: t('storages.colUsage'),
       width: 160,
       render: (s) => {
         const pct = s.total > 0 ? (s.used / s.total) * 100 : 0;
@@ -237,10 +239,10 @@ export function Storages() {
     },
     {
       key: 'active',
-      header: '状态',
+      header: t('common.status'),
       width: 100,
       render: (s) => {
-        const meta = storageStatusMeta(s.active);
+        const meta = storageStatusMeta(s.active, t);
         return (
           <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
             {meta.label}
@@ -252,18 +254,18 @@ export function Storages() {
     },
     {
       key: 'shared',
-      header: '共享',
+      header: t('storages.colShared'),
       width: 80,
       align: 'center',
       render: (s) => (
         <Badge variant={s.shared ? 'info' : 'neutral'} size="sm">
-          {s.shared ? '是' : '否'}
+          {s.shared ? t('common.yes') : t('common.no')}
         </Badge>
       ),
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       width: 130,
       align: 'right',
       render: (s) => (
@@ -278,7 +280,7 @@ export function Storages() {
               setSearch('');
             }}
           >
-            浏览
+            {t('storages.browse')}
           </Button>
         </span>
       ),
@@ -289,12 +291,12 @@ export function Storages() {
      与其留一个有表头、每行却什么都没有的「操作」列，不如整列省掉。 */
   const contentActionColumn: Column<StorageContent> = {
     key: 'actions',
-    header: '操作',
+    header: t('common.actions'),
     width: 80,
     align: 'right',
     render: (c) => (
       <IconButton
-        label={`删除 ${c.volid}`}
+        label={t('storages.deleteLabel', { volid: c.volid })}
         variant="danger"
         onClick={() => setDeleteTarget(c)}
         disabled={busy}
@@ -307,7 +309,7 @@ export function Storages() {
   const contentColumns: Array<Column<StorageContent>> = [
     {
       key: 'volid',
-      header: '卷标识 (volid)',
+      header: t('storages.colVolid'),
       render: (c) => (
         <span className="mono fs-sm" title={c.volid}>
           {c.volid}
@@ -318,7 +320,7 @@ export function Storages() {
     },
     {
       key: 'name',
-      header: '名称',
+      header: t('common.name'),
       render: (c) => (
         <span className="fs-sm text-secondary">{c.name || '—'}</span>
       ),
@@ -326,7 +328,7 @@ export function Storages() {
     },
     {
       key: 'format',
-      header: '格式',
+      header: t('storages.colFormat'),
       render: (c) => (
         <Badge variant="neutral" size="sm">
           {c.format || '—'}
@@ -336,7 +338,7 @@ export function Storages() {
     },
     {
       key: 'size',
-      header: '大小',
+      header: t('storages.colSize'),
       align: 'right',
       width: 110,
       render: (c) => <span className="mono fs-sm">{formatBytes(c.size)}</span>,
@@ -345,7 +347,7 @@ export function Storages() {
     },
     {
       key: 'ctime',
-      header: '创建时间',
+      header: t('storages.colCtime'),
       render: (c) => (
         <span className="mono fs-sm text-secondary">{formatDateTime(c.ctime)}</span>
       ),
@@ -355,7 +357,7 @@ export function Storages() {
     },
     {
       key: 'vmid',
-      header: '所属 VM',
+      header: t('storages.colVmid'),
       width: 100,
       render: (c) => (
         <span className="mono fs-sm">{c.vmid ?? '—'}</span>
@@ -373,15 +375,16 @@ export function Storages() {
       title={
         <>
           <IconStorage size={20} />
-          存储
+          {t('storages.title')}
         </>
       }
       subtitle={
         storagesQuery.data
-          ? `共 ${storages.length} 个存储池 · 总容量 ${formatBytes(
-              storages.reduce((s, x) => s + x.total, 0),
-            )}`
-          : '正在加载…'
+          ? t('storages.subtitle', {
+              n: storages.length,
+              size: formatBytes(storages.reduce((s, x) => s + x.total, 0)),
+            })
+          : t('common.loading')
       }
       actions={
         <>
@@ -394,7 +397,7 @@ export function Storages() {
             }}
             loading={storagesQuery.isFetching && !storagesQuery.isLoading}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
           {/* 只有能管理存储的人才看到上传入口：普通用户只有 storage.view，
               给了按钮也是点了必 403 */}
@@ -404,13 +407,13 @@ export function Storages() {
               icon={<IconUpload size={15} />}
               onClick={() => {
                 if (!selected) {
-                  toast.info('请先选择存储池', '在下方表格中点击「浏览」选定目标存储');
+                  toast.info(t('storages.selectFirst'), t('storages.selectFirstDetail'));
                   return;
                 }
                 setUploadOpen(true);
               }}
             >
-              上传 ISO
+              {t('storages.uploadIso')}
             </Button>
           ) : null}
         </>
@@ -424,12 +427,15 @@ export function Storages() {
               value={nodeFilter}
               onChange={(e) => setNodeFilter(e.target.value)}
               options={nodeOptions}
-              aria-label="按节点筛选存储"
+              aria-label={t('storages.filterNodeAria')}
             />
           </div>
           <div className="toolbar-right">
             <span className="fs-sm text-muted">
-              {storages.filter((s) => s.active).length} / {storages.length} 已激活
+              {t('storages.activeRatio', {
+                active: storages.filter((s) => s.active).length,
+                total: storages.length,
+              })}
             </span>
           </div>
         </div>
@@ -437,7 +443,7 @@ export function Storages() {
         {storagesQuery.isError ? (
           <div className="card" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
             <ErrorState
-              title="无法加载存储列表"
+              title={t('storages.loadFailed')}
               message={errorMessage(storagesQuery.error)}
               notImplemented={isNotImplemented(storagesQuery.error)}
               onRetry={() => void storagesQuery.refetch()}
@@ -449,7 +455,7 @@ export function Storages() {
             rows={storages}
             rowKey={(s) => `${s.connection_id ?? ''}/${s.node}/${s.storage}`}
             loading={storagesQuery.isLoading}
-            caption="集群存储池列表，包含类型、容量与使用率"
+            caption={t('storages.caption')}
             onRowClick={(s) => {
               setSelected(s);
               setContentFilter('');
@@ -460,12 +466,12 @@ export function Storages() {
               selected?.node === s.node &&
               selected?.connection_id === s.connection_id
             }
-            emptyTitle="暂无存储"
+            emptyTitle={t('storages.emptyTitle')}
             emptyDescription={
               <>
-                当前还没有配置任何存储池。存储池要在 Proxmox VE 侧添加
-                （<code className="mono">数据中心 → 存储 → 添加</code>
-                ），加好后回到这里刷新即可看到。
+                {t('storages.emptyDescPre')}
+                <code className="mono">{t('storages.emptyDescPath')}</code>
+                {t('storages.emptyDescPost')}
               </>
             }
             emptyAction={
@@ -475,7 +481,7 @@ export function Storages() {
                 onClick={() => void storagesQuery.refetch()}
                 loading={storagesQuery.isFetching && !storagesQuery.isLoading}
               >
-                刷新列表
+                {t('storages.refreshList')}
               </Button>
             }
           />
@@ -499,7 +505,7 @@ export function Storages() {
             <div className="flex items-center gap-8 flex-wrap">
               <IconFolder size={16} />
               <span className="fw-600">
-                内容浏览 · {selected.storage}
+                {t('storages.contentTitle', { storage: selected.storage })}
               </span>
               <Badge variant="neutral" size="sm">
                 {selected.node}
@@ -508,7 +514,7 @@ export function Storages() {
                 {selected.type}
               </Badge>
               <span className="fs-sm text-muted">
-                可用 {formatBytes(selected.avail)}
+                {t('storages.avail', { size: formatBytes(selected.avail) })}
               </span>
             </div>
 
@@ -516,16 +522,19 @@ export function Storages() {
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索 volid / 名称…"
+                placeholder={t('storages.searchPlaceholder')}
                 prefix={<IconSearch size={14} />}
                 block={false}
-                aria-label="搜索存储内容"
+                aria-label={t('storages.searchAria')}
               />
               <Select
                 value={contentFilter}
                 onChange={(e) => setContentFilter(e.target.value)}
-                options={CONTENT_FILTERS}
-                aria-label="按内容类型筛选"
+                options={CONTENT_FILTERS.map((item) => ({
+                  label: t(item.label),
+                  value: item.value,
+                }))}
+                aria-label={t('storages.contentFilterAria')}
               />
               {canManageStorage ? (
                 <Button
@@ -534,10 +543,10 @@ export function Storages() {
                   icon={<IconUpload size={14} />}
                   onClick={() => setUploadOpen(true)}
                 >
-                  上传
+                  {t('storages.upload')}
                 </Button>
               ) : null}
-              <IconButton label="关闭内容浏览" onClick={() => setSelected(null)}>
+              <IconButton label={t('storages.closeContent')} onClick={() => setSelected(null)}>
                 <IconClose size={16} />
               </IconButton>
             </div>
@@ -545,8 +554,8 @@ export function Storages() {
 
           {contentNotImpl ? (
             <div style={{ padding: 16 }}>
-              <Notice tone="info" title="该功能需要后端支持">
-                /storages/content 接口尚未实现，无法浏览存储内容。
+              <Notice tone="info" title={t('storages.notImplTitle')}>
+                {t('storages.contentNotImpl')}
               </Notice>
             </div>
           ) : contentQuery.isLoading ? (
@@ -556,15 +565,16 @@ export function Storages() {
               columns={contentColumns}
               rows={filteredContent}
               rowKey={(c) => c.volid}
-              caption={`存储 ${selected.storage} 的内容列表`}
-              emptyTitle={contentFilter ? '该类型下暂无内容' : '暂无内容'}
+              caption={t('storages.contentCaption', { storage: selected.storage })}
+              emptyTitle={
+                contentFilter ? t('storages.contentEmptyFiltered') : t('storages.contentEmpty')
+              }
               emptyDescription={
                 contentFilter ? (
-                  '该类型下没有文件，试试把「内容类型」切回全部。'
+                  t('storages.contentEmptyFilteredDesc')
                 ) : (
                   <>
-                    这个存储池还是空的。可以直接上传 ISO / 镜像，或在创建虚拟机时
-                    把磁盘建在这里。
+                    {t('storages.contentEmptyDesc')}
                   </>
                 )
               }
@@ -577,7 +587,7 @@ export function Storages() {
                     icon={<IconUpload size={15} />}
                     onClick={() => setUploadOpen(true)}
                   >
-                    上传文件
+                    {t('storages.uploadFile')}
                   </Button>
                 ) : undefined
               }
@@ -588,8 +598,8 @@ export function Storages() {
       ) : (
         <Card>
           <EmptyState
-            title="选择存储池以浏览内容"
-            description="点击上方表格中的任意存储行，即可查看其中的磁盘镜像、ISO 与备份文件。"
+            title={t('storages.selectTitle')}
+            description={t('storages.selectDesc')}
             icon={<IconFolder size={28} />}
           />
         </Card>
@@ -633,7 +643,7 @@ export function Storages() {
                     volid: deleteTarget.volid,
                   }),
               {
-                title: `删除 ${deleteTarget.volid}`,
+                title: t('storages.deleteTask', { volid: deleteTarget.volid }),
                 node: selected.node,
                 invalidate: [
                   ['storages'],
@@ -649,16 +659,16 @@ export function Storages() {
             setBusy(false);
           }
         }}
-        title="删除存储内容"
+        title={t('storages.deleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={busy}
         message={
           <>
-            即将删除 <strong>{deleteTarget?.volid}</strong>
-            （{formatBytes(deleteTarget?.size)}）。
+            {t('storages.deleteMessagePre')}<strong>{deleteTarget?.volid}</strong>
+            {t('storages.deleteMessageMid', { size: formatBytes(deleteTarget?.size) })}
             {deleteTarget?.vmid
-              ? `该卷属于虚拟机 ${deleteTarget.vmid}，删除后该虚拟机可能无法启动。`
+              ? t('storages.deleteMessageVmid', { vmid: deleteTarget.vmid })
               : ''}
           </>
         }
@@ -682,6 +692,7 @@ function UploadDialog({
   onClose: () => void;
   onUploaded: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -712,23 +723,27 @@ function UploadDialog({
   }, [storage]);
 
   const availableContents = useMemo(() => {
-    if (!storage) return CONTENT_FILTERS.filter((c) => c.value);
+    if (!storage)
+      return CONTENT_FILTERS.filter((c) => c.value).map((c) => ({
+        label: t(c.label),
+        value: c.value,
+      }));
     const types = storage.content.split(/[,;]/).map((c) => c.trim());
     const options = [
-      { label: 'ISO 镜像 (iso)', value: 'iso', key: 'iso' },
-      { label: 'VM 磁盘 (vm)', value: 'vm', key: 'images' },
-      { label: '代码片段 (snippets)', value: 'snippets', key: 'snippets' },
+      { label: t('storages.contentIso'), value: 'iso', key: 'iso' },
+      { label: t('storages.contentVm'), value: 'vm', key: 'images' },
+      { label: t('storages.contentSnippets'), value: 'snippets', key: 'snippets' },
     ];
     const filtered = options.filter((o) => types.includes(o.key));
     return filtered.length > 0
       ? filtered.map((o) => ({ label: o.label, value: o.value }))
       : options.map((o) => ({ label: o.label, value: o.value }));
-  }, [storage]);
+  }, [storage, t]);
 
   const pickFile = (f: File | null | undefined) => {
     if (!f) return;
     if (f.size === 0) {
-      toast.error('文件无效', '该文件为空');
+      toast.error(t('storages.fileInvalid'), t('storages.fileEmpty'));
       return;
     }
     setFile(f);
@@ -747,15 +762,18 @@ function UploadDialog({
         file,
         (p) => setProgress(p),
       );
-      toast.success('上传成功', `${file.name} 已上传到 ${storage.storage}`);
+      toast.success(
+        t('storages.uploadOk'),
+        t('storages.uploadOkDetail', { name: file.name, storage: storage.storage }),
+      );
       onUploaded();
     } catch (err) {
       const notImpl = isNotImplemented(err);
       if (notImpl) {
         setUnsupported(true);
-        toast.warning('功能暂不可用', '后端尚未实现文件上传接口');
+        toast.warning(t('storages.featureUnavailable'), t('storages.uploadNotImpl'));
       } else {
-        toast.error('上传失败', errorMessage(err));
+        toast.error(t('storages.uploadFailed'), errorMessage(err));
       }
     } finally {
       setUploading(false);
@@ -768,9 +786,11 @@ function UploadDialog({
     <Modal
       open={open}
       onClose={uploading ? () => undefined : onClose}
-      title="上传文件"
+      title={t('storages.uploadTitle')}
       description={
-        storage ? `目标存储：${storage.storage}（${storage.node}）` : undefined
+        storage
+          ? t('storages.uploadTarget', { storage: storage.storage, node: storage.node })
+          : undefined
       }
       size="sm"
       closeOnOverlay={!uploading}
@@ -778,7 +798,7 @@ function UploadDialog({
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={uploading}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -786,19 +806,19 @@ function UploadDialog({
             loading={uploading}
             disabled={!canUpload}
           >
-            开始上传
+            {t('storages.startUpload')}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-16">
         <Select
-          label="内容类型"
+          label={t('storages.contentType')}
           value={content}
           onChange={(e) => setContent(e.target.value)}
           options={availableContents}
           disabled={uploading}
-          hint="决定文件存放的目录（iso 目录用于安装镜像）"
+          hint={t('storages.contentTypeHint')}
         />
 
         <div
@@ -822,7 +842,7 @@ function UploadDialog({
               fileRef.current?.click();
             }
           }}
-          aria-label="选择要上传的文件"
+          aria-label={t('storages.pickFileAria')}
         >
           <IconUpload size={26} />
           <div className="upload-zone-text">
@@ -835,9 +855,9 @@ function UploadDialog({
               </>
             ) : (
               <>
-                <div>点击选择文件，或将文件拖拽到此处</div>
+                <div>{t('storages.dropHint')}</div>
                 <div className="fs-sm text-muted mt-8">
-                  支持 .iso / .img / .qcow2 等格式
+                  {t('storages.dropFormats')}
                 </div>
               </>
             )}
@@ -854,7 +874,7 @@ function UploadDialog({
         {uploading || progress > 0 ? (
           <div className="upload-progress">
             <ProgressBar
-              label={uploading ? '上传中' : '已完成'}
+              label={uploading ? t('storages.uploading') : t('storages.completed')}
               value={progress}
               showValue
               height={7}
@@ -864,17 +884,18 @@ function UploadDialog({
         ) : null}
 
         {unsupported ? (
-          <Notice tone="info" title="该功能需要后端支持">
-            后端尚未实现 <code>POST /storages/upload</code>
-            接口。你可以先在 Proxmox 节点的对应目录（如{' '}
-            <code>/var/lib/vz/template/iso</code>）中用 wget 下载镜像，再回到此处浏览。
+          <Notice tone="info" title={t('storages.notImplTitle')}>
+            {t('storages.uploadNotImplBodyPre')}
+            <code>POST /storages/upload</code>
+            {t('storages.uploadNotImplBodyMid')}
+            <code>/var/lib/vz/template/iso</code>
+            {t('storages.uploadNotImplBodyPost')}
           </Notice>
         ) : null}
 
         {file && file.size > 4 * 1024 ** 3 ? (
-          <Notice tone="warning" title="大文件提示">
-            超过 4GB 的上传可能受后端超时或反向代理（Nginx
-            client_max_body_size）限制，建议使用 Proxmox 自带的下载任务或直接在节点上下载。
+          <Notice tone="warning" title={t('storages.largeFileTitle')}>
+            {t('storages.largeFileBody')}
           </Notice>
         ) : null}
       </div>

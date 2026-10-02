@@ -30,20 +30,24 @@ import { useToast } from "../hooks/useToast";
 import { useAuth } from "../hooks/useAuth";
 import { isRunning } from "../utils/status";
 import { formatDate, formatDateTime, formatRelative } from "../utils/format";
+import { useT, type MessageKey, type TFunc } from "../i18n";
 import type { CertSite, RemoteCertificate } from "../api/types";
 
-const ACTION_LABEL: Record<string, string> = {
-  apply: "申请证书",
-  renew: "自动续期",
-  deploy: "部署证书",
-  bind: "绑定证书",
-  sync: "状态同步",
+const ACTION_LABEL: Record<string, MessageKey> = {
+  apply: 'cert.act.apply',
+  renew: 'cert.act.renew',
+  deploy: 'cert.act.deploy',
+  bind: 'cert.act.bind',
+  sync: 'cert.act.sync',
 };
 
-const RESULT_META: Record<string, { label: string; variant: "success" | "warning" | "danger" | "info" }> = {
-  success: { label: "成功", variant: "success" },
-  pending: { label: "等待签发", variant: "info" },
-  failed: { label: "失败", variant: "danger" },
+const RESULT_META: Record<
+  string,
+  { label: MessageKey; variant: "success" | "warning" | "danger" | "info" }
+> = {
+  success: { label: 'cert.result.success', variant: "success" },
+  pending: { label: 'cert.result.pending', variant: "info" },
+  failed: { label: 'cert.result.failed', variant: "danger" },
 };
 
 function errText(err: unknown): string {
@@ -78,7 +82,7 @@ function blankSite(): Partial<CertSite> {
 }
 
 /** 部署目标的展示文案 */
-function targetText(site: CertSite): string {
+function targetText(site: CertSite, t: TFunc): string {
   const dir = site.deploy_dir || "";
   if (site.deploy_method === "ssh") {
     return `${site.ssh_user || "root"}@${site.ssh_host || "?"}:${site.ssh_port || 22}${dir}`;
@@ -86,10 +90,11 @@ function targetText(site: CertSite): string {
   if (site.deploy_method === "agent") {
     return `VM ${site.agent_vmid || "?"}@${site.agent_node || "?"}${dir}`;
   }
-  return `本机 ${dir}`;
+  return t('cert.targetLocal', { dir });
 }
 
 export function Certificates() {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const { hasPermission } = useAuth();
@@ -135,14 +140,17 @@ export function Certificates() {
     const vms = (vmsQuery.data ?? [])
       .filter((vm) => isRunning(vm.status) && !vm.template)
       .map((vm) => ({
-        label: `${vm.name}（VMID ${vm.vmid} · ${vm.node}）`,
+        label: t('cert.agentOption', { name: vm.name, vmid: vm.vmid, node: vm.node }),
         value: `${vm.node}|${vm.vmid}`,
       }));
     if (agentValue && !vms.some((o) => o.value === agentValue)) {
-      return [{ label: `${agentValue}（当前未运行）`, value: agentValue }, ...vms];
+      return [
+        { label: t('cert.agentNotRunning', { value: agentValue }), value: agentValue },
+        ...vms,
+      ];
     }
     return vms;
-  }, [vmsQuery.data, agentValue]);
+  }, [vmsQuery.data, agentValue, t]);
 
   async function run(key: string, fn: () => Promise<string>, okTitle: string): Promise<boolean> {
     setBusy(key);
@@ -152,7 +160,7 @@ export function Certificates() {
       toast.success(okTitle, note || undefined);
       return true;
     } catch (err) {
-      toast.error("操作失败", errText(err));
+      toast.error(t('common.opFailed'), errText(err));
       return false;
     } finally {
       setBusy("");
@@ -181,14 +189,14 @@ export function Certificates() {
         await certsApi.saveTencent(payload);
         setSecretInput("");
         setSecretClear(false);
-        return "腾讯云 API 密钥已保存";
+        return t('cert.tcSaved');
       },
-      "配置已保存",
+      t('cert.configSaved'),
     );
   }
 
   function testTencent() {
-    void run("test", async () => (await certsApi.testTencent()).detail, "连接正常");
+    void run("test", async () => (await certsApi.testTencent()).detail, t('cert.connectionOk'));
   }
 
   /* ---- 站点 ---- */
@@ -213,9 +221,9 @@ export function Certificates() {
           await certsApi.updateSite(form.id, form);
         }
         setForm(null);
-        return "站点已保存";
+        return t('cert.siteSaved');
       },
-      "保存成功",
+      t('cert.saveOk'),
     );
   }
 
@@ -223,7 +231,7 @@ export function Certificates() {
     void run(
       "apply:" + site.id,
       async () => (await certsApi.apply(site.id)).detail,
-      "申请已提交",
+      t('cert.applySubmitted'),
     );
   }
 
@@ -231,7 +239,7 @@ export function Certificates() {
     void run(
       "deploy:" + site.id,
       async () => (await certsApi.deploy(site.id)).detail,
-      "部署完成",
+      t('cert.deployDone'),
     );
   }
 
@@ -240,11 +248,12 @@ export function Certificates() {
       "sync:" + site.id,
       async () => {
         const s = (await certsApi.sync(site.id)).site;
-        return `状态：${s.cert_status_text || "未知"}${
-          s.days_left !== null && s.days_left !== undefined ? ` · 剩余 ${s.days_left} 天` : ""
-        }`;
+        return t('cert.syncStatus', { status: s.cert_status_text || t('common.unknown') }) +
+          (s.days_left !== null && s.days_left !== undefined
+            ? t('cert.syncDays', { n: s.days_left })
+            : "");
       },
-      "已同步",
+      t('cert.synced'),
     );
   }
 
@@ -254,9 +263,9 @@ export function Certificates() {
       async () => {
         const r = await certsApi.remoteList(remoteSearch);
         setRemote(r.certificates);
-        return `获取到 ${r.count} 张证书`;
+        return t('cert.fetchedCerts', { n: r.count });
       },
-      "已获取证书列表",
+      t('cert.remoteListTitle'),
     );
   }
 
@@ -268,16 +277,16 @@ export function Certificates() {
         await certsApi.bind(pickerSite.id, cert.cert_id);
         setPickerSite(null);
         setRemote(null);
-        return `已绑定证书 ${cert.cert_id}`;
+        return t('cert.boundCert', { id: cert.cert_id });
       },
-      "绑定成功",
+      t('cert.bindDone'),
     );
   }
 
   return (
     <PageShell
-      title="网站证书"
-      subtitle="使用腾讯云免费 DV 证书（有效期 90 天、单域名），自动申请、部署到本机 / 远程服务器 / 虚拟机，并在到期前续期"
+      title={t('cert.title')}
+      subtitle={t('cert.subtitle')}
       actions={
         <>
           <Button
@@ -290,13 +299,13 @@ export function Certificates() {
                 "syncAll",
                 async () => {
                   const r = await certsApi.syncAll();
-                  return `已同步 ${r.sites.length} 个站点`;
+                  return t('cert.syncedSites', { n: r.sites.length });
                 },
-                "同步完成",
+                t('cert.syncAllDone'),
               )
             }
           >
-            同步全部
+            {t('cert.syncAll')}
           </Button>
           <Button
             variant="primary"
@@ -304,13 +313,13 @@ export function Certificates() {
             disabled={!canManage}
             onClick={openCreate}
           >
-            添加站点
+            {t('cert.addSite')}
           </Button>
         </>
       }
     >
       {query.isError ? (
-        <Notice tone="danger" title="无法加载证书配置">
+        <Notice tone="danger" title={t('cert.loadFailed')}>
           {errText(query.error)}
         </Notice>
       ) : null}
@@ -318,15 +327,15 @@ export function Certificates() {
       {/* ---------------- 腾讯云账号 ---------------- */}
       <Card>
         <CardHeader
-          title="腾讯云账号"
-          subtitle="在「访问管理 → API 密钥」中创建密钥；免费证书额度 50 张，需账号完成实名认证"
+          title={t('cert.tcTitle')}
+          subtitle={t('cert.tcSubtitle')}
           icon={<IconCloud size={16} />}
           actions={
             <>
               <Badge variant={secretSet ? "success" : "neutral"} size="sm" dot>
                 <span className="flex items-center gap-4">
                   <IconKey size={12} />
-                  {secretSet ? "密钥已加密保存" : "未配置密钥"}
+                  {secretSet ? t('cert.secretSet') : t('cert.secretUnset')}
                 </span>
               </Badge>
               <Button
@@ -336,7 +345,7 @@ export function Certificates() {
                 disabled={!canManage || !secretSet}
                 onClick={testTencent}
               >
-                测试连接
+                {t('cert.testConnection')}
               </Button>
               <Button
                 variant="primary"
@@ -346,7 +355,7 @@ export function Certificates() {
                 disabled={!canManage || tc === null}
                 onClick={saveTencent}
               >
-                保存
+                {t('common.save')}
               </Button>
             </>
           }
@@ -354,7 +363,7 @@ export function Certificates() {
         {tc ? (
           <div className="form-grid">
             <Input
-              label="SecretId"
+              label={t('cert.fieldSecretId')}
               value={tc.secret_id || ""}
               placeholder="AKIDxxxxxxxxxxxxxxxx"
               autoComplete="off"
@@ -363,18 +372,20 @@ export function Certificates() {
               onChange={(e) => setTc({ ...tc, secret_id: e.target.value })}
             />
             <Input
-              label="SecretKey"
+              label={t('cert.fieldSecretKey')}
               type="password"
               value={secretInput}
-              placeholder={secretSet ? "已加密保存，留空表示不修改" : "填写 API 密钥"}
+              placeholder={
+                secretSet ? t('cert.secretPlaceholderSet') : t('cert.secretPlaceholder')
+              }
               autoComplete="new-password"
               disabled={!canManage}
               hint={
                 secretClear
-                  ? "保存后将清除已保存的密钥，自动续期随即停止"
+                  ? t('cert.secretHintClear')
                   : secretSet
-                    ? "密钥以密文存储，不会回显。留空表示不修改。"
-                    : "密钥仅保存在本机数据库（加密存储）"
+                    ? t('cert.secretHintSet')
+                    : t('cert.secretHintUnset')
               }
               onChange={(e) => {
                 setSecretClear(false);
@@ -382,25 +393,25 @@ export function Certificates() {
               }}
             />
             <Select
-              label="域名验证方式"
+              label={t('cert.fieldDvAuth')}
               value={tc.dv_auth_method || "DNS_AUTO"}
               disabled={!canManage}
               options={options?.dv_auth_methods ?? []}
               onChange={(e) => setTc({ ...tc, dv_auth_method: e.target.value })}
             />
             <Select
-              label="证书密钥算法"
+              label={t('cert.fieldEncryptAlgo')}
               value={tc.encrypt_algo || "RSA"}
               disabled={!canManage}
               options={options?.encrypt_algos ?? []}
               onChange={(e) => setTc({ ...tc, encrypt_algo: e.target.value })}
             />
             <Input
-              label="默认提前续期天数"
+              label={t('cert.fieldDefaultRenewDays')}
               type="number"
               value={tc.renew_before_days ?? 15}
               disabled={!canManage}
-              hint="证书剩余天数小于该值时自动申请续期（免费证书仅 90 天，建议 15~20 天）"
+              hint={t('cert.defaultRenewDaysHint')}
               onChange={(e) =>
                 setTc({ ...tc, renew_before_days: Number(e.target.value) })
               }
@@ -414,8 +425,8 @@ export function Certificates() {
       {/* ---------------- 证书站点 ---------------- */}
       <Card>
         <CardHeader
-          title="证书站点"
-          subtitle="填写域名与证书部署目录后，点「申请」即可自动签发并部署"
+          title={t('cert.sitesTitle')}
+          subtitle={t('cert.sitesSubtitle')}
           icon={<IconShield size={16} />}
         />
         {sites.length > 0 ? (
@@ -423,13 +434,13 @@ export function Certificates() {
             <table className="table table-dense">
               <thead>
                 <tr>
-                  {isAdmin ? <th>归属</th> : null}
-                  <th>站点</th>
-                  <th>域名</th>
-                  <th>证书</th>
-                  <th>到期</th>
-                  <th>部署位置</th>
-                  <th>自动续期</th>
+                  {isAdmin ? <th>{t('cert.colOwner')}</th> : null}
+                  <th>{t('cert.colSite')}</th>
+                  <th>{t('cert.colDomain')}</th>
+                  <th>{t('cert.colCert')}</th>
+                  <th>{t('cert.colExpire')}</th>
+                  <th>{t('cert.colTarget')}</th>
+                  <th>{t('cert.colAutoRenew')}</th>
                   <th />
                 </tr>
               </thead>
@@ -458,7 +469,7 @@ export function Certificates() {
                       <td>
                         <div>{site.name}</div>
                         <div className="fs-xs text-muted">
-                          {site.enabled ? "已启用" : "已停用"}
+                          {site.enabled ? t('cert.enabledSite') : t('cert.disabledSite')}
                           {site.notes ? ` · ${site.notes}` : ""}
                         </div>
                       </td>
@@ -470,15 +481,15 @@ export function Certificates() {
                           <div>
                             <span className="mono fs-sm">{site.cert_id}</span>
                             <div className="fs-xs text-muted">
-                              {site.cert_status_text || "状态未知"}
+                              {site.cert_status_text || t('cert.statusUnknown')}
                             </div>
                           </div>
                         ) : (
-                          <span className="text-muted">未申请</span>
+                          <span className="text-muted">{t('cert.notApplied')}</span>
                         )}
                         {site.pending_cert_id ? (
                           <div className="fs-xs text-accent">
-                            待签发：{site.pending_cert_id}
+                            {t('cert.pendingIssue', { id: site.pending_cert_id })}
                           </div>
                         ) : null}
                       </td>
@@ -488,7 +499,9 @@ export function Certificates() {
                         ) : (
                           <div>
                             <Badge variant={tone} size="sm" dot>
-                              {left < 0 ? `已过期 ${-left} 天` : `剩余 ${left} 天`}
+                              {left < 0
+                                ? t('cert.expiredDays', { n: -left })
+                                : t('cert.daysLeft', { n: left })}
                             </Badge>
                             <div className="fs-xs text-muted">
                               {formatDate(site.expire_at)}
@@ -498,7 +511,7 @@ export function Certificates() {
                       </td>
                       <td>
                         <div className="mono fs-sm" style={{ wordBreak: "break-all" }}>
-                          {targetText(site)}
+                          {targetText(site, t)}
                         </div>
                         <div className="fs-xs text-muted">
                           {site.cert_filename} · {site.key_filename}
@@ -506,7 +519,9 @@ export function Certificates() {
                         </div>
                         {site.last_deploy_at ? (
                           <div className="fs-xs text-muted">
-                            上次部署 {formatRelative(site.last_deploy_at)}
+                            {t('cert.lastDeploy', {
+                              time: formatRelative(site.last_deploy_at),
+                            })}
                           </div>
                         ) : null}
                       </td>
@@ -516,44 +531,44 @@ export function Certificates() {
                           size="sm"
                           dot
                         >
-                          {site.auto_renew ? "已开启" : "未开启"}
+                          {site.auto_renew ? t('cert.autoRenewOn') : t('cert.autoRenewOff')}
                         </Badge>
                         <div className="fs-xs text-muted">
-                          提前 {threshold} 天
+                          {t('cert.renewAhead', { n: threshold })}
                         </div>
                       </td>
                       <td>
                         <div className="flex items-center gap-4">
                           <IconButton
-                            label={readonly ? "他人的站点，只读" : "申请 / 续期证书"}
+                            label={readonly ? t('cert.readonlyForeign') : t('cert.applyOrRenew')}
                             disabled={!canManage || readonly || busy === "apply:" + site.id}
                             onClick={() => applyCert(site)}
                           >
                             <IconShield size={15} />
                           </IconButton>
                           <IconButton
-                            label={readonly ? "他人的站点，只读" : "立即部署"}
+                            label={readonly ? t('cert.readonlyForeign') : t('cert.deployNow')}
                             disabled={!canManage || readonly || busy === "deploy:" + site.id}
                             onClick={() => deployCert(site)}
                           >
                             <IconDownload size={15} />
                           </IconButton>
                           <IconButton
-                            label={readonly ? "他人的站点，只读" : "同步腾讯云状态"}
+                            label={readonly ? t('cert.readonlyForeign') : t('cert.syncStatusBtn')}
                             disabled={!canManage || readonly || busy === "sync:" + site.id}
                             onClick={() => syncCert(site)}
                           >
                             <IconRefresh size={15} />
                           </IconButton>
                           <IconButton
-                            label={readonly ? "他人的站点，只读" : "编辑站点"}
+                            label={readonly ? t('cert.readonlyForeign') : t('cert.editSite')}
                             disabled={!canManage || readonly}
                             onClick={() => openEdit(site)}
                           >
                             <IconEdit size={15} />
                           </IconButton>
                           <IconButton
-                            label={readonly ? "他人的站点，只读" : "删除站点"}
+                            label={readonly ? t('cert.readonlyForeign') : t('cert.deleteSite')}
                             variant="danger"
                             disabled={!canManage || readonly}
                             onClick={() => setDeleteTarget(site)}
@@ -573,7 +588,7 @@ export function Certificates() {
           </div>
         ) : (
           <div className="text-secondary fs-sm">
-            还没有站点。点击右上角「添加站点」填写域名与部署目录，然后点「申请」即可自动签发并部署证书。
+            {t('cert.noSites')}
           </div>
         )}
       </Card>
@@ -581,8 +596,10 @@ export function Certificates() {
       {/* ---------------- 部署日志 ---------------- */}
       <Card>
         <CardHeader
-          title="部署日志"
-          subtitle={logs.length > 0 ? `最近 ${logs.length} 条操作记录` : undefined}
+          title={t('cert.logsTitle')}
+          subtitle={
+            logs.length > 0 ? t('cert.logsSubtitle', { n: logs.length }) : undefined
+          }
           icon={<IconClock size={16} />}
           actions={
             <Button
@@ -593,7 +610,7 @@ export function Certificates() {
               disabled={!canManage || logs.length === 0}
               onClick={() => setClearLogsOpen(true)}
             >
-              清除日志
+              {t('cert.clearLogs')}
             </Button>
           }
         />
@@ -602,18 +619,18 @@ export function Certificates() {
             <table className="table table-dense">
               <thead>
                 <tr>
-                  {isAdmin ? <th>归属</th> : null}
-                  <th>时间</th>
-                  <th>站点</th>
-                  <th>动作</th>
-                  <th>结果</th>
-                  <th>详情</th>
+                  {isAdmin ? <th>{t('cert.colOwner')}</th> : null}
+                  <th>{t('cert.colTime')}</th>
+                  <th>{t('cert.colSite')}</th>
+                  <th>{t('cert.colAction')}</th>
+                  <th>{t('cert.colResult')}</th>
+                  <th>{t('cert.colDetail')}</th>
                 </tr>
               </thead>
               <tbody>
                 {logs.map((log) => {
                   const meta = RESULT_META[log.result] ?? {
-                    label: log.result,
+                    label: log.result as MessageKey,
                     variant: "neutral" as const,
                   };
                   return (
@@ -628,10 +645,12 @@ export function Certificates() {
                         <div>{log.site_name || "—"}</div>
                         <div className="fs-xs text-muted mono">{log.domain}</div>
                       </td>
-                      <td>{ACTION_LABEL[log.action] ?? log.action}</td>
+                      <td>
+                        {ACTION_LABEL[log.action] ? t(ACTION_LABEL[log.action]) : log.action}
+                      </td>
                       <td>
                         <Badge variant={meta.variant} size="sm" dot>
-                          {meta.label}
+                          {RESULT_META[log.result] ? t(meta.label) : log.result}
                         </Badge>
                       </td>
                       <td className="fs-sm text-secondary">{log.detail}</td>
@@ -642,15 +661,15 @@ export function Certificates() {
             </table>
           </div>
         ) : (
-          <div className="text-secondary fs-sm">暂无操作记录。</div>
+          <div className="text-secondary fs-sm">{t('cert.noLogs')}</div>
         )}
       </Card>
 
       {/* ---------------- 站点编辑 ---------------- */}
       <Modal
         open={form !== null}
-        title={isNew ? "添加证书站点" : "编辑证书站点"}
-        description="域名、部署目录与重载命令决定证书最终落到哪里"
+        title={isNew ? t('cert.addSiteTitle') : t('cert.editSiteTitle')}
+        description={t('cert.editDesc')}
         size="lg"
         onClose={() => setForm(null)}
         footer={
@@ -665,11 +684,11 @@ export function Certificates() {
                   setRemote(null);
                 }}
               >
-                选择已有证书
+                {t('cert.chooseExisting')}
               </Button>
             ) : null}
             <Button variant="secondary" onClick={() => setForm(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -677,7 +696,7 @@ export function Certificates() {
               loading={busy === "site"}
               onClick={saveSite}
             >
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
@@ -685,30 +704,30 @@ export function Certificates() {
         {form ? (
           <div className="form-grid">
             <Input
-              label="站点名称"
+              label={t('cert.fieldSiteName')}
               value={form.name || ""}
-              placeholder="例如：博客站点"
+              placeholder={t('cert.siteNamePlaceholder')}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
             <Input
-              label="域名"
+              label={t('cert.fieldDomain')}
               required
               value={form.domain || ""}
               placeholder="blog.example.com"
               className="mono"
-              hint="腾讯云免费证书仅支持单个域名，不支持泛域名与 IP"
+              hint={t('cert.domainHint')}
               onChange={(e) => setForm({ ...form, domain: e.target.value })}
             />
             <Select
-              label="部署方式"
+              label={t('cert.fieldDeployMethod')}
               value={form.deploy_method || "local"}
               options={options?.deploy_methods ?? []}
               hint={
                 form.deploy_method === "local"
-                  ? "证书写到面板所在服务器（本机）的目录"
+                  ? t('cert.deployHintLocal')
                   : form.deploy_method === "ssh"
-                    ? "通过 SSH 把证书上传到目标服务器并执行重载命令"
-                    : "通过 Proxmox Guest Agent 把证书写进虚拟机（无需 SSH 凭据）"
+                    ? t('cert.deployHintSsh')
+                    : t('cert.deployHintAgent')
               }
               onChange={(e) =>
                 setForm({ ...form, deploy_method: e.target.value as CertSite["deploy_method"] })
@@ -717,80 +736,84 @@ export function Certificates() {
             {form.deploy_method === "ssh" ? (
               <>
                 <Input
-                  label="目标服务器地址"
+                  label={t('cert.fieldSshHost')}
                   required
                   value={form.ssh_host || ""}
-                  placeholder="192.168.1.20 或 web.example.com"
+                  placeholder={t('cert.sshHostPlaceholder')}
                   className="mono"
-                  hint="Linux 服务器的 IP 或域名"
+                  hint={t('cert.sshHostHint')}
                   onChange={(e) => setForm({ ...form, ssh_host: e.target.value })}
                 />
                 <Input
-                  label="SSH 端口"
+                  label={t('cert.fieldSshPort')}
                   type="number"
                   value={form.ssh_port ?? 22}
                   onChange={(e) => setForm({ ...form, ssh_port: Number(e.target.value) })}
                 />
                 <Input
-                  label="登录用户名"
+                  label={t('cert.fieldSshUser')}
                   required
                   value={form.ssh_user || ""}
                   placeholder="root"
                   className="mono"
-                  hint="需要对该目录有写权限，且能执行重载命令"
+                  hint={t('cert.sshUserHint')}
                   onChange={(e) => setForm({ ...form, ssh_user: e.target.value })}
                 />
                 <Select
-                  label="认证方式"
+                  label={t('cert.fieldSshAuth')}
                   value={form.ssh_auth || "password"}
                   options={[
-                    { value: "password", label: "密码" },
-                    { value: "key", label: "私钥（推荐）" },
+                    { value: "password", label: t('cert.authPassword') },
+                    { value: "key", label: t('cert.authKey') },
                   ]}
                   onChange={(e) => setForm({ ...form, ssh_auth: e.target.value })}
                 />
                 {form.ssh_auth === "key" ? (
                   <div style={{ gridColumn: "1 / -1" }}>
                     <Textarea
-                      label="SSH 私钥"
+                      label={t('cert.fieldSshKey')}
                       rows={5}
                       mono
                       value={form.ssh_key || ""}
                       placeholder={
                         form.ssh_key_set
-                          ? "已加密保存，留空表示不修改"
+                          ? t('cert.sshKeyPlaceholderSet')
                           : "-----BEGIN OPENSSH PRIVATE KEY----- …"
                       }
-                      hint="支持 RSA / ECDSA / Ed25519，不能带密码短语；私钥以密文存储"
+                      hint={t('cert.sshKeyHint')}
                       onChange={(e) => setForm({ ...form, ssh_key: e.target.value })}
                     />
                   </div>
                 ) : (
                   <Input
-                    label="SSH 密码"
+                    label={t('cert.fieldSshPassword')}
                     type="password"
                     value={form.ssh_password || ""}
-                    placeholder={form.ssh_password_set ? "已加密保存，留空表示不修改" : "登录密码"}
+                    placeholder={
+                      form.ssh_password_set
+                        ? t('cert.secretPlaceholderSet')
+                        : t('cert.sshPasswordPlaceholder')
+                    }
                     autoComplete="new-password"
-                    hint="密码以密文存储，接口不会回显"
+                    hint={t('cert.sshPasswordHint')}
                     onChange={(e) => setForm({ ...form, ssh_password: e.target.value })}
                   />
                 )}
                 <div className="field">
-                  <div className="field-label">主机指纹</div>
+                  <div className="field-label">{t('cert.fieldHostKey')}</div>
                   <div className="fs-xs text-muted mono" style={{ wordBreak: "break-all" }}>
-                    {form.ssh_host_key || "首次部署成功后自动记录，用于识别服务器是否被替换"}
+                    {form.ssh_host_key || t('cert.hostKeyPlaceholder')}
                   </div>
                 </div>
               </>
             ) : null}
             {form.deploy_method === "agent" ? (
               <Select
-                label="目标虚拟机"
+                label={t('cert.fieldAgentVm')}
                 value={agentValue}
-                placeholder="选择一台运行中的虚拟机"
+                placeholder={t('cert.agentVmPlaceholder')}
                 options={agentOptions}
-                hint="需要虚拟机内已安装并运行 qemu-guest-agent"
+                hint={t('cert.agentVmHint')}
                 onChange={(e) => {
                   const [node, vmid] = String(e.target.value).split("|");
                   setForm({ ...form, agent_node: node || "", agent_vmid: vmid || "" });
@@ -798,78 +821,82 @@ export function Certificates() {
               />
             ) : null}
             <Input
-              label={form.deploy_method === "local" ? "证书部署目录" : "目标机上的部署目录"}
+              label={
+                form.deploy_method === "local"
+                  ? t('cert.fieldDeployDir')
+                  : t('cert.fieldTargetDeployDir')
+              }
               required
               value={form.deploy_dir || ""}
-              placeholder="/etc/nginx/ssl/blog.example.com"
+              placeholder={t('cert.deployDirPlaceholder')}
               className="mono"
               hint={
                 form.deploy_method === "ssh"
-                  ? "远程服务器上的绝对路径，不存在时会自动创建"
+                  ? t('cert.deployDirHintSsh')
                   : form.deploy_method === "agent"
-                    ? "虚拟机内的绝对路径，不存在时会自动创建"
-                    : "本机绝对路径，目录不存在时会自动创建"
+                    ? t('cert.deployDirHintAgent')
+                    : t('cert.deployDirHintLocal')
               }
               onChange={(e) => setForm({ ...form, deploy_dir: e.target.value })}
             />
             <Input
-              label="证书文件名"
+              label={t('cert.fieldCertFile')}
               value={form.cert_filename || ""}
               placeholder="fullchain.pem"
               className="mono"
-              hint="Nginx 请使用完整证书链文件"
+              hint={t('cert.certFileHint')}
               onChange={(e) => setForm({ ...form, cert_filename: e.target.value })}
             />
             <Input
-              label="私钥文件名"
+              label={t('cert.fieldKeyFile')}
               value={form.key_filename || ""}
               placeholder="privkey.pem"
               className="mono"
-              hint="写入后权限为 0600"
+              hint={t('cert.keyFileHint')}
               onChange={(e) => setForm({ ...form, key_filename: e.target.value })}
             />
             <Input
-              label="部署后执行命令"
+              label={t('cert.fieldReloadCmd')}
               value={form.reload_command || ""}
               placeholder="nginx -s reload"
               className="mono"
               hint={
                 form.deploy_method === "ssh"
-                  ? "在目标服务器上执行（如 systemctl reload nginx）"
+                  ? t('cert.reloadCmdHintSsh')
                   : form.deploy_method === "agent"
-                    ? "在虚拟机内执行（如 systemctl reload nginx）"
-                    : "在面板所在服务器上执行；留空则不执行"
+                    ? t('cert.reloadCmdHintAgent')
+                    : t('cert.reloadCmdHintLocal')
               }
               onChange={(e) => setForm({ ...form, reload_command: e.target.value })}
             />
             <Input
-              label="提前续期天数"
+              label={t('cert.fieldRenewDays')}
               type="number"
               value={form.renew_before_days ?? 0}
-              hint="0 表示跟随全局设置"
+              hint={t('cert.renewDaysHint')}
               onChange={(e) =>
                 setForm({ ...form, renew_before_days: Number(e.target.value) })
               }
             />
             <Input
-              label="备注"
+              label={t('incident.fieldNote')}
               value={form.notes || ""}
-              placeholder="例如：公司官网，证书给 Nginx 用"
+              placeholder={t('cert.notesPlaceholder')}
               onChange={(e) => setForm({ ...form, notes: e.target.value })}
             />
             <div className="field">
               <Switch
                 checked={form.auto_renew !== false}
-                label="自动续期"
-                hint="到期前自动申请新证书并重新部署"
+                label={t('cert.autoRenewSwitch')}
+                hint={t('cert.autoRenewSwitchHint')}
                 onChange={(v) => setForm({ ...form, auto_renew: v })}
               />
             </div>
             <div className="field">
               <Switch
                 checked={form.enabled !== false}
-                label="启用该站点"
-                hint="停用后不再自动检查与续期"
+                label={t('cert.enabledSwitch')}
+                hint={t('cert.enabledSwitchHint')}
                 onChange={(v) => setForm({ ...form, enabled: v })}
               />
             </div>
@@ -880,22 +907,22 @@ export function Certificates() {
       {/* ---------------- 腾讯云证书选择 ---------------- */}
       <Modal
         open={pickerSite !== null}
-        title="选择腾讯云已有证书"
+        title={t('cert.pickerTitle')}
         description={
-          pickerSite ? `为站点「${pickerSite.name}」绑定一张已签发的证书` : undefined
+          pickerSite ? t('cert.pickerDesc', { name: pickerSite.name }) : undefined
         }
         size="lg"
         onClose={() => setPickerSite(null)}
         footer={
           <Button variant="secondary" onClick={() => setPickerSite(null)}>
-            关闭
+            {t('common.close')}
           </Button>
         }
       >
         <div className="flex items-center gap-8">
           <Input
             value={remoteSearch}
-            placeholder="按域名 / 备注 / 证书 ID 搜索"
+            placeholder={t('cert.remoteSearchPlaceholder')}
             onChange={(e) => setRemoteSearch(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") loadRemote();
@@ -907,7 +934,7 @@ export function Certificates() {
             loading={busy === "remote"}
             onClick={loadRemote}
           >
-            查询
+            {t('cert.query')}
           </Button>
         </div>
         {remote && remote.length > 0 ? (
@@ -915,10 +942,10 @@ export function Certificates() {
             <table className="table table-dense">
               <thead>
                 <tr>
-                  <th>域名</th>
-                  <th>证书 ID</th>
-                  <th>状态</th>
-                  <th>到期</th>
+                  <th>{t('cert.colDomain')}</th>
+                  <th>{t('cert.colCertId')}</th>
+                  <th>{t('common.status')}</th>
+                  <th>{t('cert.colExpire')}</th>
                   <th />
                 </tr>
               </thead>
@@ -950,7 +977,7 @@ export function Certificates() {
                         disabled={cert.status !== 1}
                         onClick={() => bindRemote(cert)}
                       >
-                        绑定
+                        {t('cert.bind')}
                       </Button>
                     </td>
                   </tr>
@@ -960,7 +987,7 @@ export function Certificates() {
           </div>
         ) : (
           <div className="text-secondary fs-sm" style={{ marginTop: 12 }}>
-            {remote ? "没有匹配的证书。" : "点击「查询」获取账号下的证书列表。"}
+            {remote ? t('cert.noMatchCerts') : t('cert.clickQuery')}
           </div>
         )}
       </Modal>
@@ -969,9 +996,12 @@ export function Certificates() {
       <ConfirmDialog
         open={deleteTarget !== null}
         danger
-        title="删除证书站点"
-        confirmText="删除"
-        message={`将删除站点「${deleteTarget?.name ?? ""}」（${deleteTarget?.domain ?? ""}）的配置，之后的自动续期也会停止。已写入磁盘的证书文件不会被删除。`}
+        title={t('cert.deleteTitle')}
+        confirmText={t('common.delete')}
+        message={t('cert.deleteMessage', {
+          name: deleteTarget?.name ?? "",
+          domain: deleteTarget?.domain ?? "",
+        })}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={async () => {
           const ok = await run(
@@ -981,7 +1011,7 @@ export function Certificates() {
               const r = await certsApi.removeSite(deleteTarget.id);
               return r.detail;
             },
-            "站点已删除",
+            t('cert.siteDeleted'),
           );
           if (ok) setDeleteTarget(null);
         }}
@@ -991,15 +1021,15 @@ export function Certificates() {
       <ConfirmDialog
         open={clearLogsOpen}
         danger
-        title="清除部署日志"
-        confirmText="清除"
-        message="将删除全部证书申请与部署记录，此操作不可撤销。证书本身与站点配置不受影响。"
+        title={t('cert.clearLogsTitle')}
+        confirmText={t('cert.clearLogsConfirm')}
+        message={t('cert.clearLogsMessage')}
         onCancel={() => setClearLogsOpen(false)}
         onConfirm={async () => {
           const ok = await run(
             "clearLogs",
             async () => (await certsApi.clearLogs()).detail,
-            "日志已清除",
+            t('cert.logsCleared'),
           );
           if (ok) setClearLogsOpen(false);
         }}

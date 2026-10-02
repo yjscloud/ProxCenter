@@ -57,6 +57,7 @@ import { NodePicker } from './NodePicker';
 import { IconCloud } from './Icons';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useT } from '../i18n';
 import { formatBytes } from '../utils/format';
 import type { VmCreateRequest } from '../api/types';
 
@@ -88,6 +89,7 @@ export function QuickDeployForm({
   onClose,
   onSwitchToCustom,
 }: QuickDeployFormProps) {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -231,10 +233,12 @@ export function QuickDeployForm({
     const list = connectionsQuery.data ?? [];
     if (list.length === 0) return [];
     return list.map((c) => ({
-      label: `${c.name || c.host}${c.active ? '（当前连接）' : ''} · ${c.host}`,
+      label: `${c.name || c.host}${
+        c.active ? t('quickDeploy.currentConn') : ''
+      } · ${c.host}`,
       value: c.id,
     }));
-  }, [connectionsQuery.data]);
+  }, [connectionsQuery.data, t]);
 
   /* 默认落在「当前连接」上：不指定连接时后端会把所有 PVE 的节点合并返回 */
   useEffect(() => {
@@ -283,13 +287,17 @@ export function QuickDeployForm({
 
   const poolOptions = useMemo(
     () => [
-      { label: '请选择网段', value: '' },
+      { label: t('quickDeploy.selectPool'), value: '' },
       ...usablePools.map((p) => ({
-        label: `${p.name} · ${p.subnet}（空闲 ${p.free_count}）`,
+        label: t('quickDeploy.poolOption', {
+          name: p.name,
+          subnet: p.subnet,
+          n: p.free_count,
+        }),
         value: p.id,
       })),
     ],
-    [usablePools],
+    [usablePools, t],
   );
 
   /* 没选网段（或所选网段已不适用，例如换了网桥）时自动挑一个：用户不必先知道
@@ -329,39 +337,55 @@ export function QuickDeployForm({
       (t) => !targetConn || !t.connection_id || t.connection_id === targetConn,
     );
     return [
-      { label: '请选择模板', value: '' },
-      ...list.map((t) => ({
-        label: `${t.name} · ${t.vmid} @ ${t.node}${t.maxdisk ? `（磁盘 ${formatBytes(t.maxdisk, 0)}）` : ''}`,
-        value: `${t.node}/${t.vmid}`,
+      { label: t('quickDeploy.selectTemplate'), value: '' },
+      ...list.map((tpl) => ({
+        label: `${t('quickDeploy.templateOption', {
+          name: tpl.name,
+          vmid: tpl.vmid,
+          node: tpl.node,
+        })}${
+          tpl.maxdisk
+            ? t('quickDeploy.diskSuffix', {
+                size: formatBytes(tpl.maxdisk, 0),
+              })
+            : ''
+        }`,
+        value: `${tpl.node}/${tpl.vmid}`,
       })),
     ];
-  }, [templatesQuery.data, targetConn]);
+  }, [templatesQuery.data, targetConn, t]);
 
   const osTemplateOptions = useMemo(
     () => [
-      { label: '请选择系统模板', value: '' },
-      ...(osTemplatesQuery.data ?? []).map((t) => ({
-        label: `${t.name}${t.size ? `（${formatBytes(t.size, 0)}）` : ''}`,
-        value: t.volid,
+      { label: t('quickDeploy.selectOsTemplate'), value: '' },
+      ...(osTemplatesQuery.data ?? []).map((tpl) => ({
+        label: `${tpl.name}${
+          tpl.size ? `（${formatBytes(tpl.size, 0)}）` : ''
+        }`,
+        value: tpl.volid,
       })),
     ],
-    [osTemplatesQuery.data],
+    [osTemplatesQuery.data, t],
   );
 
   const storageOptions = useMemo(() => {
     const want = isVm ? 'images' : 'rootdir';
     return [
-      { label: '请选择存储', value: '' },
+      { label: t('quickDeploy.selectStorage'), value: '' },
       ...(storagesQuery.data ?? [])
         .filter(
           (s) => s.active && s.content.split(/[,;]/).some((c) => c.trim() === want),
         )
         .map((s) => ({
-          label: `${s.storage}（${s.type}，可用 ${formatBytes(s.avail, 0)}）`,
+          label: t('quickDeploy.storageOption', {
+            name: s.storage,
+            type: s.type,
+            avail: formatBytes(s.avail, 0),
+          }),
           value: s.storage,
         })),
     ];
-  }, [storagesQuery.data, isVm]);
+  }, [storagesQuery.data, isVm, t]);
 
   const bridgeOptions = useMemo(
     () =>
@@ -376,21 +400,29 @@ export function QuickDeployForm({
   const storageNeeded = !isVm;
 
   const error = useMemo(() => {
-    if (!name.trim()) return '请填写实例名称';
-    if (!spec) return '请选择资源规格';
+    if (!name.trim()) return t('quickDeploy.errName');
+    if (!spec) return t('quickDeploy.errSpec');
     /* 内存气球：留空 = 不回收（不下发该键）；填了就必须低于规格的内存上限 */
     if (balloon.trim()) {
       const value = Number(balloon);
-      if (!Number.isFinite(value) || value < 0) return '最低保留内存需为不小于 0 的整数';
-      else if (value > 0 && value < 128) return '最低保留内存不能小于 128 MB';
-      else if (value > 0 && value >= spec.memory) return '最低保留内存必须小于规格的内存上限';
+      if (!Number.isFinite(value) || value < 0) {
+        return t('quickDeploy.errBalloonInt');
+      } else if (value > 0 && value < 128) {
+        return t('quickDeploy.errBalloonMin');
+      } else if (value > 0 && value >= spec.memory) {
+        return t('quickDeploy.errBalloonMax');
+      }
     }
-    if (!node) return '请选择节点';
-    if (isVm && !templateRef) return '请选择模板';
-    if (!isVm && !osTemplate) return '请选择系统模板';
-    if (storageNeeded && !storage) return '请选择存储';
-    if (ipMode === 'static' && !staticIp.trim()) return '请填写静态 IP';
-    if (quotaBlocked) return `${quota?.label ?? '该类'}下发额度已用尽`;
+    if (!node) return t('quickDeploy.errNode');
+    if (isVm && !templateRef) return t('quickDeploy.errTemplate');
+    if (!isVm && !osTemplate) return t('quickDeploy.errOsTemplate');
+    if (storageNeeded && !storage) return t('quickDeploy.errStorage');
+    if (ipMode === 'static' && !staticIp.trim()) return t('quickDeploy.errStaticIp');
+    if (quotaBlocked) {
+      return t('quickDeploy.errQuota', {
+        label: quota?.label ?? t('quickDeploy.quotaFallback'),
+      });
+    }
     return '';
   }, [
     name,
@@ -406,6 +438,7 @@ export function QuickDeployForm({
     staticIp,
     quotaBlocked,
     quota,
+    t,
   ]);
 
   const submit = async () => {
@@ -453,8 +486,8 @@ export function QuickDeployForm({
         };
         const result = await vmsApi.create(payload, targetConn);
         toast.success(
-          '已提交创建',
-          `VMID ${result.vmid ?? '-'}，可在任务队列查看进度`,
+          t('quickDeploy.created'),
+          t('quickDeploy.createdVmHint', { vmid: result.vmid ?? '-' }),
         );
         queryClient.invalidateQueries({ queryKey: ['vms'] });
         onCreated?.(result.vmid ?? 0);
@@ -490,73 +523,90 @@ export function QuickDeployForm({
           targetConn,
         );
         toast.success(
-          '已提交创建',
-          `CT ${result.vmid ?? '-'}，可在任务队列查看进度`,
+          t('quickDeploy.created'),
+          t('quickDeploy.createdLxcHint', { vmid: result.vmid ?? '-' }),
         );
         queryClient.invalidateQueries({ queryKey: ['lxc'] });
         onCreated?.(result.vmid ?? 0);
         onClose();
       }
     } catch (err) {
-      toast.error('创建失败', errorMessage(err));
+      toast.error(t('quickDeploy.createFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
   };
 
   const summary = spec
-    ? `${spec.cores}C · ${gb(spec.memory)}G 内存 · ${
-        isVm ? '沿用模板磁盘' : `${spec.disk}G 磁盘`
-      }`
+    ? t('quickDeploy.summary', {
+        cores: spec.cores,
+        mem: gb(spec.memory),
+        disk: isVm
+          ? t('quickDeploy.summaryVm')
+          : t('quickDeploy.summaryLxc', { n: spec.disk }),
+      })
     : '';
 
   return (
     <div className="wizard-body">
       <div className="wizard-section">
         {!canCreate ? (
-          <Notice tone="warning" title="没有下发权限">
-            当前账号没有 vm.create 权限，只能查看本页。
+          <Notice tone="warning" title={t('quickDeploy.noPermTitle')}>
+            {t('quickDeploy.noPermBody')}
           </Notice>
         ) : null}
 
         {quotaBlocked ? (
-          <Notice tone="warning" title={`${quota?.label ?? ''}下发额度已用尽`}>
-            已用 {quota?.used} / {quota?.quota}。请让管理员在「设置 → 创建默认值」里调整额度。
+          <Notice
+            tone="warning"
+            title={t('quickDeploy.quotaBlockedTitle', {
+              label: quota?.label ?? '',
+            })}
+          >
+            {t('quickDeploy.quotaBlockedBody', {
+              used: quota?.used,
+              quota: quota?.quota,
+            })}
           </Notice>
         ) : null}
 
         {!specsQuery.isLoading && specs.length === 0 ? (
-          <Notice tone="info" title="还没有可用的资源规格">
-            管理员可在「设置 → 资源规格」里添加，例如「标准型 2C4G」。在此之前请用
-            {' '}
+          <Notice tone="info" title={t('quickDeploy.noSpecTitle')}>
+            {t('quickDeploy.noSpecPre')}{' '}
             <button type="button" className="link-button" onClick={onSwitchToCustom}>
-              自定义部署
+              {t('quickDeploy.noSpecCustom')}
             </button>
-            ，那里的核数与内存自己填。
+            {t('quickDeploy.noSpecPost')}
           </Notice>
         ) : null}
 
         {/* ---- 1. 实例名称 ---- */}
         <Card>
           <CardHeader
-            title="实例名称"
+            title={t('quickDeploy.sectionName')}
             subtitle={
-              isVm ? '名称即虚拟机名，创建后也可在详情页改' : '名称即容器主机名（hostname）'
+              isVm
+                ? t('quickDeploy.nameSubtitleVm')
+                : t('quickDeploy.nameSubtitleLxc')
             }
           />
           <div className="form-grid-2">
             <Input
-              label="名称"
+              label={t('quickDeploy.labelName')}
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={isVm ? '如 web-01' : '如 redis-01'}
+              placeholder={
+                isVm
+                  ? t('quickDeploy.namePlaceholderVm')
+                  : t('quickDeploy.namePlaceholderLxc')
+              }
             />
             <Input
-              label="标签（可选）"
+              label={t('quickDeploy.labelTags')}
               value={tags}
               onChange={(e) => setTags(e.target.value)}
-              placeholder="如 web;prod（分号分隔）"
+              placeholder={t('quickDeploy.tagsPlaceholder')}
             />
           </div>
         </Card>
@@ -564,8 +614,8 @@ export function QuickDeployForm({
         {/* ---- 2. 资源规格 ---- */}
         <Card>
           <CardHeader
-            title="资源规格"
-            subtitle="由管理员定义；不含特殊硬件需求的标准机器选这里就够了"
+            title={t('quickDeploy.sectionSpec')}
+            subtitle={t('quickDeploy.specSubtitle')}
           />
           {specsQuery.isLoading ? (
             <Spinner />
@@ -586,8 +636,9 @@ export function QuickDeployForm({
                   >
                     <span className="spec-card-name">{item.name}</span>
                     <span className="spec-card-spec">
-                      <b>{item.cores}</b> 核 · <b>{gb(item.memory)}</b> G 内存 ·{' '}
-                      <b>{item.disk}</b> G 磁盘
+                      <b>{item.cores}</b> {t('quickDeploy.specUnitCores')} ·{' '}
+                      <b>{gb(item.memory)}</b> {t('quickDeploy.specUnitMem')} ·{' '}
+                      <b>{item.disk}</b> {t('quickDeploy.specUnitDisk')}
                     </span>
                     {item.description ? (
                       <span className="spec-card-desc">{item.description}</span>
@@ -603,13 +654,13 @@ export function QuickDeployForm({
           {isVm ? (
             <div className="form-grid-2 mt-12">
               <Input
-                label="最低保留内存（MB，可选）"
+                label={t('quickDeploy.labelBalloon')}
                 type="number"
                 min={0}
                 step={256}
                 value={balloon}
                 onChange={(e) => setBalloon(e.target.value)}
-                hint="留空 = 不回收（默认）；如 1024 = 至少保留 1G，余量可被宿主机收回"
+                hint={t('quickDeploy.balloonHint')}
               />
             </div>
           ) : null}
@@ -617,22 +668,25 @@ export function QuickDeployForm({
 
         {/* ---- 3. 部署位置 ---- */}
         <Card>
-          <CardHeader title="部署位置" subtitle="节点卡片上是它当前的 CPU / 内存 / 磁盘占用" />
+          <CardHeader
+            title={t('quickDeploy.sectionLocation')}
+            subtitle={t('quickDeploy.locationSubtitle')}
+          />
           {connectionOptions.length > 0 ? (
             <div className="form-grid-2">
               <Select
-                label="目标 PVE 主机"
+                label={t('quickDeploy.labelConn')}
                 value={targetConn}
                 onChange={(e) => setTargetConn(e.target.value)}
                 options={connectionOptions}
-                hint="可在已配置的多台 PVE 之间选择"
+                hint={t('quickDeploy.connHint')}
               />
             </div>
           ) : null}
           <Field
-            label="节点"
+            label={t('quickDeploy.labelNode')}
             required
-            error={nodesQuery.isError ? '读取节点失败，请检查该主机的连接' : undefined}
+            error={nodesQuery.isError ? t('quickDeploy.nodeError') : undefined}
             hint={nodesQuery.isError ? errorMessage(nodesQuery.error) : undefined}
           >
             <NodePicker
@@ -647,17 +701,17 @@ export function QuickDeployForm({
         {/* ---- 4. 系统镜像 ---- */}
         <Card>
           <CardHeader
-            title="系统镜像"
+            title={t('quickDeploy.sectionImage')}
             subtitle={
               isVm
-                ? '从虚拟机模板链接克隆：秒级完成、不额外占用空间'
-                : '容器从 Proxmox 的 OS 模板（vztmpl）创建，磁盘按规格大小'
+                ? t('quickDeploy.imageSubtitleVm')
+                : t('quickDeploy.imageSubtitleLxc')
             }
           />
           <div className="form-grid-2">
             {isVm ? (
               <Select
-                label="模板"
+                label={t('quickDeploy.labelTemplate')}
                 required
                 value={templateRef}
                 onChange={(e) => setTemplateRef(e.target.value)}
@@ -665,12 +719,12 @@ export function QuickDeployForm({
                 hint={
                   templatesQuery.isError
                     ? errorMessage(templatesQuery.error)
-                    : '只列虚拟机模板（与目标主机一致）'
+                    : t('quickDeploy.templateHint')
                 }
               />
             ) : (
               <Select
-                label="系统模板"
+                label={t('quickDeploy.labelOsTemplate')}
                 required
                 value={osTemplate}
                 onChange={(e) => setOsTemplate(e.target.value)}
@@ -678,7 +732,7 @@ export function QuickDeployForm({
                 hint={
                   osTemplatesQuery.isError
                     ? errorMessage(osTemplatesQuery.error)
-                    : '节点上已下载的容器模板'
+                    : t('quickDeploy.osTemplateHint')
                 }
               />
             )}
@@ -686,20 +740,19 @@ export function QuickDeployForm({
             {/* 容器建 rootfs 必须选存储；虚拟机的链接克隆不往任何存储写数据 */}
             {storageNeeded ? (
               <Select
-                label="存储"
+                label={t('quickDeploy.labelStorage')}
                 required
                 value={storage}
                 onChange={(e) => setStorage(e.target.value)}
                 options={storageOptions}
-                hint="容器需要支持 rootdir 的存储"
+                hint={t('quickDeploy.storageHint')}
               />
             ) : null}
           </div>
 
           {isVm && spec ? (
             <div className="mt-12 field-message">
-              链接克隆沿用模板磁盘，不按规格的 {spec.disk}G 调整；磁盘依赖模板，
-              模板被删这些机器就起不来。要独立磁盘请用「自定义部署」做完整克隆。
+              {t('quickDeploy.linkedCloneNote', { n: spec.disk })}
             </div>
           ) : null}
         </Card>
@@ -707,16 +760,16 @@ export function QuickDeployForm({
         {/* ---- 5. 网络 ---- */}
         <Card>
           <CardHeader
-            title="网络"
+            title={t('quickDeploy.sectionNetwork')}
             subtitle={
               isVm
-                ? '默认静态地址：从「网络 → IP 地址池」里自动挑一个空闲地址，可改'
-                : '容器的 IP 直接写在 net0 上，开机即生效'
+                ? t('quickDeploy.networkSubtitleVm')
+                : t('quickDeploy.networkSubtitleLxc')
             }
           />
           <div className="form-grid-2">
             <Select
-              label="网桥"
+              label={t('quickDeploy.labelBridge')}
               value={bridge}
               onChange={(e) => setBridge(e.target.value)}
               options={
@@ -726,13 +779,13 @@ export function QuickDeployForm({
               }
               hint={bridgesQuery.isError ? errorMessage(bridgesQuery.error) : undefined}
             />
-            <Field label="IP 获取方式">
+            <Field label={t('quickDeploy.labelIpMode')}>
               <SegmentedControl<IpMode>
                 value={ipMode}
                 onChange={pickIpMode}
-                ariaLabel="IP 获取方式"
+                ariaLabel={t('quickDeploy.labelIpMode')}
                 options={[
-                  { label: '静态', value: 'static' },
+                  { label: t('quickDeploy.ipModeStatic'), value: 'static' },
                   { label: 'DHCP', value: 'dhcp' },
                 ]}
               />
@@ -742,7 +795,7 @@ export function QuickDeployForm({
           {ipMode === 'static' ? (
             <div className="form-grid-2 mt-12">
               <Select
-                label="网段"
+                label={t('quickDeploy.labelPool')}
                 value={poolId}
                 onChange={(e) => {
                   setPoolId(e.target.value);
@@ -752,21 +805,21 @@ export function QuickDeployForm({
                 hint={
                   poolsQuery.isError
                     ? errorMessage(poolsQuery.error)
-                    : '已按当前网桥自动选中；换网段会重新取空闲地址'
+                    : t('quickDeploy.poolHint')
                 }
               />
               <Input
-                label="IP 地址"
+                label={t('quickDeploy.labelIp')}
                 required
                 value={staticIp}
                 onChange={(e) => setStaticIp(e.target.value)}
-                placeholder="如 172.16.149.50 或 172.16.149.50/24"
+                placeholder={t('quickDeploy.ipPlaceholder')}
               />
               <Input
-                label="网关"
+                label={t('quickDeploy.labelGateway')}
                 value={gateway}
                 onChange={(e) => setGateway(e.target.value)}
-                placeholder="如 172.16.149.1"
+                placeholder={t('quickDeploy.gatewayPlaceholder')}
               />
             </div>
           ) : null}
@@ -775,28 +828,32 @@ export function QuickDeployForm({
         {/* ---- 6. 登录信息 ---- */}
         <Card>
           <CardHeader
-            title="登录信息"
+            title={t('quickDeploy.sectionLogin')}
             subtitle={
               isVm
-                ? '通过 cloud-init 写入；模板 / 镜像需带 cloud-init 才能生效'
-                : '容器创建时写入 root 密码'
+                ? t('quickDeploy.loginSubtitleVm')
+                : t('quickDeploy.loginSubtitleLxc')
             }
           />
           <div className="form-grid-2">
             {isVm ? (
               <Input
-                label="用户名"
+                label={t('quickDeploy.labelUser')}
                 value={ciUser}
                 onChange={(e) => setCiUser(e.target.value)}
                 placeholder="root"
               />
             ) : null}
             <Input
-              label={isVm ? '密码' : 'root 密码'}
+              label={
+                isVm
+                  ? t('quickDeploy.labelPassword')
+                  : t('quickDeploy.labelRootPassword')
+              }
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="留空则不设置"
+              placeholder={t('quickDeploy.passwordPlaceholder')}
             />
           </div>
         </Card>
@@ -813,21 +870,26 @@ export function QuickDeployForm({
               disabled={Boolean(error) || !canCreate}
               onClick={() => void submit()}
             >
-              创建{isVm ? '虚拟机' : '容器'}
+              {isVm ? t('quickDeploy.createVm') : t('quickDeploy.createLxc')}
             </Button>
             <Button variant="secondary" onClick={onClose} disabled={busy}>
-              取消
+              {t('common.cancel')}
             </Button>
             {quota ? (
               <span className="fs-sm text-muted">
                 {quota.limited
-                  ? `${quota.label}额度：已用 ${quota.used} / ${quota.quota}，还剩 ${quota.remaining} 台`
-                  : `${quota.label}额度：不限制`}
-                {summary ? ` · 将创建：${summary}` : ''}
+                  ? t('quickDeploy.quotaLimited', {
+                      label: quota.label,
+                      used: quota.used,
+                      quota: quota.quota,
+                      remaining: quota.remaining,
+                    })
+                  : t('quickDeploy.quotaUnlimited', { label: quota.label })}
+                {summary ? t('quickDeploy.willCreate', { summary }) : ''}
               </span>
             ) : (
               <span className="flex items-center gap-6 fs-sm text-muted">
-                <Spinner size={12} /> 读取额度…
+                <Spinner size={12} /> {t('quickDeploy.loadingQuota')}
               </span>
             )}
           </div>

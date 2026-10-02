@@ -49,6 +49,7 @@ import {
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
 import { formatDateTime } from '../utils/format';
+import { useT, type MessageKey, type TFunc } from '../i18n';
 import type {
   BadgeVariant,
   BaselineCheck,
@@ -59,17 +60,17 @@ import type {
   BaselineStatus,
 } from '../api/types';
 
-const STATUS_META: Record<BaselineStatus, { variant: BadgeVariant; label: string }> = {
-  pass: { variant: 'success', label: '通过' },
-  warn: { variant: 'warning', label: '待改进' },
-  fail: { variant: 'danger', label: '不合格' },
-  unknown: { variant: 'neutral', label: '无法检测' },
+const STATUS_META: Record<BaselineStatus, { variant: BadgeVariant; label: MessageKey }> = {
+  pass: { variant: 'success', label: 'baseline.status.pass' },
+  warn: { variant: 'warning', label: 'baseline.status.warn' },
+  fail: { variant: 'danger', label: 'baseline.status.fail' },
+  unknown: { variant: 'neutral', label: 'baseline.status.unknown' },
 };
 
-const SEV_META: Record<BaselineSeverity, string> = {
-  high: '高危',
-  medium: '中危',
-  low: '低危',
+const SEV_META: Record<BaselineSeverity, MessageKey> = {
+  high: 'baseline.sev.high',
+  medium: 'baseline.sev.medium',
+  low: 'baseline.sev.low',
 };
 
 const GRADE_VARIANT: Record<string, BadgeVariant> = {
@@ -79,11 +80,10 @@ const GRADE_VARIANT: Record<string, BadgeVariant> = {
   D: 'danger',
 };
 
-const PRIVILEGE_LABEL: Record<BaselinePrivilege, string> = {
-  root: 'root',
-  sudo: 'sudo',
-  none: '无特权',
-};
+/** root / sudo 是标识符本身，不用翻译；只有「无特权」需要本地化 */
+function privilegeLabel(value: BaselinePrivilege, t: TFunc): string {
+  return value === 'none' ? t('baseline.priv.none') : value;
+}
 
 /** 服务器区的两种视图：卡片看一台机器的细节，列表横向比对多台机器 */
 type HostViewMode = 'card' | 'list';
@@ -134,6 +134,7 @@ function ScoreRing({
   size?: number;
   stroke?: number;
 }) {
+  const t = useT();
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
   const ratio = ok ? Math.max(0, Math.min(100, score)) / 100 : 0;
@@ -144,7 +145,11 @@ function ScoreRing({
       className={`baseline-ring baseline-lvl-${level}`}
       style={{ width: size, height: size }}
       role="img"
-      aria-label={ok ? `评分 ${score} 分，等级 ${grade || '未评级'}` : '未完成体检'}
+      aria-label={
+        ok
+          ? t('baseline.ringAria', { score, grade: grade || t('baseline.ungraded') })
+          : t('baseline.ringAriaNone')
+      }
     >
       <svg width={size} height={size} aria-hidden="true">
         <circle
@@ -172,7 +177,11 @@ function ScoreRing({
           {ok ? score : '—'}
         </span>
         <span className="baseline-ring-unit">
-          {ok ? (grade ? `${grade} 级` : '') : '未体检'}
+          {ok
+            ? grade
+              ? t('baseline.gradeSuffix', { grade })
+              : ''
+            : t('baseline.notScanned')}
         </span>
       </span>
     </div>
@@ -190,23 +199,26 @@ function Counts({
   summary: { pass: number; warn: number; fail: number; unknown?: number };
   size?: 'sm' | 'md';
 }) {
+  const t = useT();
   const tone = size === 'sm' ? 'fs-xs' : '';
   return (
     <span className="baseline-counts">
-      <span className={`baseline-count is-pass ${tone}`}>通过 {summary.pass}</span>
+      <span className={`baseline-count is-pass ${tone}`}>
+        {t('baseline.count.pass', { n: summary.pass })}
+      </span>
       {summary.fail > 0 ? (
         <span className={`baseline-count is-fail ${tone}`}>
-          不合格 {summary.fail}
+          {t('baseline.count.fail', { n: summary.fail })}
         </span>
       ) : null}
       {summary.warn > 0 ? (
         <span className={`baseline-count is-warn ${tone}`}>
-          待改进 {summary.warn}
+          {t('baseline.count.warn', { n: summary.warn })}
         </span>
       ) : null}
       {(summary.unknown ?? 0) > 0 ? (
         <span className={`baseline-count is-unknown ${tone}`}>
-          无法检测 {summary.unknown}
+          {t('baseline.count.unknown', { n: summary.unknown })}
         </span>
       ) : null}
     </span>
@@ -224,6 +236,7 @@ function CheckRow({
   item: BaselineCheck;
   action?: ReactNode;
 }) {
+  const t = useT();
   return (
     <div className={`baseline-item is-${item.status}`}>
       <span className="baseline-item-icon" aria-hidden="true">
@@ -240,26 +253,28 @@ function CheckRow({
         <div className="baseline-item-head">
           <span className="baseline-item-title">{item.label}</span>
           <span className={`sev-chip is-${item.severity}`}>
-            {SEV_META[item.severity]}
+            {t(SEV_META[item.severity])}
           </span>
           {item.status !== 'pass' ? (
             <Badge variant={STATUS_META[item.status].variant} size="sm">
-              {STATUS_META[item.status].label}
+              {t(STATUS_META[item.status].label)}
             </Badge>
           ) : null}
         </div>
 
         <div className="baseline-item-values">
-          实际：<span className={item.status === 'fail' ? 'is-bad' : ''}>{item.value}</span>
+          {t('baseline.actual')}<span className={item.status === 'fail' ? 'is-bad' : ''}>{item.value}</span>
           {'　'}
-          期望：{item.expected}
+          {t('baseline.expected')}{item.expected}
         </div>
 
         {item.detail ? (
           <div className="fs-xs text-muted">{item.detail}</div>
         ) : null}
         {item.hint && item.status !== 'pass' ? (
-          <div className="baseline-item-hint">建议：{item.hint}</div>
+          <div className="baseline-item-hint">
+            {t('baseline.suggestion')}{item.hint}
+          </div>
         ) : null}
       </div>
 
@@ -283,6 +298,7 @@ function HostCard({
   onScan: (hostId: string) => void;
   scanning: boolean;
 }) {
+  const t = useT();
   const { summary } = host;
   const total = summary.total || 0;
   const width = (value: number) => (total ? `${(value / total) * 100}%` : '0%');
@@ -294,7 +310,7 @@ function HostCard({
       className={`baseline-host-card ${host.ok ? '' : 'is-unreachable'}`}
       role="button"
       tabIndex={0}
-      aria-label={`查看 ${host.name || host.host_id} 的体检详情`}
+      aria-label={t('baseline.viewHostAria', { name: host.name || host.host_id })}
       onClick={() => onOpen(host.host_id)}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -314,15 +330,19 @@ function HostCard({
         <span className="baseline-host-ident">
           <span className="baseline-host-name">{host.name || host.host_id}</span>
           <span className="baseline-host-addr">
-            {host.local ? '面板本机' : host.host || host.host_id}
+            {host.local ? t('baseline.localPanelHost') : host.host || host.host_id}
           </span>
           <span className="form-row" style={{ gap: 6 }}>
             <Badge variant={GRADE_VARIANT[host.grade] ?? 'neutral'} size="sm">
-              {host.ok ? host.grade_label : '未体检'}
+              {host.ok ? host.grade_label : t('baseline.notScanned')}
             </Badge>
             {host.ok && !host.elevated ? (
-              <Badge variant="neutral" size="sm" title="没有 root / sudo，只能体检不能加固">
-                只读
+              <Badge
+                variant="neutral"
+                size="sm"
+                title={t('baseline.readonlyBadgeTitle')}
+              >
+                {t('baseline.readonlyBadge')}
               </Badge>
             ) : null}
           </span>
@@ -334,7 +354,11 @@ function HostCard({
           {/* 问题构成占比条：绿=通过 橙=待改进 红=不合格 */}
           <span
             className="baseline-bar"
-            title={`通过 ${summary.pass} · 待改进 ${summary.warn} · 不合格 ${summary.fail}`}
+            title={t('baseline.barTitle', {
+              pass: summary.pass,
+              warn: summary.warn,
+              fail: summary.fail,
+            })}
           >
             <span className="is-pass" style={{ width: width(summary.pass) }} />
             <span className="is-warn" style={{ width: width(summary.warn) }} />
@@ -355,19 +379,19 @@ function HostCard({
             </span>
           ) : (
             <span className="fs-xs" style={{ color: 'var(--success)' }}>
-              全部 {summary.total} 项检查通过
+              {t('baseline.allPassedN', { n: summary.total })}
             </span>
           )}
         </span>
       ) : (
         <span className="baseline-host-body fs-xs text-muted">
-          {host.error || '无法连接该主机'}
+          {host.error || t('baseline.cannotConnectHost')}
         </span>
       )}
 
       <span className="baseline-host-foot">
         <span className="baseline-host-foot-main">
-          查看详情 <IconChevronRight size={13} />
+          {t('baseline.viewDetails')} <IconChevronRight size={13} />
         </span>
         {/* 阻止冒泡：点「扫描」不该顺带把详情也打开 */}
         <span
@@ -378,10 +402,10 @@ function HostCard({
             type="button"
             className="baseline-host-scan"
             disabled={scanning}
-            title={`只重新扫描 ${host.name || host.host_id} 这台主机`}
+            title={t('baseline.scanOneTitle', { name: host.name || host.host_id })}
             onClick={() => onScan(host.host_id)}
           >
-            {scanning ? '扫描中…' : '扫描'}
+            {scanning ? t('baseline.scanning') : t('baseline.scan')}
           </button>
         </span>
       </span>
@@ -394,6 +418,7 @@ function HostCard({
    --------------------------------------------------------------------------- */
 
 export function SecurityBaseline() {
+  const t = useT();
   const { hasPermission, isAdmin } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -461,10 +486,12 @@ export function SecurityBaseline() {
   const hostOptions = useMemo(
     () =>
       hosts.map((host) => ({
-        label: host.local ? `本机（${host.name}）` : host.name || host.address,
+        label: host.local
+          ? `${t('baseline.localOption')}（${host.name}）`
+          : host.name || host.address,
         value: host.id,
       })),
-    [hosts],
+    [hosts, t],
   );
 
   /* 加固后让总览与详情一起失效：改动会同时影响两边的评分 */
@@ -491,13 +518,18 @@ export function SecurityBaseline() {
       });
       await queryClient.invalidateQueries({ queryKey: ['baseline', 'fleet'] });
       toast.success(
-        `已扫描 ${fresh.name || id}`,
+        t('baseline.scannedToast', { name: fresh.name || id }),
         fresh.ok
-          ? `评分 ${fresh.score}（${fresh.grade_label}）· ${fresh.summary.fail} 项不合格 / ${fresh.summary.warn} 项待改进`
-          : fresh.error || '这台主机连不上',
+          ? t('baseline.scannedDetail', {
+              score: fresh.score,
+              grade: fresh.grade_label,
+              fail: fresh.summary.fail,
+              warn: fresh.summary.warn,
+            })
+          : fresh.error || t('baseline.hostUnreachable'),
       );
     } catch (err) {
-      toast.error('扫描失败', errorMessage(err));
+      toast.error(t('baseline.scanFailed'), errorMessage(err));
     } finally {
       setScanningId(null);
     }
@@ -512,7 +544,7 @@ export function SecurityBaseline() {
     () => [
       {
         key: 'name',
-        header: '服务器',
+        header: t('baseline.colHost'),
         width: 190,
         sortable: true,
         sortValue: (host) => host.name || host.host_id,
@@ -520,14 +552,14 @@ export function SecurityBaseline() {
           <div className="vm-name-cell">
             <span className="fw-500">{host.name || host.host_id}</span>
             <span className="fs-xs text-muted mono">
-              {host.local ? '面板本机' : host.host || host.host_id}
+              {host.local ? t('baseline.localPanelHost') : host.host || host.host_id}
             </span>
           </div>
         ),
       },
       {
         key: 'score',
-        header: '评分',
+        header: t('baseline.colScore'),
         width: 78,
         align: 'center',
         sortable: true,
@@ -542,22 +574,22 @@ export function SecurityBaseline() {
       },
       {
         key: 'grade',
-        header: '等级',
+        header: t('baseline.colGrade'),
         width: 108,
         sortable: true,
         sortValue: (host) => (host.ok ? host.grade : ''),
         render: (host) => (
           <Badge variant={GRADE_VARIANT[host.grade] ?? 'neutral'} size="sm">
-            {host.ok ? host.grade_label : '未体检'}
+            {host.ok ? host.grade_label : t('baseline.notScanned')}
           </Badge>
         ),
       },
       {
         key: 'counts',
-        header: '通过 / 待改进 / 不合格',
+        header: t('baseline.colCounts'),
         width: 150,
         sortable: true,
-        title: '按不合格项数量排序',
+        title: t('baseline.sortByFail'),
         sortValue: (host) => (host.ok ? host.summary.fail : -1),
         render: (host) =>
           host.ok ? (
@@ -569,12 +601,14 @@ export function SecurityBaseline() {
               <span className="is-fail">{host.summary.fail}</span>
             </span>
           ) : (
-            <span className="fs-xs text-danger">{host.error || '无法连接'}</span>
+            <span className="fs-xs text-danger">
+              {host.error || t('baseline.cannotConnect')}
+            </span>
           ),
       },
       {
         key: 'issues',
-        header: '待处理',
+        header: t('baseline.colPending'),
         render: (host) =>
           host.issues.length ? (
             <span className="baseline-issue-list">
@@ -590,7 +624,7 @@ export function SecurityBaseline() {
             </span>
           ) : host.ok ? (
             <span className="fs-xs" style={{ color: 'var(--success)' }}>
-              全部 {host.summary.total} 项通过
+              {t('baseline.allPassedShort', { n: host.summary.total })}
             </span>
           ) : null,
       },
@@ -600,36 +634,36 @@ export function SecurityBaseline() {
         width: 104,
         align: 'right',
         locked: true,
-        label: '操作',
+        label: t('common.actions'),
         render: (host) => (
           <div className="form-row" style={{ gap: 6, justifyContent: 'flex-end' }}>
             <Button size="sm" variant="ghost" onClick={() => openHost(host.host_id)}>
-              详情
+              {t('baseline.details')}
             </Button>
             <button
               type="button"
               className="baseline-host-scan"
               disabled={scanningId === host.host_id}
-              title={`只重新扫描 ${host.name || host.host_id} 这台主机`}
+              title={t('baseline.scanOneTitle', { name: host.name || host.host_id })}
               onClick={() => void scanHost(host.host_id)}
             >
-              {scanningId === host.host_id ? '扫描中…' : '扫描'}
+              {scanningId === host.host_id ? t('baseline.scanning') : t('baseline.scan')}
             </button>
           </div>
         ),
       },
     ],
-    [openHost, scanHost, scanningId],
+    [openHost, scanHost, scanningId, t],
   );
 
   const runFix = async (key: string, label: string) => {
     setBusyKey(key);
     try {
       const result = await baselineApi.fix(key, hostId);
-      toast.success(`已加固：${label}`, result.detail);
+      toast.success(t('baseline.fixDone', { label }), result.detail);
       await refreshAll();
     } catch (err) {
-      toast.error('加固失败', errorMessage(err));
+      toast.error(t('baseline.fixFailed'), errorMessage(err));
     } finally {
       setBusyKey(null);
     }
@@ -641,17 +675,23 @@ export function SecurityBaseline() {
       const result = await baselineApi.fixAll(hostId);
       if (result.failed) {
         toast.warning(
-          '部分加固失败',
-          `成功 ${result.fixed} 项，失败 ${result.failed} 项，详见各项提示`,
+          t('baseline.fixPartial'),
+          t('baseline.fixPartialDetail', {
+            fixed: result.fixed,
+            failed: result.failed,
+          }),
         );
       } else if (result.fixed) {
-        toast.success(`已加固 ${result.fixed} 项`, '已重新体检，可查看最新评分');
+        toast.success(
+          t('baseline.fixedN', { fixed: result.fixed }),
+          t('baseline.fixedNDetail'),
+        );
       } else {
-        toast.info('没有需要加固的项', '当前可自动处理的项均已达标');
+        toast.info(t('baseline.nothingToFix'), t('baseline.nothingToFixDetail'));
       }
       await refreshAll();
     } catch (err) {
-      toast.error('批量加固失败', errorMessage(err));
+      toast.error(t('baseline.fixAllFailed'), errorMessage(err));
     } finally {
       setBusyAll(false);
     }
@@ -671,11 +711,15 @@ export function SecurityBaseline() {
       const fresh = await baselineApi.fleet(true);
       queryClient.setQueryData(['baseline', 'fleet'], fresh);
       toast.success(
-        '已重新体检全部服务器',
-        `${fresh.totals.hosts} 台 · 平均 ${fresh.totals.avg_score} 分 · 体检时间 ${formatDateTime(fresh.generated_at)}`,
+        t('baseline.rescannedAll'),
+        t('baseline.rescannedAllDetail', {
+          hosts: fresh.totals.hosts,
+          avg: fresh.totals.avg_score,
+          time: formatDateTime(fresh.generated_at),
+        }),
       );
     } catch (err) {
-      toast.error('体检失败', errorMessage(err));
+      toast.error(t('baseline.checkFailed'), errorMessage(err));
     } finally {
       setRescanningAll(false);
     }
@@ -691,8 +735,8 @@ export function SecurityBaseline() {
 
   return (
     <PageShell
-      title="安全基线"
-      subtitle="对整个平台的服务器做一键体检：SSH、口令策略、防火墙、时间同步、弱口令账号与内核参数"
+      title={t('baseline.title')}
+      subtitle={t('baseline.subtitle')}
       actions={
         <div className="form-row">
           {view === 'host' && canManage && report?.elevated && report.summary.auto_fixable > 0 ? (
@@ -702,9 +746,9 @@ export function SecurityBaseline() {
               icon={<IconShield size={14} />}
               loading={busyAll}
               onClick={() => void runFixAll()}
-              title="批量修复所有可安全自动处理的项；关闭 SSH 口令认证等可能锁定登录的项需单独修复"
+              title={t('baseline.fixAllTitle')}
             >
-              一键加固（{report.summary.auto_fixable}）
+              {t('baseline.fixAll', { n: report.summary.auto_fixable })}
             </Button>
           ) : null}
           <Button
@@ -714,7 +758,7 @@ export function SecurityBaseline() {
             loading={busy}
             onClick={refetch}
           >
-            {view === 'fleet' ? '重新体检全部' : '重新体检'}
+            {view === 'fleet' ? t('baseline.rescanAll') : t('baseline.rescan')}
           </Button>
         </div>
       }
@@ -722,7 +766,7 @@ export function SecurityBaseline() {
       {/* ---- 视图切换 ---- */}
       <Card collapsible={false}>
         <div className="baseline-viewbar">
-          <div className="segmented" role="tablist" aria-label="体检视图">
+          <div className="segmented" role="tablist" aria-label={t('baseline.viewAria')}>
             <button
               type="button"
               role="tab"
@@ -730,7 +774,7 @@ export function SecurityBaseline() {
               className={`segmented-item ${view === 'fleet' ? 'is-active' : ''}`}
               onClick={showFleet}
             >
-              全平台总览
+              {t('baseline.fleetView')}
             </button>
             <button
               type="button"
@@ -739,13 +783,13 @@ export function SecurityBaseline() {
               className={`segmented-item ${view === 'host' ? 'is-active' : ''}`}
               onClick={() => openHost(hostId)}
             >
-              单机详情
+              {t('baseline.hostView')}
             </button>
           </div>
 
           {view === 'host' ? (
             <Select
-              aria-label="选择服务器"
+              aria-label={t('baseline.selectHostAria')}
               value={hostId}
               onChange={(event) => openHost(event.target.value)}
               options={
@@ -753,7 +797,7 @@ export function SecurityBaseline() {
                   ? hostOptions
                   : /* 兜底只给管理员：普通用户看不到本机，给这个选项点了必 403 */
                     isAdmin
-                    ? [{ label: '本机', value: 'local' }]
+                    ? [{ label: t('baseline.localOption'), value: 'local' }]
                     : []
               }
               style={{ maxWidth: 280 }}
@@ -764,23 +808,32 @@ export function SecurityBaseline() {
             {view === 'fleet' && fleet ? (
               <>
                 <span>
-                  体检时间 {formatDateTime(fleet.generated_at)}
+                  {t('baseline.checkedAt', { time: formatDateTime(fleet.generated_at) })}
                   {/* 缓存过期后进页面会先显示这份结果再后台重扫：得让人知道
                       屏幕上的分数正在被刷新，而不是以为它过时了 */}
-                  {fleetQuery.isFetching ? ' · 正在重新体检…' : ''}
+                  {fleetQuery.isFetching ? t('baseline.rescanning') : ''}
                 </span>
                 <span>
-                  {fleet.totals.hosts} 台服务器 · 平均 {fleet.totals.avg_score} 分
+                  {t('baseline.fleetTotals', {
+                    n: fleet.totals.hosts,
+                    score: fleet.totals.avg_score,
+                  })}
                 </span>
               </>
             ) : null}
             {view === 'host' && report ? (
               <>
-                <span>体检时间 {formatDateTime(report.checked_at)}</span>
                 <span>
-                  {report.local ? '面板所在主机' : `受管主机 ${report.address}`}
+                  {t('baseline.checkedAt', { time: formatDateTime(report.checked_at) })}
                 </span>
-                {hostQuery.isFetching ? <span>正在重新体检…</span> : null}
+                <span>
+                  {report.local
+                    ? t('baseline.hostOfPanel')
+                    : t('baseline.managedHost', { address: report.address })}
+                </span>
+                {hostQuery.isFetching ? (
+                  <span>{t('baseline.rescanningShort')}</span>
+                ) : null}
               </>
             ) : null}
           </span>
@@ -793,7 +846,7 @@ export function SecurityBaseline() {
           {fleetQuery.isError ? (
             <Card collapsible={false}>
               <ErrorState
-                title="体检失败"
+                title={t('baseline.checkFailed')}
                 message={errorMessage(fleetQuery.error)}
                 onRetry={() => void fleetQuery.refetch()}
               />
@@ -805,7 +858,7 @@ export function SecurityBaseline() {
           {!fleetQuery.isError ? (
             <div className="grid grid-4">
               <KpiCard
-                label="服务器总数"
+                label={t('baseline.kpi.hosts')}
                 value={fleet?.totals.hosts ?? '—'}
                 icon={<IconServer size={16} />}
                 tone="accent"
@@ -813,13 +866,16 @@ export function SecurityBaseline() {
                 hint={
                   fleet
                     ? fleet.totals.unreachable
-                      ? `可达 ${fleet.totals.reachable} · 不可达 ${fleet.totals.unreachable}`
-                      : '全部可达'
+                      ? t('baseline.kpi.reachable', {
+                          reachable: fleet.totals.reachable,
+                          unreachable: fleet.totals.unreachable,
+                        })
+                      : t('baseline.kpi.allReachable')
                     : undefined
                 }
               />
               <KpiCard
-                label="平均评分"
+                label={t('baseline.kpi.avg')}
                 value={fleet?.totals.avg_score ?? '—'}
                 icon={<IconShield size={16} />}
                 tone={
@@ -835,12 +891,15 @@ export function SecurityBaseline() {
                 loading={fleetQuery.isLoading}
                 hint={
                   fleet
-                    ? `最低 ${fleet.totals.worst_score} 分 · 达标 ${fleet.totals.healthy} 台`
+                    ? t('baseline.kpi.worst', {
+                        worst: fleet.totals.worst_score,
+                        healthy: fleet.totals.healthy,
+                      })
                     : undefined
                 }
               />
               <KpiCard
-                label="不合格项"
+                label={t('baseline.kpi.fail')}
                 value={fleet?.totals.fail ?? '—'}
                 icon={<IconAlert size={16} />}
                 tone={fleet?.totals.fail ? 'danger' : 'success'}
@@ -848,13 +907,13 @@ export function SecurityBaseline() {
                 hint={
                   fleet
                     ? fleet.totals.fail
-                      ? '建议优先处理高危项'
-                      : '没有不合格项'
+                      ? t('baseline.kpi.failHint')
+                      : t('baseline.kpi.noFail')
                     : undefined
                 }
               />
               <KpiCard
-                label="待改进项"
+                label={t('baseline.kpi.warn')}
                 value={fleet?.totals.warn ?? '—'}
                 icon={<IconInfo size={16} />}
                 tone={fleet?.totals.warn ? 'warning' : 'success'}
@@ -862,8 +921,8 @@ export function SecurityBaseline() {
                 hint={
                   fleet
                     ? fleet.totals.fixable
-                      ? `其中 ${fleet.totals.fixable} 项可自动加固`
-                      : '没有可自动加固的项'
+                      ? t('baseline.kpi.fixableHint', { n: fleet.totals.fixable })
+                      : t('baseline.kpi.nothingFixable')
                     : undefined
                 }
               />
@@ -872,17 +931,21 @@ export function SecurityBaseline() {
 
           <Card collapsible={false}>
             <CardHeader
-              title={fleet ? `服务器（${fleet.hosts.length}）` : '服务器'}
-              subtitle="按「最需要处理」排序：有不合格项的最前，其次是连不上的主机"
+              title={
+                fleet
+                  ? t('baseline.hostsTitle', { n: fleet.hosts.length })
+                  : t('baseline.hostsTitlePlain')
+              }
+              subtitle={t('baseline.hostsSubtitle')}
               icon={<IconServer size={16} />}
               actions={
                 <SegmentedControl<HostViewMode>
                   value={hostView}
                   onChange={setHostView}
-                  ariaLabel="服务器展示方式"
+                  ariaLabel={t('baseline.hostViewAria')}
                   options={[
-                    { label: '卡片', value: 'card' },
-                    { label: '列表', value: 'list' },
+                    { label: t('nodes.viewCards'), value: 'card' },
+                    { label: t('nodes.viewList'), value: 'list' },
                   ]}
                 />
               }
@@ -890,8 +953,7 @@ export function SecurityBaseline() {
             {fleetQuery.isLoading ? (
               <>
                 <p className="fs-sm text-muted mb-16">
-                  正在并发体检所有服务器…（每台一条 SSH，首次要等几秒；结果会缓存 5
-                  分钟，期间进这一页不再重扫）
+                  {t('baseline.scanningAll')}
                 </p>
                 {/* 骨架沿用真卡片的外形（.baseline-host-card），
                     别在卡片里再套一排白卡 */}
@@ -920,7 +982,7 @@ export function SecurityBaseline() {
                 </div>
               ) : (
                 <Table
-                  caption="服务器安全基线总览"
+                  caption={t('baseline.tableCaption')}
                   rows={fleet.hosts}
                   columns={hostColumns}
                   rowKey={(host) => host.host_id}
@@ -931,8 +993,8 @@ export function SecurityBaseline() {
               )
             ) : !fleetQuery.isError ? (
               <EmptyState
-                title="还没有可体检的服务器"
-                description="本机应该总是可用；要体检其它服务器，先去「SSH 安全 → 受管主机」把它们加进来。"
+                title={t('baseline.emptyFleetTitle')}
+                description={t('baseline.emptyFleetDesc')}
                 icon={<IconServer size={26} />}
               />
             ) : null}
@@ -946,7 +1008,7 @@ export function SecurityBaseline() {
           {hostQuery.isError ? (
             <Card collapsible={false}>
               <ErrorState
-                title="体检失败"
+                title={t('baseline.checkFailed')}
                 message={errorMessage(hostQuery.error)}
                 onRetry={() => void hostQuery.refetch()}
               />
@@ -955,7 +1017,7 @@ export function SecurityBaseline() {
 
           {hostQuery.isLoading ? (
             <Card collapsible={false}>
-              <div className="fs-sm text-muted">正在读取安全配置…</div>
+              <div className="fs-sm text-muted">{t('baseline.dataLoading')}</div>
             </Card>
           ) : null}
 
@@ -964,11 +1026,11 @@ export function SecurityBaseline() {
               {/* ---- 主机概览 ---- */}
               <Card collapsible={false}>
                 <CardHeader
-                  title="体检评分"
+                  title={t('baseline.reportTitle')}
                   subtitle={
                     report.local
-                      ? '面板所在主机'
-                      : `受管主机 ${report.address}`
+                      ? t('baseline.hostOfPanel')
+                      : t('baseline.managedHost', { address: report.address })
                   }
                   icon={<IconShield size={16} />}
                 />
@@ -986,22 +1048,22 @@ export function SecurityBaseline() {
                       {report.name || report.host_id}
                       {report.local ? (
                         <Badge variant="accent" size="sm">
-                          面板本机
+                          {t('baseline.localPanelHost')}
                         </Badge>
                       ) : null}
                       {report.ok && !report.elevated ? (
                         <Badge
                           variant="neutral"
                           size="sm"
-                          title="该主机上没有 root / sudo，只能体检不能加固"
+                          title={t('baseline.readonlyHostTitle')}
                         >
-                          只读体检
+                          {t('baseline.readonlyScan')}
                         </Badge>
                       ) : null}
                     </div>
 
                     <div className="baseline-head-conclusion">
-                      {conclusionOf(report)}
+                      {conclusionOf(report, t)}
                     </div>
 
                     {report.ok ? <Counts summary={report.summary} /> : null}
@@ -1009,27 +1071,27 @@ export function SecurityBaseline() {
 
                   <div className="baseline-head-meta">
                     <div className="baseline-meta-item">
-                      <span className="baseline-meta-label">主机名</span>
+                      <span className="baseline-meta-label">{t('baseline.metaHostname')}</span>
                       <span className="baseline-meta-value mono">
                         {report.host || report.host_id}
                       </span>
                     </div>
                     <div className="baseline-meta-item">
-                      <span className="baseline-meta-label">系统</span>
+                      <span className="baseline-meta-label">{t('baseline.metaOs')}</span>
                       <span className="baseline-meta-value">
                         {report.os.distribution || '—'}
                       </span>
                     </div>
                     <div className="baseline-meta-item">
-                      <span className="baseline-meta-label">内核</span>
+                      <span className="baseline-meta-label">{t('baseline.metaKernel')}</span>
                       <span className="baseline-meta-value mono">
                         {report.os.kernel || '—'}
                       </span>
                     </div>
                     <div className="baseline-meta-item">
-                      <span className="baseline-meta-label">加固权限</span>
+                      <span className="baseline-meta-label">{t('baseline.metaPrivilege')}</span>
                       <span className="baseline-meta-value">
-                        {PRIVILEGE_LABEL[report.privilege]}
+                        {privilegeLabel(report.privilege, t)}
                       </span>
                     </div>
                   </div>
@@ -1038,18 +1100,25 @@ export function SecurityBaseline() {
 
               {/* ---- 不可达 / 只读提示 ---- */}
               {!report.ok ? (
-                <Notice tone="danger" title="这台服务器体检不了" icon={<IconAlert size={16} />}>
-                  {report.error || '无法连接'}
-                  。请先在「SSH 安全 → 受管主机」里确认它能连上（地址、端口、凭据、
-                  指纹是否已信任），修好之后回到这里刷新。
+                <Notice
+                  tone="danger"
+                  title={t('baseline.unreachableTitle')}
+                  icon={<IconAlert size={16} />}
+                >
+                  {report.error || t('baseline.cannotConnectShort')}
+                  {t('baseline.unreachableTail')}
                 </Notice>
               ) : null}
 
               {report.ok && !report.elevated ? (
-                <Notice tone="warning" title="这台服务器只有只读权限" icon={<IconInfo size={16} />}>
+                <Notice
+                  tone="warning"
+                  title={t('baseline.readonlyTitle')}
+                  icon={<IconInfo size={16} />}
+                >
                   {report.local
-                    ? '面板进程不是以 root 运行，读不到 /etc/shadow 等文件，也改不了系统配置。用 root 运行面板（或 systemd 以 root 托管）即可解锁全部检查与一键加固。'
-                    : '该主机的 SSH 凭据没有 root / sudo 权限：读不到 /etc/shadow 或系统日志，也无法写入配置文件。请给它一个带免密 sudo 的账号（在「SSH 安全 → 受管主机」里勾选「使用 sudo」）后再来加固。'}
+                    ? t('baseline.readonlyLocal')
+                    : t('baseline.readonlyRemote')}
                 </Notice>
               ) : null}
 
@@ -1057,8 +1126,8 @@ export function SecurityBaseline() {
               {report.ok && pending.length > 0 ? (
                 <Card collapsible={false}>
                   <CardHeader
-                    title={`需要处理（${pending.length}）`}
-                    subtitle="按严重程度排序。可自动修复的直接点「修复」，其余的按建议手动处理"
+                    title={t('baseline.pendingTitle', { n: pending.length })}
+                    subtitle={t('baseline.pendingSubtitle')}
                     icon={<IconAlert size={16} />}
                   />
                   <div className="baseline-todo">
@@ -1076,11 +1145,11 @@ export function SecurityBaseline() {
                               title={
                                 report.elevated
                                   ? undefined
-                                  : '缺少 root / sudo 权限，无法自动加固'
+                                  : t('baseline.fixNoPermTitle')
                               }
                               onClick={() => void runFix(item.key, item.label)}
                             >
-                              修复
+                              {t('baseline.fix')}
                             </Button>
                           ) : null
                         }
@@ -1091,8 +1160,12 @@ export function SecurityBaseline() {
               ) : null}
 
               {report.ok && pending.length === 0 ? (
-                <Notice tone="success" title="全部检查通过" icon={<IconCheck size={16} />}>
-                  {report.summary.total} 项检查全部达标，保持定期体检即可。
+                <Notice
+                  tone="success"
+                  title={t('baseline.allPassTitle')}
+                  icon={<IconCheck size={16} />}
+                >
+                  {t('baseline.allPassBody', { n: report.summary.total })}
                 </Notice>
               ) : null}
 
@@ -1108,13 +1181,19 @@ export function SecurityBaseline() {
                       title={category.label}
                       subtitle={
                         fail || warn
-                          ? `${category.checks.length} 项检查 · ${fail} 项不合格 / ${warn} 项待改进`
-                          : `${category.checks.length} 项检查全部通过`
+                          ? t('baseline.catSubtitleIssues', {
+                              total: category.checks.length,
+                              fail,
+                              warn,
+                            })
+                          : t('baseline.catSubtitleOk', {
+                              total: category.checks.length,
+                            })
                       }
                       icon={CATEGORY_ICONS[category.key] ?? <IconShield size={15} />}
                       actions={
                         <span className="baseline-cat-score">
-                          {category.score} 分
+                          {t('baseline.scoreValue', { n: category.score })}
                         </span>
                       }
                     />
@@ -1129,43 +1208,49 @@ export function SecurityBaseline() {
 
               {/* ---- 说明与加固策略 ---- */}
               <CollapsibleCard
-                title="体检范围与加固策略"
+                title={t('baseline.policyTitle')}
                 icon={<IconInfo size={15} />}
               >
                 <div className="fs-sm text-secondary" style={{ lineHeight: 1.9 }}>
                   <div>
-                    <strong>体检对象</strong>：整个平台的服务器 —— 面板所在主机（本机）
-                    与「SSH 安全 → 受管主机」里启用的主机。两端在后端共用同一套判定
-                    逻辑，结论口径一致；集群里的 Proxmox 节点若要体检，把它作为受管
-                    主机加进来即可（PVE API 本身不提供在节点上执行 shell 的能力）。
+                    <strong>{t('baseline.policyScopeLabel')}</strong>
+                    {t('baseline.policyScope')}
                   </div>
                   <div>
-                    <strong>评分口径</strong>：按严重级别加权 —— 高危 3、中危 2、
-                    低危 1，「待改进」按半分计；「无法检测」的项不计入分母，所以缺
-                    权限时不会被冤枉扣分。
+                    <strong>{t('baseline.policyScoreLabel')}</strong>
+                    {t('baseline.policyScore')}
                   </div>
                   <div>
-                    <strong>一键加固写哪儿</strong>：只写面板自己命名的文件 ——
+                    <strong>{t('baseline.policyWriteLabel')}</strong>
+                    {t('baseline.policyWriteA')}
                     <span className="mono">/etc/ssh/sshd_config.d/99-panel-baseline.conf</span>
-                    与 <span className="mono">/etc/sysctl.d/99-panel-baseline.conf</span>；
-                    修改 <span className="mono">/etc/login.defs</span> 前先备份。SSH
-                    配置改完立刻 <span className="mono">sshd -t</span> 校验、内核参数
-                    改完复读 <span className="mono">/proc</span> 确认，校验不过
-                    <strong>自动回滚</strong>，不会把机器改到登录不上去。
+                    {t('baseline.policyWriteB')}
+                    <span className="mono">/etc/sysctl.d/99-panel-baseline.conf</span>
+                    {t('baseline.policyWriteC')}
+                    <span className="mono">/etc/login.defs</span>
+                    {t('baseline.policyWriteD')}
+                    <span className="mono">sshd -t</span>
+                    {t('baseline.policyWriteE')}
+                    <span className="mono">/proc</span>
+                    {t('baseline.policyWriteF')}
+                    <strong>{t('baseline.policyWriteG')}</strong>
+                    {t('baseline.policyWriteH')}
                   </div>
                   <div>
-                    <strong>不会自动做的事</strong>：关闭 SSH 口令认证这类可能把人锁
-                    在门外的项只能逐项确认后单独修复；受管主机若正用「root + 口令」
-                    或「口令认证」连接，相应的加固会被直接拒绝（否则面板会连同自己
-                    一起关在门外）。防火墙、PAM 复杂度模块、UID 0 账号这些因环境而
-                    异的项只给可执行的手动建议。
+                    <strong>{t('baseline.policyNoAutoLabel')}</strong>
+                    {t('baseline.policyNoAuto')}
                   </div>
                   <div>
-                    <strong>审计</strong>：报告读取记{' '}
-                    <span className="mono">baseline.read</span> /{' '}
-                    <span className="mono">baseline.fleet_read</span>，加固记{' '}
-                    <span className="mono">baseline.fix</span> /{' '}
-                    <span className="mono">baseline.fix_all</span>。
+                    <strong>{t('baseline.policyAuditLabel')}</strong>
+                    {t('baseline.policyAuditA')}
+                    <span className="mono">baseline.read</span>
+                    {t('baseline.policyAuditB')}
+                    <span className="mono">baseline.fleet_read</span>
+                    {t('baseline.policyAuditC')}
+                    <span className="mono">baseline.fix</span>
+                    {t('baseline.policyAuditD')}
+                    <span className="mono">baseline.fix_all</span>
+                    {t('baseline.policyAuditE')}
                   </div>
                 </div>
               </CollapsibleCard>
@@ -1181,16 +1266,16 @@ export function SecurityBaseline() {
    一句话结论
    --------------------------------------------------------------------------- */
 
-function conclusionOf(report: BaselineReport): string {
+function conclusionOf(report: BaselineReport, t: TFunc): string {
   if (!report.ok) {
-    return '这台服务器暂时体检不了，先在「SSH 安全 → 受管主机」里确认它能连上。';
+    return t('baseline.conclusionUnreachable');
   }
   const { fail, warn, total } = report.summary;
   if (!fail && !warn) {
-    return `全部 ${total} 项检查达标，保持定期体检即可。`;
+    return t('baseline.conclusionAllPass', { total });
   }
   if (fail) {
-    return `有 ${fail} 项不合格、${warn} 项待改进，建议优先处理不合格的高危项。`;
+    return t('baseline.conclusionFails', { fail, warn });
   }
-  return `没有不合格项，还有 ${warn} 项可以再收紧一些。`;
+  return t('baseline.conclusionWarns', { warn });
 }

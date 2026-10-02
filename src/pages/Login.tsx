@@ -21,9 +21,11 @@ import {
   IconUser,
 } from '../components/Icons';
 import { AuthShell } from '../components/AuthShell';
+import { useT } from '../i18n';
 
 export function Login() {
   const { login, completeMfa } = useAuth();
+  const t = useT();
   const navigate = useNavigate();
 
   const [username, setUsername] = useState('');
@@ -117,16 +119,16 @@ export function Login() {
 
     /* 本地校验：错误直接落到对应输入框下方 */
     const local: typeof fieldErrors = {};
-    if (!username.trim()) local.username = '请输入用户名';
-    if (!password) local.password = '请输入密码';
+    if (!username.trim()) local.username = t('auth.err.usernameRequired');
+    if (!password) local.password = t('auth.err.passwordRequired');
     const code = captchaCode.trim();
     if (captchaMode === 'image') {
-      if (!code) local.captcha = '请输入验证码';
+      if (!code) local.captcha = t('auth.err.captchaRequired');
     } else if (captchaMode === 'slider') {
       /* 与后端同一个阈值：没拖到最右端就在本地拦一道，省掉一次必然失败的往返 */
       const max = (captchaQ.data?.width ?? 320) - (captchaQ.data?.handle_size ?? 56);
       if (sliderXRef.current < max - (captchaQ.data?.tolerance ?? 6)) {
-        local.captcha = '请拖动滑块到最右端完成验证';
+        local.captcha = t('auth.err.sliderRequired');
       }
     }
     if (local.username || local.password || local.captcha) {
@@ -190,7 +192,7 @@ export function Login() {
 
     const code = mfaCode.trim();
     if (!code) {
-      setFieldErrors({ mfa: '请输入动态码或一次性恢复码' });
+      setFieldErrors({ mfa: t('auth.err.mfaRequired') });
       return;
     }
 
@@ -215,12 +217,12 @@ export function Login() {
   return (
     <AuthShell>
       <h1 className="login-title">
-        {mfaToken ? '两步验证' : '登录控制台'}
+        {mfaToken ? t('auth.mfa.title') : t('auth.login.title')}
       </h1>
       <p className="login-subtitle">
         {mfaToken
-          ? '请输入认证器 App 里的动态码'
-          : '请输入面板账号以继续'}
+          ? t('auth.mfa.subtitle')
+          : t('auth.login.subtitle')}
       </p>
 
       <form
@@ -251,13 +253,10 @@ export function Login() {
           <>
             <div className="login-error" style={{ background: 'var(--surface-2)' }}>
               <IconShield size={16} />
-              <span>
-                该账号已开启两步验证：请输入 6 位动态码。手机不在身边时，
-                可以改用一张一次性恢复码（形如 ABCD-EFGH）。
-              </span>
+              <span>{t('auth.mfa.notice')}</span>
             </div>
             <Input
-              label="动态码 / 恢复码"
+              label={t('auth.mfa.code')}
               value={mfaCode}
               onChange={(e) => setMfaCode(e.target.value)}
               placeholder="123456"
@@ -278,13 +277,13 @@ export function Login() {
                 setFieldErrors({});
               }}
             >
-              返回重新输入账号密码
+              {t('auth.mfa.back')}
             </button>
           </>
         ) : (
           <>
         <Input
-          label="用户名"
+          label={t('auth.login.username')}
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           placeholder="admin"
@@ -297,8 +296,8 @@ export function Login() {
         />
 
         <Input
-          label="密码"
-          labelExtra={<Link to="/forgot-password">忘记密码？</Link>}
+          label={t('auth.login.password')}
+          labelExtra={<Link to="/forgot-password">{t('auth.login.forgot')}</Link>}
           type={showPassword ? 'text' : 'password'}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -312,8 +311,12 @@ export function Login() {
             <button
               type="button"
               onClick={() => setShowPassword((v) => !v)}
-              aria-label={showPassword ? '隐藏密码' : '显示密码'}
-              title={showPassword ? '隐藏密码' : '显示密码'}
+              aria-label={
+                showPassword ? t('auth.login.hidePassword') : t('auth.login.showPassword')
+              }
+              title={
+                showPassword ? t('auth.login.hidePassword') : t('auth.login.showPassword')
+              }
               style={{
                 background: 'none',
                 border: 'none',
@@ -332,10 +335,10 @@ export function Login() {
           <div className="login-captcha">
             <div className="login-captcha-input">
               <Input
-                label="验证码"
+                label={t('auth.login.captcha')}
                 value={captchaCode}
                 onChange={(e) => setCaptchaCode(e.target.value)}
-                placeholder="看图输入"
+                placeholder={t('auth.login.captchaPlaceholder')}
                 autoComplete="off"
                 autoCapitalize="characters"
                 disabled={submitting}
@@ -353,14 +356,16 @@ export function Login() {
                 setFieldErrors((prev) => ({ ...prev, captcha: undefined }));
                 void captchaQ.refetch();
               }}
-              title="看不清？点击更换"
-              aria-label="更换验证码"
+              title={t('auth.login.captchaRefresh')}
+              aria-label={t('auth.login.captchaRefreshAria')}
             >
               {captchaQ.data?.image ? (
-                <img src={captchaQ.data.image} alt="验证码" />
+                <img src={captchaQ.data.image} alt={t('auth.login.captchaAlt')} />
               ) : (
                 <span>
-                  {captchaQ.isFetching ? '加载中…' : '加载失败，点击重试'}
+                  {captchaQ.isFetching
+                    ? t('auth.login.captchaLoading')
+                    : t('auth.login.captchaFailed')}
                 </span>
               )}
             </button>
@@ -390,14 +395,18 @@ export function Login() {
           block
           loading={submitting}
         >
-          {submitting ? '正在登录…' : mfaToken ? '验证并登录' : '登录'}
+          {submitting
+            ? t('auth.login.submitting')
+            : mfaToken
+              ? t('auth.mfa.verify')
+              : t('auth.login.submit')}
         </Button>
 
         {mfaToken ? null : (
           <div className="login-register-hint">
-            还没有账号？
-            <Link to="/register">注册申请</Link>
-            后由管理员审批开通
+            {t('auth.login.noAccount')}
+            <Link to="/register">{t('auth.login.registerLink')}</Link>
+            {t('auth.login.registerSuffix')}
           </div>
         )}
       </form>
@@ -405,18 +414,18 @@ export function Login() {
       {/* ---- 后端状态 ---- */}
       <div className="login-health">
         <div className="login-health-row">
-          <span className="login-health-label">后端服务</span>
+          <span className="login-health-label">{t('auth.health.backend')}</span>
           <Badge
             variant={backendUp ? 'success' : 'danger'}
             dot
             pulse={backendUp}
             size="sm"
           >
-            {backendUp ? '正常' : '无法连接'}
+            {backendUp ? t('auth.health.up') : t('auth.health.down')}
           </Badge>
         </div>
         <div className="login-health-row">
-          <span className="login-health-label">Proxmox VE</span>
+          <span className="login-health-label">{t('auth.health.pve')}</span>
           <Badge
             variant={pveConnected ? 'success' : 'warning'}
             dot
@@ -424,24 +433,22 @@ export function Login() {
             size="sm"
           >
             {health.isLoading
-              ? '检测中…'
+              ? t('auth.health.checking')
               : pveConnected
-                ? '已连接'
-                : '未连接'}
+                ? t('auth.health.connected')
+                : t('auth.health.disconnected')}
           </Badge>
         </div>
         {health.data?.version ? (
           <div className="login-health-row">
-            <span className="login-health-label">后端版本</span>
+            <span className="login-health-label">{t('auth.health.version')}</span>
             <span className="mono fs-sm text-secondary">
               {health.data.version}
             </span>
           </div>
         ) : null}
         {!backendUp ? (
-          <div className="fs-xs text-muted mt-8">
-            提示：请确认后端服务已在 http://localhost:8080 启动。
-          </div>
+          <div className="fs-xs text-muted mt-8">{t('auth.health.hint')}</div>
         ) : null}
       </div>
     </AuthShell>

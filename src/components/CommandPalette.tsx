@@ -29,17 +29,18 @@ import {
 import { useAuth } from '../hooks/useAuth';
 import { useUiPrefs } from '../hooks/useUiPrefs';
 import { IconSearch, IconChevronRight } from './Icons';
+import { useT } from '../i18n';
 
 /** 输入停顿多久才去搜后端。太短会把每个字符都发一趟请求。 */
 const DEBOUNCE_MS = 200;
 
 /** 侧边栏里没有、但值得能被搜到的页面（子页面 / 隐藏入口） */
 const EXTRA_PAGES: NavItem[] = [
-  { to: '/ssh-security/config', label: 'SSH 安全 · 配置', icon: null },
-  { to: '/nodes/connections', label: '节点 · 连接配置', icon: null },
+  { to: '/ssh-security/config', labelKey: 'nav.sshSecurityConfig', icon: null },
+  { to: '/nodes/connections', labelKey: 'nav.nodesConnections', icon: null },
   /* 个人中心已从侧边栏分组下沉到侧边栏底部，不再是 NAV_SECTIONS 的一项，
      所以这里要显式补回来 —— 否则 Ctrl+K 会搜不到它。 */
-  { to: '/profile', label: '个人中心', icon: null },
+  { to: '/profile', labelKey: 'nav.profile', icon: null },
 ];
 
 interface Row {
@@ -60,6 +61,7 @@ export interface CommandPaletteProps {
 
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const navigate = useNavigate();
+  const t = useT();
   const { user } = useAuth();
   /* 被管理员关闭的入口同样不在这里出现：Ctrl+K 是页面的第二个入口，
      它漏出来就等于「关掉了但还进得去」。 */
@@ -102,15 +104,17 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     const items = [...NAV_SECTIONS.flatMap((s) => s.items), ...EXTRA_PAGES]
       .filter((item) => canAccessNav(item, user))
       .filter((item) => !isPathDisabled(item.to, disabledPaths));
-    return items.filter((item) => !q || item.label.toLowerCase().includes(q));
-  }, [query, user, disabledPaths]);
+    /* 按**当前语言**的文案匹配：中文界面下输入「虚拟机」要能命中，
+       切到英文后同一串输入则不该命中 —— 用户看到什么就搜什么。 */
+    return items.filter((item) => !q || t(item.labelKey).toLowerCase().includes(q));
+  }, [query, user, disabledPaths, t]);
 
   /* ---- 合并成一个扁平列表，供键盘上下移动 ---- */
   const rows = useMemo<Row[]>(() => {
     const result: Row[] = pages.map((item) => ({
       key: `page:${item.to}`,
-      group: '页面',
-      title: item.label,
+      group: t('commandPalette.groupPages'),
+      title: t(item.labelKey),
       subtitle: item.to,
       badge: '',
       link: item.to,
@@ -130,7 +134,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       }
     }
     return result;
-  }, [pages, searchQuery.data]);
+  }, [pages, searchQuery.data, t]);
 
   /* 结果变了就把光标收回第一项：否则会停在一个已经不存在的位置上 */
   useEffect(() => {
@@ -184,7 +188,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         className="cmd-panel"
         role="dialog"
         aria-modal="true"
-        aria-label="全局搜索"
+        aria-label={t('commandPalette.dialogAria')}
         onKeyDown={onKeyDown}
       >
         <div className="cmd-input-row">
@@ -194,12 +198,14 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             className="cmd-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索页面、虚拟机、容器、节点、存储、用户…"
-            aria-label="搜索"
+            placeholder={t('commandPalette.placeholder')}
+            aria-label={t('commandPalette.searchAria')}
             autoComplete="off"
             spellCheck={false}
           />
-          {searching ? <span className="cmd-hint">搜索中…</span> : null}
+          {searching ? (
+            <span className="cmd-hint">{t('commandPalette.searching')}</span>
+          ) : null}
           <kbd className="cmd-kbd">Esc</kbd>
         </div>
 
@@ -207,10 +213,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           {rows.length === 0 ? (
             <div className="cmd-empty">
               {debounced && searchQuery.isLoading
-                ? '正在搜索…'
+                ? t('commandPalette.loading')
                 : debounced
-                  ? `没有匹配「${debounced}」的结果`
-                  : '输入关键词开始搜索'}
+                  ? t('commandPalette.noMatch', { query: debounced })
+                  : t('commandPalette.hint')}
             </div>
           ) : (
             rows.map((row, index) => {
@@ -253,14 +259,15 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         <div className="cmd-footer">
           <span>
             <kbd className="cmd-kbd">↑</kbd>
-            <kbd className="cmd-kbd">↓</kbd> 选择
+            <kbd className="cmd-kbd">↓</kbd> {t('commandPalette.footerSelect')}
           </span>
           <span>
-            <kbd className="cmd-kbd">Enter</kbd> 打开
+            <kbd className="cmd-kbd">Enter</kbd> {t('commandPalette.footerOpen')}
           </span>
           {debounced ? (
             <span className="cmd-footer-count">
-              命中 {total} 项{total > rows.length ? '，仅显示前几项' : ''}
+              {t('commandPalette.hitCount', { count: total })}
+              {total > rows.length ? t('commandPalette.hitTruncated') : ''}
             </span>
           ) : null}
         </div>

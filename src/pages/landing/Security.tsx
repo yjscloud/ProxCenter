@@ -13,28 +13,33 @@
    ========================================================================== */
 
 import { IconInfo } from '../../components/Icons';
-import { AUDIT_SAMPLE, PILLARS, type AuditRow } from './content';
+import { useT, type MessageKey } from '../../i18n';
+import type { AuditRow } from './content';
+import { useLandingContent } from './hooks';
 import { SectionHead } from './Common';
 
-const RESULT_META: Record<AuditRow['result'], { label: string; tone: string }> = {
-  ok: { label: '成功', tone: 'ok' },
-  denied: { label: '已拦截', tone: 'warn' },
-  failed: { label: '失败', tone: 'bad' },
+const RESULT_META: Record<AuditRow['result'], { labelKey: MessageKey; tone: string }> = {
+  ok: { labelKey: 'landing.security.resultOk', tone: 'ok' },
+  denied: { labelKey: 'landing.security.resultDenied', tone: 'warn' },
+  failed: { labelKey: 'landing.security.resultFailed', tone: 'bad' },
 };
 
 export function Security() {
+  const t = useT();
+  const { pillars, auditSample } = useLandingContent();
+
   return (
     <section className="lp-band-dark" id="security">
       <div className="lp-container">
         <SectionHead
           index="05"
           eyebrow="Security & Compliance"
-          title="权限、确认、留痕，一个都不省"
-          desc="管的是虚拟机与宿主机，任何一次误操作代价都不小。面板在「谁能做、要不要再确认一次、做完留没留下痕迹」这三件事上没有偷懒。"
+          title={t('landing.security.title')}
+          desc={t('landing.security.desc')}
         />
 
         <div className="lp-defenses">
-          {PILLARS.map((pillar, index) => (
+          {pillars.map((pillar, index) => (
             <article
               className="lp-defense lp-reveal"
               key={pillar.title}
@@ -49,22 +54,26 @@ export function Security() {
 
         <div className="lp-audit lp-reveal">
           <div className="lp-audit-head">
-            <span className="lp-audit-title">审计流水</span>
+            <span className="lp-audit-title">{t('landing.security.auditTitle')}</span>
             <span className="lp-audit-hint">
               <IconInfo size={13} />
-              示意数据 · 真实记录可在「审计日志」页按用户 / 动作 / 结果筛选
+              {t('landing.security.auditHint')}
             </span>
           </div>
 
-          <div className="lp-audit-table" role="table" aria-label="审计流水示例">
+          <div
+            className="lp-audit-table"
+            role="table"
+            aria-label={t('landing.security.auditAria')}
+          >
             <div className="lp-audit-tr is-head" role="row">
-              <span role="columnheader">时间</span>
-              <span role="columnheader">操作人</span>
-              <span role="columnheader">动作</span>
-              <span role="columnheader">对象</span>
-              <span role="columnheader">结果</span>
+              <span role="columnheader">{t('landing.security.colTime')}</span>
+              <span role="columnheader">{t('landing.security.colUser')}</span>
+              <span role="columnheader">{t('landing.security.colAction')}</span>
+              <span role="columnheader">{t('landing.security.colTarget')}</span>
+              <span role="columnheader">{t('landing.security.colResult')}</span>
             </div>
-            {AUDIT_SAMPLE.map((row) => {
+            {auditSample.map((row) => {
               const meta = RESULT_META[row.result];
               return (
                 <div className="lp-audit-tr" role="row" key={`${row.time}-${row.action}`}>
@@ -81,7 +90,7 @@ export function Security() {
                     {row.target}
                   </span>
                   <span className={`lp-audit-result is-${meta.tone}`} role="cell">
-                    {meta.label}
+                    {t(meta.labelKey)}
                   </span>
                 </div>
               );

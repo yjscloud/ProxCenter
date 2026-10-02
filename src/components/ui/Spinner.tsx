@@ -3,6 +3,7 @@
    ========================================================================== */
 
 import type { CSSProperties } from 'react';
+import { useT } from '../../i18n';
 
 export interface SpinnerProps {
   size?: number;
@@ -11,13 +12,14 @@ export interface SpinnerProps {
   label?: string;
 }
 
-export function Spinner({ size = 20, className, label = '加载中' }: SpinnerProps) {
+export function Spinner({ size = 20, className, label }: SpinnerProps) {
+  const t = useT();
   return (
     <span
       className={`spinner ${className ?? ''}`}
       style={{ width: size, height: size }}
       role="status"
-      aria-label={label}
+      aria-label={label ?? t('common.loading')}
     >
       <svg viewBox="0 0 24 24" width={size} height={size}>
         <circle
@@ -75,8 +77,9 @@ export function TableSkeleton({
   rows?: number;
   cols?: number;
 }) {
+  const t = useT();
   return (
-    <div className="table-skeleton" role="status" aria-label="加载表格数据">
+    <div className="table-skeleton" role="status" aria-label={t('state.loadingTable')}>
       <div className="table-skeleton-head">
         {Array.from({ length: cols }).map((_, i) => (
           <Skeleton key={i} height={12} width={`${60 + ((i * 17) % 40)}%`} />
@@ -105,8 +108,9 @@ export function CardSkeleton({
   count?: number;
   height?: number;
 }) {
+  const t = useT();
   return (
-    <div className="grid grid-auto-280" role="status" aria-label="加载卡片数据">
+    <div className="grid grid-auto-280" role="status" aria-label={t('state.loadingCards')}>
       {Array.from({ length: count }).map((_, i) => (
         <div className="card card-padded" key={i}>
           <Skeleton width="55%" height={15} />
@@ -121,8 +125,9 @@ export function CardSkeleton({
 
 /** 详情页骨架屏 */
 export function DetailSkeleton() {
+  const t = useT();
   return (
-    <div role="status" aria-label="加载详情">
+    <div role="status" aria-label={t('state.loadingDetail')}>
       <div className="flex gap-12 items-center mb-24">
         <Skeleton width={200} height={22} />
         <Skeleton width={80} height={22} radius={999} />

@@ -44,8 +44,9 @@ import {
   IconVm,
 } from '../components/Icons';
 import { formatBytes, formatUptimeShort, parseTags } from '../utils/format';
-import { ostypeLabel } from '../utils/status';
-import { OSTYPE_OPTIONS, CPU_TYPE_OPTIONS } from '../utils/status';
+import { ostypeLabel } from '../utils/status'
+import { useT } from '../i18n';
+import { ostypeOptions, cpuTypeOptions } from '../utils/status';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -58,6 +59,7 @@ type TemplateTab = 'qemu' | 'lxc';
 type ViewMode = 'cards' | 'list';
 
 export function Templates() {
+  const t = useT();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
@@ -143,11 +145,11 @@ export function Templates() {
     () => [
       {
         key: 'name',
-        header: '名称',
+        header: t('templates.colName'),
         width: 200,
-        render: (t) => (
-          <span className="fw-600" title={t.name}>
-            {t.name || `${tab === 'lxc' ? 'CT' : 'VM'} ${t.vmid}`}
+        render: (tpl) => (
+          <span className="fw-600" title={tpl.name}>
+            {tpl.name || `${tab === 'lxc' ? 'CT' : 'VM'} ${tpl.vmid}`}
           </span>
         ),
       },
@@ -156,17 +158,17 @@ export function Templates() {
         header: 'VMID',
         width: 90,
         mono: true,
-        render: (t) => t.vmid,
+        render: (tpl) => tpl.vmid,
       },
       {
         key: 'node',
-        header: '节点',
+        header: t('common.node'),
         width: 150,
-        render: (t) => (
+        render: (tpl) => (
           <span>
-            {t.node}
-            {t.connection_name ? (
-              <span className="text-muted"> · {t.connection_name}</span>
+            {tpl.node}
+            {tpl.connection_name ? (
+              <span className="text-muted"> · {tpl.connection_name}</span>
             ) : null}
           </span>
         ),
@@ -175,65 +177,65 @@ export function Templates() {
         key: 'cpu',
         header: 'CPU',
         width: 80,
-        render: (t) => `${t.maxcpu ?? '—'} 核`,
+        render: (tpl) => t('templates.coresValue', { count: tpl.maxcpu ?? '—' }),
       },
       {
         key: 'mem',
-        header: '内存',
+        header: t('templates.colMem'),
         width: 100,
-        render: (t) => formatBytes(t.maxmem, 0),
+        render: (tpl) => formatBytes(tpl.maxmem, 0),
       },
       {
         key: 'disk',
-        header: '磁盘',
+        header: t('templates.colDisk'),
         width: 100,
-        render: (t) => formatBytes(t.maxdisk, 0),
+        render: (tpl) => formatBytes(tpl.maxdisk, 0),
       },
       {
         key: 'tags',
-        header: '标签',
+        header: t('templates.colTags'),
         width: 160,
-        render: (t) =>
-          parseTags(t.tags).length ? (
-            <TagList tags={parseTags(t.tags)} max={2} />
+        render: (tpl) =>
+          parseTags(tpl.tags).length ? (
+            <TagList tags={parseTags(tpl.tags)} max={2} />
           ) : (
             <span className="text-muted">—</span>
           ),
       },
       {
         key: 'actions',
-        header: '操作',
+        header: t('templates.colActions'),
         width: 170,
         align: 'right',
         locked: true,
-        label: '操作',
-        render: (t) => (
+        label: t('templates.colActions'),
+        render: (tpl) => (
           /* row-actions：与列表页一致的操作单元格（右对齐、紧凑间距） */
           <span className="row-actions">
             <Button
               size="sm"
               variant="primary"
-              onClick={() => setCloneTarget(t)}
+              onClick={() => setCloneTarget(tpl)}
               disabled={!canWrite}
             >
-              克隆
+              {t('templates.clone')}
             </Button>
             <IconButton
-              label="查看详情"
+              label={t('templates.viewDetail')}
               onClick={() =>
                 navigate(
-                  t.guest_type === 'lxc'
-                    ? `/lxc/${t.node}/${t.vmid}`
-                    : `/vms/${t.node}/${t.vmid}`,
+                  tpl.guest_type === 'lxc'
+                    ? `/lxc/${tpl.node}/${tpl.vmid}`
+                    : `/vms/${tpl.node}/${tpl.vmid}`,
                 )
               }
             >
               <IconEye size={15} />
             </IconButton>
             <IconButton
-              label={`删除模板 ${t.name}`}
+              label={t('templates.deleteAria', { name: tpl.name })}
               variant="danger"
-              onClick={() => setDeleteTarget(t)}
+              onClick={() => setDeleteTarget(tpl)}
               disabled={!canWrite}
             >
               <IconTrash size={15} />
@@ -242,7 +244,7 @@ export function Templates() {
         ),
       },
     ],
-    [canWrite, navigate, tab],
+    [canWrite, navigate, tab, t],
   );
 
   return (
@@ -250,10 +252,14 @@ export function Templates() {
       title={
         <>
           <IconTemplate size={20} />
-          模板
+          {t('templates.title')}
         </>
       }
-      subtitle={`共 ${templates.length} 个模板（虚拟机 ${vmTemplates.length} · 容器 ${ctTemplates.length}）· 用于快速批量部署虚拟机 / 容器`}
+      subtitle={t('templates.subtitle', {
+        total: templates.length,
+        vm: vmTemplates.length,
+        ct: ctTemplates.length,
+      })}
       actions={
         <>
           <Button
@@ -262,7 +268,7 @@ export function Templates() {
             onClick={() => void templatesQuery.refetch()}
             loading={templatesQuery.isFetching && !templatesQuery.isLoading}
           >
-            刷新
+            {t('templates.refresh')}
           </Button>
           {canWrite ? (
             <Button
@@ -270,7 +276,7 @@ export function Templates() {
               icon={<IconPlus size={15} />}
               onClick={() => setWizardOpen(true)}
             >
-              创建模板
+              {t('templates.create')}
             </Button>
           ) : null}
         </>
@@ -278,52 +284,54 @@ export function Templates() {
     >
       {/* ---- 最佳实践说明 ---- */}
       <CollapsibleCard
-        title="Cloud-Init 模板最佳实践"
+        title={t('templates.bestPractice')}
         icon={<IconCloud size={16} />}
       >
         <ul>
           <li>
-            <strong>镜像选择</strong>：优先使用官方 Cloud Image（Ubuntu Cloud
-            Image、Debian Generic Cloud、Rocky/Alma Cloud），这类镜像自带 cloud-init
-            与 virtio 驱动。下载后放到任一 <code>dir</code> 类型存储（如{' '}
-            <code>local</code>）的 iso 目录即可。
+            <strong>{t('templates.bpImage')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpImageBody')}
           </li>
           <li>
-            <strong>磁盘总线</strong>：使用 <code>SCSI + virtio-scsi-single</code>{' '}
-            控制器，并把磁盘格式设为 <code>qcow2</code>，兼顾性能与快照能力。
+            <strong>{t('templates.bpBus')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpBusBody')}
           </li>
           <li>
-            <strong>机型与固件</strong>：Linux 用 <code>i440fx + SeaBIOS</code>；
-            Windows 11 / Server 2022 必须 <code>q35 + OVMF</code>，并添加 EFI 磁盘与
-            TPM。
+            <strong>{t('templates.bpFirmware')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpFirmwareBody')}
           </li>
           <li>
-            <strong>Cloud-Init 驱动</strong>：创建模板时必须挂载 Cloud-Init
-            驱动（IDA 总线），否则首次开机无法注入用户与网络配置。
+            <strong>{t('templates.bpCiDriver')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpCiDriverBody')}
           </li>
           <li>
-            <strong>默认用户</strong>：不要依赖镜像默认账号。统一在 Cloud-Init
-            中指定 <code>user</code> 与 SSH 公钥，禁用密码登录更安全。
+            <strong>{t('templates.bpDefaultUser')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpDefaultUserBody')}
           </li>
           <li>
-            <strong>网络</strong>：Cloud-Init 的 <code>ip_configs</code> 推荐使用{' '}
-            <code>dhcp</code>；若需静态地址，务必带上 CIDR 前缀（如{' '}
-            <code>192.168.1.10/24</code>）与网关。
+            <strong>{t('templates.bpNetwork')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpNetworkBody')}
           </li>
           <li>
-            <strong>内存与 Balloon</strong>：模板内存不要过小（建议 ≥ 1024 MB）。
-            再把<strong>最低保留内存</strong>设成一个更低的值（如 1024）——
-            PVE 不设这个值时按「整份内存」算，宿主机即使看到克隆体空闲也收不回内存；
-            这个值会被所有克隆继承，在模板上设一次最省事。
+            <strong>{t('templates.bpMemory')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpMemoryBody')}
           </li>
           <li>
-            <strong>转换前清理</strong>：转模板前执行{' '}
-            <code>cloud-init clean</code>、清空 <code>/etc/machine-id</code> 与
-            SSH host key，避免克隆体之间身份冲突。
+            <strong>{t('templates.bpCleanup')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpCleanupBody')}
           </li>
           <li>
-            <strong>标签规范</strong>：给模板打上 <code>template</code>、
-            <code>os:ubuntu</code> 之类的标签，方便克隆时快速筛选。
+            <strong>{t('templates.bpTags')}</strong>
+            {t('templates.bpColon')}
+            {t('templates.bpTagsBody')}
           </li>
         </ul>
       </CollapsibleCard>
@@ -334,31 +342,39 @@ export function Templates() {
           <SegmentedControl<TemplateTab>
             value={tab}
             onChange={setTab}
-            ariaLabel="模板类型"
+            ariaLabel={t('templates.tabTypeAria')}
             options={[
-              { label: `虚拟机模板（${vmTemplates.length}）`, value: 'qemu' },
-              { label: `容器模板（${ctTemplates.length}）`, value: 'lxc' },
+              {
+                label: t('templates.tabVm', { count: vmTemplates.length }),
+                value: 'qemu',
+              },
+              {
+                label: t('templates.tabCt', { count: ctTemplates.length }),
+                value: 'lxc',
+              },
             ]}
           />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索模板名称、VMID、标签…"
+            placeholder={t('templates.searchPlaceholder')}
             block={false}
-            aria-label="搜索模板"
+            aria-label={t('templates.searchAria')}
           />
         </div>
         <div className="toolbar-right">
           <SegmentedControl<ViewMode>
             value={view}
             onChange={setView}
-            ariaLabel="模板展示方式"
+            ariaLabel={t('templates.viewAria')}
             options={[
-              { label: '卡片', value: 'cards' },
-              { label: '列表', value: 'list' },
+              { label: t('templates.viewCards'), value: 'cards' },
+              { label: t('templates.viewList'), value: 'list' },
             ]}
           />
-          <span className="fs-sm text-muted">共 {shown.length} 个</span>
+          <span className="fs-sm text-muted">
+            {t('templates.totalShown', { count: shown.length })}
+          </span>
         </div>
       </div>
 
@@ -367,7 +383,7 @@ export function Templates() {
         <CardSkeleton count={4} height={200} />
       ) : templatesQuery.isError ? (
         <ErrorState
-          title="无法加载模板列表"
+          title={t('templates.loadFailed')}
           message={errorMessage(templatesQuery.error)}
           onRetry={() => void templatesQuery.refetch()}
         />
@@ -376,25 +392,26 @@ export function Templates() {
           <EmptyState
             title={
               search
-                ? '没有匹配的模板'
-                : `暂无${tab === 'lxc' ? '容器' : '虚拟机'}模板`
+                ? t('templates.emptySearch')
+                : tab === 'lxc'
+                  ? t('templates.emptyCt')
+                  : t('templates.emptyVm')
             }
             description={
               search ? (
-                '尝试调整搜索关键词。'
+                t('templates.emptySearchDesc')
               ) : (
                 <>
-                  模板可以让虚拟机部署变得可重复。你既可以从 cloud-init 镜像生成，
-                  也可以把现有虚拟机转换而来。
+                  {t('templates.emptyDesc')}
                   {/* 向导能覆盖绝大多数场景，但批量/自动化场景直接给命令更快，
                       省得用户去翻 PVE 文档 */}
                   <span className="empty-cli">
-                    命令行等价写法：
+                    {t('templates.emptyCli')}
+                    <code className="mono">{t('templates.emptyCliImport')}</code>
+                    {t('templates.emptyCliTail')}
                     <code className="mono">
-                      qm importdisk &lt;vmid&gt; &lt;镜像&gt; &lt;存储&gt;
+                      {t('templates.emptyCliTemplate')}
                     </code>
-                    ，再执行
-                    <code className="mono">qm template &lt;vmid&gt;</code>
                   </span>
                 </>
               )
@@ -408,14 +425,14 @@ export function Templates() {
                     icon={<IconCloud size={15} />}
                     onClick={() => setWizardOpen(true)}
                   >
-                    从镜像生成模板
+                    {t('templates.createFromImage')}
                   </Button>
                   <Button
                     variant="secondary"
                     icon={<IconVm size={15} />}
                     onClick={() => setConvertOpen(true)}
                   >
-                    从现有虚拟机 / 容器转换
+                    {t('templates.convertFromVm')}
                   </Button>
                 </div>
               ) : undefined
@@ -445,8 +462,10 @@ export function Templates() {
         <Table<TemplateItem>
           columns={templateColumns}
           rows={shown}
-          rowKey={(t) => `${t.connection_id}/${t.node}/${t.vmid}`}
-          caption={`${tab === 'lxc' ? '容器' : '虚拟机'}模板列表：名称、VMID、节点、规格与操作`}
+          rowKey={(tpl) => `${tpl.connection_id}/${tpl.node}/${tpl.vmid}`}
+          caption={t('templates.tableCaption', {
+            kind: tab === 'lxc' ? t('templates.kindCt') : t('templates.kindVm'),
+          })}
         />
       )}
 
@@ -461,13 +480,13 @@ export function Templates() {
       <Modal
         open={convertOpen}
         onClose={() => setConvertOpen(false)}
-        title="从现有虚拟机 / 容器转换"
-        description="选择一台非模板的虚拟机或容器，将其转换为模板"
+        title={t('templates.convertTitle')}
+        description={t('templates.convertDesc')}
         size="sm"
         footer={
           <>
             <Button variant="secondary" onClick={() => setConvertOpen(false)}>
-              取消
+              {t('common.cancel')}
             </Button>
           </>
         }
@@ -484,7 +503,9 @@ export function Templates() {
                   ? lxcApi.toTemplate(vm.node, vm.vmid, vm.connection_id)
                   : vmsApi.toTemplate(vm.node, vm.vmid, vm.connection_id),
                 {
-                  title: `转换「${vm.name || vm.vmid}」为模板`,
+                  title: t('templates.convertTask', {
+                    name: vm.name || vm.vmid,
+                  }),
                   node: vm.node,
                   invalidate: [['vms'], ['lxc'], ['templates'], ['cluster']],
                 },
@@ -533,7 +554,9 @@ export function Templates() {
                     deleteTarget.connection_id,
                   ),
               {
-                title: `删除模板「${deleteTarget.name || deleteTarget.vmid}」`,
+                title: t('templates.deleteTask', {
+                  name: deleteTarget.name || deleteTarget.vmid,
+                }),
                 node: deleteTarget.node,
                 invalidate: [['vms'], ['templates'], ['cluster'], ['storages']],
               },
@@ -544,16 +567,18 @@ export function Templates() {
             setBusy(false);
           }
         }}
-        title="删除模板"
+        title={t('templates.deleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={busy}
         requireText={deleteTarget?.name || String(deleteTarget?.vmid ?? '')}
         message={
           <>
-            即将删除模板{' '}
-            <strong>{deleteTarget?.name || `VM ${deleteTarget?.vmid}`}</strong>
-            （VMID {deleteTarget?.vmid}）。已克隆出的虚拟机不受影响，但该模板将无法再用于新建。
+            {t('templates.deleteBodyPre')}
+            <strong>
+              {deleteTarget?.name || `VM ${deleteTarget?.vmid}`}
+            </strong>
+            {t('templates.deleteBodyTail', { vmid: deleteTarget?.vmid })}
           </>
         }
       />
@@ -578,6 +603,7 @@ function TemplateCard({
   onDelete: () => void;
   onOpen: () => void;
 }) {
+  const t = useT();
   return (
     <article className="entity-card">
       <div className="entity-card-head">
@@ -592,23 +618,25 @@ function TemplateCard({
         </div>
         {/* 类型由标签页区分，卡片上只标「模板」 */}
         <Badge variant="accent" size="sm">
-          模板
+          {t('templates.badge')}
         </Badge>
       </div>
 
       <div className="entity-card-stats">
         <div className="entity-stat">
           <span className="entity-stat-label">CPU</span>
-          <span className="entity-stat-value">{template.maxcpu ?? '—'} 核</span>
+          <span className="entity-stat-value">
+            {t('templates.coresValue', { count: template.maxcpu ?? '—' })}
+          </span>
         </div>
         <div className="entity-stat">
-          <span className="entity-stat-label">内存</span>
+          <span className="entity-stat-label">{t('templates.colMem')}</span>
           <span className="entity-stat-value">
             {formatBytes(template.maxmem, 0)}
           </span>
         </div>
         <div className="entity-stat">
-          <span className="entity-stat-label">磁盘</span>
+          <span className="entity-stat-label">{t('templates.colDisk')}</span>
           <span className="entity-stat-value">
             {formatBytes(template.maxdisk, 0)}
           </span>
@@ -616,10 +644,16 @@ function TemplateCard({
       </div>
 
       <div className="flex items-center gap-8 flex-wrap">
-        <span className="fs-xs text-muted">OS：{ostypeLabel(template.type)}</span>
+        <span className="fs-xs text-muted">
+          {t('templates.osValue', {
+            value: ostypeLabel(template.type, t),
+          })}
+        </span>
         <span className="fs-xs text-muted">·</span>
         <span className="fs-xs text-muted">
-          运行 {formatUptimeShort(template.uptime)}
+          {t('templates.uptime', {
+            uptime: formatUptimeShort(template.uptime),
+          })}
         </span>
       </div>
 
@@ -636,14 +670,14 @@ function TemplateCard({
             onClick={onClone}
             disabled={!canWrite}
           >
-            克隆
+            {t('templates.clone')}
           </Button>
-          <IconButton label="查看详情" onClick={onOpen}>
+          <IconButton label={t('templates.viewDetail')} onClick={onOpen}>
             <IconEye size={15} />
           </IconButton>
         </div>
         <IconButton
-          label={`删除模板 ${template.name}`}
+          label={t('templates.deleteAria', { name: template.name })}
           variant="danger"
           onClick={onDelete}
           disabled={!canWrite}
@@ -668,10 +702,11 @@ function ConvertForm({
   busy: boolean;
   onSubmit: (vm: VmSummary) => void | Promise<void>;
 }) {
+  const t = useT();
   const [selected, setSelected] = useState('');
 
   const options = [
-    { label: '请选择虚拟机 / 容器', value: '' },
+    { label: t('templates.convertPick'), value: '' },
     ...vms.map((v) => ({
       label: `${v.name || `${v.type === 'lxc' ? 'CT' : 'VM'} ${v.vmid}`} · ${
         v.vmid
@@ -692,21 +727,20 @@ function ConvertForm({
   return (
     <div className="flex flex-col gap-16">
       <Select
-        label="目标虚拟机 / 容器"
+        label={t('templates.convertTarget')}
         required
         value={selected}
         onChange={(e) => setSelected(e.target.value)}
         options={options}
         hint={
           vms.length === 0
-            ? '没有可转换的虚拟机或容器（已排除模板）'
-            : '将关机并转换为模板'
+            ? t('templates.convertNone')
+            : t('templates.convertHint')
         }
       />
 
-      <Notice tone="warning" title="转换影响">
-        转换过程中虚拟机会被强制关机。转换完成后它无法再直接启动，只能用于克隆。
-        若仍需正常运行，请先克隆一份再转换。
+      <Notice tone="warning" title={t('templates.convertNoticeTitle')}>
+        {t('templates.convertNoticeBody')}
       </Notice>
 
       <Button
@@ -716,7 +750,7 @@ function ConvertForm({
         loading={busy}
         block
       >
-        关机并转换为模板
+        {t('templates.convertSubmit')}
       </Button>
     </div>
   );
@@ -735,6 +769,7 @@ function CloneTemplateDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const runner = useTaskRunner();
   const { canWrite } = useAuth();
 
@@ -809,13 +844,13 @@ function CloneTemplateDialog({
   const idNum = Number(newId);
   const idError =
     newId && (!Number.isInteger(idNum) || idNum < 100 || idNum > 999999999)
-      ? 'VMID 需为 100 ~ 999999999 之间的整数'
+      ? t('templates.vmidRule')
       : undefined;
 
   /* 虚拟机占 images 存储、容器占 rootdir 存储 —— 别把放不下的选项列给用户挑 */
   const storageContent = isLxc ? 'rootdir' : 'images';
   const storageOptions = [
-    { label: '继承模板存储', value: '' },
+    { label: t('templates.storageInherit'), value: '' },
     ...(storagesQuery.data ?? [])
       .filter(
         (s) =>
@@ -823,7 +858,10 @@ function CloneTemplateDialog({
           s.content.split(/[,;]/).some((c) => c.trim() === storageContent),
       )
       .map((s) => ({
-        label: `${s.storage}（可用 ${formatBytes(s.avail)}）`,
+        label: t('templates.storageAvail', {
+          storage: s.storage,
+          avail: formatBytes(s.avail),
+        }),
         value: s.storage,
       })),
   ];
@@ -849,7 +887,7 @@ function CloneTemplateDialog({
             template.connection_id,
           ),
           {
-            title: `从容器模板克隆（VMID ${idNum}）`,
+            title: t('templates.cloneTaskCt', { vmid: idNum }),
             node: template.node,
             invalidate: [['vms'], ['lxc'], ['templates'], ['cluster'], ['storages']],
           },
@@ -877,7 +915,7 @@ function CloneTemplateDialog({
             template.connection_id,
           ),
           {
-            title: `从模板克隆（VMID ${idNum}）`,
+            title: t('templates.cloneTaskVm', { vmid: idNum }),
             node: template.node,
             invalidate: [['vms'], ['templates'], ['cluster'], ['storages']],
           },
@@ -893,18 +931,19 @@ function CloneTemplateDialog({
     <Modal
       open={Boolean(template)}
       onClose={onClose}
-      title={isLxc ? '从模板克隆容器' : '从模板克隆虚拟机'}
+      title={isLxc ? t('templates.cloneCtTitle') : t('templates.cloneVmTitle')}
       description={
         template
-          ? `模板：${template.name || `${isLxc ? 'CT' : 'VM'} ${template.vmid}`}（${
-              template.connection_name ? `${template.connection_name} · ` : ''
-            }${template.node}）`
+          ? t('templates.cloneFrom', {
+              name: template.name || `${isLxc ? 'CT' : 'VM'} ${template.vmid}`,
+              meta: `${template.connection_name ? `${template.connection_name} · ` : ''}${template.node}`,
+            })
           : undefined
       }
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -912,36 +951,42 @@ function CloneTemplateDialog({
             loading={busy}
             disabled={!newId || Boolean(idError)}
           >
-            开始克隆
+            {t('templates.cloneStart')}
           </Button>
         </>
       }
     >
       <div className="form-grid-2">
         <Input
-          label="新 VMID"
+          label={t('templates.cloneNewId')}
           required
           value={newId}
           onChange={(e) => setNewId(e.target.value.replace(/\D/g, ''))}
           error={idError}
           hint={
             nextIdQuery.data
-              ? `建议 ID：${nextIdQuery.data.vmid}`
-              : '需为唯一整数'
+              ? t('templates.cloneSuggested', { vmid: nextIdQuery.data.vmid })
+              : t('templates.cloneUnique')
           }
         />
         <Input
-          label={isLxc ? '新主机名' : '新名称'}
+          label={
+            isLxc ? t('templates.cloneNewHostname') : t('templates.cloneNewName')
+          }
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={isLxc ? '克隆后的容器主机名' : '克隆后的虚拟机名称'}
+          placeholder={
+            isLxc
+              ? t('templates.cloneHostnamePlaceholder')
+              : t('templates.cloneNamePlaceholder')
+          }
         />
         <Select
-          label="目标节点（可选）"
+          label={t('templates.cloneTargetNode')}
           value={targetNode}
           onChange={(e) => setTargetNode(e.target.value)}
           options={[
-            { label: '与模板同节点', value: '' },
+            { label: t('templates.cloneSameNode'), value: '' },
             ...(nodesQuery.data ?? []).map((n) => ({
               label: n.node,
               value: n.node,
@@ -951,38 +996,36 @@ function CloneTemplateDialog({
         {/* 内存气球：模板不带这个值时 PVE 按整份内存算，克隆体在宿主机上收不回内存 */}
         {isLxc ? null : (
           <Input
-            label="最低保留内存（MB，可选）"
+            label={t('templates.cloneBalloon')}
             type="number"
             min={0}
             step={256}
             value={balloon}
             onChange={(e) => setBalloon(e.target.value)}
-            hint="留空 = 沿用模板；如 1024 = 至少保留 1G，余量可被宿主机收回"
+            hint={t('templates.cloneBalloonHint')}
           />
         )}
         <Select
-          label="目标存储（可选）"
+          label={t('templates.cloneTargetStorage')}
           value={targetStorage}
           onChange={(e) => setTargetStorage(e.target.value)}
           options={storageOptions}
-          hint="完整克隆必须指定或继承可用存储"
+          hint={t('templates.cloneStorageHint')}
         />
       </div>
 
       <div className="mt-16">
         {isLxc ? (
-          <div className="field-message">
-            容器没有链接克隆：PVE 的容器克隆固定为<b>全量</b>，磁盘数据会完整复制一份。
-          </div>
+          <div className="field-message">{t('templates.cloneCtFullNotice')}</div>
         ) : (
           <>
             <Checkbox
               checked={full}
               onChange={(e) => setFull(e.target.checked)}
-              label="完整克隆（复制全部磁盘数据，独立运行）"
+              label={t('templates.cloneFullCheck')}
             />
             <div className="field-message">
-              默认不勾选，即<b>链接克隆</b>：几秒完成、几乎不额外占用空间，但依赖模板磁盘。
+              {t('templates.cloneLinkedNotice')}
             </div>
           </>
         )}
@@ -990,29 +1033,29 @@ function CloneTemplateDialog({
 
       <div className="mt-16">
         <Textarea
-          label="描述"
+          label={t('common.description')}
           rows={2}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="记录该虚拟机用途"
+          placeholder={t('templates.cloneDescPlaceholder')}
         />
         <div className="field-message">
           {vmDefaultsQuery.data?.dns ? (
             <>
-              DNS 将写入面板默认值 <span className="mono">{vmDefaultsQuery.data.dns}</span>
-              （可在「设置 → 虚拟机创建默认值」修改，清空该设置则改为继承 DHCP / RA）。
+              {t('templates.cloneDnsDefault', {
+                dns: vmDefaultsQuery.data.dns,
+              })}
             </>
           ) : (
-            <>DNS 未在面板配置默认值，将继承模板 / DHCP / RA 下发的设置。</>
+            <>{t('templates.cloneDnsNone')}</>
           )}
         </div>
       </div>
 
       {!isLxc && !full ? (
         <div className="mt-16">
-          <Notice tone="warning" title="链接克隆">
-            以模板磁盘为 backing file 增量生成，秒级完成；但模板一旦被删除或磁盘链被合并，
-            克隆体将无法使用。需要完全独立的副本时，请勾选上方「完整克隆」。
+          <Notice tone="warning" title={t('templates.cloneLinkedTitle')}>
+            {t('templates.cloneLinkedBody')}
           </Notice>
         </div>
       ) : null}
@@ -1035,6 +1078,7 @@ function TemplateCreateWizard({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const { canWrite } = useAuth();
 
@@ -1142,18 +1186,21 @@ function TemplateCreateWizard({
 
   const diskStorageOptions = useMemo(
     () => [
-      { label: '请选择存储池', value: '' },
+      { label: t('templates.wizStoragePlaceholder'), value: '' },
       ...(storagesQuery.data ?? [])
         .filter(
           (s) =>
             s.active && s.content.split(/[,;]/).some((c) => c.trim() === 'images'),
         )
         .map((s) => ({
-          label: `${s.storage}（可用 ${formatBytes(s.avail)}）`,
+          label: t('templates.storageAvail', {
+            storage: s.storage,
+            avail: formatBytes(s.avail),
+          }),
           value: s.storage,
         })),
     ],
-    [storagesQuery.data],
+    [storagesQuery.data, t],
   );
 
   const bridgeOptions = useMemo(() => {
@@ -1163,15 +1210,15 @@ function TemplateCreateWizard({
     );
     const list = bridges.length > 0 ? bridges : ifaces;
     return [
-      { label: '请选择网桥', value: '' },
+      { label: t('templates.wizBridgePlaceholder'), value: '' },
       ...list.map((i) => ({ label: i.iface, value: i.iface })),
     ];
-  }, [bridgesQuery.data]);
+  }, [bridgesQuery.data, t]);
 
   const idNum = Number(vmid);
   const idError =
     vmid && (!Number.isInteger(idNum) || idNum < 100 || idNum > 999999999)
-      ? 'VMID 需为 100 ~ 999999999 之间的整数'
+      ? t('templates.vmidRule')
       : undefined;
 
   const canSubmit =
@@ -1189,7 +1236,10 @@ function TemplateCreateWizard({
   /* ---- 提交（模式 A） ---- */
   const submitImage = async () => {
     if (!canSubmit) {
-      toast.warning('请完善表单', '有必填项未填写或格式不正确');
+      toast.warning(
+        t('templates.wizIncomplete'),
+        t('templates.wizIncompleteHint'),
+      );
       return;
     }
     setSubmitting(true);
@@ -1216,7 +1266,7 @@ function TemplateCreateWizard({
         machine: 'pc',
         start_on_boot: false,
         tags: tags || undefined,
-        description: '由 ProxCenter 从 cloud-init 镜像生成的模板',
+        description: t('templates.wizDesc'),
         source_image: imageVolId || undefined,
         target_storage: diskStorage,
         templateMode: true,
@@ -1231,13 +1281,13 @@ function TemplateCreateWizard({
       });
 
       toast.success(
-        '模板创建已提交',
-        `VMID ${res.vmid ?? vmid} 将依次执行：创建 VM → 导入镜像 → 配置 cloud-init → 转模板`,
+        t('templates.wizSubmitted'),
+        t('templates.wizSubmittedDesc', { vmid: res.vmid ?? vmid }),
       );
       onCreated();
       onClose();
     } catch (err) {
-      toast.error('创建模板失败', errorMessage(err));
+      toast.error(t('templates.wizFailed'), errorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -1247,14 +1297,14 @@ function TemplateCreateWizard({
     <Modal
       open={open}
       onClose={onClose}
-      title="创建模板"
-      description="从 cloud-init 镜像生成，或把现有虚拟机 / 容器转换而来"
+      title={t('templates.createTitle')}
+      description={t('templates.createDesc')}
       size="lg"
       footer={
         mode === 'image' ? (
           <>
             <Button variant="secondary" onClick={onClose} disabled={submitting}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -1262,12 +1312,12 @@ function TemplateCreateWizard({
               loading={submitting}
               disabled={!canSubmit}
             >
-              创建模板
+              {t('templates.create')}
             </Button>
           </>
         ) : (
           <Button variant="secondary" onClick={onClose}>
-            关闭
+            {t('templates.close')}
           </Button>
         )
       }
@@ -1277,13 +1327,13 @@ function TemplateCreateWizard({
         <SegmentedControl<CreateMode>
           value={mode}
           onChange={setMode}
-          ariaLabel="创建模板方式"
+          ariaLabel={t('templates.modeAria')}
           options={[
             {
               label: (
                 <span className="flex items-center gap-6">
                   <IconCloud size={14} />
-                  从 cloud-init 镜像生成
+                  {t('templates.modeFromImage')}
                 </span>
               ),
               value: 'image',
@@ -1292,7 +1342,7 @@ function TemplateCreateWizard({
               label: (
                 <span className="flex items-center gap-6">
                   <IconVm size={14} />
-                  从现有 VM 转换
+                  {t('templates.modeFromVm')}
                 </span>
               ),
               value: 'convert',
@@ -1303,18 +1353,17 @@ function TemplateCreateWizard({
 
       {mode === 'image' ? (
         <div className="wizard-section">
-          <Notice tone="info" title="生成的流水线">
-            提交后后端将依次执行：创建虚拟机 → <code>importdisk</code> 导入镜像 →
-            配置 cloud-init 驱动 → 转换为模板。整个过程可在「任务队列」查看。
+          <Notice tone="info" title={t('templates.pipelineTitle')}>
+            {t('templates.pipelineBody')}
           </Notice>
 
           <div className="form-grid">
             <Input
-              label="名称"
+              label={t('common.name')}
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="如 tmpl-ubuntu-2404"
+              placeholder={t('templates.fieldNamePlaceholder')}
             />
             <Input
               label="VMID"
@@ -1323,37 +1372,41 @@ function TemplateCreateWizard({
               onChange={(e) => setVmid(e.target.value.replace(/\D/g, ''))}
               error={idError}
               hint={
-                nextIdQuery.data ? `建议 ID：${nextIdQuery.data.vmid}` : undefined
+                nextIdQuery.data
+                  ? t('templates.cloneSuggested', { vmid: nextIdQuery.data.vmid })
+                  : undefined
               }
             />
             <Select
-              label="节点"
+              label={t('common.node')}
               required
               value={node}
               onChange={(e) => setNode(e.target.value)}
               options={[
-                { label: '请选择节点', value: '' },
+                { label: t('templates.nodePlaceholder'), value: '' },
                 ...(nodesQuery.data ?? []).map((n) => ({
-                  label: `${n.node}${n.status !== 'online' ? '（离线）' : ''}`,
+                  label: `${n.node}${
+                    n.status !== 'online' ? t('templates.nodeOffline') : ''
+                  }`,
                   value: n.node,
                 })),
               ]}
             />
             <Input
-              label="标签"
+              label={t('templates.colTags')}
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder="template;os:ubuntu"
             />
           </div>
 
-          <div className="wizard-section-title">源镜像</div>
+          <div className="wizard-section-title">{t('templates.secSourceImage')}</div>
           <Select
-            label="cloud-init 镜像文件"
+            label={t('templates.fieldImage')}
             value={imageVolId}
             onChange={(e) => setImageVolId(e.target.value)}
             options={[
-              { label: '不指定（仅创建空模板）', value: '' },
+              { label: t('templates.fieldImageNone'), value: '' },
               ...(imagesQuery.data ?? []).map(({ storage, item }) => ({
                 label: `${item.volid}（${formatBytes(item.size)}, ${storage}）`,
                 value: item.volid,
@@ -1361,32 +1414,35 @@ function TemplateCreateWizard({
             ]}
             hint={
               imagesQuery.isLoading
-                ? '正在扫描镜像文件…'
+                ? t('templates.fieldImageScanning')
                 : (imagesQuery.data ?? []).length === 0
-                  ? '未找到 .img / .qcow2 镜像。请先到「存储」页上传，或用 wget 下载到节点的 iso 目录。'
-                  : '列表来自节点各存储的 ISO 目录，已筛选 img/qcow2/raw 文件'
+                  ? t('templates.fieldImageNoneFound')
+                  : t('templates.fieldImageHint')
             }
           />
 
-          <div className="wizard-section-title">规格</div>
+          <div className="wizard-section-title">{t('templates.secSpecs')}</div>
           <div className="form-grid">
             <Select
-              label="操作系统类型"
+              label={t('templates.fieldOstype')}
               value={ostype}
               onChange={(e) => setOstype(e.target.value)}
-              options={OSTYPE_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+              options={ostypeOptions(t).map((o) => ({
+                label: o.label,
+                value: o.value,
+              }))}
             />
             <Select
-              label="CPU 类型"
+              label={t('vmDetail.hwCpuType')}
               value={cpuType}
               onChange={(e) => setCpuType(e.target.value)}
-              options={CPU_TYPE_OPTIONS.map((o) => ({
+              options={cpuTypeOptions(t).map((o) => ({
                 label: o.label,
                 value: o.value,
               }))}
             />
             <Input
-              label="核心数"
+              label={t('vmDetail.cfgCores')}
               type="number"
               min={1}
               max={128}
@@ -1394,17 +1450,19 @@ function TemplateCreateWizard({
               onChange={(e) => setCores(Number(e.target.value) || 0)}
             />
             <Input
-              label="内存（MB）"
+              label={t('vmDetail.cfgMemory')}
               type="number"
               min={512}
               step={512}
               value={memory}
               onChange={(e) => setMemory(Number(e.target.value) || 0)}
-              hint={`约 ${formatBytes(memory * 1024 ** 2)}`}
+              hint={t('vmCreate.approxSize', {
+                size: formatBytes(memory * 1024 ** 2),
+              })}
             />
             {/* 模板的气球值会被每个克隆继承；不设则等于「整份内存不回收」 */}
             <Input
-              label="最低保留内存（MB）"
+              label={t('templates.fieldBalloon')}
               type="number"
               min={0}
               step={256}
@@ -1412,79 +1470,78 @@ function TemplateCreateWizard({
               onChange={(e) => setBalloon(e.target.value)}
               error={
                 balloon.trim() && Number(balloon) >= memory
-                  ? '必须小于内存上限'
+                  ? t('templates.balloonTooLarge')
                   : undefined
               }
-              hint="留空 = 不回收；如 1024 = 至少保留 1G，克隆体可被宿主机收回余量"
+              hint={t('templates.fieldBalloonHint')}
             />
             <Select
-              label="磁盘存储池"
+              label={t('templates.fieldDiskStorage')}
               required
               value={diskStorage}
               onChange={(e) => setDiskStorage(e.target.value)}
               options={diskStorageOptions}
             />
             <Input
-              label="磁盘大小（GB）"
+              label={t('templates.fieldDiskSize')}
               type="number"
               min={1}
               value={diskSize}
               onChange={(e) => setDiskSize(Number(e.target.value) || 0)}
             />
             <Select
-              label="网桥"
+              label={t('templates.fieldBridge')}
               required
               value={bridge}
               onChange={(e) => setBridge(e.target.value)}
               options={bridgeOptions.length > 1 ? bridgeOptions : [{ label: 'vmbr0', value: 'vmbr0' }, ...bridgeOptions.filter((o) => o.value !== 'vmbr0')]}
               hint={
                 bridgesQuery.isError
-                  ? '无法读取网卡列表，可手动填写网桥名'
+                  ? t('templates.bridgeLoadFailed')
                   : undefined
               }
             />
           </div>
 
-          <div className="wizard-section-title">Cloud-Init 默认配置</div>
+          <div className="wizard-section-title">{t('templates.secCiDefaults')}</div>
           <Switch
             checked={ciEnabled}
             onChange={setCiEnabled}
-            label="启用 Cloud-Init"
-            hint="在模板中预置默认用户与 SSH 密钥"
+            label={t('templates.fieldCiEnable')}
+            hint={t('templates.fieldCiEnableHint')}
           />
           {ciEnabled ? (
             <div className="form-grid-2">
               <Input
-                label="默认用户名"
+                label={t('vmCreate.ciUser')}
                 value={ciUser}
                 onChange={(e) => setCiUser(e.target.value)}
                 placeholder="ubuntu"
               />
               <Input
-                label="网络"
+                label={t('templates.fieldNetwork')}
                 value="dhcp"
                 disabled
-                hint="模板中固定为 DHCP，克隆后可在详情页改为静态"
+                hint={t('templates.fieldNetworkHint')}
               />
             </div>
           ) : null}
           {ciEnabled ? (
             <Textarea
-              label="SSH 公钥"
+              label={t('vmCreate.ciSshKeys')}
               mono
               rows={3}
               value={sshKey}
               onChange={(e) => setSshKey(e.target.value)}
               placeholder="ssh-ed25519 AAAA... user@host"
-              hint="每行一个公钥；克隆出的虚拟机将自动注入这些密钥"
+              hint={t('templates.fieldSshKeysHint')}
             />
           ) : null}
         </div>
       ) : (
         <div className="wizard-section">
-          <Notice tone="info" title="切换到「从现有虚拟机 / 容器转换」">
-            请关闭本窗口后，在主页面点击「创建模板」旁的入口，或在空状态中选择「从现有 VM
-            转换」。
+          <Notice tone="info" title={t('templates.switchModeTitle')}>
+            {t('templates.switchModeBody')}
           </Notice>
           <ConvertForm
             vms={[]}

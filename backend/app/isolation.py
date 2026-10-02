@@ -26,6 +26,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+from . import i18n
 from .pve import ProxmoxError, get_client
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ async def quarantine(
     try:
         config = await client.qemu_config(node, vmid) or {}
     except ProxmoxError as exc:
-        raise RuntimeError(f"读取虚拟机配置失败：{exc}") from exc
+        raise RuntimeError(i18n.t("isolation.detail.readConfigFail", error=exc)) from exc
 
     # ---- 1. 取证快照（务必在处置之前）----
     snapshot_name = ""
@@ -121,13 +122,17 @@ async def quarantine(
                 _step(
                     "snapshot",
                     True,
-                    f"已创建取证快照 {snapshot_name}（崩溃一致性，不含内存镜像）",
+                    i18n.t("isolation.detail.snapshotOk", name=snapshot_name),
                     snapshot=snapshot_name,
                 )
             )
         except ProxmoxError as exc:
             steps.append(
-                _step("snapshot", False, f"取证快照失败（不影响后续隔离）：{exc}")
+                _step(
+                    "snapshot",
+                    False,
+                    i18n.t("isolation.detail.snapshotFail", error=exc),
+                )
             )
 
     # ---- 2. 断网：逐张虚拟网卡置 link_down ----
@@ -144,15 +149,21 @@ async def quarantine(
                 await _set_link_down(node, vmid, key, raw, True)
                 cut.append(key)
             except ProxmoxError as exc:
-                failures.append(f"{key}（{exc}）")
+                failures.append(i18n.t("isolation.failed_item", key=key, error=exc))
         if not keys:
-            steps.append(_step("network", False, "这台虚拟机没有虚拟网卡（net*），未做断网"))
+            steps.append(
+                _step("network", False, i18n.t("isolation.detail.noNics"))
+            )
         elif failures:
             steps.append(
                 _step(
                     "network",
                     False,
-                    f"已断网 {len(cut)} 张网卡；失败：{'、'.join(failures)}",
+                    i18n.t(
+                        "isolation.detail.networkPartial",
+                        count=len(cut),
+                        failures=i18n.t("isolation.separator").join(failures),
+                    ),
                     interfaces=cut,
                 )
             )
@@ -161,8 +172,11 @@ async def quarantine(
                 _step(
                     "network",
                     True,
-                    f"已切断 {len(cut)} 张虚拟网卡（{'、'.join(cut)}）。"
-                    "注意：PCI 直通 / SR-IOV 网卡不受此控制，需要另行在交换机侧隔离",
+                    i18n.t(
+                        "isolation.detail.networkOk",
+                        count=len(cut),
+                        list=i18n.t("isolation.separator").join(cut),
+                    ),
                     interfaces=cut,
                 )
             )
@@ -175,20 +189,39 @@ async def quarantine(
                 _step(
                     "power",
                     True,
-                    "已下发优雅关机" if action == "shutdown" else "已下发强制关机（可能丢失未落盘数据）",
+                    i18n.t(
+                        "isolation.detail.shutdown"
+                        if action == "shutdown"
+                        else "isolation.detail.stop"
+                    ),
                     action=action,
                 )
             )
         except ProxmoxError as exc:
-            steps.append(_step("power", False, f"电源操作失败：{exc}", action=action))
+            steps.append(
+                _step(
+                    "power",
+                    False,
+                    i18n.t("isolation.detail.powerFail", error=exc),
+                    action=action,
+                )
+            )
 
     # ---- 4. 顺手保护：防止慌乱中把证据 VM 删掉 ----
     if protect:
         try:
             await client.qemu_set_config(node, vmid, {"protection": 1})
-            steps.append(_step("protect", True, "已开启虚拟机保护（禁止误删，需手动解除）"))
+            steps.append(
+                _step("protect", True, i18n.t("isolation.detail.protectOk"))
+            )
         except ProxmoxError as exc:
-            steps.append(_step("protect", False, f"开启虚拟机保护失败：{exc}"))
+            steps.append(
+                _step(
+                    "protect",
+                    False,
+                    i18n.t("isolation.detail.protectFail", error=exc),
+                )
+            )
 
     ok = all(item["ok"] for item in steps)
     return {
@@ -202,7 +235,7 @@ async def quarantine(
         "note": note,
         "started_at": int(started),
         "summary": _summary(ok, steps),
-        "caveats": _CAVEATS,
+        "caveats": i18n.tr_all(_CAVEATS),
     }
 
 
@@ -222,7 +255,7 @@ async def release(
     try:
         config = await client.qemu_config(node, vmid) or {}
     except ProxmoxError as exc:
-        raise RuntimeError(f"读取虚拟机配置失败：{exc}") from exc
+        raise RuntimeError(i18n.t("isolation.detail.readConfigFail", error=exc)) from exc
 
     restored: List[str] = []
     if restore_network:
@@ -235,34 +268,61 @@ async def release(
                 await _set_link_down(node, vmid, key, raw, False)
                 restored.append(key)
             except ProxmoxError as exc:
-                failures.append(f"{key}（{exc}）")
+                failures.append(i18n.t("isolation.failed_item", key=key, error=exc))
         if failures:
             steps.append(
-                _step("network", False, f"恢复网卡失败：{'、'.join(failures)}")
+                _step(
+                    "network",
+                    False,
+                    i18n.t(
+                        "isolation.detail.restoreFail",
+                        failures=i18n.t("isolation.separator").join(failures),
+                    ),
+                )
             )
         else:
             steps.append(
                 _step(
                     "network",
                     True,
-                    f"已恢复 {len(restored)} 张网卡"
-                    + (f"（{'、'.join(restored)}）" if restored else "（本来就没有被切断）"),
+                    i18n.t(
+                        "isolation.detail.restoreOk",
+                        count=len(restored),
+                        list=(
+                            i18n.t(
+                                "isolation.detail.restoreList",
+                                list=i18n.t("isolation.separator").join(restored),
+                            )
+                            if restored
+                            else i18n.t("isolation.detail.restoreNone")
+                        ),
+                    ),
                 )
             )
 
     if unprotect:
         try:
             await client.qemu_set_config(node, vmid, {"protection": 0})
-            steps.append(_step("protect", True, "已解除虚拟机保护"))
+            steps.append(
+                _step("protect", True, i18n.t("isolation.detail.unprotectOk"))
+            )
         except ProxmoxError as exc:
-            steps.append(_step("protect", False, f"解除保护失败：{exc}"))
+            steps.append(
+                _step(
+                    "protect",
+                    False,
+                    i18n.t("isolation.detail.unprotectFail", error=exc),
+                )
+            )
 
     if power_on:
         try:
             await client.qemu_power(node, vmid, "start")
-            steps.append(_step("power", True, "已下发开机"))
+            steps.append(_step("power", True, i18n.t("isolation.detail.startOk")))
         except ProxmoxError as exc:
-            steps.append(_step("power", False, f"开机失败：{exc}"))
+            steps.append(
+                _step("power", False, i18n.t("isolation.detail.startFail", error=exc))
+            )
 
     return {
         "node": node,
@@ -324,13 +384,26 @@ _CAVEATS = [
 
 
 def _summary(ok: bool, steps: List[Dict[str, Any]]) -> str:
-    done = [item["step"] for item in steps if item["ok"]]
-    failed = [item["step"] for item in steps if not item["ok"]]
+    def step_name(name: str) -> str:
+        return i18n.t(f"isolation.step.{name}")
+
+    done = [step_name(item["step"]) for item in steps if item["ok"]]
+    failed = [step_name(item["step"]) for item in steps if not item["ok"]]
     parts = []
     if done:
-        parts.append("已完成：" + "、".join(done))
+        parts.append(
+            i18n.t("isolation.summary.done", items=i18n.t("isolation.separator").join(done))
+        )
     if failed:
-        parts.append("失败：" + "、".join(failed))
-    return ("隔离处置成功" if ok else "隔离处置部分失败") + (
-        f"（{'；'.join(parts)}）" if parts else ""
+        parts.append(
+            i18n.t(
+                "isolation.summary.failed", items=i18n.t("isolation.separator").join(failed)
+            )
+        )
+    head = i18n.t("isolation.summary.ok" if ok else "isolation.summary.partial")
+    if not parts:
+        return head
+    return head + i18n.t(
+        "isolation.summary.detail",
+        parts=i18n.t("isolation.summary.partSep").join(parts),
     )

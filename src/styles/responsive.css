@@ -382,10 +382,11 @@
     width: auto;
   }
 
-  /* 键值对在窄屏下改成上下排列，长值不再被挤成一条 */
+  /* 键值对在窄屏下改成上下排列，长值不再被挤成一条
+     （.info-row 是 grid，窄屏把两列并成一行，标签在上、值在下） */
   .info-row {
-    flex-direction: column;
-    align-items: flex-start;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
     gap: 2px;
   }
 

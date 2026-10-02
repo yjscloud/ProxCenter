@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import paramiko
 
-from . import alerting, crypto, database, sshguard, store
+from . import alerting, crypto, database, i18n, sshguard, store
 
 logger = logging.getLogger(__name__)
 
@@ -453,10 +453,12 @@ async def trust_fingerprint(row: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "ok": False,
             "fingerprint": "",
-            "detail": "没能从这台主机取到 SSH 指纹：请确认地址、端口与 SSH 服务正常后重试",
+            "detail": i18n.tr(
+                "没能从这台主机取到 SSH 指纹：请确认地址、端口与 SSH 服务正常后重试"
+            ),
         }
     await save_host({**row, "known_host": fingerprint}, row.get("updated_by") or "")
-    return {"ok": True, "fingerprint": fingerprint, "detail": "已记录主机指纹"}
+    return {"ok": True, "fingerprint": fingerprint, "detail": i18n.tr("已记录主机指纹")}
 
 
 # ------------------------------------------------------------- 远程日志与统计
@@ -538,7 +540,9 @@ async def remote_fail2ban_status(row: Dict[str, Any]) -> Dict[str, Any]:
         "host": str(row.get("name") or row.get("host") or ""),
         "binary": "",
         "checked": [],
-        "hint": "" if ok else "远程主机上执行 fail2ban-client 失败：" + output.strip()[:200],
+        "hint": ""
+        if ok
+        else i18n.t("ssh.remoteF2bFail", output=output.strip()[:200]),
     }
     if not ok:
         return base
@@ -670,7 +674,11 @@ async def fleet_reports(
     local["name"] = local["source"].get("host") or "本机（面板）"
     local["host"] = local["source"].get("host") or "localhost"
     local["ok"] = bool(local["source"].get("available"))
-    local["error"] = "" if local["ok"] else str(local["source"].get("detail") or "本机日志不可用")
+    local["error"] = (
+        ""
+        if local["ok"]
+        else str(local["source"].get("detail") or i18n.t("ssh.noLocalLog"))
+    )
     reports.append(local)
     return reports
 
@@ -727,6 +735,8 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
         return []
     await sshguard.init_table()
     target_owner = policy.get("notify_user") or await store.first_admin_username() or ""
+    # 按收件人的语言渲染（巡检是后台跑的，没有请求上下文，见 alerting.resolve_language）
+    i18n.pin_language(await alerting.resolve_language(target_owner))
     feishu = await alerting.load_feishu(target_owner)
     email_cfg = await alerting.load_alert_email(target_owner)
     cooldown = int(policy["cooldown_minutes"]) * 60
@@ -760,28 +770,52 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 continue
             card = alerting.build_card(
                 "critical" if row["count"] >= threshold * 2 else "warning",
-                "🛡 ProxCenter SSH 爆破告警",
-                f"{label}：{ip} 失败 {row['count']} 次",
+                i18n.tr("🛡 ProxCenter SSH 爆破告警"),
+                i18n.pick(
+                    f"{label}：{ip} 失败 {row['count']} 次",
+                    f"{label}: {ip} failed {row['count']} times",
+                ),
                 [
-                    ("主机", label),
-                    ("来源 IP", ip),
-                    ("失败次数", f"**{row['count']}**（阈值 {threshold}）"),
-                    ("统计窗口", f"最近 {policy['window_hours']} 小时"),
-                    ("尝试的用户名", "、".join(row["users"][:8]) or "-"),
-                    ("发生时间", alerting._now_text(now)),
+                    (i18n.tr("主机"), label),
+                    (i18n.tr("来源 IP"), ip),
+                    (
+                        i18n.tr("失败次数"),
+                        f"**{row['count']}**"
+                        + i18n.pick("（阈值 ", " (threshold ")
+                        + str(threshold)
+                        + i18n.pick("）", ")"),
+                    ),
+                    (
+                        i18n.tr("统计窗口"),
+                        i18n.pick(
+                            f"最近 {policy['window_hours']} 小时",
+                            f"Last {policy['window_hours']} hour(s)",
+                        ),
+                    ),
+                    (
+                        i18n.tr("尝试的用户名"),
+                        i18n.pick("、", ", ").join(row["users"][:8]) or "-",
+                    ),
+                    (i18n.tr("发生时间"), alerting._now_text(now)),
                 ],
-                "可在「SSH 安全」页对该主机一键封禁，或用 fail2ban 自动封禁。",
+                i18n.tr("可在「SSH 安全」页对该主机一键封禁，或用 fail2ban 自动封禁。"),
             )
-            text = (
+            text = i18n.pick(
                 f"SSH 爆破告警（{label}）：{ip} 在 {policy['window_hours']} 小时内失败"
                 f" {row['count']} 次（阈值 {threshold}）\n"
-                f"尝试的用户名：{'、'.join(row['users'][:8])}"
+                f"尝试的用户名：{'、'.join(row['users'][:8])}",
+                f"SSH brute-force alert ({label}): {ip} failed {row['count']} times "
+                f"within {policy['window_hours']} hour(s) (threshold {threshold})\n"
+                f"Attempted usernames: {', '.join(row['users'][:8])}",
             )
             ok, detail = await alerting.dispatch(
                 target_owner,
                 feishu,
                 email_cfg,
-                f"SSH 爆破告警 {label}/{ip}",
+                i18n.pick(
+                    f"SSH 爆破告警 {label}/{ip}",
+                    f"SSH brute-force alert {label}/{ip}",
+                ),
                 text,
                 card,
                 source=alerting.SOURCE_SSHREMOTE,
@@ -789,7 +823,7 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
             state = {
                 "username": target_owner,
                 "rule_id": "ssh-fail",
-                "rule_name": "SSH 登录失败次数",
+                "rule_name": i18n.tr("SSH 登录失败次数"),
                 "target_type": "ssh",
                 "target": f"{label}:{ip}",
                 "metric": "ssh_fail",
@@ -824,12 +858,16 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
         if not await alerting.recovery_confirmed(key, row):
             continue  # 本轮只是回落到阈值以下，还没到「连续 N 轮正常」的恢复门槛
         card = alerting.build_recovery_card(row, None, at=now)
-        text = f"{row.get('target')} 的 SSH 登录失败次数已回落到阈值以下，告警解除"
+        text = i18n.pick(
+            f"{row.get('target')} 的 SSH 登录失败次数已回落到阈值以下，告警解除",
+            f"Failed SSH sign-ins for {row.get('target')} dropped below the "
+            "threshold; the alert is cleared",
+        )
         ok, detail = await alerting.dispatch(
             target_owner,
             feishu,
             email_cfg,
-            "恢复通知：" + str(row.get("target")),
+            i18n.tr("恢复通知：") + str(row.get("target")),
             text,
             card,
             source=alerting.SOURCE_SSHREMOTE,

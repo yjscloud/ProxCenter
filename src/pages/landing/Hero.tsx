@@ -23,21 +23,34 @@ import {
   IconChevronRight,
   IconSearch,
 } from '../../components/Icons';
-import { CAPABILITY_TOTAL } from './content';
+import { CAPABILITY_TOTAL, pick, type Bi } from './content';
 import { USAGE_HIGH_PERCENT, USAGE_WARN_PERCENT } from '../../utils/format';
+import { useI18n, useT, type MessageKey } from '../../i18n';
 
 /* ---------------------------------------------------------------------------
    Hero
    --------------------------------------------------------------------------- */
 
-/** 指令条右侧的快捷词：覆盖几个最常被找的能力 */
-const QUICK_TERMS = ['模板', '防火墙', '快照', '证书', '安全基线'];
+/**
+ * 指令条右侧的快捷词：覆盖几个最常被找的能力。
+ *
+ * 必须**跟着语言走**：这些词会被填进检索框去匹配能力矩阵的条目文案，而矩阵
+ * 数据（content.tsx）是双语的 —— 中文界面给中文词、英文界面给英文词，否则
+ * 点下去会变成「搜不到东西」的死按钮。
+ */
+const QUICK_TERMS: Bi[] = [
+  ['模板', 'template'],
+  ['防火墙', 'firewall'],
+  ['快照', 'snapshot'],
+  ['证书', 'certificate'],
+  ['安全基线', 'baseline'],
+];
 
-const TRUST = [
-  '一个端口对外，无需额外反代',
-  '集群凭据不出内网',
-  '敏感配置加密落库',
-  '写操作与敏感读取都留痕',
+const TRUST_KEYS: MessageKey[] = [
+  'landing.hero.trustSinglePort',
+  'landing.hero.trustInternal',
+  'landing.hero.trustEncrypted',
+  'landing.hero.trustAudited',
 ];
 
 export interface HeroProps {
@@ -50,6 +63,8 @@ export interface HeroProps {
 }
 
 export function Hero({ query, onQueryChange, onSubmit, consoleHref, consoleLabel }: HeroProps) {
+  const t = useT();
+  const { lang } = useI18n();
   return (
     <section className="lp-hero">
       <div className="lp-container">
@@ -58,23 +73,19 @@ export function Hero({ query, onQueryChange, onSubmit, consoleHref, consoleLabel
             <div className="lp-badge-row">
               <span className="lp-chip">
                 <span className="lp-chip-dot" />
-                兼容 Proxmox VE 8.x / 9.x
+                {t('landing.hero.compat')}
               </span>
-              <span className="lp-chip">前后端同源</span>
-              <span className="lp-chip">API Token 鉴权</span>
+              <span className="lp-chip">{t('landing.hero.sameOrigin')}</span>
+              <span className="lp-chip">{t('landing.hero.tokenAuth')}</span>
             </div>
 
             <h1 className="lp-h1">
-              把 Proxmox 集群
+              {t('landing.hero.titleTop')}
               <br />
-              <span className="lp-grad">管成一份说得清的资产</span>
+              <span className="lp-grad">{t('landing.hero.titleBottom')}</span>
             </h1>
 
-            <p className="lp-lead">
-              虚拟机与容器、模板交付与配额、快照备份与应急隔离、防火墙与安全基线、
-              监控告警与证书续期、飞书机器人与内网穿透 —— {CAPABILITY_TOTAL} 项能力收在
-              一个浏览器窗口里，每一步操作都留痕。
-            </p>
+            <p className="lp-lead">{t('landing.hero.lead', { count: CAPABILITY_TOTAL })}</p>
 
             <div className="lp-cta-row">
               <Link className="lp-btn lp-btn-primary lp-btn-lg" to={consoleHref}>
@@ -82,15 +93,15 @@ export function Hero({ query, onQueryChange, onSubmit, consoleHref, consoleLabel
                 <IconChevronRight size={15} />
               </Link>
               <a className="lp-btn lp-btn-ghost lp-btn-lg" href="#matrix">
-                先看看能做什么
+                {t('landing.hero.explore')}
               </a>
             </div>
 
             <div className="lp-trust">
-              {TRUST.map((text) => (
-                <span className="lp-trust-item" key={text}>
+              {TRUST_KEYS.map((key) => (
+                <span className="lp-trust-item" key={key}>
                   <IconCheck size={14} />
-                  {text}
+                  {t(key)}
                 </span>
               ))}
             </div>
@@ -117,27 +128,30 @@ export function Hero({ query, onQueryChange, onSubmit, consoleHref, consoleLabel
             className="lp-command-input"
             type="search"
             value={query}
-            aria-label="检索平台能力"
-            placeholder={`检索 ${CAPABILITY_TOTAL} 项能力，例如「模板」「防火墙」「快照」`}
+            aria-label={t('landing.hero.searchAria')}
+            placeholder={t('landing.hero.searchPlaceholder', { count: CAPABILITY_TOTAL })}
             onChange={(event) => onQueryChange(event.target.value)}
           />
           <div className="lp-command-keys">
-            {QUICK_TERMS.map((term) => (
-              <button
-                key={term}
-                type="button"
-                className="lp-command-key"
-                onClick={() => {
-                  onQueryChange(term);
-                  onSubmit();
-                }}
-              >
-                {term}
-              </button>
-            ))}
+            {QUICK_TERMS.map((term) => {
+              const label = pick(term, lang);
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  className="lp-command-key"
+                  onClick={() => {
+                    onQueryChange(label);
+                    onSubmit();
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
           <button type="submit" className="lp-btn lp-btn-primary">
-            检索
+            {t('landing.hero.search')}
           </button>
         </form>
       </div>
@@ -152,11 +166,11 @@ export function Hero({ query, onQueryChange, onSubmit, consoleHref, consoleLabel
    的文字，读屏用户如果关掉 aria-hidden 也能读到。
    --------------------------------------------------------------------------- */
 
-const BOARD_KPIS = [
-  { num: '3/3', label: '节点在线', tone: 'is-green' },
-  { num: '18', label: '虚拟机', tone: '' },
-  { num: '42.6%', label: 'CPU 使用率', tone: 'is-blue' },
-  { num: '2', label: '待处理', tone: 'is-amber' },
+const BOARD_KPIS: { num: string; labelKey: MessageKey; tone: string }[] = [
+  { num: '3/3', labelKey: 'landing.hero.board.kpiNodes', tone: 'is-green' },
+  { num: '18', labelKey: 'landing.hero.board.kpiVms', tone: '' },
+  { num: '42.6%', labelKey: 'landing.hero.board.kpiCpu', tone: 'is-blue' },
+  { num: '2', labelKey: 'landing.hero.board.kpiPending', tone: 'is-amber' },
 ];
 
 const BOARD_LOAD = [
@@ -165,10 +179,30 @@ const BOARD_LOAD = [
   { name: 'db-01', pct: 88 },
 ];
 
-const BOARD_FEED = [
-  { time: '14:02', text: 'web-01 开机完成', badge: '成功', tone: 'is-ok' },
-  { time: '14:03', text: '模板 debian-12 构建中', badge: '进行中', tone: 'is-run' },
-  { time: '14:04', text: '安全基线巡检 3 台服务器', badge: '完成', tone: 'is-ok' },
+const BOARD_FEED: {
+  time: string;
+  textKey: MessageKey;
+  badgeKey: MessageKey;
+  tone: string;
+}[] = [
+  {
+    time: '14:02',
+    textKey: 'landing.hero.board.feedStart',
+    badgeKey: 'landing.hero.board.badgeSuccess',
+    tone: 'is-ok',
+  },
+  {
+    time: '14:03',
+    textKey: 'landing.hero.board.feedBuild',
+    badgeKey: 'landing.hero.board.badgeRunning',
+    tone: 'is-run',
+  },
+  {
+    time: '14:04',
+    textKey: 'landing.hero.board.feedAudit',
+    badgeKey: 'landing.hero.board.badgeDone',
+    tone: 'is-ok',
+  },
 ];
 
 function loadTone(pct: number): string {
@@ -179,6 +213,7 @@ function loadTone(pct: number): string {
 }
 
 function ConsoleBoard() {
+  const t = useT();
   return (
     <>
       <div className="lp-board" aria-hidden="true">
@@ -189,23 +224,23 @@ function ConsoleBoard() {
           <span className="lp-board-url">panel.example.com/dashboard</span>
           <span className="lp-board-state">
             <span className="lp-board-state-dot" />
-            集群仲裁正常
+            {t('landing.hero.board.quorate')}
           </span>
         </div>
 
         <div className="lp-board-kpis">
           {BOARD_KPIS.map((kpi) => (
-            <div className="lp-board-kpi" key={kpi.label}>
+            <div className="lp-board-kpi" key={kpi.labelKey}>
               <div className={`lp-board-kpi-num ${kpi.tone}`}>{kpi.num}</div>
-              <div className="lp-board-kpi-label">{kpi.label}</div>
+              <div className="lp-board-kpi-label">{t(kpi.labelKey)}</div>
             </div>
           ))}
         </div>
 
         <div className="lp-board-section">
           <div className="lp-board-section-head">
-            <span className="lp-board-section-title">节点负载</span>
-            <span className="lp-board-section-hint">实时 · 5s 推送</span>
+            <span className="lp-board-section-title">{t('landing.hero.board.load')}</span>
+            <span className="lp-board-section-hint">{t('landing.hero.board.loadHint')}</span>
           </div>
           <div>
             {BOARD_LOAD.map((row) => (
@@ -225,15 +260,15 @@ function ConsoleBoard() {
 
         <div className="lp-board-section">
           <div className="lp-board-section-head">
-            <span className="lp-board-section-title">最近动态</span>
-            <span className="lp-board-section-hint">任务与巡检</span>
+            <span className="lp-board-section-title">{t('landing.hero.board.feed')}</span>
+            <span className="lp-board-section-hint">{t('landing.hero.board.feedHint')}</span>
           </div>
           <div className="lp-feed">
             {BOARD_FEED.map((item) => (
-              <div className="lp-feed-item" key={`${item.time}-${item.text}`}>
+              <div className="lp-feed-item" key={`${item.time}-${item.textKey}`}>
                 <span className="lp-feed-time">{item.time}</span>
-                <span className="lp-feed-text">{item.text}</span>
-                <span className={`lp-feed-badge ${item.tone}`}>{item.badge}</span>
+                <span className="lp-feed-text">{t(item.textKey)}</span>
+                <span className={`lp-feed-badge ${item.tone}`}>{t(item.badgeKey)}</span>
               </div>
             ))}
           </div>
@@ -241,13 +276,15 @@ function ConsoleBoard() {
 
         <div className="lp-board-section">
           <div className="lp-board-section-head">
-            <span className="lp-board-section-title">安全基线</span>
-            <span className="lp-board-section-hint">3 台服务器受检</span>
+            <span className="lp-board-section-title">{t('landing.hero.board.baseline')}</span>
+            <span className="lp-board-section-hint">
+              {t('landing.hero.board.baselineHint')}
+            </span>
           </div>
           <div className="lp-board-score">
             <span className="lp-board-score-num">92</span>
-            <span className="lp-board-score-unit">分 · A 级</span>
-            <span className="lp-board-score-tag">2 项可一键加固</span>
+            <span className="lp-board-score-unit">{t('landing.hero.board.scoreUnit')}</span>
+            <span className="lp-board-score-tag">{t('landing.hero.board.scoreTag')}</span>
           </div>
         </div>
       </div>

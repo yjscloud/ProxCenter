@@ -25,6 +25,7 @@ import {
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useT, type MessageKey } from '../i18n';
 import {
   exportUrl,
   lxcApi,
@@ -35,7 +36,7 @@ import {
   vmsApi,
 } from '../api/endpoints';
 import { guestPath, guestPower, guestsApi, guestTypeOf } from '../api/guests';
-import { BulkResultNotice, bulkActionLabel } from '../components/BulkResultNotice';
+import { BulkResultNotice, bulkActionKey } from '../components/BulkResultNotice';
 import { errorMessage } from '../api/client';
 import { PageShell } from '../components/Layout';
 import { Badge, TagList } from '../components/ui/Badge';
@@ -102,47 +103,62 @@ type StatusFilter = 'all' | 'running' | 'stopped' | 'template';
 /** 列表要有两种：虚拟机（qemu）/ 容器（lxc） */
 export type GuestKind = 'qemu' | 'lxc';
 
+/**
+ * 两种 kind 的差异只有「图标 + 词条前缀」。文案一律走词条表：同一个名词会被
+ * 拼进几十个句子，而中英语序不同（「暂无虚拟机」/「No VMs yet」），靠字符串
+ * 拼接迟早会在某一种语言里拧巴。
+ *
+ * 前缀用 `as const` 收窄成字面量联合，`${prefix}.noun` 因此是 10 个具体键，
+ * 拼错前缀会在编译期报错 —— 而不是静默回退成中文。
+ */
+const KIND_KEY = {
+  qemu: 'guestList.vm',
+  lxc: 'guestList.ct',
+} as const;
+
 interface KindMeta {
-  /** 页面标题与文案里的名词 */
-  noun: string;
-  /** 量词 */
-  unit: string;
   /** 页面标题图标 */
   titleIcon: ReactNode;
-  /** 创建按钮文案 */
-  createLabel: string;
   /** 创建按钮图标 */
   createIcon: ReactNode;
-  /** 空列表引导文案 */
-  emptyDescription: string;
   /** 详情页无法定位 guest 时的兜底前缀（VM 100 / CT 100） */
   codePrefix: string;
-  /** 克隆时「新名称」输入框的占位文案 */
-  cloneNamePlaceholder: string;
 }
 
 const KIND_META: Record<GuestKind, KindMeta> = {
   qemu: {
-    noun: '虚拟机',
-    unit: '台',
     titleIcon: <IconVm size={20} />,
-    createLabel: '创建虚拟机',
     createIcon: <IconPlus size={15} />,
-    emptyDescription: '集群中还没有创建任何虚拟机，点击「创建虚拟机」开始。',
     codePrefix: 'VM',
-    cloneNamePlaceholder: '克隆后的虚拟机名称',
   },
   lxc: {
-    noun: '容器',
-    unit: '个',
     titleIcon: <IconBox size={20} />,
-    createLabel: '创建容器',
     createIcon: <IconBox size={15} />,
-    emptyDescription: '集群中还没有创建任何容器，点击「创建容器」开始。',
     codePrefix: 'CT',
-    cloneNamePlaceholder: '克隆后的容器主机名',
   },
 };
+
+/** 随语言变的五个常用词：名词、量词、创建按钮、空状态引导、克隆占位 */
+function useKindLabels(kind: GuestKind): {
+  noun: string;
+  unit: string;
+  create: string;
+  empty: string;
+  cloneName: string;
+} {
+  const t = useT();
+  const prefix = KIND_KEY[kind];
+  return useMemo(
+    () => ({
+      noun: t(`${prefix}.noun`),
+      unit: t(`${prefix}.unit`),
+      create: t(`${prefix}.create`),
+      empty: t(`${prefix}.empty`),
+      cloneName: t(`${prefix}.cloneName`),
+    }),
+    [t, prefix],
+  );
+}
 
 /* ---------------------------------------------------------------------------
    指派归属：管理员把 guest 交给某个用户
@@ -162,6 +178,7 @@ function AssignOwnerDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
@@ -188,7 +205,7 @@ function AssignOwnerDialog({
   }, [vm]);
 
   const options = [
-    { label: '不指派（清除归属，仅管理员可见）', value: '' },
+    { label: t('guestList.assignNone'), value: '' },
     ...(usersQuery.data ?? [])
       // 待审批 / 已拒绝的账号还登不进来，指派给他没有意义
       .filter((u) => u.enabled !== false && (u.status ?? 'active') === 'active')
@@ -205,14 +222,14 @@ function AssignOwnerDialog({
         vm.connection_id,
       );
       toast.success(
-        res.owner ? `已指派${noun}` : '已清除归属',
+        res.owner ? t('guestList.assignDone', { noun }) : t('guestList.assignCleared'),
         res.owner
           ? `${vm.name || `${noun} ${vm.vmid}`} → ${res.owner}`
           : vm.name || `${noun} ${vm.vmid}`,
       );
       onDone();
     } catch (err) {
-      toast.error('指派失败', errorMessage(err));
+      toast.error(t('guestList.assignFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -222,21 +239,24 @@ function AssignOwnerDialog({
     <Modal
       open={Boolean(vm)}
       onClose={onClose}
-      title={`指派${noun}归属`}
-      description={`指派后该用户即可看到并管理这台${noun}；选「不指派」则清除归属`}
+      title={t('guestList.assignTitle', { noun })}
+      description={t('guestList.assignDesc', { noun })}
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={() => void submit()} loading={busy}>
-            保存
+            {t('common.save')}
           </Button>
         </>
       }
     >
-      <Field label="指派给" hint={loading ? '正在读取当前归属…' : undefined}>
+      <Field
+        label={t('guestList.assignField')}
+        hint={loading ? t('guestList.assignLoading') : undefined}
+      >
         <Select
           value={username}
           onChange={(e) => setUsername(e.target.value)}
@@ -278,7 +298,8 @@ function RowMenu({
   canAssign,
   canResetPassword,
 }: RowMenuProps) {
-  const meta = KIND_META[kind];
+  const t = useT();
+  const L = useKindLabels(kind);
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -361,7 +382,7 @@ function RowMenu({
       ref={anchorRef}
       onClick={(e) => e.stopPropagation()}
     >
-      <IconButton label="更多操作" onClick={toggle} disabled={disabled}>
+      <IconButton label={t('guestList.moreActions')} onClick={toggle} disabled={disabled}>
         <IconMore size={16} />
       </IconButton>
       {open && pos ? (
@@ -376,21 +397,21 @@ function RowMenu({
             right: pos.right,
           }}
         >
-          {item(`克隆${meta.noun}`, <IconCopy size={15} />, onClone)}
+          {item(t('guestList.cloneTitle', { noun: L.noun }), <IconCopy size={15} />, onClone)}
           {/* 容器没有「转模板」：PVE 的 pct 不提供这个能力 */}
           {kind === 'qemu' && !vm.template
-            ? item('转为模板', <IconTemplate size={15} />, onTemplate)
+            ? item(t('guestList.toTemplate'), <IconTemplate size={15} />, onTemplate)
             : null}
-          {item('新建快照', <IconSnapshot size={15} />, onSnapshot)}
-          {item('迁移到其他节点', <IconLayers size={15} />, onMigrate)}
+          {item(t('guestList.newSnapshot'), <IconSnapshot size={15} />, onSnapshot)}
+          {item(t('guestList.migrate'), <IconLayers size={15} />, onMigrate)}
           {canAssign
-            ? item('指派给用户', <IconUser size={15} />, onAssign)
+            ? item(t('guestList.assign'), <IconUser size={15} />, onAssign)
             : null}
           {canResetPassword
-            ? item('重置用户口令', <IconKey size={15} />, onResetPassword)
+            ? item(t('guestList.resetPassword'), <IconKey size={15} />, onResetPassword)
             : null}
           <div className="user-dropdown-divider" />
-          {item(`删除${meta.noun}`, <IconTrash size={15} />, onDelete, true)}
+          {item(t('guestList.deleteTitle', { noun: L.noun }), <IconTrash size={15} />, onDelete, true)}
         </div>
       ) : null}
     </span>
@@ -402,7 +423,9 @@ function RowMenu({
    --------------------------------------------------------------------------- */
 
 export function GuestListPage({ kind }: { kind: GuestKind }) {
+  const t = useT();
   const meta = KIND_META[kind];
+  const L = useKindLabels(kind);
   const isLxc = kind === 'lxc';
 
   const navigate = useNavigate();
@@ -416,9 +439,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const copyText = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      toast.success('已复制到剪贴板', text);
+      toast.success(t('guestList.copied'), text);
     } catch {
-      toast.error('复制失败', '浏览器不允许访问剪贴板');
+      toast.error(t('guestList.copyFailed'), t('guestList.clipboardDenied'));
     }
   };
 
@@ -529,10 +552,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       new Set((nodesQuery.data ?? []).map((n) => n.node)),
     ).sort();
     return [
-      { label: '全部节点', value: '' },
+      { label: t('guestList.allNodes'), value: '' },
       ...names.map((name) => ({ label: name, value: name })),
     ];
-  }, [nodesQuery.data]);
+  }, [nodesQuery.data, t]);
 
   /* ---- 过滤 ---- */
   /* 搜索统一匹配「名称 / VMID / 节点 / IP / 标签 / 来源 PVE」。
@@ -633,14 +656,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const doPower = useCallback(
     async (vm: VmSummary, action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
       if (!canWrite) {
-        toast.warning('权限不足', '当前角色不允许执行电源操作');
+        toast.warning(t('guestList.noPermission'), t('guestList.powerDenied'));
         return;
       }
-      const labels: Record<typeof action, string> = {
-        start: '启动',
-        stop: '停止',
-        shutdown: '关机',
-        reboot: '重启',
+      const labels: Record<typeof action, MessageKey> = {
+        start: 'power.start',
+        stop: 'power.stop',
+        shutdown: 'power.shutdown',
+        reboot: 'power.reboot',
       };
       // 容器与虚拟机是两套 PVE 端点，按类型分派
       const call: Record<typeof action, () => Promise<{ task?: string }>> = {
@@ -652,7 +675,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
       try {
         await runner.run(call[action](), {
-          title: `${labels[action]}「${vm.name || vm.vmid}」`,
+          title: t('guestList.powerTask', {
+            action: t(labels[action]),
+            name: vm.name || vm.vmid,
+          }),
           node: vm.node,
           invalidate: [
             ['vms'],
@@ -665,7 +691,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         /* toast 已提示 */
       }
     },
-    [canWrite, runner, toast, isLxc],
+    [canWrite, runner, toast, isLxc, t],
   );
 
   /* ---- 批量操作 ----
@@ -697,7 +723,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         // 失败的留在选择里，方便直接重试；全成功才清空
         if (result.failed === 0) {
           setSelected(new Set());
-          toast.success(`批量${bulkActionLabel(action)}完成`, `${result.ok} ${meta.unit}已处理`);
+          toast.success(
+            t('guestList.bulkDone', { action: t(bulkActionKey(action)) }),
+            t('guestList.bulkProcessed', { count: result.ok, unit: L.unit }),
+          );
         } else {
           setSelected(
             new Set(
@@ -713,12 +742,15 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         }
         invalidateGuests();
       } catch (err) {
-        toast.error(`批量${bulkActionLabel(action)}失败`, errorMessage(err));
+        toast.error(
+          t('guestList.bulkFailed', { action: t(bulkActionKey(action)) }),
+          errorMessage(err),
+        );
       } finally {
         setPendingAction(false);
       }
     },
-    [selectedGuests, invalidateGuests, toast, meta.unit],
+    [selectedGuests, invalidateGuests, toast, t, L.unit],
   );
 
   /* 只重跑上一次批量里失败的那几台：此时选择已被换成失败清单 */
@@ -734,7 +766,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     setPendingAction(true);
     try {
       await runner.run(guestsApi.remove(vm), {
-        title: `删除「${vm.name || vm.vmid}」`,
+        title: t('guestList.deleteTask', { name: vm.name || vm.vmid }),
         node: vm.node,
         invalidate: [['vms'], ['lxc'], ['cluster'], ['storages']],
         destructive: true,
@@ -767,11 +799,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     /* 名称合法与否最终由 PVE 说了算，这里只挡明显不合理的输入，
        让报错口径集中在一处（后端把 PVE 的原话带回来） */
     if (!name) {
-      toast.warning('名称不能为空', `留空会让它退回显示 ${meta.codePrefix} ${vm.vmid}`);
+      toast.warning(
+        t('guestList.nameRequired'),
+        t('guestList.nameRequiredHint', { code: meta.codePrefix, vmid: vm.vmid }),
+      );
       return;
     }
     if (name.length > 63) {
-      toast.warning('名称过长', 'Proxmox 的名称上限是 63 个字符');
+      toast.warning(t('guestList.nameTooLong'), t('guestList.nameTooLongHint'));
       return;
     }
     if (name === (vm.name ?? '')) {
@@ -781,7 +816,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     setRenameBusy(true);
     try {
       await runner.run(guestsApi.rename(vm, name), {
-        title: `重命名为「${name}」`,
+        title: t('guestList.renameTask', { name }),
         node: vm.node,
         invalidate: [
           ['vms'],
@@ -811,7 +846,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     // 只做「看着像个地址」的轻校验：这里存的是备注性质的展示值，
     // 过严的规则会把 IPv6、带掩码、主机名这些合法写法挡在外面。
     if (ip && (/\s/.test(ip) || ip.length > 64)) {
-      toast.warning('IP 格式不正确', '不要包含空格，且不超过 64 个字符');
+      toast.warning(t('guestList.ipInvalid'), t('guestList.ipInvalidHint'));
       return;
     }
     setIpBusy(true);
@@ -824,12 +859,12 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       });
       await queryClient.invalidateQueries({ queryKey: ['vm-meta'] });
       toast.success(
-        ip ? '已保存手动 IP' : '已清除手动 IP',
-        ip ? `${vm.name || vm.vmid} → ${ip}` : '将回落到平台自动识别',
+        ip ? t('guestList.ipSaved') : t('guestList.ipCleared'),
+        ip ? `${vm.name || vm.vmid} → ${ip}` : t('guestList.ipFallback'),
       );
       setIpTarget(null);
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('guestList.saveFailed'), errorMessage(err));
     } finally {
       setIpBusy(false);
     }
@@ -842,14 +877,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const columns: Array<Column<VmSummary>> = [
     {
       key: 'select',
-      label: '选择',
+      label: t('guestList.colSelect'),
       locked: true,
       header: (
         <Checkbox
           checked={allSelected}
           indeterminate={!allSelected && someSelected}
           onChange={toggleAll}
-          aria-label={`全选${meta.noun}`}
+          aria-label={t('guestList.selectAll', { noun: L.noun })}
         />
       ),
       width: 44,
@@ -858,17 +893,17 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           <Checkbox
             checked={selected.has(rowKeyOf(vm))}
             onChange={() => toggleOne(vm)}
-            aria-label={`选择 ${vm.name || vm.vmid}`}
+            aria-label={t('guestList.selectOne', { name: vm.name || vm.vmid })}
           />
         </span>
       ),
     },
     {
       key: 'status',
-      header: '状态',
+      header: t('guestList.colStatus'),
       width: 108,
       render: (vm) => {
-        const status = vmStatusMeta(vm.status);
+        const status = vmStatusMeta(vm.status, t);
         return (
           <Badge variant={status.variant} dot pulse={status.pulse} size="sm">
             {status.label}
@@ -889,7 +924,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'name',
-      header: '名称',
+      header: t('guestList.name'),
       /* 其余列都写死了宽度，名称列不写就会独占全部剩余空间，
          宽屏下被撑得很长；给一个上限后超出部分由 truncate 省略。
          178 = 原来的 160 + 改名按钮所占的宽度：按钮是 flex-shrink:0 的，
@@ -911,7 +946,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 模板不给入口 —— 模板名改动会牵连克隆来源，属于要谨慎对待的操作。 */}
             {canWrite && !vm.template ? (
               <IconButton
-                label={`重命名 ${vm.name || vm.vmid}`}
+                label={t('guestList.renameAria', { name: vm.name || vm.vmid })}
                 onClick={(e) => {
                   e.stopPropagation();
                   openRename(vm);
@@ -923,12 +958,16 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           </span>
           {vm.template ? (
             <Badge variant="accent" size="sm">
-              模板
+              {t('guestList.status.template')}
             </Badge>
           ) : null}
           {vm.lock ? (
-            <Badge variant="warning" size="sm" title={`锁定：${vm.lock}`}>
-              锁定
+            <Badge
+              variant="warning"
+              size="sm"
+              title={t('guestList.lockTitle', { lock: vm.lock })}
+            >
+              {t('guestList.locked')}
             </Badge>
           ) : null}
         </div>
@@ -938,7 +977,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'node',
-      header: '节点',
+      header: t('common.node'),
       width: 110,
       render: (vm) => (
         <span className="fs-sm">
@@ -953,7 +992,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'ip',
-      header: 'IP 地址',
+      header: t('guestList.ipLabel'),
       width: 190,
       render: (vm) => {
         const manual = manualIpOf(vm);
@@ -962,12 +1001,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
            手动值是回落，只在平台确实拿不到时顶上来。 */
         const shown = auto || manual;
         const fromManual = !auto && Boolean(manual);
+        const manualBy = metaItems[vmMetaKey(vm.connection_id, vm.node, vm.vmid)]?.by ?? '';
         /* 虚拟机这条提示不写「Cloud-Init」：Windows 客户机用的是 Cloudbase-Init，
            而列表接口里没有 ostype（只有详情接口有），判断不出该叫哪个名字，
            所以按「初始化」统称，两种都覆盖。 */
-        const missingHint = isLxc
-          ? '未获取到 IP：容器只有 DHCP，没有静态地址配置'
-          : '未获取到 IP：Guest Agent 未运行，且没有初始化静态地址配置（cloud-init / Cloudbase-Init）';
+        const missingHint = isLxc ? t('guestList.ipMissingCt') : t('guestList.ipMissingVm');
         return (
           <div className="ip-cell" onClick={(e) => e.stopPropagation()}>
             {shown ? (
@@ -976,13 +1014,19 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 className={`ip-copy mono fs-sm${fromManual ? ' is-manual' : ''}`}
                 title={
                   fromManual
-                    ? `手动填写${metaItems[vmMetaKey(vm.connection_id, vm.node, vm.vmid)]?.by ? `（由 ${metaItems[vmMetaKey(vm.connection_id, vm.node, vm.vmid)]?.by} 记录）` : ''} · 点击复制`
-                    : '点击复制 IP'
+                    ? t('guestList.ipManualTitle', {
+                        by: manualBy
+                          ? t('guestList.ipManualBy', { name: manualBy })
+                          : '',
+                      })
+                    : t('guestList.ipCopyTitle')
                 }
                 onClick={() => void copyText(shown)}
               >
                 {shown}
-                {fromManual ? <span className="ip-manual-tag">手动</span> : null}
+                {fromManual ? (
+                  <span className="ip-manual-tag">{t('guestList.ipManualTag')}</span>
+                ) : null}
               </button>
             ) : (
               <span className="fs-sm text-muted" title={missingHint}>
@@ -993,9 +1037,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 让它旁边常驻一个「改」按钮只会诱导用户改错 */}
             {!auto && canWrite ? (
               <IconButton
-                label={`手动填写 ${vm.name || vm.vmid} 的 IP`}
+                label={t('guestList.ipEditAria', { name: vm.name || vm.vmid })}
                 onClick={() => openIpEditor(vm)}
-                title="平台未识别到 IP，可手动填写"
+                title={t('guestList.ipEditTitle')}
               >
                 <IconEdit size={14} />
               </IconButton>
@@ -1016,9 +1060,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         return (
           <InlineMeter
             percent={pct}
-            sub={`/ ${vm.maxcpu ?? 0} 核`}
+            sub={t('guestList.meterCores', { count: vm.maxcpu ?? 0 })}
             dim={!running}
-            title={`${pct.toFixed(1)}% 使用率`}
+            title={t('guestList.meterUsage', { pct: pct.toFixed(1) })}
             width={106}
           />
         );
@@ -1028,7 +1072,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'mem',
-      header: '内存',
+      header: t('guestList.colMem'),
       width: 142,
       render: (vm) => {
         const pct = vm.maxmem ? ((vm.mem ?? 0) / vm.maxmem) * 100 : 0;
@@ -1039,7 +1083,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             text={formatBytes(vm.mem, 0)}
             sub={`/ ${formatBytes(vm.maxmem, 0)}`}
             dim={!running}
-            title={`${pct.toFixed(1)}% 使用率`}
+            title={t('guestList.meterUsage', { pct: pct.toFixed(1) })}
             width={130}
           />
         );
@@ -1049,7 +1093,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'disk',
-      header: '磁盘',
+      header: t('guestList.colDisk'),
       width: 110,
       align: 'right',
       render: (vm) => (
@@ -1062,7 +1106,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'uptime',
-      header: '运行时长',
+      header: t('guestList.colUptime'),
       width: 100,
       align: 'right',
       render: (vm) => (
@@ -1075,12 +1119,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'created',
-      header: '创建时间',
+      header: t('common.createdAt'),
       width: 150,
       /* 表头悬停说明：PVE 只在建机时写下这个时间，克隆 / 恢复出来的机器会
          继承来源机器的那一份 —— 不说清楚，用户会以为面板记错了。 */
-      title:
-        '面板发起的新建 / 克隆 / 恢复按实际时刻记录；其余机器取 PVE config 里的 meta.ctime。注意 PVE 克隆 / 恢复会继承来源机器的时间（面板自身发起的克隆已按实际时刻纠正），PVE 8 之前创建的机器与容器没有这个记录，显示为 —',
+      title: t('guestList.colCreatedTitle'),
       render: (vm) => (
         <span className="mono fs-sm text-secondary">
           {vm.created ? formatDateTime(vm.created) : '—'}
@@ -1091,13 +1134,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     },
     {
       key: 'tags',
-      header: '标签',
+      header: t('guestList.colTags'),
       width: 140,
       render: (vm) => <TagList tags={parseTags(vm.tags)} max={2} />,
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       /* 固定列：隐藏「操作」等于把启停、控制台、删除全部收走，
          用户只会以为面板坏了 */
       locked: true,
@@ -1113,7 +1156,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           <span className="row-actions" onClick={(e) => e.stopPropagation()}>
             {stopped ? (
               <IconButton
-                label={`启动 ${vm.name}`}
+                label={`${t('power.start')} ${vm.name}`}
                 variant="primary"
                 onClick={() => void doPower(vm, 'start')}
                 disabled={noWrite}
@@ -1125,14 +1168,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             {running ? (
               <>
                 <IconButton
-                  label={`关机 ${vm.name}`}
+                  label={`${t('power.shutdown')} ${vm.name}`}
                   onClick={() => void doPower(vm, 'shutdown')}
                   disabled={noWrite}
                 >
                   <IconPower size={15} />
                 </IconButton>
                 <IconButton
-                  label={`停止 ${vm.name}`}
+                  label={`${t('power.stop')} ${vm.name}`}
                   variant="danger"
                   onClick={() => void doPower(vm, 'stop')}
                   disabled={noWrite}
@@ -1140,7 +1183,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                   <IconStop size={14} />
                 </IconButton>
                 <IconButton
-                  label={`重启 ${vm.name}`}
+                  label={`${t('power.reboot')} ${vm.name}`}
                   onClick={() => void doPower(vm, 'reboot')}
                   disabled={noWrite}
                 >
@@ -1151,11 +1194,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
             {frozen ? (
               <IconButton
-                label={`恢复 ${vm.name}`}
+                label={`${t('power.resume')} ${vm.name}`}
                 variant="primary"
                 onClick={() =>
                   void runner.run(guestPower.resume(vm), {
-                    title: `恢复「${vm.name || vm.vmid}」`,
+                    title: t('guestList.resumeTask', { name: vm.name || vm.vmid }),
                     node: vm.node,
                     invalidate: [
                       ['vms'],
@@ -1171,7 +1214,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             ) : null}
 
             <IconButton
-              label={`打开 ${vm.name} 控制台`}
+              label={t('guestList.consoleAria', { name: vm.name })}
               onClick={() => navigate(`${guestPath(vm)}?tab=console`)}
             >
               <IconConsole size={15} />
@@ -1208,15 +1251,17 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       title={
         <>
           {meta.titleIcon}
-          {meta.noun}
+          {L.noun}
         </>
       }
       subtitle={
         guestsQuery.data
-          ? `共 ${filtered.length} ${meta.unit}${
-              selected.size > 0 ? ` · 已选 ${selected.size} ${meta.unit}` : ''
+          ? `${t('guestList.countTotal', { count: filtered.length, unit: L.unit })}${
+              selected.size > 0
+                ? t('guestList.countSelected', { count: selected.size, unit: L.unit })
+                : ''
             }`
-          : '正在加载…'
+          : t('common.loading')
       }
       actions={
         <>
@@ -1232,9 +1277,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 '_blank',
               )
             }
-            title={`导出全部${meta.noun}清单（按当前节点筛选，含归属人）`}
+            title={t('guestList.exportAll', { noun: L.noun })}
           >
-            导出清单
+            {t('guestList.export')}
           </Button>
           <Button
             variant="secondary"
@@ -1242,7 +1287,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             onClick={() => void guestsQuery.refetch()}
             loading={guestsQuery.isFetching && !guestsQuery.isLoading}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
           {canWrite ? (
             <Button
@@ -1252,11 +1297,15 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               disabled={quotaBlocked}
               title={
                 quotaBlocked
-                  ? `可下发${meta.noun}数量已用尽（上限 ${quota?.quota} ${meta.unit}），请联系管理员`
+                  ? t('guestList.quotaExhausted', {
+                      noun: L.noun,
+                      quota: quota?.quota,
+                      unit: L.unit,
+                    })
                   : undefined
               }
             >
-              {meta.createLabel}
+              {L.create}
             </Button>
           ) : null}
         </>
@@ -1276,9 +1325,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       {selected.size > 0 ? (
         <div className="bulk-bar">
           <span>
-            已选择 <span className="bulk-bar-count">{selected.size}</span>{' '}
-            {meta.unit}
-            {meta.noun}
+            {t('guestList.bulkSelectedPre')}
+            <span className="bulk-bar-count">{selected.size}</span>{' '}
+            {t('guestList.bulkSelectedPost', { unit: L.unit, noun: L.noun })}
           </span>
           <div className="flex items-center gap-8 flex-wrap">
             <Button
@@ -1288,7 +1337,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               disabled={pendingAction}
               onClick={() => void runBulk('start')}
             >
-              启动
+              {t('power.start')}
             </Button>
             <Button
               variant="secondary"
@@ -1297,7 +1346,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               disabled={pendingAction}
               onClick={() => void runBulk('shutdown')}
             >
-              关机
+              {t('power.shutdown')}
             </Button>
             <Button
               variant="secondary"
@@ -1306,7 +1355,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               disabled={pendingAction}
               onClick={() => void runBulk('reboot')}
             >
-              重启
+              {t('power.reboot')}
             </Button>
             <Button
               variant="secondary"
@@ -1315,7 +1364,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               disabled={pendingAction}
               onClick={() => void runBulk('stop')}
             >
-              强制停止
+              {t('guestList.bulkForceStop')}
             </Button>
 
             {/* 需要额外参数的动作走这个下拉：直接铺按钮会把操作条挤爆 */}
@@ -1327,13 +1376,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               }}
               disabled={pendingAction}
               options={[
-                { label: '更多批量操作…', value: '' },
-                { label: '批量打标签', value: 'tag' },
-                { label: '批量迁移到其他节点', value: 'migrate' },
-                { label: '批量设置内存气球', value: 'balloon' },
-                { label: '批量创建快照', value: 'snapshot' },
+                { label: t('guestList.bulkMore'), value: '' },
+                { label: t('guestList.bulkTag'), value: 'tag' },
+                { label: t('guestList.bulkMigrate'), value: 'migrate' },
+                { label: t('guestList.bulkBalloon'), value: 'balloon' },
+                { label: t('guestList.bulkSnapshot'), value: 'snapshot' },
               ]}
-              aria-label="更多批量操作"
+              aria-label={t('guestList.bulkMoreAria')}
             />
 
             <Button
@@ -1343,7 +1392,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               disabled={pendingAction}
               onClick={() => setBulkDelete(true)}
             >
-              删除
+              {t('common.delete')}
             </Button>
             <Button
               variant="ghost"
@@ -1351,7 +1400,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               onClick={() => setSelected(new Set())}
               disabled={pendingAction}
             >
-              取消选择
+              {t('guestList.clearSelection')}
             </Button>
           </div>
         </div>
@@ -1364,28 +1413,28 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索名称 / VMID / 节点 / IP / 标签"
-              title="支持按名称、VMID、节点、IP、标签、来源 PVE 搜索，空格分隔多个条件"
+              placeholder={t('guestList.searchPlaceholder')}
+              title={t('guestList.searchTitle')}
               prefix={<IconSearch size={15} />}
               block={false}
-              aria-label={`搜索${meta.noun}（名称、VMID、节点、IP、标签）`}
+              aria-label={t('guestList.searchAria', { noun: L.noun })}
             />
             <Select
               value={nodeFilter}
               onChange={(e) => setNodeFilter(e.target.value)}
               options={nodeOptions}
-              aria-label="按节点筛选"
+              aria-label={t('guestList.nodeFilterAria')}
             />
             <Select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
               options={[
-                { label: '全部状态', value: 'all' },
-                { label: '运行中', value: 'running' },
-                { label: '已停止', value: 'stopped' },
-                { label: '模板', value: 'template' },
+                { label: t('guestList.status.all'), value: 'all' },
+                { label: t('guestList.status.running'), value: 'running' },
+                { label: t('guestList.status.stopped'), value: 'stopped' },
+                { label: t('guestList.status.template'), value: 'template' },
               ]}
-              aria-label="按状态筛选"
+              aria-label={t('guestList.statusFilterAria')}
             />
           </div>
           <div className="toolbar-right">
@@ -1396,19 +1445,34 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 className={`quota-chip${quotaBlocked ? ' is-empty' : ''}`}
                 title={
                   quota.limited
-                    ? `${meta.noun}额度 ${quota.quota} ${meta.unit}，当前已用 ${quota.used} ${meta.unit}`
-                    : '管理员没有设置下发额度，可无限创建'
+                    ? t('guestList.quotaLine', {
+                        noun: L.noun,
+                        quota: quota.quota,
+                        used: quota.used,
+                        unit: L.unit,
+                      })
+                    : t('guestList.quotaUnlimitedHint')
                 }
               >
                 {!quota.limited
-                  ? '可下发不限'
+                  ? t('guestList.quotaUnlimited')
                   : quotaBlocked
-                    ? `已用尽 ${quota.used}/${quota.quota}`
-                    : `可下发剩余 ${quota.remaining} ${meta.unit}`}
+                    ? t('guestList.quotaUsedUp', {
+                        used: quota.used,
+                        quota: quota.quota,
+                      })
+                    : t('guestList.quotaRemaining', {
+                        remaining: quota.remaining,
+                        unit: L.unit,
+                      })}
               </span>
             ) : null}
             <span className="fs-sm text-muted">
-              显示 {filtered.length} / {(guestsQuery.data ?? []).length} {meta.unit}
+              {t('guestList.showing', {
+                shown: filtered.length,
+                total: (guestsQuery.data ?? []).length,
+                unit: L.unit,
+              })}
             </span>
           </div>
         </div>
@@ -1416,7 +1480,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         {hasError ? (
           <div className="card" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
             <ErrorState
-              title={`无法加载${meta.noun}列表`}
+              title={t('guestList.loadFailed', { noun: L.noun })}
               message={errorMessage(guestsQuery.error)}
               onRetry={() => void guestsQuery.refetch()}
             />
@@ -1428,20 +1492,20 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             rows={filtered}
             rowKey={rowKeyOf}
             loading={guestsQuery.isLoading}
-            caption={`${meta.noun}列表，包含状态、规格、资源占用与操作`}
+            caption={t('guestList.caption', { noun: L.noun })}
             sort={sort}
             onSortChange={setSort}
             onRowClick={(vm) => navigate(guestPath(vm))}
             isRowSelected={(vm) => selected.has(rowKeyOf(vm))}
             emptyTitle={
               search || statusFilter !== 'all'
-                ? `没有匹配的${meta.noun}`
-                : `暂无${meta.noun}`
+                ? t('guestList.noMatch', { noun: L.noun })
+                : t('guestList.empty', { noun: L.noun })
             }
             emptyDescription={
               search || statusFilter !== 'all'
-                ? '尝试调整搜索关键词或筛选条件。'
-                : meta.emptyDescription
+                ? t('guestList.emptyFiltered')
+                : L.empty
             }
             emptyAction={
               canWrite && !search ? (
@@ -1452,11 +1516,15 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                   disabled={quotaBlocked}
                   title={
                     quotaBlocked
-                      ? `可下发${meta.noun}数量已用尽（上限 ${quota?.quota} ${meta.unit}），请联系管理员`
+                      ? t('guestList.quotaExhausted', {
+                          noun: L.noun,
+                          quota: quota?.quota,
+                          unit: L.unit,
+                        })
                       : undefined
                   }
                 >
-                  {meta.createLabel}
+                  {L.create}
                 </Button>
               ) : undefined
             }
@@ -1470,7 +1538,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       <Modal
         open={Boolean(renameTarget)}
         onClose={() => setRenameTarget(null)}
-        title={isLxc ? '修改容器名称' : '修改虚拟机名称'}
+        title={isLxc ? t('guestList.renameCt') : t('guestList.renameVm')}
         description={
           renameTarget
             ? `${meta.codePrefix} ${renameTarget.vmid} · ${renameTarget.node}`
@@ -1484,16 +1552,16 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               onClick={() => setRenameTarget(null)}
               disabled={renameBusy}
             >
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" onClick={() => void saveRename()} loading={renameBusy}>
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
       >
         <Input
-          label={isLxc ? '主机名' : '名称'}
+          label={isLxc ? t('guestList.hostname') : t('guestList.name')}
           value={renameDraft}
           onChange={(e) => setRenameDraft(e.target.value)}
           placeholder={`${meta.codePrefix} ${renameTarget?.vmid ?? ''}`}
@@ -1501,8 +1569,12 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           autoFocus
           hint={
             isLxc
-              ? `容器的名称即主机名，列表与 PVE 里显示的都是它。当前：${renameTarget?.name || '未设置'}`
-              : `当前名称：${renameTarget?.name || '未设置'} · 最多 63 个字符`
+              ? t('guestList.renameCtHint', {
+                  name: renameTarget?.name || t('guestList.unset'),
+                })
+              : t('guestList.renameVmHint', {
+                  name: renameTarget?.name || t('guestList.unset'),
+                })
           }
         />
       </Modal>
@@ -1513,7 +1585,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       <Modal
         open={Boolean(ipTarget)}
         onClose={() => setIpTarget(null)}
-        title="手动填写 IP 地址"
+        title={t('guestList.ipTitle')}
         description={
           ipTarget
             ? `${ipTarget.name || `${meta.codePrefix} ${ipTarget.vmid}`} · ${ipTarget.node}`
@@ -1527,29 +1599,27 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               onClick={() => setIpTarget(null)}
               disabled={ipBusy}
             >
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" onClick={() => void saveManualIp()} loading={ipBusy}>
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-16">
-          <Notice tone="info" title="这是面板侧的记录，不会改动机器">
-            {isLxc
-              ? '容器没有 Guest Agent 可问，面板只能读到 net0 里的静态配置。'
-              : '虚拟机需要开启 Guest Agent 面板才能读到客户机内的地址。'}{' '}
-            手动填写只影响面板上的展示与搜索，Proxmox 里的网络配置保持不变。
+          <Notice tone="info" title={t('guestList.ipNoticeTitle')}>
+            {isLxc ? t('guestList.ipNoticeCt') : t('guestList.ipNoticeVm')}{' '}
+            {t('guestList.ipNoticeTail')}
           </Notice>
           <Input
-            label="IP 地址"
+            label={t('guestList.ipLabel')}
             value={ipDraft}
             onChange={(e) => setIpDraft(e.target.value)}
-            placeholder="例如 192.168.1.10"
+            placeholder={t('guestList.ipPlaceholder')}
             mono
             autoFocus
-            hint="留空并保存 = 清除这条记录，回落到平台自动识别"
+            hint={t('guestList.ipHint')}
           />
         </div>
       </Modal>
@@ -1576,20 +1646,22 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         open={Boolean(deleteTarget)}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={confirmDelete}
-        title={`删除${meta.noun}`}
+        title={t('guestList.deleteTitle', { noun: L.noun })}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={pendingAction}
         requireText={deleteTarget?.name || String(deleteTarget?.vmid ?? '')}
         message={
           <>
-            即将删除{meta.noun}{' '}
+            {t('guestList.deleteSoon', { noun: L.noun })}{' '}
             <strong>
               {deleteTarget?.name ||
                 `${meta.codePrefix} ${deleteTarget?.vmid ?? ''}`}
             </strong>
-            （VMID {deleteTarget?.vmid}，位于节点 {deleteTarget?.node}）。
-            该操作会同时清除其磁盘数据，且无法恢复。
+            {t('guestList.deleteTail', {
+              vmid: deleteTarget?.vmid,
+              node: deleteTarget?.node,
+            })}
           </>
         }
       />
@@ -1598,14 +1670,17 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         open={bulkDelete}
         onCancel={() => setBulkDelete(false)}
         onConfirm={confirmBulkDelete}
-        title={`批量删除${meta.noun}`}
+        title={t('guestList.bulkDeleteTitle', { noun: L.noun })}
         danger
-        confirmText={`删除 ${selected.size} ${meta.unit}`}
+        confirmText={t('guestList.bulkDeleteConfirm', {
+          count: selected.size,
+          unit: L.unit,
+        })}
         loading={pendingAction}
         message={
           <>
-            即将删除选中的 <strong>{selected.size}</strong> {meta.unit}
-            {meta.noun}。删除会连同磁盘数据一起清除，操作不可撤销。
+            {t('guestList.bulkDeleteSoon')} <strong>{selected.size}</strong>{' '}
+            {t('guestList.bulkDeleteTail', { unit: L.unit, noun: L.noun })}
           </>
         }
       />
@@ -1621,7 +1696,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             setPendingAction(true);
             try {
               await runner.run(vmsApi.toTemplate(vm.node, vm.vmid), {
-                title: `转换「${vm.name || vm.vmid}」为模板`,
+                title: t('guestList.toTemplateTask', { name: vm.name || vm.vmid }),
                 node: vm.node,
                 invalidate: [['vms'], ['lxc'], ['cluster']],
               });
@@ -1630,14 +1705,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               setPendingAction(false);
             }
           }}
-          title="转换为模板"
-          confirmText="转换"
+          title={t('guestList.toTemplate')}
+          confirmText={t('guestList.toTemplateConfirm')}
           loading={pendingAction}
           message={
             <>
-              虚拟机{' '}
+              {t('guestList.toTemplateSoon')}{' '}
               <strong>{templateTarget?.name || `VM ${templateTarget?.vmid}`}</strong>{' '}
-              将被转换为模板。转换过程中虚拟机会被关机，之后无法直接启动，只能用于克隆。
+              {t('guestList.toTemplateTail')}
             </>
           }
         />
@@ -1655,7 +1730,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       />
 
       <MigrateDialog
-        noun={meta.noun}
+        noun={L.noun}
         vm={migrateTarget}
         nodes={(nodesQuery.data ?? []).map((n) => n.node)}
         onClose={() => setMigrateTarget(null)}
@@ -1667,7 +1742,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
       <AssignOwnerDialog
         vm={assignTarget}
-        noun={meta.noun}
+        noun={L.noun}
         onClose={() => setAssignTarget(null)}
         onDone={() => {
           invalidateGuests();
@@ -1677,7 +1752,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
       <ResetGuestPasswordDialog
         guest={passwordTarget}
-        noun={meta.noun}
+        noun={L.noun}
         onClose={() => setPasswordTarget(null)}
         onDone={() => {
           invalidateGuests(passwordTarget ?? undefined);
@@ -1698,8 +1773,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       <BulkParamsDialog
         action={bulkDialog}
         count={selected.size}
-        unit={meta.unit}
-        noun={meta.noun}
+        unit={L.unit}
+        noun={L.noun}
         nodes={(nodesQuery.data ?? []).map((n) => n.node)}
         hasContainer={isLxc}
         busy={pendingAction}
@@ -1729,7 +1804,9 @@ function CloneDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const meta = KIND_META[kind];
+  const L = useKindLabels(kind);
   const runner = useTaskRunner();
   const [newId, setNewId] = useState('');
   const [name, setName] = useState('');
@@ -1753,7 +1830,7 @@ function CloneDialog({
   const idNum = Number(newId);
   const idError =
     newId && (!Number.isInteger(idNum) || idNum < 100 || idNum > 999999999)
-      ? 'VMID 需为 100 ~ 999999999 之间的整数'
+      ? t('guestList.cloneIdRange')
       : undefined;
 
   const submit = async () => {
@@ -1774,7 +1851,7 @@ function CloneDialog({
               target_storage: targetStorage || undefined,
             }),
         {
-          title: `克隆「${vm.name || vm.vmid}」`,
+          title: t('guestList.cloneTask', { name: vm.name || vm.vmid }),
           node: vm.node,
           invalidate: [['vms'], ['lxc'], ['cluster'], ['storages']],
         },
@@ -1791,16 +1868,19 @@ function CloneDialog({
     <Modal
       open={Boolean(vm)}
       onClose={onClose}
-      title={`克隆${meta.noun}`}
+      title={t('guestList.cloneTitle', { noun: L.noun })}
       description={
         vm
-          ? `源：${vm.name || `${meta.codePrefix} ${vm.vmid}`}（节点 ${vm.node}）`
+          ? t('guestList.cloneSource', {
+              name: vm.name || `${meta.codePrefix} ${vm.vmid}`,
+              node: vm.node,
+            })
           : undefined
       }
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -1808,39 +1888,39 @@ function CloneDialog({
             loading={busy}
             disabled={!newId || Boolean(idError)}
           >
-            开始克隆
+            {t('guestList.cloneStart')}
           </Button>
         </>
       }
     >
       <div className="form-grid">
         <Input
-          label="新 VMID"
+          label={t('guestList.cloneNewId')}
           required
           value={newId}
           onChange={(e) => setNewId(e.target.value.replace(/\D/g, ''))}
-          placeholder="如 200"
+          placeholder={t('guestList.cloneNewIdPlaceholder')}
           error={idError}
-          hint={`留空可先到「${meta.createLabel}」获取建议 ID`}
+          hint={t('guestList.cloneIdHint', { create: L.create })}
         />
         <Input
-          label="新名称"
+          label={t('guestList.cloneNewName')}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={meta.cloneNamePlaceholder}
+          placeholder={L.cloneName}
         />
         <Input
-          label="目标存储（可选）"
+          label={t('guestList.cloneTarget')}
           value={targetStorage}
           onChange={(e) => setTargetStorage(e.target.value)}
-          placeholder="如 local-lvm"
-          hint="完整克隆时需指定"
+          placeholder={t('guestList.cloneTargetPlaceholder')}
+          hint={t('guestList.cloneTargetHint')}
         />
       </div>
       {container ? (
         <div className="mt-16">
-          <Notice tone="info" title="容器只有全量克隆">
-            PVE 不支持容器的链接克隆，克隆结果始终独立于源容器。
+          <Notice tone="info" title={t('guestList.cloneCtOnlyTitle')}>
+            {t('guestList.cloneCtOnlyDesc')}
           </Notice>
         </div>
       ) : (
@@ -1848,11 +1928,11 @@ function CloneDialog({
           <Checkbox
             checked={full}
             onChange={(e) => setFull(e.target.checked)}
-            label="完整克隆（复制所有磁盘数据，独立于源虚拟机）"
+            label={t('guestList.cloneFullLabel')}
           />
           {!full ? (
-            <Notice tone="warning" title="链接克隆">
-              链接克隆依赖源虚拟机及快照链，源被删除或快照被合并后会导致克隆体数据损坏。生产环境建议使用完整克隆。
+            <Notice tone="warning" title={t('guestList.cloneLinkedTitle')}>
+              {t('guestList.cloneLinkedDesc')}
             </Notice>
           ) : null}
         </div>
@@ -1878,6 +1958,7 @@ function MigrateDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const runner = useTaskRunner();
   const [target, setTarget] = useState('');
   const [online, setOnline] = useState(true);
@@ -1899,7 +1980,7 @@ function MigrateDialog({
     setBusy(true);
     try {
       await runner.run(guestsApi.migrate(vm, target, online), {
-        title: `迁移「${vm.name || vm.vmid}」到 ${target}`,
+        title: t('guestList.migrate.task', { name: vm.name || vm.vmid, node: target }),
         node: vm.node,
         invalidate: [['vms'], ['lxc'], ['nodes'], ['cluster']],
       });
@@ -1913,15 +1994,20 @@ function MigrateDialog({
     <Modal
       open={Boolean(vm)}
       onClose={onClose}
-      title={`迁移${noun}`}
+      title={t('guestList.migrate.title', { noun })}
       description={
-        vm ? `源节点：${vm.node} · ${vm.name || `VM ${vm.vmid}`}` : undefined
+        vm
+          ? t('guestList.migrate.desc', {
+              node: vm.node,
+              name: vm.name || `VM ${vm.vmid}`,
+            })
+          : undefined
       }
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -1929,21 +2015,21 @@ function MigrateDialog({
             loading={busy}
             disabled={!target}
           >
-            开始迁移
+            {t('guestList.migrate.start')}
           </Button>
         </>
       }
     >
       {options.length === 0 ? (
-        <Notice tone="warning" title="没有可用的目标节点">
-          集群中只有一个节点，无法执行迁移。
+        <Notice tone="warning" title={t('guestList.migrate.noTargetTitle')}>
+          {t('guestList.migrate.noTargetDesc')}
         </Notice>
       ) : (
         <div className="flex flex-col gap-16">
           <Select
-            label="目标节点"
+            label={t('guestList.migrate.targetLabel')}
             required
-            placeholder="请选择目标节点"
+            placeholder={t('guestList.migrate.targetPlaceholder')}
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             options={options}
@@ -1951,7 +2037,7 @@ function MigrateDialog({
           <Checkbox
             checked={online}
             onChange={(e) => setOnline(e.target.checked)}
-            label="在线迁移（不停机，需要共享存储或本地磁盘迁移支持）"
+            label={t('guestList.migrate.online')}
           />
         </div>
       )}
@@ -1974,6 +2060,7 @@ function SnapshotDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const runner = useTaskRunner();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -1990,7 +2077,7 @@ function SnapshotDialog({
 
   const nameError =
     name && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)
-      ? '快照名需以字母开头，只能包含字母、数字、- 和 _'
+      ? t('guestList.snap.nameError')
       : undefined;
 
   const submit = async () => {
@@ -2005,7 +2092,7 @@ function SnapshotDialog({
           vmstate: isLxc ? false : vmstate,
         }),
         {
-          title: `创建快照「${name}」`,
+          title: t('guestList.snap.task', { name }),
           node: vm.node,
           invalidate: [['snapshots'], ['vms'], ['lxc'], [isLxc ? 'lxc' : 'vm', vm.node, vm.vmid]],
         },
@@ -2020,15 +2107,20 @@ function SnapshotDialog({
     <Modal
       open={Boolean(vm)}
       onClose={onClose}
-      title="新建快照"
+      title={t('guestList.snap.title')}
       description={
-        vm ? `${vm.name || `VM ${vm.vmid}`}（节点 ${vm.node}）` : undefined
+        vm
+          ? t('guestList.snap.subtitle', {
+              name: vm.name || `VM ${vm.vmid}`,
+              node: vm.node,
+            })
+          : undefined
       }
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -2036,25 +2128,25 @@ function SnapshotDialog({
             loading={busy}
             disabled={!name || Boolean(nameError)}
           >
-            创建快照
+            {t('guestList.snap.create')}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-16">
         <Input
-          label="快照名称"
+          label={t('guestList.snap.nameLabel')}
           required
           value={name}
           onChange={(e) => setName(e.target.value)}
           error={nameError}
-          placeholder="如 before-upgrade"
+          placeholder={t('guestList.snap.namePlaceholder')}
         />
         <Input
-          label="描述"
+          label={t('common.description')}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="说明该快照的用途"
+          placeholder={t('guestList.snap.descPlaceholder')}
         />
         {/* 容器快照没有内存状态，这一项对容器不显示 */}
         {isLxc ? null : (
@@ -2062,12 +2154,10 @@ function SnapshotDialog({
             <Checkbox
               checked={vmstate}
               onChange={(e) => setVmstate(e.target.checked)}
-              label="包含内存状态（vmstate，回滚时可恢复到运行状态）"
+              label={t('guestList.snap.vmstate')}
             />
             {vmstate ? (
-              <Notice tone="info">
-                包含内存状态会额外占用与虚拟机内存等量的存储空间。
-              </Notice>
+              <Notice tone="info">{t('guestList.snap.vmstateNote')}</Notice>
             ) : null}
           </>
         )}
@@ -2102,6 +2192,7 @@ function BulkParamsDialog({
   onClose: () => void;
   onSubmit: (params: BulkParams) => void;
 }) {
+  const t = useT();
   const [tags, setTags] = useState('');
   const [tagMode, setTagMode] = useState<'replace' | 'append'>('append');
   const [target, setTarget] = useState('');
@@ -2127,16 +2218,16 @@ function BulkParamsDialog({
   const nodeOptions = nodes.map((n) => ({ label: n, value: n }));
   const snapNameError =
     snapName && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(snapName)
-      ? '快照名需以字母开头，只能包含字母、数字、- 和 _'
+      ? t('guestList.snap.nameError')
       : undefined;
 
   /* 内存气球：必须填，且是 >= 0 的整数（0 表示关掉气球驱动） */
   const balloonValue = balloon.trim() === '' ? NaN : Number(balloon);
   const balloonError =
     balloon.trim() === '' || !Number.isFinite(balloonValue) || balloonValue < 0
-      ? '请填写不小于 0 的整数（0 = 关闭气球驱动）'
+      ? t('guestList.bulkDialog.balloonError')
       : balloonValue > 0 && balloonValue < 128
-        ? '至少 128 MB，或填 0 关闭气球驱动'
+        ? t('guestList.bulkDialog.balloonErrorMin')
         : undefined;
 
   const canSubmit =
@@ -2158,29 +2249,36 @@ function BulkParamsDialog({
     else onSubmit({ name: snapName, description: snapDesc, vmstate });
   };
 
-  const titles: Record<string, string> = {
-    tag: '批量打标签',
-    migrate: '批量迁移',
-    balloon: '批量设置内存气球',
-    snapshot: '批量创建快照',
+  const titles: Record<string, MessageKey> = {
+    tag: 'guestList.bulkTag',
+    migrate: 'guestList.bulkDialog.titleMigrate',
+    balloon: 'guestList.bulkBalloon',
+    snapshot: 'guestList.bulkSnapshot',
   };
 
   return (
     <Modal
       open={Boolean(action)}
       onClose={onClose}
-      title={action ? titles[action] ?? '批量操作' : '批量操作'}
-      description={`将对选中的 ${count} ${unit}${noun}执行${
-        action === 'snapshot' ? '，**逐台**创建同名快照' : ''
-      }`}
+      title={
+        action
+          ? t(titles[action] ?? 'guestList.bulkDialog.titleDefault')
+          : t('guestList.bulkDialog.titleDefault')
+      }
+      description={t('guestList.bulkDialog.desc', {
+        count,
+        unit,
+        noun,
+        extra: action === 'snapshot' ? t('guestList.bulkDialog.descSnapshot') : '',
+      })}
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={submit} loading={busy} disabled={!canSubmit}>
-            执行
+            {t('guestList.bulkDialog.run')}
           </Button>
         </>
       }
@@ -2188,21 +2286,29 @@ function BulkParamsDialog({
       {action === 'tag' ? (
         <div className="flex flex-col gap-16">
           <Input
-            label="标签"
+            label={t('guestList.bulkDialog.tagLabel')}
             required
             value={tags}
             onChange={(e) => setTags(e.target.value)}
-            placeholder="如 prod;web"
-            hint="多个标签用分号或逗号分隔"
+            placeholder={t('guestList.bulkDialog.tagPlaceholder')}
+            hint={t('guestList.bulkDialog.tagHint')}
           />
           <RadioGroup
             name="bulk-tag-mode"
-            label="写入方式"
+            label={t('guestList.bulkDialog.tagMode')}
             value={tagMode}
             onChange={(v) => setTagMode(v as 'replace' | 'append')}
             options={[
-              { label: '追加', value: 'append', hint: '保留原有标签，只补上缺失的' },
-              { label: '覆盖', value: 'replace', hint: '用这里的标签替换掉原有的' },
+              {
+                label: t('guestList.bulkDialog.tagAppend'),
+                value: 'append',
+                hint: t('guestList.bulkDialog.tagAppendHint'),
+              },
+              {
+                label: t('guestList.bulkDialog.tagReplace'),
+                value: 'replace',
+                hint: t('guestList.bulkDialog.tagReplaceHint'),
+              },
             ]}
           />
         </div>
@@ -2211,9 +2317,9 @@ function BulkParamsDialog({
       {action === 'migrate' ? (
         <div className="flex flex-col gap-16">
           <Select
-            label="目标节点"
+            label={t('guestList.migrate.targetLabel')}
             required
-            placeholder="请选择目标节点"
+            placeholder={t('guestList.migrate.targetPlaceholder')}
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             options={nodeOptions}
@@ -2221,12 +2327,11 @@ function BulkParamsDialog({
           <Switch
             checked={online}
             onChange={setOnline}
-            label="在线迁移"
-            hint="不停机；需要共享存储或本地磁盘迁移支持"
+            label={t('guestList.bulkDialog.onlineMigrate')}
+            hint={t('guestList.bulkDialog.onlineMigrateHint')}
           />
-          <Notice tone="warning" title="已在目标节点上的机器会失败">
-            后端不会替你过滤：已经在目标节点的机器 PVE 会直接报错，
-            结果清单里会写明是哪几台。
+          <Notice tone="warning" title={t('guestList.bulkDialog.migrateWarnTitle')}>
+            {t('guestList.bulkDialog.migrateWarnDesc')}
           </Notice>
         </div>
       ) : null}
@@ -2234,7 +2339,7 @@ function BulkParamsDialog({
       {action === 'balloon' ? (
         <div className="flex flex-col gap-16">
           <Input
-            label="最低保留内存（MB）"
+            label={t('guestList.bulkDialog.balloonLabel')}
             required
             type="number"
             min={0}
@@ -2242,17 +2347,15 @@ function BulkParamsDialog({
             value={balloon}
             onChange={(e) => setBalloon(e.target.value)}
             error={balloon.trim() === '' ? undefined : balloonError}
-            placeholder="如 1024（至少保留 1G）"
-            hint="填 0 = 关闭气球驱动；PVE 默认（不设）等于整份内存不回收"
+            placeholder={t('guestList.bulkDialog.balloonPlaceholder')}
+            hint={t('guestList.bulkDialog.balloonHint')}
           />
-          <Notice tone="info" title="这是在改什么">
-            内存气球让宿主机在客户机空闲时把那部分内存收回去。不填这个值时 PVE
-            按「整份内存」算，宿主机即使看到客户机空闲也收不回。生效前提是客户机里
-            装了气球驱动（Linux 通常自带，<code>lsmod | grep balloon</code> 可查）。
+          <Notice tone="info" title={t('guestList.bulkDialog.balloonNoticeTitle')}>
+            {t('guestList.bulkDialog.balloonNoticeDesc')}
           </Notice>
           {hasContainer ? (
-            <Notice tone="warning" title="容器不支持内存气球">
-              选中的容器会逐台失败（LXC 的内存是硬上限），虚拟机会正常改。
+            <Notice tone="warning" title={t('guestList.bulkDialog.balloonCtTitle')}>
+              {t('guestList.bulkDialog.balloonCtDesc')}
             </Notice>
           ) : null}
         </div>
@@ -2261,30 +2364,30 @@ function BulkParamsDialog({
       {action === 'snapshot' ? (
         <div className="flex flex-col gap-16">
           <Input
-            label="快照名称"
+            label={t('guestList.snap.nameLabel')}
             required
             value={snapName}
             onChange={(e) => setSnapName(e.target.value)}
             error={snapNameError}
-            hint="所有目标机器用同一个名字"
+            hint={t('guestList.bulkDialog.snapNameHint')}
           />
           <Input
-            label="描述"
+            label={t('common.description')}
             value={snapDesc}
             onChange={(e) => setSnapDesc(e.target.value)}
           />
           {/* 容器没有内存状态，这个开关对容器页无意义 */}
           {hasContainer ? (
-            <Notice tone="info" title="容器快照不支持内存状态">
-              选中的容器会忽略「包含内存状态」，快照只保存磁盘数据。
+            <Notice tone="info" title={t('guestList.bulkDialog.snapCtTitle')}>
+              {t('guestList.bulkDialog.snapCtDesc')}
             </Notice>
           ) : (
             <>
               <Switch
                 checked={vmstate}
                 onChange={setVmstate}
-                label="包含内存状态"
-                hint="回滚时可恢复到运行状态；会额外占用与内存等量的空间"
+                label={t('guestList.bulkDialog.snapVmstate')}
+                hint={t('guestList.bulkDialog.snapVmstateHint')}
               />
             </>
           )}

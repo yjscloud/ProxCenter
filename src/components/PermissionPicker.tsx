@@ -7,6 +7,7 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { rolesApi } from '../api/endpoints';
+import { useT } from '../i18n';
 
 export function PermissionPicker({
   value,
@@ -18,6 +19,7 @@ export function PermissionPicker({
   /** 关闭时只读（例如用户「跟随角色」模式） */
   disabled?: boolean;
 }) {
+  const t = useT();
   const catalogQuery = useQuery({
     queryKey: ['permissions', 'catalog'],
     queryFn: () => rolesApi.catalog(),
@@ -45,7 +47,7 @@ export function PermissionPicker({
   };
 
   if (catalogQuery.isLoading) {
-    return <div className="fs-sm text-muted">正在加载权限目录…</div>;
+    return <div className="fs-sm text-muted">{t('permPicker.loading')}</div>;
   }
 
   return (
@@ -63,7 +65,7 @@ export function PermissionPicker({
                 disabled={disabled}
                 onClick={() => toggleGroup(keys, !allOn)}
               >
-                {allOn ? '取消全选' : '全选'}
+                {allOn ? t('permPicker.clearAll') : t('permPicker.selectAll')}
               </button>
             </div>
             <div className="perm-items">

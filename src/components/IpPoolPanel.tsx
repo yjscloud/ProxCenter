@@ -16,6 +16,7 @@ import { Badge } from './ui/Badge';
 import { IconPlus, IconTrash, IconSave, IconNetwork } from './Icons';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useT } from '../i18n';
 import type { IpPool } from '../api/types';
 
 function newPool(): IpPool {
@@ -32,6 +33,7 @@ function newPool(): IpPool {
 }
 
 export function IpPoolPanel() {
+  const t = useT();
   const toast = useToast();
   const qc = useQueryClient();
   /* 地址池保存在后端、写入走 network.manage（仅管理员），界面沿用同一判定 */
@@ -80,9 +82,12 @@ export function IpPoolPanel() {
     try {
       await ipPoolsApi.save(pools);
       await qc.invalidateQueries({ queryKey: ['ip-pools'] });
-      toast.success('地址池已保存', `共 ${pools.length} 个池`);
+      toast.success(
+        t('ippool.saved'),
+        t('ippool.savedDetail', { n: pools.length }),
+      );
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('ippool.saveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -91,8 +96,8 @@ export function IpPoolPanel() {
   return (
     <Card collapsible={false}>
       <CardHeader
-        title="IP 地址池"
-        subtitle="为虚拟机提供可分配的静态 IP（创建 / 克隆时可下拉选择空闲地址）"
+        title={t('ippool.title')}
+        subtitle={t('ippool.subtitle')}
         icon={<IconNetwork size={16} />}
         actions={
           <>
@@ -103,7 +108,7 @@ export function IpPoolPanel() {
               disabled={!canManageNet}
               onClick={() => setPools([...pools, newPool()])}
             >
-              添加池
+              {t('ippool.addPool')}
             </Button>
             <Button
               variant="primary"
@@ -113,31 +118,35 @@ export function IpPoolPanel() {
               disabled={!canManageNet}
               onClick={() => void save()}
             >
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
       />
 
       {!canManageNet ? (
-        <Notice tone="info" title="只读模式">
-          当前账号对 IP 地址池只有查看权限，新增地址池与保存修改需要管理员权限。
+        <Notice tone="info" title={t('ippool.readonlyTitle')}>
+          {t('ippool.readonlyBody')}
         </Notice>
       ) : null}
 
-      <Notice tone="info" title="它是怎么工作的">
-        这里只维护「可用地址范围」，<b>不需要 DHCP / SDN</b>。面板会扫描各虚拟机的
-        cloud-init / Cloudbase-Init 与网卡静态配置统计已占用地址，创建或克隆虚拟机时，
-        在网络配置里就能从池中选择一个<b>未被使用</b>的 IP（写入初始化静态地址）。
-        需要客户机支持初始化下发才会生效：Linux 用带 cloud-init 的镜像，
-        Windows 需在系统内装好 Cloudbase-Init。
+      <Notice tone="info" title={t('ippool.howTitle')}>
+        {t('ippool.howPre')}
+        <b>{t('ippool.howBold1')}</b>
+        {t('ippool.howMid')}
+        <b>{t('ippool.howBold2')}</b>
+        {t('ippool.howPost')}
       </Notice>
 
       {query.isError ? (
-        <Notice tone="warning" title="地址池接口暂不可用">
-          读取已保存的地址池失败（{errorMessage(query.error)}）。
-          如果后端刚更新过，请<b>重启后端服务</b>后再刷新页面 —— 新增的
-          <code>/api/ip-pools</code> 接口需要先重启才能生效。
+        <Notice tone="warning" title={t('ippool.apiTitle')}>
+          {t('ippool.apiPre')}
+          {errorMessage(query.error)}
+          {t('ippool.apiMid')}
+          <b>{t('ippool.apiBold')}</b>
+          {t('ippool.apiMid2')}
+          <code>/api/ip-pools</code>
+          {t('ippool.apiPost')}
         </Notice>
       ) : null}
 
@@ -146,14 +155,14 @@ export function IpPoolPanel() {
           <table className="table table-dense">
             <thead>
               <tr>
-                <th>名称</th>
-                <th>网桥</th>
-                <th>子网</th>
-                <th>网关</th>
-                <th>起始 IP</th>
-                <th>结束 IP</th>
+                <th>{t('ippool.colName')}</th>
+                <th>{t('ippool.colBridge')}</th>
+                <th>{t('ippool.colSubnet')}</th>
+                <th>{t('ippool.colGateway')}</th>
+                <th>{t('ippool.colStart')}</th>
+                <th>{t('ippool.colEnd')}</th>
                 <th>DNS</th>
-                <th>空闲</th>
+                <th>{t('ippool.colFree')}</th>
                 <th />
               </tr>
             </thead>
@@ -165,7 +174,7 @@ export function IpPoolPanel() {
                       <input
                         className="input"
                         value={p.name}
-                        placeholder="如 业务网"
+                        placeholder={t('ippool.namePlaceholder')}
                         onChange={(e) => patch(i, { name: e.target.value })}
                       />
                     </div>
@@ -225,19 +234,19 @@ export function IpPoolPanel() {
                       <input
                         className="input"
                         value={p.dns}
-                        placeholder="223.5.5.5（可选）"
+                        placeholder={t('ippool.dnsPlaceholder')}
                         onChange={(e) => patch(i, { dns: e.target.value })}
                       />
                     </div>
                   </td>
                   <td>
                     <Badge variant={freeOf(p.id) > 0 ? 'success' : 'warning'} size="sm">
-                      {freeOf(p.id)} 个
+                      {t('ippool.freeCount', { n: freeOf(p.id) })}
                     </Badge>
                   </td>
                   <td>
                     <IconButton
-                      label="删除该地址池"
+                      label={t('ippool.deleteAria')}
                       variant="danger"
                       disabled={!canManageNet}
                       onClick={() => setPools(pools.filter((_, k) => k !== i))}
@@ -251,10 +260,7 @@ export function IpPoolPanel() {
           </table>
         </div>
       ) : (
-        <div className="text-secondary fs-sm">
-          还没有地址池，点击右上角「添加池」新增（例如 192.168.1.0/24，范围
-          100–200）。
-        </div>
+        <div className="text-secondary fs-sm">{t('ippool.empty')}</div>
       )}
     </Card>
   );

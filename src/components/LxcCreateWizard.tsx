@@ -41,20 +41,13 @@ import { NodePicker } from './NodePicker';
 import { QuickDeployForm } from './QuickDeployForm';
 import { useToast } from '../hooks/useToast';
 import { useTaskRunner } from '../hooks/useTaskRunner';
+import { useT, type TFunc } from '../i18n';
 import type { LxcCreateNetwork, LxcCreateRequest } from '../api/types';
 
-const STEPS = ['基本信息', '资源', '网络与初始化'] as const;
 type StepIndex = 0 | 1 | 2;
 
 /** 两种下单方式：快速（选规格）与自定义（逐步填写） */
 type CreateMode = 'quick' | 'custom';
-
-/** 容器可选特性。nesting 用来在容器里跑 Docker，keyctl 是它的常见搭档。 */
-const FEATURE_OPTIONS = [
-  { value: 'nesting', label: 'nesting（容器内再跑容器 / Docker）' },
-  { value: 'keyctl', label: 'keyctl（内核密钥环，常与 nesting 一起开）' },
-  { value: 'fuse', label: 'fuse（用户态文件系统）' },
-] as const;
 
 interface FormState {
   node: string;
@@ -112,26 +105,26 @@ const INITIAL: FormState = {
 
 type Errors = Partial<Record<string, string>>;
 
-function validate(step: StepIndex, f: FormState): Errors {
+function validate(step: StepIndex, f: FormState, t: TFunc): Errors {
   const e: Errors = {};
   if (step === 0) {
-    if (!f.node) e.node = '请选择节点';
-    if (!f.name.trim()) e.name = '请输入容器名称';
-    else if (f.name.length > 63) e.name = '名称不能超过 63 个字符';
-    if (f.vmid && !/^\d+$/.test(f.vmid)) e.vmid = 'VMID 只能是数字';
-    if (!f.ostemplate) e.ostemplate = '请选择系统模板';
+    if (!f.node) e.node = t('lxcWizard.errNode');
+    if (!f.name.trim()) e.name = t('lxcWizard.errName');
+    else if (f.name.length > 63) e.name = t('lxcWizard.errNameLength');
+    if (f.vmid && !/^\d+$/.test(f.vmid)) e.vmid = t('lxcWizard.errVmid');
+    if (!f.ostemplate) e.ostemplate = t('lxcWizard.errTemplate');
   }
   if (step === 1) {
-    if (!f.storage) e.storage = '请选择存储池';
-    if (f.rootfs < 1) e.rootfs = 'rootfs 至少 1 GB';
-    if (f.memory < 16) e.memory = '内存至少 16 MB';
-    if (f.cores < 1) e.cores = '核心数至少 1';
-    if (f.swap < 0) e.swap = 'swap 不能为负';
+    if (!f.storage) e.storage = t('lxcWizard.errStorage');
+    if (f.rootfs < 1) e.rootfs = t('lxcWizard.errRootfs');
+    if (f.memory < 16) e.memory = t('lxcWizard.errMemory');
+    if (f.cores < 1) e.cores = t('lxcWizard.errCores');
+    if (f.swap < 0) e.swap = t('lxcWizard.errSwap');
   }
   if (step === 2) {
-    if (!f.bridge) e.bridge = '请选择网桥';
+    if (!f.bridge) e.bridge = t('lxcWizard.errBridge');
     if (f.ip && f.ip !== 'dhcp' && f.ip !== 'manual' && !f.ip.includes('/')) {
-      e.ip = '静态地址请写成 CIDR 形式，如 192.168.1.50/24';
+      e.ip = t('lxcWizard.errIp');
     }
   }
   return e;
@@ -148,9 +141,28 @@ export function LxcCreateWizard({
   onClose,
   onCreated,
 }: LxcCreateWizardProps) {
+  const t = useT();
   const toast = useToast();
   const runner = useTaskRunner();
   const queryClient = useQueryClient();
+
+  /* 步骤名与容器特性：文案随语言走，因此在组件内构造 */
+  const steps = useMemo(
+    () => [
+      t('lxcWizard.stepBasic'),
+      t('lxcWizard.stepResource'),
+      t('lxcWizard.stepNetwork'),
+    ],
+    [t],
+  );
+  const featureOptions = useMemo(
+    () => [
+      { value: 'nesting', label: t('lxcWizard.featNesting') },
+      { value: 'keyctl', label: t('lxcWizard.featKeyctl') },
+      { value: 'fuse', label: t('lxcWizard.featFuse') },
+    ],
+    [t],
+  );
 
   const [step, setStep] = useState<StepIndex>(0);
   const [form, setForm] = useState<FormState>(INITIAL);
@@ -225,10 +237,12 @@ export function LxcCreateWizard({
   const connectionOptions = useMemo(
     () =>
       (connectionsQuery.data ?? []).map((c) => ({
-        label: `${c.name || c.host}${c.active ? '（当前连接）' : ''} · ${c.host}:${c.port}`,
+        label: `${c.name || c.host}${
+          c.active ? t('lxcWizard.currentConn') : ''
+        } · ${c.host}:${c.port}`,
         value: c.id,
       })),
-    [connectionsQuery.data],
+    [connectionsQuery.data, t],
   );
 
   /* 打开时默认落在面板当前连接上（与虚拟机向导一致） */
@@ -317,17 +331,17 @@ export function LxcCreateWizard({
     const bridges = ifaces.filter((i) => i.type === 'bridge' || i.type === 'OVSBridge');
     const list = bridges.length > 0 ? bridges : ifaces;
     return [
-      { label: '请选择网桥', value: '' },
+      { label: t('lxcWizard.selectBridge'), value: '' },
       ...list.map((i) => ({
-        label: `${i.iface}${i.active ? '' : '（未激活）'}`,
+        label: `${i.iface}${i.active ? '' : t('lxcWizard.inactive')}`,
         value: i.iface,
       })),
     ];
-  }, [bridgesQuery.data]);
+  }, [bridgesQuery.data, t]);
 
   /* ---- 步骤导航 ---- */
   const goNext = () => {
-    const e = validate(step, form);
+    const e = validate(step, form, t);
     setErrors(e);
     if (Object.keys(e).length > 0) return;
     if (step < 2) setStep((s) => (s + 1) as StepIndex);
@@ -340,13 +354,13 @@ export function LxcCreateWizard({
   /* ---- 提交 ---- */
   const submit = async () => {
     const all: Errors = {
-      ...validate(0, form),
-      ...validate(1, form),
-      ...validate(2, form),
+      ...validate(0, form, t),
+      ...validate(1, form, t),
+      ...validate(2, form, t),
     };
     setErrors(all);
     if (Object.keys(all).length > 0) {
-      toast.error('请先修正表单中的错误', '仍有必填项未填写');
+      toast.error(t('lxcWizard.fixErrors'), t('lxcWizard.fixErrorsHint'));
       return;
     }
 
@@ -392,7 +406,7 @@ export function LxcCreateWizard({
          建容器 —— PVE 会回 hostname lookup 失败。 */
       const created = await lxcApi.create(payload, targetConn);
       await runner.run(Promise.resolve(created), {
-        title: `创建容器「${payload.name}」`,
+        title: t('lxcWizard.createTask', { name: payload.name }),
         node: form.node,
         invalidate: [['vms'], ['lxc'], ['cluster']],
       });
@@ -410,8 +424,8 @@ export function LxcCreateWizard({
     <Modal
       open={open}
       onClose={onClose}
-      title="创建容器（LXC）"
-      description="容器比虚拟机更轻，适合跑服务；系统模板需先放到节点的 vztmpl 存储"
+      title={t('lxcWizard.title')}
+      description={t('lxcWizard.desc')}
       size="lg"
       footer={
         /* 快速模式自带提交按钮（在表单末尾），这里不再重复一套 footer */
@@ -420,7 +434,11 @@ export function LxcCreateWizard({
           {/* 左侧放进度：底部只有两个按钮时整条 footer 会显得很空，
               而「第几步 / 共几步」正是向导里最该一直看得见的信息 */}
           <span className="wizard-footer-step">
-            第 {step + 1} / {STEPS.length} 步 · {STEPS[step]}
+            {t('lxcWizard.footerStep', {
+              n: step + 1,
+              total: steps.length,
+              label: steps[step],
+            })}
           </span>
           <div className="wizard-footer-actions">
             <Button
@@ -428,11 +446,11 @@ export function LxcCreateWizard({
               onClick={step === 0 ? onClose : goPrev}
               disabled={submitting}
             >
-              {step === 0 ? '取消' : '上一步'}
+              {step === 0 ? t('common.cancel') : t('lxcWizard.prev')}
             </Button>
             {step < 2 ? (
               <Button variant="primary" onClick={goNext}>
-                下一步
+                {t('lxcWizard.next')}
               </Button>
             ) : (
               <Button
@@ -440,9 +458,9 @@ export function LxcCreateWizard({
                 onClick={submit}
                 loading={submitting}
                 disabled={blocked}
-                title={blocked ? '可下发容器数量已用尽，请联系管理员' : undefined}
+                title={blocked ? t('lxcWizard.quotaBlocked') : undefined}
               >
-                创建容器
+                {t('lxcWizard.create')}
               </Button>
             )}
           </div>
@@ -455,16 +473,16 @@ export function LxcCreateWizard({
         <SegmentedControl<CreateMode>
           value={mode}
           onChange={pickMode}
-          ariaLabel="创建方式"
+          ariaLabel={t('lxcWizard.modeAria')}
           options={[
-            { label: '快速部署', value: 'quick' },
-            { label: '自定义部署', value: 'custom' },
+            { label: t('lxcWizard.modeQuick'), value: 'quick' },
+            { label: t('lxcWizard.modeCustom'), value: 'custom' },
           ]}
         />
         <span className="fs-sm text-muted">
           {mode === 'quick'
-            ? '选规格、选位置、起名即下发；规格由管理员在「设置 → 资源规格」里定义'
-            : `逐步填写：${STEPS.join(' → ')}`}
+            ? t('lxcWizard.modeQuickHint')
+            : t('lxcWizard.modeCustomHint', { steps: steps.join(' → ') })}
         </span>
       </div>
 
@@ -480,8 +498,8 @@ export function LxcCreateWizard({
       ) : (
         <>
       {/* ---- 步骤条 ---- */}
-      <div className="wizard-steps" role="list" aria-label="创建步骤">
-        {STEPS.map((label, i) => (
+      <div className="wizard-steps" role="list" aria-label={t('lxcWizard.stepsAria')}>
+        {steps.map((label, i) => (
           <div
             key={label}
             role="listitem"
@@ -493,7 +511,7 @@ export function LxcCreateWizard({
               {i + 1}
             </span>
             <span className="wizard-step-label">{label}</span>
-            {i < STEPS.length - 1 ? (
+            {i < steps.length - 1 ? (
               <span className={`wizard-connector ${i < step ? 'is-done' : ''}`} aria-hidden="true" />
             ) : null}
           </div>
@@ -510,38 +528,46 @@ export function LxcCreateWizard({
                 tone={quota.can_create ? 'info' : 'warning'}
                 title={
                   quota.can_create
-                    ? `还可下发 ${quota.remaining ?? 0} 个容器`
-                    : '可下发容器数量已用尽'
+                    ? t('lxcWizard.quotaRemaining', { n: quota.remaining ?? 0 })
+                    : t('lxcWizard.quotaExhausted')
                 }
               >
                 {quota.can_create
-                  ? `容器额度 ${quota.quota ?? 0} 个，当前已有 ${quota.used} 个`
-                  : `容器额度 ${quota.quota ?? 0} 个，当前 ${quota.used} 个，已无法再创建，请联系管理员`}
+                  ? t('lxcWizard.quotaUsed', {
+                      quota: quota.quota ?? 0,
+                      used: quota.used,
+                    })
+                  : t('lxcWizard.quotaUsedUp', {
+                      quota: quota.quota ?? 0,
+                      used: quota.used,
+                    })}
                 {/* 与虚拟机额度分开记账：说清楚，免得管理员以为被虚拟机占掉了 */}
-                。与虚拟机额度相互独立，互不占用。
+                {t('lxcWizard.quotaIndependent')}
                 {quota.count_error ? (
-                  <>（部分 PVE 连接读取失败：{quota.count_error}）</>
+                  <>
+                    {t('lxcWizard.quotaCountError', { err: quota.count_error })}
+                  </>
                 ) : null}
               </Notice>
             ) : null}
 
-            <div className="wizard-section-title">节点与名称</div>
+            <div className="wizard-section-title">{t('lxcWizard.sectionNodeName')}</div>
             <div className="form-grid">
               <Select
-                label="目标 PVE 主机"
+                label={t('lxcWizard.fieldConn')}
                 value={targetConn}
                 onChange={(e) => setTargetConn(e.target.value)}
                 options={connectionOptions}
-                hint="决定容器建在哪台 PVE 上；切换后节点、模板、存储会按该主机重新读取"
+                hint={t('lxcWizard.fieldConnHint')}
               />
               <Field
-                label="节点"
+                label={t('lxcWizard.fieldNode')}
                 required
                 error={errors.node}
                 hint={
                   nodesQuery.isError
                     ? errorMessage(nodesQuery.error)
-                    : '容器将在此节点上创建；卡片上是各节点当前的资源占用'
+                    : t('lxcWizard.fieldNodeHint')
                 }
               >
                 <NodePicker
@@ -552,52 +578,60 @@ export function LxcCreateWizard({
                 />
               </Field>
               <Input
-                label="VMID"
-                hint="留空自动取下一个可用 ID"
+                label={t('lxcWizard.fieldVmid')}
+                hint={t('lxcWizard.fieldVmidHint')}
                 value={form.vmid}
                 onChange={(e) => update('vmid', e.target.value)}
                 error={errors.vmid}
               />
               <Input
-                label="容器名称"
+                label={t('lxcWizard.fieldName')}
                 required
-                placeholder="如 web-01"
+                placeholder={t('lxcWizard.namePlaceholder')}
                 value={form.name}
                 onChange={(e) => update('name', e.target.value)}
                 error={errors.name}
               />
               <Input
-                label="root 口令"
+                label={t('lxcWizard.fieldPassword')}
                 type="password"
-                hint="留空则只能用控制台（或已注入的 SSH 公钥）登录"
+                hint={t('lxcWizard.fieldPasswordHint')}
                 value={form.password}
                 onChange={(e) => update('password', e.target.value)}
               />
             </div>
 
-            <div className="wizard-section-title">系统模板</div>
+            <div className="wizard-section-title">{t('lxcWizard.sectionTemplate')}</div>
             {templatesQuery.isLoading ? (
               <div className="flex items-center gap-8 fs-sm text-muted">
-                <Spinner size={16} label="正在读取模板列表" />
-                正在读取模板列表…
+                <Spinner size={16} label={t('lxcWizard.templatesLoading')} />
+                {t('lxcWizard.templatesLoading')}
               </div>
             ) : null}
             {templatesQuery.isError ? (
-              <Notice tone="danger" title="无法读取容器模板">
+              <Notice tone="danger" title={t('lxcWizard.templatesError')}>
                 {errorMessage(templatesQuery.error)}
               </Notice>
             ) : null}
             {!templatesQuery.isLoading && templateOptions.length === 0 ? (
-              <Notice tone="warning" title="该节点没有可用的容器模板">
-                请先在「存储」页上传，或在节点上执行
+              <Notice tone="warning" title={t('lxcWizard.templatesEmptyTitle')}>
+                {t('lxcWizard.templatesEmptyPre')}
                 <code> pveam update && pveam download local debian-12-standard</code>
               </Notice>
             ) : null}
-            <Field label="系统模板" required error={errors.ostemplate} hint="来自节点上内容类型含 vztmpl 的存储">
+            <Field
+              label={t('lxcWizard.fieldTemplate')}
+              required
+              error={errors.ostemplate}
+              hint={t('lxcWizard.fieldTemplateHint')}
+            >
               <Select
                 value={form.ostemplate}
                 onChange={(e) => update('ostemplate', e.target.value)}
-                options={[{ label: '请选择模板', value: '' }, ...templateOptions]}
+                options={[
+                  { label: t('lxcWizard.selectTemplate'), value: '' },
+                  ...templateOptions,
+                ]}
               />
             </Field>
           </div>
@@ -606,18 +640,21 @@ export function LxcCreateWizard({
         {/* ================= 第 2 步：资源 ================= */}
         {step === 1 ? (
           <div className="wizard-section">
-            <div className="wizard-section-title">系统盘</div>
+            <div className="wizard-section-title">{t('lxcWizard.sectionDisk')}</div>
             <div className="form-grid">
               <Select
-                label="存储池"
+                label={t('lxcWizard.fieldStorage')}
                 required
                 value={form.storage}
                 onChange={(e) => update('storage', e.target.value)}
-                options={[{ label: '请选择存储池', value: '' }, ...storageOptions]}
+                options={[
+                  { label: t('lxcWizard.selectStorage'), value: '' },
+                  ...storageOptions,
+                ]}
                 error={errors.storage}
               />
               <Input
-                label="rootfs 容量（GB）"
+                label={t('lxcWizard.fieldRootfs')}
                 type="number"
                 min={1}
                 value={form.rootfs}
@@ -626,10 +663,10 @@ export function LxcCreateWizard({
               />
             </div>
 
-            <div className="wizard-section-title">计算资源</div>
+            <div className="wizard-section-title">{t('lxcWizard.sectionCompute')}</div>
             <div className="form-grid">
               <Input
-                label="内存（MB）"
+                label={t('lxcWizard.fieldMemory')}
                 type="number"
                 min={16}
                 step={128}
@@ -638,7 +675,7 @@ export function LxcCreateWizard({
                 error={errors.memory}
               />
               <Input
-                label="Swap（MB）"
+                label={t('lxcWizard.fieldSwap')}
                 type="number"
                 min={0}
                 step={128}
@@ -647,7 +684,7 @@ export function LxcCreateWizard({
                 error={errors.swap}
               />
               <Input
-                label="CPU 核心数"
+                label={t('lxcWizard.fieldCores')}
                 type="number"
                 min={1}
                 max={128}
@@ -657,17 +694,17 @@ export function LxcCreateWizard({
               />
             </div>
 
-            <div className="wizard-section-title">容器属性</div>
+            <div className="wizard-section-title">{t('lxcWizard.sectionAttrs')}</div>
             <Switch
               checked={form.unprivileged}
               onChange={(v) => update('unprivileged', v)}
-              label="非特权容器"
-              hint="推荐。容器内的 root 映射到宿主机的普通用户，逃逸风险更低；要挂 NFS / 用某些设备时才需要关闭"
+              label={t('lxcWizard.unprivileged')}
+              hint={t('lxcWizard.unprivilegedHint')}
             />
             <div className="mt-8">
-              <div className="field-label">特性（features）</div>
+              <div className="field-label">{t('lxcWizard.features')}</div>
               <div className="flex flex-col gap-4 mt-4">
-                {FEATURE_OPTIONS.map((opt) => (
+                {featureOptions.map((opt) => (
                   <Checkbox
                     key={opt.value}
                     label={opt.label}
@@ -690,10 +727,10 @@ export function LxcCreateWizard({
         {/* ================= 第 3 步：网络与初始化 ================= */}
         {step === 2 ? (
           <div className="wizard-section">
-            <div className="wizard-section-title">网络</div>
+            <div className="wizard-section-title">{t('lxcWizard.sectionNetwork')}</div>
             <div className="form-grid">
               <Select
-                label="网桥"
+                label={t('lxcWizard.fieldBridge')}
                 required
                 value={form.bridge}
                 onChange={(e) => update('bridge', e.target.value)}
@@ -702,25 +739,25 @@ export function LxcCreateWizard({
               />
               <Input
                 label="IPv4"
-                hint="dhcp 或静态地址（192.168.1.50/24）；manual 表示只配链路"
+                hint={t('lxcWizard.fieldIpv4Hint')}
                 value={form.ip}
                 onChange={(e) => update('ip', e.target.value)}
                 error={errors.ip}
               />
               <Input
-                label="IPv4 网关"
-                hint="静态地址时必填"
+                label={t('lxcWizard.fieldGateway')}
+                hint={t('lxcWizard.fieldGatewayHint')}
                 value={form.gateway}
                 onChange={(e) => update('gateway', e.target.value)}
               />
               <Input
                 label="IPv6"
-                hint="留空不配；dhcp / auto 或静态地址"
+                hint={t('lxcWizard.fieldIpv6Hint')}
                 value={form.ip6}
                 onChange={(e) => update('ip6', e.target.value)}
               />
               <Input
-                label="VLAN Tag"
+                label={t('lxcWizard.fieldVlan')}
                 type="number"
                 min={1}
                 max={4094}
@@ -731,16 +768,20 @@ export function LxcCreateWizard({
             <Switch
               checked={form.firewall}
               onChange={(v) => update('firewall', v)}
-              label="启用防火墙"
-              hint="网卡上打开 firewall=1；规则本身要在「防火墙」页配"
+              label={t('lxcWizard.enableFirewall')}
+              hint={t('lxcWizard.enableFirewallHint')}
             />
 
-            <div className="wizard-section-title">初始化</div>
-            <Notice tone="info" title="容器没有 cloud-init">
-              用户名固定为 root。要免密登录就把公钥贴在下面 —— 会写进容器内的
-              <code> /root/.ssh/authorized_keys</code>。
+            <div className="wizard-section-title">{t('lxcWizard.sectionInit')}</div>
+            <Notice tone="info" title={t('lxcWizard.noCloudInitTitle')}>
+              {t('lxcWizard.noCloudInitPre')}
+              <code> /root/.ssh/authorized_keys</code>
+              {t('lxcWizard.noCloudInitPost')}
             </Notice>
-            <Field label="SSH 公钥" hint="支持多行粘贴，一行一个">
+            <Field
+              label={t('lxcWizard.fieldSshKeys')}
+              hint={t('lxcWizard.fieldSshKeysHint')}
+            >
               <Textarea
                 rows={4}
                 placeholder="ssh-rsa AAAAB3NzaC1yc2E…"
@@ -750,17 +791,17 @@ export function LxcCreateWizard({
             </Field>
             <Input
               label="DNS"
-              hint="留空则套用面板默认 DNS"
+              hint={t('lxcWizard.fieldDnsHint')}
               value={form.nameserver}
               onChange={(e) => update('nameserver', e.target.value)}
             />
             <Input
-              label="标签"
-              hint="分号或逗号分隔"
+              label={t('lxcWizard.fieldTags')}
+              hint={t('lxcWizard.fieldTagsHint')}
               value={form.tags}
               onChange={(e) => update('tags', e.target.value)}
             />
-            <Field label="描述">
+            <Field label={t('lxcWizard.fieldDescription')}>
               <Textarea
                 rows={2}
                 value={form.description}
@@ -771,12 +812,12 @@ export function LxcCreateWizard({
             <Switch
               checked={form.startOnBoot}
               onChange={(v) => update('startOnBoot', v)}
-              label="开机自启"
+              label={t('lxcWizard.startOnBoot')}
             />
             <Switch
               checked={form.start}
               onChange={(v) => update('start', v)}
-              label="创建后立即启动"
+              label={t('lxcWizard.startNow')}
             />
           </div>
         ) : null}
@@ -784,7 +825,7 @@ export function LxcCreateWizard({
 
       <div className="mt-16 flex items-center gap-8">
         <span className="fs-sm text-muted">
-          步骤 {step + 1} / {STEPS.length}
+          {t('lxcWizard.footerProgress', { n: step + 1, total: steps.length })}
         </span>
       </div>
         </>

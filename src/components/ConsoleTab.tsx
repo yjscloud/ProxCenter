@@ -22,6 +22,7 @@ import {
 } from './Icons';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useT } from '../i18n';
 
 /* noVNC 是懒加载的：避免影响首屏体积 */
 
@@ -50,6 +51,7 @@ export function ConsoleTab({
   running,
   guestType = 'qemu',
 }: ConsoleTabProps) {
+  const t = useT();
   const navigate = useNavigate();
   /* 控制台凭据配置位于「系统设置」，仅管理员可进入 */
   const { isAdmin } = useAuth();
@@ -124,7 +126,7 @@ export function ConsoleTab({
           {/* 仅提供 VNC 控制台，容器与虚拟机统一走 VNC */}
           <span className="console-mode-label">
             <IconConsole size={14} />
-            VNC 图形控制台
+            {t('console.mode')}
           </span>
 
           <span className="console-status">
@@ -142,23 +144,27 @@ export function ConsoleTab({
                 // 通过自定义事件把 CAD 发送给 VNC 会话
                 window.dispatchEvent(new CustomEvent('ProxCenter:vnc-cad'));
               }}
-              title="发送 Ctrl+Alt+Del"
+              title={t('console.sendCad')}
             >
               Ctrl+Alt+Del
             </Button>
           ) : null}
 
           <IconButton
-            label={compact ? '恢复正常高度' : '收窄控制台高度'}
+            label={
+              compact ? t('console.restoreHeight') : t('console.compactHeight')
+            }
             onClick={() => setCompact((v) => !v)}
           >
             {compact ? <IconExpand size={16} /> : <IconShrink size={16} />}
           </IconButton>
-          <IconButton label="重新连接控制台" onClick={reconnect}>
+          <IconButton label={t('console.reconnect')} onClick={reconnect}>
             <IconRefresh size={16} />
           </IconButton>
           <IconButton
-            label={fullscreen ? '退出全屏' : '进入全屏'}
+            label={
+              fullscreen ? t('console.exitFullscreen') : t('console.enterFullscreen')
+            }
             onClick={() => void toggleFullscreen()}
           >
             {fullscreen ? <IconShrink size={16} /> : <IconExpand size={16} />}
@@ -173,15 +179,17 @@ export function ConsoleTab({
             <IconAlert size={30} />
             <div>
               <div className="fw-600">
-                {guestType === 'lxc' ? '容器未运行' : '虚拟机未运行'}
+                {guestType === 'lxc'
+                  ? t('console.lxcNotRunning')
+                  : t('console.vmNotRunning')}
               </div>
               <div className="fs-sm text-muted mt-8">
                 {vmName
-                  ? `「${vmName}」`
+                  ? t('console.nameQuoted', { name: vmName })
                   : guestType === 'lxc'
-                    ? '该容器'
-                    : '该虚拟机'}
-                当前处于停止状态，无法连接控制台。
+                    ? t('console.thisLxc')
+                    : t('console.thisVm')}
+                {t('console.stoppedHint')}
               </div>
             </div>
           </div>
@@ -203,7 +211,7 @@ export function ConsoleTab({
         <div style={{ padding: 12 }}>
           <Notice
             tone="danger"
-            title="控制台连接失败"
+            title={t('console.connFailed')}
             action={
               needsConsoleAccount && isAdmin ? (
                 <Button
@@ -211,15 +219,15 @@ export function ConsoleTab({
                   size="sm"
                   onClick={() => navigate('/settings')}
                 >
-                  前往设置
+                  {t('console.goSettings')}
                 </Button>
               ) : undefined
             }
           >
             {needsConsoleAccount
-              ? `VNC 控制台必须使用 Proxmox 账号密码登录（API Token 不支持）。当前控制台凭据缺失、无效或权限不足（PVE 拒绝了登录），请${
-                  isAdmin ? '到「设置 → 控制台凭据」检查' : '联系管理员检查'
-                }账号与密码后重试。`
+              ? `${t('console.needCredsPre')}${
+                  isAdmin ? t('console.checkSettings') : t('console.contactAdmin')
+                }${t('console.needCredsPost')}`
               : error}
           </Notice>
         </div>
@@ -233,12 +241,13 @@ export function ConsoleTab({
    --------------------------------------------------------------------------- */
 
 function StatusBadge({ state }: { state: ConnState }) {
+  const t = useT();
   const map: Record<ConnState, { label: string; variant: 'success' | 'warning' | 'danger' | 'neutral' | 'info'; pulse?: boolean }> = {
-    idle: { label: '未连接', variant: 'neutral' },
-    connecting: { label: '连接中…', variant: 'info', pulse: true },
-    connected: { label: '已连接', variant: 'success', pulse: true },
-    disconnected: { label: '已断开', variant: 'warning' },
-    error: { label: '连接失败', variant: 'danger' },
+    idle: { label: t('console.stateIdle'), variant: 'neutral' },
+    connecting: { label: t('console.stateConnecting'), variant: 'info', pulse: true },
+    connected: { label: t('console.stateConnected'), variant: 'success', pulse: true },
+    disconnected: { label: t('console.stateDisconnected'), variant: 'warning' },
+    error: { label: t('console.stateError'), variant: 'danger' },
   };
   const meta = map[state];
   return (
@@ -270,6 +279,7 @@ function VncConsole({
   onStateChange,
   onError,
 }: VncProps) {
+  const t = useT();
   const toast = useToast();
   const guest = useMemo(() => ({ node, vmid, type: guestType }), [
     node,
@@ -305,7 +315,7 @@ function VncConsole({
         /* 拿不到容器时不能默默 return：状态已经写成 connecting，用户就只能对着
            转圈等下去。容器没就绪是明确的失败，如实报出来。 */
         onStateChange('error');
-        onError('控制台区域尚未就绪，请重新打开该标签页后重试。');
+        onError(t('console.stageNotReady'));
         return;
       }
 
@@ -357,11 +367,7 @@ function VncConsole({
           if (disposed) return;
           timedOut = true;
           onStateChange('error');
-          onError(
-            'VNC 握手超时（20 秒未完成）。常见原因：目标机器未开机或没有图形控制台、'
-            + 'PVE 控制台凭据无效、或浏览器到面板的 WebSocket 被中间设备拦截。'
-            + '可点击「重新连接」重试。',
-          );
+          onError(t('console.handshakeTimeout'));
           try {
             rfbRef.current?.disconnect();
           } catch {
@@ -392,9 +398,9 @@ function VncConsole({
           if (timedOut) return;
           onStateChange('disconnected');
           if (e?.detail?.clean) {
-            onError('控制台会话已结束');
+            onError(t('console.sessionEnded'));
           } else {
-            onError('与 VNC 代理的连接意外中断，请点击「重新连接」重试。');
+            onError(t('console.proxyInterrupted'));
           }
         });
 
@@ -402,7 +408,7 @@ function VncConsole({
           if (disposed) return;
           window.clearTimeout(handshakeTimer);
           onStateChange('error');
-          onError('VNC 认证失败，请检查后端代理票据配置。');
+          onError(t('console.authFailed'));
         });
 
         /* 上游要求凭据但前端没拿到（极少见：PVE 开了 VNC 口令而我们没取到）。
@@ -412,17 +418,15 @@ function VncConsole({
           if (disposed) return;
           window.clearTimeout(handshakeTimer);
           onStateChange('error');
-          onError(
-            'VNC 连接需要凭据但后端未返回，请检查 PVE 控制台账号配置后重试。',
-          );
+          onError(t('console.credentialsMissing'));
         });
       } catch (err) {
         if (disposed) return;
         onStateChange('error');
         const msg = errorMessage(err);
         onError(
-          msg.includes('未实现')
-            ? '后端尚未实现 VNC 代理接口（/console/vncproxy）。'
+          /未实现|not implemented/i.test(msg)
+            ? t('console.proxyNotImpl')
             : msg,
         );
       }
@@ -468,12 +472,10 @@ function VncConsole({
   return (
     <div className="console-stage" ref={containerRef}>
       <div className="console-overlay vnc-connecting">
-        <Spinner size={26} label="正在连接 VNC" />
+        <Spinner size={26} label={t('console.connectingLabel')} />
         <div>
-          <div className="fw-600">正在建立 VNC 连接…</div>
-          <div className="console-hint mt-8">
-            首次连接可能需要数秒，请稍候
-          </div>
+          <div className="fw-600">{t('console.connectingTitle')}</div>
+          <div className="console-hint mt-8">{t('console.connectingHint')}</div>
         </div>
       </div>
     </div>

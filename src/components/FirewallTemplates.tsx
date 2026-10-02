@@ -21,6 +21,7 @@ import { Notice } from './ui/EmptyState';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { IconCheck, IconClose, IconPlus, IconRefresh, IconSave, IconTrash } from './Icons';
 import { useToast } from '../hooks/useToast';
+import { useT } from '../i18n';
 import type {
   FirewallApplyResult,
   FirewallRule,
@@ -49,6 +50,7 @@ export function FirewallTemplates({
   currentRules,
   currentLabel,
 }: FirewallTemplatesProps) {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
 
@@ -80,10 +82,13 @@ export function FirewallTemplates({
     try {
       await firewallApi.saveTemplate(draft);
       await qc.invalidateQueries({ queryKey: ['firewall', 'templates'] });
-      toast.success('模板已保存', draft.rules.length + ' 条规则');
+      toast.success(
+        t('fwTpl.saved'),
+        t('fwTpl.savedDetail', { n: draft.rules.length }),
+      );
       setEditing(null);
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('firewall.saveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -95,10 +100,10 @@ export function FirewallTemplates({
     try {
       await firewallApi.deleteTemplate(deleteTarget.id);
       await qc.invalidateQueries({ queryKey: ['firewall', 'templates'] });
-      toast.success('模板已删除', deleteTarget.name);
+      toast.success(t('fwTpl.deleted'), deleteTarget.name);
       setDeleteTarget(null);
     } catch (err) {
-      toast.error('删除失败', errorMessage(err));
+      toast.error(t('firewall.deleteFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -106,13 +111,16 @@ export function FirewallTemplates({
 
   const startFromCurrent = () => {
     if (currentRules.length === 0) {
-      toast.warning('当前没有规则', '先加几条规则，再另存为模板');
+      toast.warning(t('fwTpl.noRules'), t('fwTpl.noRulesHint'));
       return;
     }
     setEditing({
       id: '',
-      name: `${currentLabel}模板`,
-      description: `来自${currentLabel}（${currentRules.length} 条规则）`,
+      name: t('fwTpl.defaultName', { label: currentLabel }),
+      description: t('fwTpl.defaultDesc', {
+        label: currentLabel,
+        n: currentRules.length,
+      }),
       enable: true,
       policy_in: '',
       policy_out: '',
@@ -123,64 +131,68 @@ export function FirewallTemplates({
   const columns: Array<Column<FirewallTemplate>> = [
     {
       key: 'name',
-      header: '模板',
-      render: (t) => (
+      header: t('fwTpl.colTemplate'),
+      render: (tpl) => (
         <div>
-          <div className="fw-600">{t.name}</div>
-          {t.description ? (
-            <div className="fs-xs text-muted">{t.description}</div>
+          <div className="fw-600">{tpl.name}</div>
+          {tpl.description ? (
+            <div className="fs-xs text-muted">{tpl.description}</div>
           ) : null}
         </div>
       ),
     },
     {
       key: 'rules',
-      header: '规则',
+      header: t('fwTpl.colRules'),
       width: 90,
-      render: (t) => <Badge variant="neutral" size="sm">{t.rules.length} 条</Badge>,
+      render: (tpl) => (
+        <Badge variant="neutral" size="sm">
+          {t('fwTpl.ruleCount', { n: tpl.rules.length })}
+        </Badge>
+      ),
     },
     {
       key: 'policy',
-      header: '下发时',
+      header: t('fwTpl.colOnApply'),
       width: 190,
-      render: (t) => (
+      render: (tpl) => (
         <span className="fs-xs text-muted">
-          {t.enable ? '打开防火墙开关' : '不改开关'}
-          {t.policy_in ? ` · 入站默认 ${t.policy_in}` : ''}
+          {tpl.enable ? t('fwTpl.enableSwitch') : t('fwTpl.keepSwitch')}
+          {tpl.policy_in ? t('fwTpl.policyIn', { policy: tpl.policy_in }) : ''}
         </span>
       ),
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       width: 176,
       align: 'right',
-      render: (t) => (
+      render: (tpl) => (
         <span className="row-actions">
           {canManage ? (
             <>
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => setApplyTarget(t)}
+                onClick={() => setApplyTarget(tpl)}
                 disabled={vms.length === 0}
               >
-                下发
+                {t('fwTpl.apply')}
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => setEditing(t)}>
-                编辑
+              <Button size="sm" variant="ghost" onClick={() => setEditing(tpl)}>
+                {t('common.edit')}
               </Button>
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => setDeleteTarget(t)}
-                title="删除模板"
+                onClick={() => setDeleteTarget(tpl)}
+                title={t('fwTpl.deleteTitle')}
               >
                 <IconTrash size={14} />
               </Button>
             </>
           ) : (
-            <span className="fs-xs text-muted">只读</span>
+            <span className="fs-xs text-muted">{t('firewall.readonly')}</span>
           )}
         </span>
       ),
@@ -191,8 +203,8 @@ export function FirewallTemplates({
     <>
       <Card collapsible={false}>
         <CardHeader
-          title="规则模板"
-          subtitle="把一套规则存下来，一次刷到多台虚拟机上"
+          title={t('fwTpl.title')}
+          subtitle={t('fwTpl.subtitle')}
           icon={<IconSave size={16} />}
           actions={
             <div className="form-row">
@@ -206,7 +218,7 @@ export function FirewallTemplates({
               </Button>
               {canManage ? (
                 <Button size="sm" variant="primary" onClick={startFromCurrent}>
-                  <IconPlus size={14} /> 用当前规则新建
+                  <IconPlus size={14} /> {t('fwTpl.createFromCurrent')}
                 </Button>
               ) : null}
             </div>
@@ -216,10 +228,13 @@ export function FirewallTemplates({
         {results ? (
           <Notice
             tone={results.failed === 0 ? 'success' : 'warning'}
-            title={`下发完成：成功 ${results.applied} 台，失败 ${results.failed} 台`}
+            title={t('fwTpl.done', {
+              applied: results.applied,
+              failed: results.failed,
+            })}
             action={
               <Button size="sm" variant="ghost" onClick={() => setResults(null)}>
-                关闭
+                {t('common.close')}
               </Button>
             }
           >
@@ -231,10 +246,15 @@ export function FirewallTemplates({
                   </span>{' '}
                   {item.ok ? (
                     <span style={{ color: 'var(--success)' }}>
-                      已下发（+{item.added} 条，清掉 {item.removed} 条）
+                      {t('fwTpl.appliedOk', {
+                        added: item.added,
+                        removed: item.removed,
+                      })}
                     </span>
                   ) : (
-                    <span style={{ color: 'var(--danger)' }}>失败：{item.error}</span>
+                    <span style={{ color: 'var(--danger)' }}>
+                      {t('fwTpl.appliedFail', { error: item.error })}
+                    </span>
                   )}
                   {item.ok && item.warning ? (
                     <div className="fs-xs text-muted">{item.warning}</div>
@@ -246,13 +266,13 @@ export function FirewallTemplates({
         ) : null}
 
         <Table
-          caption="防火墙规则模板"
+          caption={t('fwTpl.caption')}
           rows={templates}
           columns={columns}
-          rowKey={(t) => t.id}
+          rowKey={(tpl) => tpl.id}
           loading={templatesQuery.isLoading}
-          emptyTitle="还没有模板"
-          emptyDescription="在「安全策略」页配好规则后，点「用当前规则新建」即可存成模板"
+          emptyTitle={t('fwTpl.empty')}
+          emptyDescription={t('fwTpl.emptyDesc')}
         />
       </Card>
 
@@ -281,8 +301,8 @@ export function FirewallTemplates({
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
-        title="删除模板"
-        message={`确定删除模板「${deleteTarget?.name ?? ''}」？已下发的规则不受影响。`}
+        title={t('fwTpl.deleteTitle')}
+        message={t('fwTpl.deleteMessage', { name: deleteTarget?.name ?? '' })}
         danger
         loading={busy}
         onCancel={() => setDeleteTarget(null)}
@@ -304,6 +324,7 @@ function TemplateEditor({
   onClose: () => void;
   onSubmit: (t: FirewallTemplate) => void;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState(template);
   const [error, setError] = useState<string | undefined>();
 
@@ -311,56 +332,54 @@ function TemplateEditor({
     <Modal
       open
       onClose={onClose}
-      title={template.id ? '编辑模板' : '新建模板'}
-      description={`包含 ${template.rules.length} 条规则（规则内容来自保存时的快照）`}
+      title={template.id ? t('fwTpl.editTitle') : t('fwTpl.newTitle')}
+      description={t('fwTpl.editorDesc', { n: template.rules.length })}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
             loading={busy}
             onClick={() => {
               if (!draft.name.trim()) {
-                setError('请填写模板名称');
+                setError(t('fwTpl.nameRequired'));
                 return;
               }
               onSubmit({ ...draft, name: draft.name.trim() });
             }}
           >
-            保存
+            {t('common.save')}
           </Button>
         </>
       }
     >
       <div className="dyn-list">
-        <Field label="模板名称" required error={error}>
+        <Field label={t('fwTpl.fieldName')} required error={error}>
           <Input
             value={draft.name}
             onChange={(e) => {
               setDraft({ ...draft, name: e.target.value });
               if (error) setError(undefined);
             }}
-            placeholder="例如：Web 服务器基线"
+            placeholder={t('fwTpl.namePlaceholder')}
           />
         </Field>
-        <Field label="说明">
+        <Field label={t('fwTpl.fieldDesc')}>
           <Input
             value={draft.description}
             onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-            placeholder="这套规则适用于哪些机器"
+            placeholder={t('fwTpl.descPlaceholder')}
           />
         </Field>
         <Switch
           checked={draft.enable}
           onChange={(v) => setDraft({ ...draft, enable: v })}
-          label="下发时打开目标机的防火墙开关"
-          hint="关掉则只写规则、不动开关（机器本来就没开防火墙时很有用）"
+          label={t('fwTpl.enableLabel')}
+          hint={t('fwTpl.enableHint')}
         />
-        <Notice tone="info">
-          规则的「默认策略」（入站 / 出站）留空表示不改动目标机原有设置。
-        </Notice>
+        <Notice tone="info">{t('fwTpl.policyNote')}</Notice>
       </div>
     </Modal>
   );
@@ -382,6 +401,7 @@ function ApplyTemplateModal({
   onDone: (result: FirewallApplyResult) => void;
   setBusy: (v: boolean) => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [keyword, setKeyword] = useState('');
@@ -409,7 +429,7 @@ function ApplyTemplateModal({
       .filter((vm) => selected.has(vm.vmid))
       .map((vm) => ({ node: vm.node, vmid: vm.vmid, type: vm.type ?? '' }));
     if (targets.length === 0) {
-      toast.warning('请先选择虚拟机');
+      toast.warning(t('fwTpl.selectFirst'));
       return;
     }
     setBusy(true);
@@ -417,7 +437,7 @@ function ApplyTemplateModal({
       const result = await firewallApi.applyTemplate(template.id, targets, replace);
       onDone(result);
     } catch (err) {
-      toast.error('下发失败', errorMessage(err));
+      toast.error(t('fwTpl.applyFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -428,12 +448,15 @@ function ApplyTemplateModal({
       open
       onClose={onClose}
       size="lg"
-      title={`下发模板：${template.name}`}
-      description={`${template.rules.length} 条规则 · 已选 ${selected.size} 台`}
+      title={t('fwTpl.applyTitle', { name: template.name })}
+      description={t('fwTpl.applyDesc', {
+        n: template.rules.length,
+        m: selected.size,
+      })}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -441,22 +464,20 @@ function ApplyTemplateModal({
             disabled={selected.size === 0}
             onClick={() => void apply()}
           >
-            <IconCheck size={15} /> 下发到 {selected.size} 台
+            <IconCheck size={15} /> {t('fwTpl.applyTo', { n: selected.size })}
           </Button>
         </>
       }
     >
       <div className="dyn-list">
         <Notice tone={replace ? 'warning' : 'info'}>
-          {replace
-            ? '覆盖式下发：会先清空目标机现有的（非安全组引用的）规则，再写入模板规则。'
-            : '追加式下发：目标机已有规则保留，模板规则追加在最后。'}
+          {replace ? t('fwTpl.replaceNote') : t('fwTpl.appendNote')}
         </Notice>
 
         <Switch
           checked={replace}
           onChange={setReplace}
-          label="覆盖目标机现有规则"
+          label={t('fwTpl.replaceLabel')}
         />
 
         <div className="form-row">
@@ -464,8 +485,8 @@ function ApplyTemplateModal({
             <Input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="搜索名称或 VMID"
-              aria-label="搜索虚拟机"
+              placeholder={t('fwTpl.searchPlaceholder')}
+              aria-label={t('fwTpl.searchAria')}
             />
           </div>
           <Button
@@ -475,10 +496,10 @@ function ApplyTemplateModal({
               setSelected(new Set(visible.map((vm) => vm.vmid)))
             }
           >
-            全选当前 {visible.length} 台
+            {t('fwTpl.selectAll', { n: visible.length })}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-            <IconClose size={14} /> 清空
+            <IconClose size={14} /> {t('fwTpl.clear')}
           </Button>
         </div>
 
@@ -497,7 +518,7 @@ function ApplyTemplateModal({
             </label>
           ))}
           {visible.length === 0 ? (
-            <div className="fw-pick-empty">没有匹配的虚拟机</div>
+            <div className="fw-pick-empty">{t('fwTpl.noMatch')}</div>
           ) : null}
         </div>
       </div>

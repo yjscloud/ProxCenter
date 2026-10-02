@@ -24,12 +24,14 @@ import { notificationsApi } from '../api/endpoints';
 import { Button } from './ui/Button';
 import { IconBell, IconCheck } from './Icons';
 import { formatRelative } from '../utils/format';
+import { useT } from '../i18n';
 import type { AppNotification } from '../api/types';
 
 /** 未读数轮询间隔。告警本身有冷却（默认 600s），30 秒足够及时。 */
 const POLL_MS = 30_000;
 
 export function NotificationBell() {
+  const t = useT();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -96,8 +98,12 @@ export function NotificationBell() {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={unread > 0 ? `消息中心，${unread} 条未读` : '消息中心，无未读'}
-        title="消息中心"
+        aria-label={
+          unread > 0
+            ? t('notif.ariaUnread', { count: unread })
+            : t('notif.ariaNone')
+        }
+        title={t('notif.title')}
       >
         <IconBell size={17} />
         {unread > 0 ? (
@@ -111,8 +117,12 @@ export function NotificationBell() {
         <div className="notif-dropdown" role="menu">
           <div className="notif-header">
             <span className="notif-title">
-              消息中心
-              {unread > 0 ? <span className="notif-count">{unread} 条未读</span> : null}
+              {t('notif.title')}
+              {unread > 0 ? (
+                <span className="notif-count">
+                  {t('notif.unreadCount', { count: unread })}
+                </span>
+              ) : null}
             </span>
             <Button
               variant="ghost"
@@ -121,15 +131,15 @@ export function NotificationBell() {
               disabled={unread === 0 || markRead.isPending}
               onClick={() => markRead.mutate({ all: true })}
             >
-              全部已读
+              {t('notif.markAll')}
             </Button>
           </div>
 
           <div className="notif-list">
             {listQuery.isLoading ? (
-              <div className="notif-empty">正在加载…</div>
+              <div className="notif-empty">{t('notif.loading')}</div>
             ) : items.length === 0 ? (
-              <div className="notif-empty">暂无通知</div>
+              <div className="notif-empty">{t('notif.empty')}</div>
             ) : (
               items.map((item) => (
                 <button
@@ -169,7 +179,7 @@ export function NotificationBell() {
                 navigate('/alerts');
               }}
             >
-              查看全部告警历史
+              {t('notif.viewAll')}
             </button>
           </div>
         </div>

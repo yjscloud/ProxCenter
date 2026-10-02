@@ -9,45 +9,53 @@
    计数动画在元素进入视口时才开始，且尊重 prefers-reduced-motion。
    ========================================================================== */
 
-import { CAPABILITY_TOTAL, DOMAINS } from './content';
-import { useCountUp, useInView } from './hooks';
+import { useT, type MessageKey } from '../../i18n';
+import { CAPABILITY_TOTAL } from './content';
+import { useCountUp, useInView, useLandingContent } from './hooks';
 
 interface Stat {
   value: number;
-  unit: string;
-  label: string;
+  /** 单位与说明都取词条：两处都随语言变化，且英文的单位与数字之间空格规则不同 */
+  unitKey: MessageKey;
+  labelKey: MessageKey;
 }
 
-const STATS: Stat[] = [
-  {
-    value: DOMAINS.length,
-    unit: '大能力域',
-    label: '从总览到系统管理，按运维实际的工作顺序分组',
-  },
-  {
-    value: CAPABILITY_TOTAL,
-    unit: '项能力',
-    label: '每一条都对应控制台里一个真实页面或入口',
-  },
-  {
-    value: 27,
-    unit: '个功能页',
-    label: '登录后侧边栏可见的页面，另有详情页与子页',
-  },
-  {
-    value: 1,
-    unit: '个对外端口',
-    label: '前后端同源托管，无需额外 Nginx 与 WebSocket 代理',
-  },
-];
+/** 能力域数由内容模型算出（加了域忘了改数字是官网文案最常见的失真来源） */
+function buildStats(domainCount: number): Stat[] {
+  return [
+    {
+      value: domainCount,
+      unitKey: 'landing.metrics.domainUnit',
+      labelKey: 'landing.metrics.domainLabel',
+    },
+    {
+      value: CAPABILITY_TOTAL,
+      unitKey: 'landing.metrics.capabilityUnit',
+      labelKey: 'landing.metrics.capabilityLabel',
+    },
+    {
+      value: 27,
+      unitKey: 'landing.metrics.pageUnit',
+      labelKey: 'landing.metrics.pageLabel',
+    },
+    {
+      value: 1,
+      unitKey: 'landing.metrics.portUnit',
+      labelKey: 'landing.metrics.portLabel',
+    },
+  ];
+}
 
 export function Metrics() {
+  const { domains } = useLandingContent();
+  const stats = buildStats(domains.length);
+
   return (
     <section className="lp-metrics">
       <div className="lp-container">
         <div className="lp-metrics-grid">
-          {STATS.map((stat, index) => (
-            <StatCard key={stat.unit} stat={stat} delay={index * 70} />
+          {stats.map((stat, index) => (
+            <StatCard key={stat.unitKey} stat={stat} delay={index * 70} />
           ))}
         </div>
       </div>
@@ -56,6 +64,7 @@ export function Metrics() {
 }
 
 function StatCard({ stat, delay }: { stat: Stat; delay: number }) {
+  const t = useT();
   const [ref, inView] = useInView<HTMLDivElement>(0.4);
   const value = useCountUp(stat.value, inView);
 
@@ -67,9 +76,9 @@ function StatCard({ stat, delay }: { stat: Stat; delay: number }) {
     >
       <div className="lp-metric-value">
         <span className="lp-metric-num">{value}</span>
-        <span className="lp-metric-unit">{stat.unit}</span>
+        <span className="lp-metric-unit">{t(stat.unitKey)}</span>
       </div>
-      <div className="lp-metric-label">{stat.label}</div>
+      <div className="lp-metric-label">{t(stat.labelKey)}</div>
     </div>
   );
 }

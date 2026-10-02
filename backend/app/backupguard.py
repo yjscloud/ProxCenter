@@ -27,7 +27,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from . import alerting, database, store
+from . import alerting, database, i18n, store
 
 logger = logging.getLogger(__name__)
 
@@ -292,15 +292,24 @@ async def reconcile() -> Dict[str, Any]:
 
 def _alert_text(record: Dict[str, Any]) -> str:
     if record["state"] == "missing":
-        return (
+        return i18n.pick(
             f"受保护备份不见了：{record['volid']}\n"
             f"存储：{record['node']}/{record['storage']}；登记时间："
             f"{alerting._now_text(record['created'])}；登记人：{record['created_by'] or '-'}\n"
-            "这可能是勒索软件在加密前先删备份，请立刻确认存储侧发生了什么。"
+            "这可能是勒索软件在加密前先删备份，请立刻确认存储侧发生了什么。",
+            f"A protected backup is gone: {record['volid']}\n"
+            f"Storage: {record['node']}/{record['storage']}; registered at: "
+            f"{alerting._now_text(record['created'])}; by: "
+            f"{record['created_by'] or '-'}\n"
+            "Ransomware often deletes backups before encrypting — check what "
+            "happened on the storage side right away.",
         )
-    return (
+    return i18n.pick(
         f"受保护备份被改动：{record['volid']}\n"
-        f"存储：{record['node']}/{record['storage']}\n原因：{record['state_detail']}"
+        f"存储：{record['node']}/{record['storage']}\n原因：{record['state_detail']}",
+        f"A protected backup was modified: {record['volid']}\n"
+        f"Storage: {record['node']}/{record['storage']}\n"
+        f"Reason: {record['state_detail']}",
     )
 
 
@@ -308,17 +317,30 @@ def _card(record: Dict[str, Any], at: float) -> Dict[str, Any]:
     missing = record["state"] == "missing"
     return alerting.build_card(
         "critical" if missing else "warning",
-        ("🔴 " if missing else "🟠 ") + "ProxCenter 备份防护告警",
-        "受保护备份丢失" if missing else "受保护备份异常",
+        ("🔴 " if missing else "🟠 ") + i18n.tr("ProxCenter 备份防护告警"),
+        i18n.tr("受保护备份丢失") if missing else i18n.tr("受保护备份异常"),
         [
-            ("备份卷", record["volid"]),
-            ("存储", f"{record['node']}/{record['storage']}"),
-            ("状态", "**已丢失**" if missing else "**元数据变化**"),
-            ("原因", record["state_detail"] or "-"),
-            ("登记人 / 时间", f"{record['created_by'] or '-'} · {alerting._now_text(record['created'])}"),
+            (i18n.tr("备份卷"), record["volid"]),
+            (i18n.tr("存储"), f"{record['node']}/{record['storage']}"),
+            (
+                i18n.tr("状态"),
+                "**" + i18n.tr("已丢失") + "**"
+                if missing
+                else "**" + i18n.tr("元数据变化") + "**",
+            ),
+            (i18n.tr("原因"), record["state_detail"] or "-"),
+            (
+                i18n.tr("登记人 / 时间"),
+                f"{record['created_by'] or '-'} · {alerting._now_text(record['created'])}",
+            ),
         ],
-        f"触发时间 {alerting._now_text(at)} · 面板层已禁止删除受保护备份，"
-        "但存储侧仍可能被绕过，请人工确认",
+        i18n.pick(
+            f"触发时间 {alerting._now_text(at)} · 面板层已禁止删除受保护备份，"
+            "但存储侧仍可能被绕过，请人工确认",
+            f"Triggered at {alerting._now_text(at)} · the panel forbids deleting "
+            "protected backups, but the storage layer can still be bypassed — "
+            "confirm it manually",
+        ),
     )
 
 
@@ -333,6 +355,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     target_owner = owner or await store.first_admin_username() or ""
     if not target_owner:
         return []
+    # 按收件人的语言渲染（巡检是后台跑的，没有请求上下文，见 alerting.resolve_language）
+    i18n.pin_language(await alerting.resolve_language(target_owner))
 
     feishu = await alerting.load_feishu(target_owner)
     email_cfg = await alerting.load_alert_email(target_owner)
@@ -362,7 +386,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             target_owner,
             feishu,
             email_cfg,
-            "备份防护告警：" + volid,
+            i18n.tr("备份防护告警：") + volid,
             text,
             _card(record, now),
             source=alerting.SOURCE_BACKUPGUARD,
@@ -401,12 +425,15 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         if not await alerting.recovery_confirmed(key, row):
             continue  # 还没到「连续 N 轮可核对」的恢复门槛
         card = alerting.build_recovery_card(row, None, at=now)
-        text = f"受保护备份 {volid} 已恢复可核对状态，告警解除"
+        text = i18n.pick(
+            f"受保护备份 {volid} 已恢复可核对状态，告警解除",
+            f"Protected backup {volid} can be verified again; the alert is cleared",
+        )
         ok, detail = await alerting.dispatch(
             target_owner,
             feishu,
             email_cfg,
-            "恢复通知：" + volid,
+            i18n.tr("恢复通知：") + volid,
             text,
             card,
             source=alerting.SOURCE_BACKUPGUARD,

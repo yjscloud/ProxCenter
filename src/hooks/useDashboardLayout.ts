@@ -22,6 +22,7 @@ import { prefsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import type { DashboardLayout } from '../api/types';
 import { useToast } from './useToast';
+import { useT, type MessageKey } from '../i18n';
 
 /** 布局偏好在服务端的键名，必须与后端 prefs.ALLOWED_KEYS 一致。 */
 export const DASHBOARD_LAYOUT_KEY = 'dashboard_layout';
@@ -29,7 +30,8 @@ export const DASHBOARD_LAYOUT_KEY = 'dashboard_layout';
 /** 一张卡片的静态描述（顺序即默认布局的顺序）。 */
 export interface WidgetMeta {
   id: string;
-  name: string;
+  /** 词条键：卡片名要随界面语言变（布局本身只存 id，不存名字） */
+  nameKey: MessageKey;
   /** half = 两张并排一行；full = 独占一行 */
   span: 'half' | 'full';
 }
@@ -118,6 +120,7 @@ export interface DashboardLayoutApi {
 }
 
 export function useDashboardLayout(widgets: WidgetMeta[]): DashboardLayoutApi {
+  const t = useT();
   const toast = useToast();
   const [layout, setLayout] = useState<DashboardLayout>(() => defaultLayout(widgets));
   const [loading, setLoading] = useState(true);
@@ -158,10 +161,10 @@ export function useDashboardLayout(widgets: WidgetMeta[]): DashboardLayoutApi {
       try {
         await prefsApi.save(DASHBOARD_LAYOUT_KEY, next);
       } catch (err) {
-        toast.error('布局未能保存', errorMessage(err));
+        toast.error(t('dashLayout.saveFailed'), errorMessage(err));
       }
     },
-    [toast],
+    [toast, t],
   );
 
   /**
@@ -210,12 +213,12 @@ export function useDashboardLayout(widgets: WidgetMeta[]): DashboardLayoutApi {
       const next = defaultLayout(widgets);
       latest.current = next;
       setLayout(next);
-      toast.success('已恢复默认布局');
+      toast.success(t('dashLayout.resetDone'));
     } catch (err) {
-      toast.error('恢复默认失败', errorMessage(err));
+      toast.error(t('dashLayout.resetFailed'), errorMessage(err));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toast]);
+  }, [toast, t]);
 
   const visibleOrder = useMemo(
     () => layout.order.filter((id) => !layout.hidden.includes(id)),

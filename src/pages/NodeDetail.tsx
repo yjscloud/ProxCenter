@@ -77,7 +77,8 @@ import {
   nodeStatusMeta,
   storageStatusMeta,
   taskStatusMeta,
-} from '../utils/status';
+} from '../utils/status'
+import { useT } from '../i18n';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -94,13 +95,7 @@ import type {
 
 type TabKey = 'overview' | 'network' | 'storage' | 'tasks' | 'monitor';
 
-const TABS: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
-  { key: 'overview', label: '概览', icon: <IconServer size={15} /> },
-  { key: 'network', label: '网络', icon: <IconNetwork size={15} /> },
-  { key: 'storage', label: '存储', icon: <IconStorage size={15} /> },
-  { key: 'tasks', label: '任务', icon: <IconTasks size={15} /> },
-  { key: 'monitor', label: '监控', icon: <IconMonitor size={15} /> },
-];
+/* 分区页签在组件内构造（文案随语言走），见 NodeDetail 里的 tabs */
 
 /** PVE 的 loadavg 可能是字符串数组，统一转成保留两位小数的字符串。 */
 function formatLoad(value: unknown): string {
@@ -109,16 +104,50 @@ function formatLoad(value: unknown): string {
 }
 
 export function NodeDetail() {
+  const t = useT();
   const { node = '' } = useParams<{ node: string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  const tabs = useMemo(
+    () => [
+      {
+        key: 'overview' as TabKey,
+        label: t('nodeDetail.tabOverview'),
+        icon: <IconServer size={15} />,
+      },
+      {
+        key: 'network' as TabKey,
+        label: t('nodeDetail.tabNetwork'),
+        icon: <IconNetwork size={15} />,
+      },
+      {
+        key: 'storage' as TabKey,
+        label: t('nodeDetail.tabStorage'),
+        icon: <IconStorage size={15} />,
+      },
+      {
+        key: 'tasks' as TabKey,
+        label: t('nodeDetail.tabTasks'),
+        icon: <IconTasks size={15} />,
+      },
+      {
+        key: 'monitor' as TabKey,
+        label: t('nodeDetail.tabMonitor'),
+        icon: <IconMonitor size={15} />,
+      },
+    ],
+    [t],
+  );
 
   /* 多台 PVE 合并展示时，不同主机可能出现同名节点；连接标识从列表页带过来，
      否则详情页会落到「当前连接」那台，看到别人家的监控数据。 */
   const conn = searchParams.get('conn') ?? '';
 
   const tabParam = (searchParams.get('tab') as TabKey | null) ?? 'overview';
-  const tab: TabKey = TABS.some((t) => t.key === tabParam) ? tabParam : 'overview';
+  const tab: TabKey = tabs.some((item) => item.key === tabParam)
+    ? tabParam
+    : 'overview';
 
   const setTab = (next: TabKey) => {
     const params = new URLSearchParams(searchParams);
@@ -160,7 +189,10 @@ export function NodeDetail() {
   if (!node) {
     return (
       <div className="page">
-        <ErrorState title="无效的节点地址" onRetry={() => navigate('/nodes')} />
+        <ErrorState
+          title={t('nodeDetail.invalidNode')}
+          onRetry={() => navigate('/nodes')}
+        />
       </div>
     );
   }
@@ -181,22 +213,22 @@ export function NodeDetail() {
       <div className="detail-header">
         <div className="detail-header-main">
           <Breadcrumb
-            items={[{ label: '节点', to: '/nodes' }, { label: node }]}
+            items={[{ label: t('nodeDetail.breadcrumbNodes'), to: '/nodes' }, { label: node }]}
           />
           <div className="detail-title-row">
             <span className="detail-name">{node}</span>
             {connName ? (
-              <Badge variant="info" size="sm" title="当前查看的数据来自此 PVE 主机">
+              <Badge variant="info" size="sm" title={t('nodeDetail.connBadgeTitle')}>
                 <IconServer size={12} />
                 {connName}
               </Badge>
             ) : null}
             <Badge
-              variant={nodeStatusMeta(nodeInfo?.status).variant}
+              variant={nodeStatusMeta(nodeInfo?.status, t).variant}
               dot
-              pulse={nodeStatusMeta(nodeInfo?.status).pulse}
+              pulse={nodeStatusMeta(nodeInfo?.status, t).pulse}
             >
-              {nodeStatusMeta(nodeInfo?.status).label}
+              {nodeStatusMeta(nodeInfo?.status, t).label}
             </Badge>
             {status?.pveversion ? (
               <Badge variant="neutral" size="sm">
@@ -205,14 +237,14 @@ export function NodeDetail() {
             ) : null}
             {nodeInfo?.level ? (
               <Badge variant="warning" size="sm">
-                维护级别 {nodeInfo.level}
+                {t('nodeDetail.maintenanceLevel', { level: nodeInfo.level })}
               </Badge>
             ) : null}
           </div>
           <div className="detail-meta">
             <span className="detail-meta-item">
               <IconCpu size={13} />
-              {status?.cpus ?? nodeInfo?.maxcpu ?? '—'} 核
+              {t('nodeDetail.cores', { n: status?.cpus ?? nodeInfo?.maxcpu ?? '—' })}
             </span>
             <span className="detail-meta-item">
               <IconMemory size={13} />
@@ -223,7 +255,9 @@ export function NodeDetail() {
               {formatBytes(status?.rootfs?.total ?? nodeInfo?.maxdisk)}
             </span>
             <span className="detail-meta-item">
-              已运行 {formatUptime(status?.uptime ?? nodeInfo?.uptime)}
+              {t('nodeDetail.uptime', {
+                time: formatUptime(status?.uptime ?? nodeInfo?.uptime),
+              })}
             </span>
           </div>
         </div>
@@ -238,24 +272,24 @@ export function NodeDetail() {
             }}
             loading={statusQuery.isFetching && !statusQuery.isLoading}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
         </div>
       </div>
 
       {/* ---- Tabs ---- */}
-      <div className="tabs" role="tablist" aria-label="节点详情分区">
-        {TABS.map((t) => (
+      <div className="tabs" role="tablist" aria-label={t('nodeDetail.tabsAria')}>
+        {tabs.map((item) => (
           <button
-            key={t.key}
+            key={item.key}
             type="button"
             role="tab"
-            aria-selected={tab === t.key}
-            className={`tab ${tab === t.key ? 'is-active' : ''}`}
-            onClick={() => setTab(t.key)}
+            aria-selected={tab === item.key}
+            className={`tab ${tab === item.key ? 'is-active' : ''}`}
+            onClick={() => setTab(item.key)}
           >
-            {t.icon}
-            <span>{t.label}</span>
+            {item.icon}
+            <span>{item.label}</span>
           </button>
         ))}
       </div>
@@ -265,21 +299,20 @@ export function NodeDetail() {
       {!conn && (connectionsQuery.data?.length ?? 0) > 1 ? (
         <Notice
           tone="warning"
-          title="无法确认节点来自哪台 PVE"
+          title={t('nodeDetail.connUnknownTitle')}
           action={
             <Button
               variant="secondary"
               size="sm"
               onClick={() => navigate('/nodes')}
             >
-              回到节点列表
+              {t('nodeDetail.backToList')}
             </Button>
           }
         >
-          当前面板已配置多台 PVE，但本页面 URL 未携带
-          <span className="mono">?conn=&lt;id&gt;</span> 参数，
-          数据会落到「当前连接」主机。请从「计算 - 节点」列表点击进入，
-          每个节点卡片会带上所属主机的参数。
+          {t('nodeDetail.connUnknownPre')}
+          <span className="mono">?conn=&lt;id&gt;</span>
+          {t('nodeDetail.connUnknownMid')}
         </Notice>
       ) : null}
 
@@ -319,6 +352,8 @@ function NodeOverview({
   status?: NodeStatus;
   loading: boolean;
 }) {
+  const t = useT();
+
   if (loading) return <DetailSkeleton />;
 
   const cpuPct = toPercent(status?.cpu ?? nodeInfo?.cpu);
@@ -336,24 +371,35 @@ function NodeOverview({
     <div className="detail-columns">
       <div className="detail-column">
         <Card>
-          <CardHeader title="资源使用" icon={<IconMonitor size={16} />} />
+          <CardHeader
+            title={t('nodeDetail.resourceUsage')}
+            icon={<IconMonitor size={16} />}
+          />
           <div className="flex flex-col gap-16">
             <ProgressBar
-              label={`CPU（${status?.cpus ?? nodeInfo?.maxcpu ?? 0} 核）`}
+              label={t('nodeDetail.cpuLabel', {
+                n: status?.cpus ?? nodeInfo?.maxcpu ?? 0,
+              })}
               value={cpuPct}
               showValue
               height={8}
               color={usageColor(cpuPct)}
             />
             <ProgressBar
-              label={`内存（${formatBytes(memUsed)} / ${formatBytes(memTotal)}）`}
+              label={t('nodeDetail.memLabel', {
+                used: formatBytes(memUsed),
+                total: formatBytes(memTotal),
+              })}
               value={memPct}
               showValue
               height={8}
               color={usageColor(memPct)}
             />
             <ProgressBar
-              label={`根文件系统（${formatBytes(rootUsed)} / ${formatBytes(rootTotal)}）`}
+              label={t('nodeDetail.rootfsLabel', {
+                used: formatBytes(rootUsed),
+                total: formatBytes(rootTotal),
+              })}
               value={rootPct}
               showValue
               height={8}
@@ -361,7 +407,10 @@ function NodeOverview({
             />
             {swapTotal > 0 ? (
               <ProgressBar
-                label={`Swap（${formatBytes(swapUsed)} / ${formatBytes(swapTotal)}）`}
+                label={t('nodeDetail.swapLabel', {
+                  used: formatBytes(swapUsed),
+                  total: formatBytes(swapTotal),
+                })}
                 value={swapPct}
                 showValue
                 height={8}
@@ -372,62 +421,91 @@ function NodeOverview({
         </Card>
 
         <Card>
-          <CardHeader title="负载与内核" icon={<IconCpu size={16} />} />
+          <CardHeader title={t('nodeDetail.loadKernel')} icon={<IconCpu size={16} />} />
           {status?.loadavg && status.loadavg.length >= 3 ? (
             <InfoGrid>
-              <InfoRow label="1 分钟负载" value={formatLoad(status.loadavg[0])} mono />
-              <InfoRow label="5 分钟负载" value={formatLoad(status.loadavg[1])} mono />
-              <InfoRow label="15 分钟负载" value={formatLoad(status.loadavg[2])} mono />
+              <InfoRow
+                label={t('nodeDetail.load1')}
+                value={formatLoad(status.loadavg[0])}
+                mono
+              />
+              <InfoRow
+                label={t('nodeDetail.load5')}
+                value={formatLoad(status.loadavg[1])}
+                mono
+              />
+              <InfoRow
+                label={t('nodeDetail.load15')}
+                value={formatLoad(status.loadavg[2])}
+                mono
+              />
             </InfoGrid>
           ) : (
-            <Notice tone="info">负载数据需要后端 /nodes/{node}/status 接口支持。</Notice>
+            <Notice tone="info">{t('nodeDetail.loadUnsupported', { node })}</Notice>
           )}
         </Card>
       </div>
 
       <div className="detail-column">
         <Card>
-          <CardHeader title="节点信息" icon={<IconServer size={16} />} />
+          <CardHeader title={t('nodeDetail.nodeInfo')} icon={<IconServer size={16} />} />
           <InfoGrid>
-            <InfoRow label="节点名称" value={node} mono />
+            <InfoRow label={t('nodeDetail.fieldNodeName')} value={node} mono />
             <InfoRow
-              label="状态"
+              label={t('nodeDetail.fieldStatus')}
               value={
                 <Badge
-                  variant={nodeStatusMeta(nodeInfo?.status).variant}
+                  variant={nodeStatusMeta(nodeInfo?.status, t).variant}
                   dot
                   size="sm"
                 >
-                  {nodeStatusMeta(nodeInfo?.status).label}
+                  {nodeStatusMeta(nodeInfo?.status, t).label}
                 </Badge>
               }
             />
-            <InfoRow label="CPU 核心" value={status?.cpus ?? nodeInfo?.maxcpu ?? '—'} mono />
             <InfoRow
-              label="总内存"
+              label={t('nodeDetail.fieldCpuCores')}
+              value={status?.cpus ?? nodeInfo?.maxcpu ?? '—'}
+              mono
+            />
+            <InfoRow
+              label={t('nodeDetail.fieldMemTotal')}
               value={formatBytes(memTotal)}
               mono
             />
-            <InfoRow label="根分区" value={formatBytes(rootTotal)} mono />
             <InfoRow
-              label="运行时长"
+              label={t('nodeDetail.fieldRootfs')}
+              value={formatBytes(rootTotal)}
+              mono
+            />
+            <InfoRow
+              label={t('nodeDetail.fieldUptime')}
               value={formatUptimeShort(status?.uptime ?? nodeInfo?.uptime)}
               mono
             />
             {status?.pveversion ? (
-              <InfoRow label="PVE 版本" value={status.pveversion} mono />
+              <InfoRow
+                label={t('nodeDetail.fieldPveVersion')}
+                value={status.pveversion}
+                mono
+              />
             ) : null}
             {status?.kernel ? (
-              <InfoRow label="内核版本" value={status.kernel} mono />
+              <InfoRow
+                label={t('nodeDetail.fieldKernel')}
+                value={status.kernel}
+                mono
+              />
             ) : null}
             {nodeInfo?.ssl_fingerprint ? (
+              /* 指纹是 95 字符的冒号分隔十六进制串（SHA-256），_info-value 自带的
+                 overflow-wrap 会在窄列里把它折成好几行、极难比对。这里让它占满
+                 整行，读起来就是一行完整指纹 —— 比对证书时要看的是全文。 */
               <InfoRow
-                label="SSL 指纹"
-                value={
-                  <span className="truncate mono fs-xs" title={nodeInfo.ssl_fingerprint}>
-                    {nodeInfo.ssl_fingerprint}
-                  </span>
-                }
+                label={t('nodeDetail.fieldSslFingerprint')}
+                value={nodeInfo.ssl_fingerprint}
+                mono
+                className="detail-full"
               />
             ) : null}
           </InfoGrid>
@@ -471,6 +549,7 @@ function writePending(node: string, set: Set<string>): void {
 }
 
 function NetworkTab({ node, conn }: { node: string; conn: string }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
   const toast = useToast();
@@ -523,7 +602,7 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
       for (const iface of pending) {
         try {
           await runner.run(nodesApi.reloadNetwork(node, iface, conn), {
-            title: `应用网卡配置 ${iface}`,
+            title: t('nodeDetail.netTaskReload', { iface }),
             node,
             invalidate: [['nodes', node, 'network']],
           });
@@ -541,27 +620,35 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
   const columns: Array<Column<NetworkInterface>> = [
     {
       key: 'iface',
-      header: '接口名',
+      header: t('nodeDetail.colIface'),
       render: (i) => (
-        <div className="flex items-center gap-8">
-          <span className="mono fw-500">{i.iface}</span>
-          {pending.has(i.iface) ? (
-            <Badge variant="warning" size="sm" dot>
-              待应用
-            </Badge>
+        <div className="net-cell">
+          <div className="flex items-center gap-8">
+            <span className="mono fw-600">{i.iface}</span>
+            {pending.has(i.iface) ? (
+              <Badge variant="warning" size="sm" dot>
+                {t('nodeDetail.pendingBadge')}
+              </Badge>
+            ) : null}
+          </div>
+          {/* 取址方式。manual 是 PVE 的默认值（等于没配地址），不值一行；
+              真正有信息量的是 static / dhcp 这两种 —— 换机器后 IP 会不会变，
+              取决于这一行。 */}
+          {i.method && i.method !== 'manual' ? (
+            <span className="net-sub mono">{i.method}</span>
           ) : null}
         </div>
       ),
       sortable: true,
       sortValue: (i) => i.iface,
-      width: 160,
+      width: 180,
     },
     {
       key: 'type',
-      header: '类型',
+      header: t('nodeDetail.colType'),
       render: (i) => (
         <Badge variant={isBridgeType(i.type) ? 'accent' : 'neutral'} size="sm">
-          {netTypeLabel(i.type)}
+          {netTypeLabel(i.type, t)}
         </Badge>
       ),
       width: 130,
@@ -570,88 +657,108 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
     },
     {
       key: 'active',
-      header: '激活',
-      width: 90,
-      align: 'center',
+      header: t('nodeDetail.colActive'),
+      width: 130,
       render: (i) => (
-        <Badge
-          variant={i.active ? 'success' : 'neutral'}
-          dot
-          pulse={i.active}
-          size="sm"
-        >
-          {i.active ? '已激活' : '未激活'}
-        </Badge>
+        <div className="net-cell">
+          <Badge
+            variant={i.active ? 'success' : 'neutral'}
+            dot
+            pulse={i.active}
+            size="sm"
+          >
+            {i.active ? t('nodeDetail.active') : t('nodeDetail.inactive')}
+          </Badge>
+          {/* 桥 / bond 能不能跟着开机起来，看的就是 autostart */}
+          {i.autostart ? (
+            <span className="net-sub">{t('nodeDetail.netAutostart')}</span>
+          ) : null}
+        </div>
       ),
       sortable: true,
       sortValue: (i) => (i.active ? 1 : 0),
     },
     {
+      /* 网关并进地址列：两者本是同一件事（同一网段里的地址与出口），
+         拆成两列要来回扫才能对上。
+         另外 cidr 本身已经含地址，PVE 又同时给 address + netmask ——
+         早先三个字段一起塞进一格会渲染成「172.16.149.3 / 172.16.149.3/24」，
+         同一个地址写了两遍。所以优先用 cidr，缺了才退回 address+netmask。 */
       key: 'address',
-      header: '地址 / CIDR',
-      render: (i) => (
-        <span className="mono fs-sm">
-          {i.address || i.cidr ? (
-            <>
-              {i.address ?? '—'}
-              {i.cidr ? <span className="text-muted"> / {i.cidr}</span> : null}
-            </>
-          ) : (
-            <span className="text-muted">—</span>
-          )}
-        </span>
-      ),
-    },
-    {
-      key: 'gateway',
-      header: '网关',
-      render: (i) => (
-        <span className="mono fs-sm text-secondary">{i.gateway || '—'}</span>
-      ),
-      width: 130,
+      header: t('nodeDetail.colAddress'),
+      render: (i) => {
+        const addr =
+          i.cidr ||
+          (i.address ? (i.netmask ? `${i.address}/${i.netmask}` : i.address) : '');
+        return (
+          <div className="net-cell">
+            {addr ? (
+              <span className="mono fs-sm">{addr}</span>
+            ) : (
+              <span className="text-muted">—</span>
+            )}
+            {i.gateway ? (
+              <span className="net-sub mono">
+                {t('nodeDetail.netGw')} {i.gateway}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
+      sortable: true,
+      sortValue: (i) => i.cidr || i.address || '',
+      width: 210,
     },
     {
       key: 'ports',
-      header: '桥接端口 / 从属',
-      render: (i) => (
-        <span className="mono fs-sm text-secondary">
-          {i.bridge_ports || i.bond_slaves || '—'}
-        </span>
-      ),
-      width: 160,
-    },
-    {
-      key: 'comments',
-      header: '备注',
-      render: (i) => (
-        <span className="fs-sm text-secondary truncate" title={i.comments}>
-          {i.comments || '—'}
-        </span>
-      ),
-      width: 160,
+      header: t('nodeDetail.colPorts'),
+      render: (i) => {
+        const list = (i.bridge_ports || i.bond_slaves || '')
+          .split(/[\s,]+/)
+          .filter(Boolean);
+        if (!list.length && i.type !== 'vlan') {
+          return <span className="text-muted">—</span>;
+        }
+        /* 逐个拆成芯片：一整串逗号文本既数不出有几个、也认不出是哪个 */
+        return (
+          <div className="net-chips">
+            {i.type === 'vlan' ? (
+              <span className="net-chip is-accent mono">
+                {t('nodeDetail.netVlanId', { id: i.vlan_id ?? '—' })}
+              </span>
+            ) : null}
+            {list.map((p) => (
+              <span className="net-chip mono" key={p}>
+                {p}
+              </span>
+            ))}
+          </div>
+        );
+      },
+      width: 210,
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('nodeDetail.colActions'),
       width: 120,
       align: 'right',
       render: (i) => (
         <span className="row-actions">
           <IconButton
-            label={`编辑 ${i.iface}`}
+            label={t('nodeDetail.editIfaceAria', { iface: i.iface })}
             onClick={() => setEditing(i)}
             disabled={!canManageNet || busy}
           >
             <IconEdit size={15} />
           </IconButton>
           <IconButton
-            label={`应用 ${i.iface} 配置`}
+            label={t('nodeDetail.applyIfaceAria', { iface: i.iface })}
             variant="primary"
             onClick={async () => {
               setBusy(true);
               try {
                 await runner.run(nodesApi.reloadNetwork(node, i.iface, conn), {
-                  title: `应用网卡配置 ${i.iface}`,
+                  title: t('nodeDetail.netTaskReload', { iface: i.iface }),
                   node,
                   invalidate: [['nodes', node, 'network']],
                 });
@@ -666,7 +773,7 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
             <IconCheck size={15} />
           </IconButton>
           <IconButton
-            label={`删除 ${i.iface}`}
+            label={t('nodeDetail.deleteIfaceAria', { iface: i.iface })}
             variant="danger"
             onClick={() => setDeleteTarget(i)}
             disabled={!canManageNet || busy}
@@ -685,8 +792,8 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
       {/* 只读账号的说明：网卡写操作需要 network.manage（仅管理员） */}
       {!canManageNet ? (
         <div className="mb-16">
-          <Notice tone="info" title="只读模式">
-            当前账号对宿主机网络只有查看权限。新增、修改、删除网卡以及应用配置变更需要管理员权限。
+          <Notice tone="info" title={t('nodeDetail.readonlyTitle')}>
+            {t('nodeDetail.netReadonlyBody')}
           </Notice>
         </div>
       ) : null}
@@ -696,7 +803,7 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
         <div className="mb-16">
           <Notice
             tone="warning"
-            title={`有 ${pending.size} 个网卡配置尚未生效`}
+            title={t('nodeDetail.pendingTitle', { n: pending.size })}
             action={
               canManageNet ? (
                 <Button
@@ -705,58 +812,56 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
                   onClick={() => void applyChanges()}
                   loading={busy}
                 >
-                  应用配置
+                  {t('nodeDetail.applyConfig')}
                 </Button>
               ) : undefined
             }
           >
-            修改网络配置后需要重新加载网卡才会生效。注意：错误的网络配置可能导致节点失联，请在具备带外管理（IPMI/iKVM）的前提下操作。
+            {t('nodeDetail.pendingBody')}
           </Notice>
         </div>
       ) : null}
 
-      <Card padded={false}>
-        <div
-          style={{
-            padding: '16px 18px',
-            borderBottom: '1px solid var(--border-muted)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            flexWrap: 'wrap',
-          }}
-        >
-          <div className="flex items-center gap-8">
-            <IconNetwork size={16} />
-            <span className="fw-600">网络接口</span>
-            <Badge variant="neutral" size="sm">
-              {ifaces.length}
-            </Badge>
-          </div>
-          <div className="flex items-center gap-8">
-            <IconButton
-              label="刷新网卡列表"
-              onClick={() => void netQuery.refetch()}
-            >
-              <IconRefresh size={16} />
-            </IconButton>
-            <Button
-              variant="primary"
-              size="sm"
-              icon={<IconPlus size={14} />}
-              onClick={() => setCreateOpen(true)}
-              disabled={!canManageNet}
-            >
-              新增网卡
-            </Button>
-          </div>
-        </div>
+      {/* collapsible={false}：网卡表是这一页的主内容，不该被标题栏点一下就折起来。
+          标题栏改用 CardHeader，与概览里的卡片同一套排版 —— 原来那段内联
+          style 手搓的 div（padding / border / flex 都写死在 JSX 里）既和全站
+          不一致，也没有 --border-muted 之外的响应式处理。 */}
+      <Card padded={false} collapsible={false}>
+        <CardHeader
+          icon={<IconNetwork size={16} />}
+          title={
+            <span className="flex items-center gap-8">
+              {t('nodeDetail.netIfaces')}
+              <Badge variant="neutral" size="sm">
+                {ifaces.length}
+              </Badge>
+            </span>
+          }
+          actions={
+            <>
+              <IconButton
+                label={t('nodeDetail.refreshIfaces')}
+                onClick={() => void netQuery.refetch()}
+              >
+                <IconRefresh size={16} />
+              </IconButton>
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<IconPlus size={14} />}
+                onClick={() => setCreateOpen(true)}
+                disabled={!canManageNet}
+              >
+                {t('nodeDetail.addIface')}
+              </Button>
+            </>
+          }
+        />
 
         {notImpl ? (
           <div style={{ padding: 16 }}>
-            <Notice tone="info" title="该功能需要后端支持">
-              /nodes/{node}/network 接口尚未实现，暂时无法管理网络。
+            <Notice tone="info" title={t('nodeDetail.needsBackendTitle')}>
+              {t('nodeDetail.netNotImpl', { node })}
             </Notice>
           </div>
         ) : (
@@ -765,9 +870,9 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
             rows={ifaces}
             rowKey={(i) => i.iface}
             loading={netQuery.isLoading}
-            caption={`节点 ${node} 的网络接口列表`}
-            emptyTitle="暂无网络接口"
-            emptyDescription="该节点没有检测到网络接口。"
+            caption={t('nodeDetail.netCaption', { node })}
+            emptyTitle={t('nodeDetail.netEmpty')}
+            emptyDescription={t('nodeDetail.netEmptyDesc')}
             className="table-flush"
           />
         )}
@@ -791,8 +896,8 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
           setCreateOpen(false);
           setEditing(null);
           toast.info(
-            '配置已保存',
-            '请点击「应用配置」使变更生效（可能导致短暂网络中断）',
+            t('nodeDetail.configSaved'),
+            t('nodeDetail.configSavedHint'),
           );
         }}
       />
@@ -808,7 +913,7 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
             await runner.run(
               nodesApi.deleteNetwork(node, deleteTarget.iface, conn),
               {
-                title: `删除网卡 ${deleteTarget.iface}`,
+                title: t('nodeDetail.deleteTask', { iface: deleteTarget.iface }),
                 node,
                 invalidate: [['nodes', node, 'network']],
               },
@@ -820,14 +925,17 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
             setBusy(false);
           }
         }}
-        title="删除网络接口"
+        title={t('nodeDetail.deleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('nodeDetail.deleteConfirm')}
         loading={busy}
         message={
           <>
-            即将删除接口 <strong>{deleteTarget?.iface}</strong>（
-            {netTypeLabel(deleteTarget?.type)}）。若该网桥仍被虚拟机使用，删除后这些虚拟机将失去网络。
+            {t('nodeDetail.deleteMessagePre')}
+            <strong>{deleteTarget?.iface}</strong>
+            {t('nodeDetail.deleteMessageMid')}
+            {netTypeLabel(deleteTarget?.type, t)}
+            {t('nodeDetail.deleteMessagePost')}
           </>
         }
       />
@@ -839,15 +947,7 @@ function NetworkTab({ node, conn }: { node: string; conn: string }) {
    网卡表单
    --------------------------------------------------------------------------- */
 
-const NET_TYPE_OPTIONS = [
-  { label: 'Linux 网桥 (bridge)', value: 'bridge' },
-  { label: '物理网卡 (eth)', value: 'eth' },
-  { label: '网卡绑定 (bond)', value: 'bond' },
-  { label: 'VLAN', value: 'vlan' },
-  { label: 'OVS 网桥 (OVSBridge)', value: 'OVSBridge' },
-  { label: 'OVS 绑定 (OVSBond)', value: 'OVSBond' },
-  { label: 'OVS 内部端口 (OVSIntPort)', value: 'OVSIntPort' },
-];
+/* 网卡类型选项在表单组件内取词构造（见 NetworkFormModal 的 netTypeOptions） */
 
 interface NetFormState {
   iface: string;
@@ -900,8 +1000,22 @@ function NetworkFormModal({
   onClose: () => void;
   onSaved: (iface: string) => void;
 }) {
+  const t = useT();
   const runner = useTaskRunner();
   const toast = useToast();
+
+  const netTypeOptions = useMemo(
+    () => [
+      { label: t('nodeDetail.netType.bridge'), value: 'bridge' },
+      { label: t('nodeDetail.netType.eth'), value: 'eth' },
+      { label: t('nodeDetail.netType.bond'), value: 'bond' },
+      { label: t('nodeDetail.netType.vlan'), value: 'vlan' },
+      { label: t('nodeDetail.netType.ovsBridge'), value: 'OVSBridge' },
+      { label: t('nodeDetail.netType.ovsBond'), value: 'OVSBond' },
+      { label: t('nodeDetail.netType.ovsIntPort'), value: 'OVSIntPort' },
+    ],
+    [t],
+  );
 
   const [form, setForm] = useState<NetFormState>(emptyForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -947,24 +1061,24 @@ function NetworkFormModal({
 
   const validate = (): boolean => {
     const e: Record<string, string> = {};
-    if (!form.iface.trim()) e.iface = '请输入接口名称';
+    if (!form.iface.trim()) e.iface = t('nodeDetail.errIfaceRequired');
     else if (!/^[a-zA-Z][a-zA-Z0-9._-]*$/.test(form.iface)) {
-      e.iface = '接口名需以字母开头，仅含字母数字与 . _ -';
+      e.iface = t('nodeDetail.errIfaceFormat');
     }
     if (form.gateway && !/^\d{1,3}(\.\d{1,3}){3}$/.test(form.gateway)) {
-      e.gateway = '网关格式不正确，应形如 192.168.1.1';
+      e.gateway = t('nodeDetail.errGateway');
     }
     if (form.cidr && !/^\d{1,3}(\.\d{1,3}){3}$/.test(form.cidr)) {
-      e.cidr = '网络地址格式不正确，应形如 192.168.1.0';
+      e.cidr = t('nodeDetail.errCidr');
     }
     if (form.type === 'bridge' && form.bridgePorts.length === 0 && !editing) {
       // 允许空（无端口网桥也是合法的）
     }
     if (form.type === 'vlan' && !form.vlanId) {
-      e.vlanId = 'VLAN 接口必须指定 VLAN ID';
+      e.vlanId = t('nodeDetail.errVlanId');
     }
     if (form.type === 'vlan' && !form.vlanRawDevice) {
-      e.vlanRawDevice = '请选择承载 VLAN 的物理网卡';
+      e.vlanRawDevice = t('nodeDetail.errVlanRaw');
     }
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -972,7 +1086,7 @@ function NetworkFormModal({
 
   const submit = async () => {
     if (!validate()) {
-      toast.warning('请检查表单', '有字段未通过校验');
+      toast.warning(t('nodeDetail.formInvalid'), t('nodeDetail.formInvalidHint'));
       return;
     }
     setBusy(true);
@@ -1005,7 +1119,9 @@ function NetworkFormModal({
         : nodesApi.createNetwork(node, payload, conn);
 
       await runner.run(promise, {
-        title: editing ? `修改网卡 ${editing.iface}` : `新增网卡 ${payload.iface}`,
+        title: editing
+          ? t('nodeDetail.netModalEditTitle', { iface: editing.iface })
+          : t('nodeDetail.netModalNewTitle'),
         node,
         invalidate: [['nodes', node, 'network']],
       });
@@ -1025,39 +1141,45 @@ function NetworkFormModal({
     <Modal
       open={open}
       onClose={onClose}
-      title={editing ? `编辑网络接口 · ${editing.iface}` : '新增网络接口'}
-      description={`节点 ${node} · 保存后需要「应用配置」才会生效`}
+      title={
+        editing
+          ? t('nodeDetail.netModalEditTitle', { iface: editing.iface })
+          : t('nodeDetail.netModalNewTitle')
+      }
+      description={t('nodeDetail.netModalDesc', { node })}
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={submit} loading={busy}>
-            {editing ? '保存修改' : '创建接口'}
+            {editing ? t('nodeDetail.saveChanges') : t('nodeDetail.createIface')}
           </Button>
         </>
       }
     >
       <div className="form-grid-2">
         <Input
-          label="接口名称"
+          label={t('nodeDetail.fieldIfaceName')}
           required
           value={form.iface}
           onChange={(e) => set('iface', e.target.value)}
-          placeholder="如 vmbr1、eth1"
+          placeholder={t('nodeDetail.ifacePlaceholder')}
           error={errors.iface}
           disabled={Boolean(editing)}
-          hint={editing ? '接口名不可修改' : '创建后不可改名'}
+          hint={
+            editing ? t('nodeDetail.ifaceHintEdit') : t('nodeDetail.ifaceHintNew')
+          }
           mono
         />
         <Select
-          label="接口类型"
+          label={t('nodeDetail.fieldIfaceType')}
           required
           value={form.type}
           onChange={(e) => set('type', e.target.value)}
-          options={NET_TYPE_OPTIONS}
+          options={netTypeOptions}
           disabled={Boolean(editing)}
-          hint={editing ? '类型不可修改' : '决定该接口的工作模式'}
+          hint={editing ? t('nodeDetail.typeHintEdit') : t('nodeDetail.typeHintNew')}
         />
       </div>
 
@@ -1065,13 +1187,11 @@ function NetworkFormModal({
       {isBridge ? (
         <div className="mt-16">
           <Field
-            label="桥接端口"
-            hint="选择要桥接进该网桥的物理网卡或绑定接口，可多选"
+            label={t('nodeDetail.fieldBridgePorts')}
+            hint={t('nodeDetail.bridgePortsHint')}
           >
             {physicalIfaces.length === 0 ? (
-              <Notice tone="info">
-                没有检测到可作为端口的物理网卡。若需要，可先创建 bond 或直接使用已有接口名。
-              </Notice>
+              <Notice tone="info">{t('nodeDetail.noPhysicalIfaces')}</Notice>
             ) : (
               <div className="checkbox-grid">
                 {physicalIfaces.map((p) => (
@@ -1088,8 +1208,8 @@ function NetworkFormModal({
                       <span className="flex items-center gap-6">
                         <span className="mono">{p.iface}</span>
                         <span className="fs-xs text-muted">
-                          {netTypeLabel(p.type)}
-                          {p.active ? '' : ' · 未激活'}
+                          {netTypeLabel(p.type, t)}
+                          {p.active ? '' : t('nodeDetail.inactiveSuffix')}
                         </span>
                       </span>
                     }
@@ -1100,7 +1220,8 @@ function NetworkFormModal({
           </Field>
           {form.bridgePorts.length > 0 ? (
             <div className="fs-sm text-secondary mt-8">
-              已选端口：<span className="mono">{form.bridgePorts.join(' ')}</span>
+              {t('nodeDetail.selectedPorts')}
+              <span className="mono">{form.bridgePorts.join(' ')}</span>
             </div>
           ) : null}
         </div>
@@ -1110,7 +1231,10 @@ function NetworkFormModal({
       {isBond ? (
         <>
           <div className="mt-16">
-            <Field label="从属网卡" hint="选择组成该绑定接口的物理网卡，至少两块">
+            <Field
+              label={t('nodeDetail.fieldBondSlaves')}
+              hint={t('nodeDetail.bondSlavesHint')}
+            >
               <div className="checkbox-grid">
                 {physicalIfaces.map((p) => (
                   <Checkbox
@@ -1130,16 +1254,16 @@ function NetworkFormModal({
           </div>
           <div className="mt-16">
             <Select
-              label="绑定模式"
+              label={t('nodeDetail.fieldBondMode')}
               value={form.bondMode}
               onChange={(e) => set('bondMode', e.target.value)}
               options={[
-                { label: 'balance-rr（轮询）', value: 'balance-rr' },
-                { label: 'active-backup（主备）', value: 'active-backup' },
-                { label: 'balance-xor', value: 'balance-xor' },
-                { label: '802.3ad（LACP）', value: '802.3ad' },
-                { label: 'balance-tlb', value: 'balance-tlb' },
-                { label: 'balance-alb', value: 'balance-alb' },
+                { label: t('nodeDetail.bondMode.balanceRr'), value: 'balance-rr' },
+                { label: t('nodeDetail.bondMode.activeBackup'), value: 'active-backup' },
+                { label: t('nodeDetail.bondMode.balanceXor'), value: 'balance-xor' },
+                { label: t('nodeDetail.bondMode.lacp'), value: '802.3ad' },
+                { label: t('nodeDetail.bondMode.balanceTlb'), value: 'balance-tlb' },
+                { label: t('nodeDetail.bondMode.balanceAlb'), value: 'balance-alb' },
               ]}
             />
           </div>
@@ -1150,12 +1274,12 @@ function NetworkFormModal({
       {form.type === 'vlan' ? (
         <div className="form-grid-2 mt-16">
           <Select
-            label="承载网卡"
+            label={t('nodeDetail.fieldVlanRaw')}
             required
             value={form.vlanRawDevice}
             onChange={(e) => set('vlanRawDevice', e.target.value)}
             options={[
-              { label: '请选择物理网卡', value: '' },
+              { label: t('nodeDetail.selectPhysicalIface'), value: '' },
               ...allIfaces
                 .filter((i) => isPhysicalType(i.type) || isBridgeType(i.type))
                 .map((i) => ({ label: i.iface, value: i.iface })),
@@ -1163,7 +1287,7 @@ function NetworkFormModal({
             error={errors.vlanRawDevice}
           />
           <Input
-            label="VLAN ID"
+            label={t('nodeDetail.fieldVlanId')}
             required
             type="number"
             min={1}
@@ -1177,52 +1301,52 @@ function NetworkFormModal({
       ) : null}
 
       {/* --- IP 配置 --- */}
-      <div className="mt-24 wizard-section-title">IP 配置</div>
+      <div className="mt-24 wizard-section-title">{t('nodeDetail.ipConfig')}</div>
       <div className="form-grid-2">
         <Input
-          label="IP 地址"
+          label={t('nodeDetail.fieldIp')}
           value={form.address}
           onChange={(e) => set('address', e.target.value)}
-          placeholder="如 192.168.1.10"
+          placeholder={t('nodeDetail.ipPlaceholder')}
           mono
-          hint="留空表示不配置 IPv4 地址"
+          hint={t('nodeDetail.ipHint')}
         />
         <Input
-          label="子网掩码 / CIDR"
+          label={t('nodeDetail.fieldMask')}
           value={form.cidr}
           onChange={(e) => set('cidr', e.target.value)}
-          placeholder="如 24 或 192.168.1.0"
+          placeholder={t('nodeDetail.maskPlaceholder')}
           mono
           error={errors.cidr}
-          hint="可填前缀长度（24）或网络地址"
+          hint={t('nodeDetail.maskHint')}
         />
         <Input
-          label="网关"
+          label={t('nodeDetail.fieldGateway')}
           value={form.gateway}
           onChange={(e) => set('gateway', e.target.value)}
-          placeholder="如 192.168.1.1"
+          placeholder={t('nodeDetail.gatewayPlaceholder')}
           mono
           error={errors.gateway}
         />
         <Input
-          label="MTU"
+          label={t('nodeDetail.fieldMtu')}
           type="number"
           min={576}
           max={9000}
           value={form.mtu}
           onChange={(e) => set('mtu', e.target.value)}
-          placeholder="留空使用默认 1500"
+          placeholder={t('nodeDetail.mtuPlaceholder')}
           mono
         />
       </div>
 
       <div className="mt-16">
         <Textarea
-          label="备注"
+          label={t('nodeDetail.fieldComments')}
           rows={2}
           value={form.comments}
           onChange={(e) => set('comments', e.target.value)}
-          placeholder="记录该接口的用途，例如「生产网络上行」"
+          placeholder={t('nodeDetail.commentsPlaceholder')}
         />
       </div>
 
@@ -1230,16 +1354,16 @@ function NetworkFormModal({
         <Switch
           checked={form.autostart}
           onChange={(v) => set('autostart', v)}
-          label="开机自动启用"
-          hint="节点启动时自动激活该接口"
+          label={t('nodeDetail.autostart')}
+          hint={t('nodeDetail.autostartHint')}
         />
       </div>
 
       <div className="mt-16">
-        <Notice tone="warning" title="操作风险提示">
-          修改承载管理网络的接口（通常是 <code>vmbr0</code>）后，需要点击「应用配置」才会生效，
-          此过程可能造成节点网络短暂中断。请确保具备 IPMI / iKVM
-          等带外管理手段再操作。
+        <Notice tone="warning" title={t('nodeDetail.riskTitle')}>
+          {t('nodeDetail.riskBodyPre')}
+          <code>vmbr0</code>
+          {t('nodeDetail.riskBodyPost')}
         </Notice>
       </div>
     </Modal>
@@ -1251,6 +1375,7 @@ function NetworkFormModal({
    ========================================================================== */
 
 function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
+  const t = useT();
   const navigate = useNavigate();
 
   const storagesQuery = useQuery({
@@ -1262,14 +1387,14 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
   const columns: Array<Column<Storage>> = [
     {
       key: 'storage',
-      header: '存储名称',
+      header: t('nodeDetail.colStorageName'),
       render: (s) => <span className="fw-500">{s.storage}</span>,
       sortable: true,
       sortValue: (s) => s.storage,
     },
     {
       key: 'type',
-      header: '类型',
+      header: t('nodeDetail.colType'),
       render: (s) => (
         <Badge variant="neutral" size="sm">
           {s.type}
@@ -1281,15 +1406,15 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
     },
     {
       key: 'content',
-      header: '内容',
-      render: (s) => <span className="fs-sm">{contentLabel(s.content)}</span>,
+      header: t('nodeDetail.colContent'),
+      render: (s) => <span className="fs-sm">{contentLabel(s.content, t)}</span>,
     },
     {
       key: 'active',
-      header: '状态',
+      header: t('common.status'),
       width: 100,
       render: (s) => {
-        const meta = storageStatusMeta(s.active);
+        const meta = storageStatusMeta(s.active, t);
         return (
           <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
             {meta.label}
@@ -1299,18 +1424,18 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
     },
     {
       key: 'shared',
-      header: '共享',
+      header: t('nodeDetail.colShared'),
       width: 80,
       align: 'center',
       render: (s) => (
         <Badge variant={s.shared ? 'info' : 'neutral'} size="sm">
-          {s.shared ? '是' : '否'}
+          {s.shared ? t('common.yes') : t('common.no')}
         </Badge>
       ),
     },
     {
       key: 'usage',
-      header: '使用率',
+      header: t('nodeDetail.colUsage'),
       width: 200,
       render: (s) => {
         const pct = s.total > 0 ? (s.used / s.total) * 100 : 0;
@@ -1342,7 +1467,7 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
           size="sm"
           onClick={() => navigate('/storages')}
         >
-          浏览
+          {t('nodeDetail.browse')}
         </Button>
       ),
     },
@@ -1350,8 +1475,8 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
 
   if (isNotImplemented(storagesQuery.error)) {
     return (
-      <Notice tone="info" title="该功能需要后端支持">
-        /storages 接口尚未实现。
+      <Notice tone="info" title={t('nodeDetail.needsBackendTitle')}>
+        {t('nodeDetail.storageNotImpl')}
       </Notice>
     );
   }
@@ -1363,9 +1488,9 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
         rows={storagesQuery.data ?? []}
         rowKey={(s) => `${s.node}/${s.storage}`}
         loading={storagesQuery.isLoading}
-        caption={`节点 ${node} 的存储列表`}
-        emptyTitle="暂无存储"
-        emptyDescription="该节点没有配置任何存储。"
+        caption={t('nodeDetail.storageCaption', { node })}
+        emptyTitle={t('nodeDetail.storageEmpty')}
+        emptyDescription={t('nodeDetail.storageEmptyDesc')}
         className="table-flush"
       />
     </Card>
@@ -1377,6 +1502,7 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
    ========================================================================== */
 
 function NodeTasksTab({ node }: { node: string }) {
+  const t = useT();
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', node, 50],
     queryFn: () => clusterApi.tasks({ node, limit: 50 }),
@@ -1387,14 +1513,14 @@ function NodeTasksTab({ node }: { node: string }) {
   const columns: Array<Column<TaskInfo>> = [
     {
       key: 'type',
-      header: '类型',
-      render: (t) => <span className="mono fs-sm">{t.type}</span>,
+      header: t('nodeDetail.colType'),
+      render: (row) => <span className="mono fs-sm">{row.type}</span>,
       sortable: true,
-      sortValue: (t) => t.type,
+      sortValue: (row) => row.type,
     },
     {
       key: 'id',
-      header: '对象',
+      header: t('nodeDetail.colTarget'),
       render: (t) => (
         <span className="mono fs-sm text-secondary">{t.id ?? '—'}</span>
       ),
@@ -1402,9 +1528,9 @@ function NodeTasksTab({ node }: { node: string }) {
     },
     {
       key: 'status',
-      header: '状态',
-      render: (t) => {
-        const meta = taskStatusMeta(t.status, t.exitstatus);
+      header: t('common.status'),
+      render: (row) => {
+        const meta = taskStatusMeta(row.status, row.exitstatus, t);
         return (
           <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
             {meta.label}
@@ -1413,33 +1539,37 @@ function NodeTasksTab({ node }: { node: string }) {
       },
       width: 110,
       sortable: true,
-      sortValue: (t) => t.exitstatus ?? t.status,
+      sortValue: (row) => row.exitstatus ?? row.status,
     },
     {
       key: 'user',
-      header: '用户',
-      render: (t) => <span className="fs-sm text-secondary">{t.user ?? '—'}</span>,
+      header: t('nodeDetail.colUser'),
+      render: (row) => (
+        <span className="fs-sm text-secondary">{row.user ?? '—'}</span>
+      ),
       width: 150,
     },
     {
       key: 'start',
-      header: '开始时间',
-      render: (t) => <span className="fs-sm mono">{formatDateTime(t.starttime)}</span>,
+      header: t('nodeDetail.colStart'),
+      render: (row) => (
+        <span className="fs-sm mono">{formatDateTime(row.starttime)}</span>
+      ),
       width: 160,
       sortable: true,
-      sortValue: (t) => t.starttime ?? 0,
+      sortValue: (row) => row.starttime ?? 0,
     },
     {
       key: 'duration',
-      header: '耗时',
+      header: t('nodeDetail.colDuration'),
       align: 'right',
       width: 90,
-      render: (t) => (
+      render: (row) => (
         <span className="mono fs-sm text-secondary">
-          {t.starttime && t.endtime
-            ? formatUptimeShort(t.endtime - t.starttime)
-            : t.status === 'running'
-              ? '进行中'
+          {row.starttime && row.endtime
+            ? formatUptimeShort(row.endtime - row.starttime)
+            : row.status === 'running'
+              ? t('nodeDetail.running')
               : '—'}
         </span>
       ),
@@ -1448,8 +1578,8 @@ function NodeTasksTab({ node }: { node: string }) {
 
   if (isNotImplemented(tasksQuery.error)) {
     return (
-      <Notice tone="info" title="该功能需要后端支持">
-        /cluster/tasks 接口尚未实现。
+      <Notice tone="info" title={t('nodeDetail.needsBackendTitle')}>
+        {t('nodeDetail.tasksNotImpl')}
       </Notice>
     );
   }
@@ -1461,9 +1591,9 @@ function NodeTasksTab({ node }: { node: string }) {
         rows={tasksQuery.data ?? []}
         rowKey={(t) => t.upid}
         loading={tasksQuery.isLoading}
-        caption={`节点 ${node} 的任务记录`}
-        emptyTitle="暂无任务"
-        emptyDescription="该节点上没有记录到任务。"
+        caption={t('nodeDetail.tasksCaption', { node })}
+        emptyTitle={t('nodeDetail.tasksEmpty')}
+        emptyDescription={t('nodeDetail.tasksEmptyDesc')}
         className="table-flush"
       />
     </Card>
@@ -1475,6 +1605,7 @@ function NodeTasksTab({ node }: { node: string }) {
    ========================================================================== */
 
 function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
+  const t = useT();
   const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
 
   const rrdQuery = useQuery({
@@ -1521,24 +1652,24 @@ function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
       <div className="flex items-center justify-between gap-12 flex-wrap">
         <span className="live-indicator">
           <span className="live-dot" aria-hidden="true" />
-          实时更新 · 每 5 秒刷新
+          {t('nodeDetail.liveIndicator')}
         </span>
         <SegmentedControl<RrdTimeframe>
           value={timeframe}
           onChange={setTimeframe}
-          ariaLabel="监控时间范围"
+          ariaLabel={t('nodeDetail.timeframeAria')}
           options={[
-            { label: '1 小时', value: 'hour' },
-            { label: '1 天', value: 'day' },
-            { label: '1 周', value: 'week' },
-            { label: '1 月', value: 'month' },
+            { label: t('nodeDetail.tfHour'), value: 'hour' },
+            { label: t('nodeDetail.tfDay'), value: 'day' },
+            { label: t('nodeDetail.tfWeek'), value: 'week' },
+            { label: t('nodeDetail.tfMonth'), value: 'month' },
           ]}
         />
       </div>
 
       {notImpl ? (
-        <Notice tone="info" title="监控接口暂不可用">
-          后端尚未实现 /nodes/{node}/rrddata 接口。
+        <Notice tone="info" title={t('nodeDetail.monitorNotImplTitle')}>
+          {t('nodeDetail.monitorNotImpl', { node })}
         </Notice>
       ) : null}
 
@@ -1546,15 +1677,17 @@ function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
       {latest ? (
         <div className="grid grid-4">
           <KpiCard
-            label="CPU 使用率"
+            label={t('nodeDetail.kpiCpu')}
             value={`${latestCpu.toFixed(1)}%`}
             tone={usageTone(latestCpu)}
             progress={latestCpu}
             progressColor={usageColor(latestCpu)}
-            hint={<span className="text-secondary">最近一次采样</span>}
+            hint={
+              <span className="text-secondary">{t('nodeDetail.latestSample')}</span>
+            }
           />
           <KpiCard
-            label="内存已用"
+            label={t('nodeDetail.kpiMemUsed')}
             value={formatBytes(memUsed, 0)}
             hint={<span className="mono">/ {formatBytes(memTotal, 0)}</span>}
             tone={usageTone(latestMem)}
@@ -1562,7 +1695,7 @@ function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
             progressColor={usageColor(latestMem)}
           />
           <KpiCard
-            label="网络吞吐"
+            label={t('nodeDetail.kpiNet')}
             value={`${formatBytes((latest.netin ?? 0) + (latest.netout ?? 0), 0)}/s`}
             hint={
               <>
@@ -1577,16 +1710,22 @@ function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
             }
           />
           <KpiCard
-            label="磁盘 I/O"
+            label={t('nodeDetail.kpiDiskIo')}
             value={`${formatBytes(
               (latest.diskread ?? 0) + (latest.diskwrite ?? 0),
               0,
             )}/s`}
             hint={
               <>
-                <span>读 {formatBytes(latest.diskread, 0)}/s</span>
+                <span>
+                  {t('nodeDetail.read', { v: `${formatBytes(latest.diskread, 0)}/s` })}
+                </span>
                 <span className="text-muted">·</span>
-                <span>写 {formatBytes(latest.diskwrite, 0)}/s</span>
+                <span>
+                  {t('nodeDetail.write', {
+                    v: `${formatBytes(latest.diskwrite, 0)}/s`,
+                  })}
+                </span>
               </>
             }
           />

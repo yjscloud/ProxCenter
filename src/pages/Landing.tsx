@@ -44,9 +44,11 @@ import { Security } from './landing/Security';
 import { Showcase } from './landing/Showcase';
 import { Start } from './landing/Start';
 import { NAV_LINKS, SITE } from './landing/content';
+import { useT } from '../i18n';
 import { scrollToSection, useReveal, useScrolled, useScrollSpy } from './landing/hooks';
 
 export function Landing() {
+  const t = useT();
   const { user } = useAuth();
   const site = useSiteInfo();
   const faqs = useFaqs();
@@ -84,8 +86,11 @@ export function Landing() {
   /* 锚点列表随 FAQ 是否展示变化；用 useMemo 固定引用，否则 useScrollSpy 的
      依赖每次渲染都变，事件监听会被反复解绑重绑。 */
   const sections = useMemo(
-    () => [...NAV_LINKS, ...(hasFaq ? [{ id: 'faq', label: '常见问题' }] : [])],
-    [hasFaq],
+    () => [
+      ...NAV_LINKS.map((link) => ({ id: link.id, label: t(link.labelKey) })),
+      ...(hasFaq ? [{ id: 'faq', label: t('landing.nav.faq') }] : []),
+    ],
+    [hasFaq, t],
   );
   const sectionIds = useMemo(() => sections.map((section) => section.id), [sections]);
 
@@ -93,7 +98,7 @@ export function Landing() {
   const scrolled = useScrolled();
 
   const consoleHref = user ? SITE.consolePathAuthed : SITE.consolePath;
-  const consoleLabel = user ? '进入控制台' : '登录控制台';
+  const consoleLabel = user ? t('landing.enterConsole') : t('landing.loginConsole');
 
   /** 提交检索：先收起移动端软键盘，再滚动到能力矩阵 */
   const goToMatrix = useCallback(() => {
@@ -119,7 +124,6 @@ export function Landing() {
         scrolled={scrolled}
         consoleHref={consoleHref}
         consoleLabel={consoleLabel}
-        docsPath={SITE.docsPath}
         onPickDomain={pickDomain}
       />
 

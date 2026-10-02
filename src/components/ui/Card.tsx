@@ -5,6 +5,7 @@
 import { createContext, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { IconChevronDown } from '../Icons';
+import { useT } from '../../i18n';
 
 /**
  * 折叠状态经 Context 下传给 CardHeader：卡片可折叠时，按钮要渲染在标题栏
@@ -116,6 +117,7 @@ export interface CardHeaderProps {
 }
 
 export function CardHeader({ title, subtitle, actions, icon }: CardHeaderProps) {
+  const t = useT();
   const collapse = useContext(CardCollapseContext);
 
   return (
@@ -146,8 +148,8 @@ export function CardHeader({ title, subtitle, actions, icon }: CardHeaderProps) 
               type="button"
               className="card-collapse-btn"
               aria-expanded={collapse.open}
-              aria-label={collapse.open ? '收起该模块' : '展开该模块'}
-              title={collapse.open ? '收起' : '展开'}
+              aria-label={collapse.open ? t('card.collapseAria') : t('card.expandAria')}
+              title={collapse.open ? t('card.collapse') : t('card.expand')}
               onClick={(event) => {
                 /* 阻止冒泡，否则会连同标题栏的点击一起触发，等于点了两次 */
                 event.stopPropagation();

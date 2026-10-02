@@ -15,8 +15,9 @@ import { useCallback, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BrandLogo } from '../../components/BrandLogo';
 import { IconChevronRight, IconClose, IconMenu } from '../../components/Icons';
-import { CAPABILITY_TOTAL, DOMAINS } from './content';
-import { useClickOutside } from './hooks';
+import { useClickOutside, useLandingContent } from './hooks';
+import { useT } from '../../i18n';
+import { LanguageSelect } from '../../components/LanguageSelect';
 
 export interface ChromeProps {
   brandName: string;
@@ -28,7 +29,6 @@ export interface ChromeProps {
   scrolled: boolean;
   consoleHref: string;
   consoleLabel: string;
-  docsPath: string;
   /** 从能力面板点某个域：交给上层去设置筛选并滚动到位 */
   onPickDomain: (domainId: string) => void;
 }
@@ -40,9 +40,11 @@ export function Chrome({
   scrolled,
   consoleHref,
   consoleLabel,
-  docsPath,
   onPickDomain,
 }: ChromeProps) {
+  const t = useT();
+  /* 能力域文案按当前语言解引用（内容型文案走 content.tsx 的双语元组，不进词条表） */
+  const { domains: domainList, capabilityTotal } = useLandingContent();
   const [megaOpen, setMegaOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const megaId = useId();
@@ -74,7 +76,7 @@ export function Chrome({
           <span className="lp-brand-name">{brandName}</span>
         </a>
 
-        <nav className="lp-nav-links" aria-label="页面导航">
+        <nav className="lp-nav-links" aria-label={t('landing.navAria')}>
           <div className="lp-nav-mega-wrap" ref={shellRef}>
             <button
               type="button"
@@ -83,7 +85,7 @@ export function Chrome({
               aria-controls={megaId}
               onClick={() => setMegaOpen((open) => !open)}
             >
-              全部能力
+              {t('landing.allCapabilities')}
               <span className={`lp-nav-caret${megaOpen ? ' is-open' : ''}`} aria-hidden="true" />
             </button>
 
@@ -93,17 +95,20 @@ export function Chrome({
               className={`lp-mega${megaOpen ? ' is-open' : ''}`}
               id={megaId}
               role="region"
-              aria-label="全部能力"
+              aria-label={t('landing.allCapabilities')}
             >
               <div className="lp-mega-head">
-                <span className="lp-mega-title">全部能力</span>
+                <span className="lp-mega-title">{t('landing.allCapabilities')}</span>
                 <span className="lp-mega-count">
-                  {DOMAINS.length} 个能力域 · {CAPABILITY_TOTAL} 项能力
+                  {t('landing.megaCount', {
+                    domains: domainList.length,
+                    total: capabilityTotal,
+                  })}
                 </span>
                 <button
                   type="button"
                   className="lp-mega-close"
-                  aria-label="收起能力面板"
+                  aria-label={t('landing.collapsePanel')}
                   onClick={() => setMegaOpen(false)}
                 >
                   <IconClose size={16} />
@@ -111,7 +116,7 @@ export function Chrome({
               </div>
 
               <div className="lp-mega-grid">
-                {DOMAINS.map((domain) => (
+                {domainList.map((domain) => (
                   <div className="lp-mega-col" key={domain.id}>
                     <button
                       type="button"
@@ -155,9 +160,10 @@ export function Chrome({
         </nav>
 
         <div className="lp-nav-actions">
-          <a className="lp-nav-docs" href={docsPath}>
-            接口文档
-          </a>
+          {/* 语言切换：官网是「找得到才会用」的入口，放在顶栏而不是折叠菜单里。
+              用 landing 形态（自绘下拉）—— 面板那套胶囊/原生下拉在官网顶栏里
+              又宽又突兀。 */}
+          <LanguageSelect variant="landing" />
           <Link className="lp-btn lp-btn-primary lp-btn-sm" to={consoleHref}>
             {consoleLabel}
           </Link>
@@ -166,7 +172,7 @@ export function Chrome({
           <button
             type="button"
             className="lp-nav-toggle"
-            aria-label={drawerOpen ? '关闭导航菜单' : '打开导航菜单'}
+            aria-label={drawerOpen ? t('landing.closeNav') : t('landing.openNav')}
             aria-expanded={drawerOpen}
             aria-controls={drawerId}
             onClick={() => setDrawerOpen((open) => !open)}
@@ -180,7 +186,7 @@ export function Chrome({
       <div className={`lp-drawer${drawerOpen ? ' is-open' : ''}`} id={drawerId}>
         <div className="lp-container lp-drawer-inner">
           <div className="lp-drawer-group">
-            <div className="lp-drawer-label">导航</div>
+            <div className="lp-drawer-label">{t('landing.drawerNav')}</div>
             <div className="lp-drawer-links">
               {sections.map((section) => (
                 <a
@@ -192,16 +198,13 @@ export function Chrome({
                   {section.label}
                 </a>
               ))}
-              <a className="lp-drawer-link" href={docsPath} onClick={closeAll}>
-                接口文档
-              </a>
             </div>
           </div>
 
           <div className="lp-drawer-group">
-            <div className="lp-drawer-label">能力域</div>
+            <div className="lp-drawer-label">{t('landing.drawerDomains')}</div>
             <div className="lp-drawer-chips">
-              {DOMAINS.map((domain) => (
+              {domainList.map((domain) => (
                 <button
                   key={domain.id}
                   type="button"

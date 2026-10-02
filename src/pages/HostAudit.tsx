@@ -37,18 +37,20 @@ import {
 import { formatDateTime, formatRelative } from '../utils/format';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { useT, type MessageKey } from '../i18n';
 import type { HostAuditCursor, HostLoginEntry, HostSudoEntry } from '../api/types';
 
 type View = 'success' | 'failed' | 'sudo' | 'vm';
 
-const VIEWS: Array<{ key: View; label: string }> = [
-  { key: 'success', label: '成功登录（last）' },
-  { key: 'failed', label: '失败登录（lastb）' },
-  { key: 'sudo', label: 'sudo / su 提权' },
-  { key: 'vm', label: '虚拟机视角' },
+const VIEWS: Array<{ key: View; label: MessageKey }> = [
+  { key: 'success', label: 'hostAudit.view.success' },
+  { key: 'failed', label: 'hostAudit.view.failed' },
+  { key: 'sudo', label: 'hostAudit.view.sudo' },
+  { key: 'vm', label: 'hostAudit.view.vm' },
 ];
 
 export function HostAudit() {
+  const t = useT();
   const { hasPermission, isAdmin } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
@@ -145,29 +147,29 @@ export function HostAudit() {
   const loginColumns: Array<Column<HostLoginEntry>> = [
     {
       key: 'user',
-      header: '账号',
+      header: t('hostAudit.colUser'),
       render: (row) => <span className="mono fs-sm">{row.user}</span>,
     },
-    { key: 'tty', header: '终端', width: 110, render: (row) => row.tty || '—' },
+    { key: 'tty', header: t('hostAudit.colTty'), width: 110, render: (row) => row.tty || '—' },
     {
       key: 'ip',
-      header: '来源',
+      header: t('hostAudit.colSource'),
       render: (row) =>
-        row.ip ? <span className="mono fs-sm">{row.ip}</span> : <span className="text-muted fs-xs">本机</span>,
+        row.ip ? <span className="mono fs-sm">{row.ip}</span> : <span className="text-muted fs-xs">{t('hostAudit.local')}</span>,
     },
     {
       key: 'start',
-      header: '开始',
+      header: t('hostAudit.colStart'),
       width: 180,
       render: (row) => (row.start ? formatDateTime(row.start) : '—'),
     },
     {
       key: 'end',
-      header: '结束 / 状态',
+      header: t('hostAudit.colEndStatus'),
       width: 180,
       render: (row) =>
         row.end ? (
-          formatDateTime(row.end) + (row.duration ? `（${row.duration}）` : '')
+          formatDateTime(row.end) + (row.duration ? t('hostAudit.durationSuffix', { d: row.duration }) : '')
         ) : row.state ? (
           <Badge variant="success" size="sm">
             {row.state}
@@ -181,45 +183,45 @@ export function HostAudit() {
   const sudoColumns: Array<Column<HostSudoEntry>> = [
     {
       key: 'ts',
-      header: '时间',
+      header: t('hostAudit.colTime'),
       width: 180,
       render: (row) => (row.ts ? formatDateTime(row.ts) : '—'),
     },
-    { key: 'user', header: '提权人', render: (row) => <span className="mono fs-sm">{row.user || '—'}</span> },
+    { key: 'user', header: t('hostAudit.colSudoUser'), render: (row) => <span className="mono fs-sm">{row.user || '—'}</span> },
     {
       key: 'target',
-      header: '目标账号',
+      header: t('hostAudit.colTargetUser'),
       width: 110,
       render: (row) => <span className="mono fs-sm">{row.target || '—'}</span>,
     },
     {
       key: 'ok',
-      header: '结果',
+      header: t('hostAudit.colResult'),
       width: 90,
       render: (row) => (
         <Badge variant={row.success ? 'success' : 'danger'} size="sm">
-          {row.success ? '成功' : '失败'}
+          {row.success ? t('status.audit.success') : t('status.audit.failed')}
         </Badge>
       ),
     },
     {
       key: 'command',
-      header: '命令',
+      header: t('hostAudit.colCommand'),
       render: (row) => <span className="mono fs-xs">{row.command || '—'}</span>,
     },
   ];
 
   const cursorColumns: Array<Column<HostAuditCursor>> = [
-    { key: 'name', header: '主机', render: (row) => row.name },
+    { key: 'name', header: t('hostAudit.colHost'), render: (row) => row.name },
     {
       key: 'last_ts',
-      header: '已汇入到',
+      header: t('hostAudit.colImportedTo'),
       render: (row) =>
-        row.last_ts ? formatDateTime(row.last_ts) : <span className="text-muted fs-xs">尚未导入</span>,
+        row.last_ts ? formatDateTime(row.last_ts) : <span className="text-muted fs-xs">{t('hostAudit.notImported')}</span>,
     },
     {
       key: 'updated',
-      header: '最近导入',
+      header: t('hostAudit.colLastImport'),
       render: (row) => (row.updated ? formatRelative(row.updated) : '—'),
     },
   ];
@@ -229,13 +231,13 @@ export function HostAudit() {
     try {
       const res = await hostAuditApi.importNow(hostId);
       toast.success(
-        res.imported ? `已汇入 ${res.imported} 条` : '没有新的事件需要汇入',
-        '写入面板审计日志：审计日志页可按 host.ssh_login / host.sudo 过滤',
+        res.imported ? t('hostAudit.imported', { n: res.imported }) : t('hostAudit.noNewEvents'),
+        t('hostAudit.importDetail'),
       );
       await qc.invalidateQueries({ queryKey: ['host-audit'] });
       await qc.invalidateQueries({ queryKey: ['audit'] });
     } catch (err) {
-      toast.error('汇入失败', errorMessage(err));
+      toast.error(t('hostAudit.importFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -245,17 +247,13 @@ export function HostAudit() {
 
   return (
     <PageShell
-      title="主机登录审计"
-      subtitle={
-        isAdmin
-          ? 'last / lastb 登录历史、sudo 提权记录，并增量汇入面板审计日志'
-          : '你添加的受管主机：登录历史、sudo 提权记录（面板本机仅管理员可见）'
-      }
+      title={t('hostAudit.title')}
+      subtitle={isAdmin ? t('hostAudit.subtitleAdmin') : t('hostAudit.subtitleUser')}
       actions={
         <div className="form-row">
           {canManage ? (
             <Button size="sm" variant="primary" loading={busy} onClick={() => void importNow()}>
-              汇入审计
+              {t('hostAudit.importNow')}
             </Button>
           ) : null}
           <Button
@@ -268,27 +266,21 @@ export function HostAudit() {
               void cursorsQuery.refetch();
             }}
           >
-            <IconRefresh size={14} /> 刷新
+            <IconRefresh size={14} /> {t('common.refresh')}
           </Button>
         </div>
       }
     >
       {!hostsQuery.isLoading && hosts.length === 0 ? (
-        <Notice tone="info" title="没有可审计的主机">
-          {isAdmin
-            ? '还没有受管主机，到「SSH 安全 · 主机与告警配置」添加，或检查连接状态。'
-            : '你名下还没有受管主机。受管主机由添加它的人维护，需要的话请联系管理员为你添加或指派。'}
+        <Notice tone="info" title={t('hostAudit.noHostsTitle')}>
+          {isAdmin ? t('hostAudit.noHostsAdmin') : t('hostAudit.noHostsUser')}
         </Notice>
       ) : null}
 
       <Card collapsible={false}>
         <CardHeader
-          title="作用域"
-          subtitle={
-            isAdmin
-              ? '面板本机 + 受管远程主机（SSH）'
-              : '你添加的受管远程主机（SSH）'
-          }
+          title={t('hostAudit.scopeTitle')}
+          subtitle={isAdmin ? t('hostAudit.scopeAdmin') : t('hostAudit.scopeUser')}
           icon={<IconServer size={16} />}
           actions={
             <Select
@@ -299,14 +291,14 @@ export function HostAudit() {
                   ? hostOptions
                   : /* 兜底只给管理员：普通用户看不到本机，选了必 403 */
                     isAdmin
-                    ? [{ label: '本机（面板）', value: 'local' }]
+                    ? [{ label: t('hostAudit.localHost'), value: 'local' }]
                     : []
               }
-              aria-label="选择主机"
+              aria-label={t('hostAudit.selectHostAria')}
             />
           }
         />
-        <div className="tabs" role="tablist" aria-label="审计视图切换">
+        <div className="tabs" role="tablist" aria-label={t('hostAudit.viewAria')}>
           {VIEWS.map((item) => (
             <button
               key={item.key}
@@ -327,7 +319,7 @@ export function HostAudit() {
                   <IconTerminal size={15} />
                 )}
               </span>
-              {item.label}
+              {t(item.label)}
             </button>
           ))}
         </div>
@@ -336,17 +328,17 @@ export function HostAudit() {
           {view === 'vm' ? (
             <div className="dyn-list">
               <div className="form-row">
-                <Field label="虚拟机" hint="按它的 IP 匹配「这台机器登录过哪些主机」">
+                <Field label={t('common.vm')} hint={t('hostAudit.vmFieldHint')}>
                   <Select
                     value={vmKey}
                     onChange={(e) => setVmKey(e.target.value)}
                     options={[
-                      { label: '请选择虚拟机', value: '' },
+                      { label: t('hostAudit.selectVm'), value: '' },
                       ...vmOptions,
                     ]}
                   />
                 </Field>
-                <Field label="时间范围" hint="小时">
+                <Field label={t('hostAudit.timeRange')} hint={t('hostAudit.hours')}>
                   <Input
                     type="number"
                     min={1}
@@ -359,20 +351,20 @@ export function HostAudit() {
               {vmQuery.data?.note ? <Notice tone="warning">{vmQuery.data.note}</Notice> : null}
               {vmQuery.data && !vmQuery.data.note ? (
                 <Table
-                  caption="以该虚拟机为来源的登录记录"
+                  caption={t('hostAudit.vmCaption')}
                   rows={vmQuery.data.entries}
                   columns={[
                     ...loginColumns,
                     {
                       key: 'host',
-                      header: '目标主机',
+                      header: t('hostAudit.colTargetHost'),
                       width: 140,
                       render: (row) => row.host || '—',
                     },
                   ]}
                   rowKey={(row) => `${row.host_id}-${row.user}-${row.start}`}
                   loading={vmQuery.isLoading}
-                  emptyTitle="这段时间没有匹配的登录记录"
+                  emptyTitle={t('hostAudit.vmEmpty')}
                 />
               ) : null}
             </div>
@@ -385,14 +377,14 @@ export function HostAudit() {
                       <Input
                         value={keyword}
                         onChange={(e) => setKeyword(e.target.value)}
-                        placeholder="搜索账号 / 来源 IP / 终端"
+                        placeholder={t('hostAudit.searchPlaceholder')}
                         prefix={<IconSearch size={15} />}
-                        aria-label="搜索登录记录"
+                        aria-label={t('hostAudit.searchAria')}
                       />
                     </div>
                     {keyword ? (
                       <Button size="sm" variant="ghost" onClick={() => setKeyword('')}>
-                        <IconClose size={14} /> 清空
+                        <IconClose size={14} /> {t('hostAudit.clear')}
                       </Button>
                     ) : null}
                   </>
@@ -400,12 +392,15 @@ export function HostAudit() {
 
                 <span className="fs-xs text-muted ha-meta">
                   {view === 'sudo'
-                    ? `来自 auth.log / secure 的提权记录（最近 ${hours} 小时）`
+                    ? t('hostAudit.sudoMeta', { hours })
                     : keyword
-                      ? `匹配 ${matchedLogins.length} / 共 ${loginEntries.length} 条 · 只看当前已加载的记录`
+                      ? t('hostAudit.matchMeta', {
+                          matched: matchedLogins.length,
+                          total: loginEntries.length,
+                        })
                       : view === 'failed'
-                        ? `btmp：失败的登录尝试（需要 root 读）· 共 ${loginEntries.length} 条`
-                        : `wtmp：成功的登录历史（含开机记录）· 共 ${loginEntries.length} 条`}
+                        ? t('hostAudit.failedMeta', { n: loginEntries.length })
+                        : t('hostAudit.successMeta', { n: loginEntries.length })}
                 </span>
 
                 {view === 'sudo' ? (
@@ -415,18 +410,17 @@ export function HostAudit() {
                     max={168}
                     value={hours}
                     onChange={(e) => setHours(Number(e.target.value))}
-                    aria-label="时间范围（小时）"
+                    aria-label={t('hostAudit.timeRangeAria')}
                     style={{ width: 120 }}
                   />
                 ) : null}
               </div>
 
               {current && !current.ok ? (
-                <Notice tone="warning" title="读不到这台主机的记录">
+                <Notice tone="warning" title={t('hostAudit.readErrorTitle')}>
                   {current.error}
                   <div className="fs-xs text-muted mt-8">
-                    常见原因：非 root 用户没配 sudo NOPASSWD（lastb 需要读 /var/log/btmp），
-                    或这台主机上没有 last / lastb 命令。
+                    {t('hostAudit.readErrorHint')}
                   </div>
                 </Notice>
               ) : null}
@@ -434,27 +428,31 @@ export function HostAudit() {
               {view === 'sudo' ? (
                 <>
                   <Table
-                    caption="sudo / su 提权记录"
+                    caption={t('hostAudit.sudoCaption')}
                     rows={sudoPage.rows}
                     columns={sudoColumns}
                     rowKey={(row) => `${row.ts ?? 0}-${row.user}-${row.command}`}
                     loading={sudoQuery.isLoading}
-                    emptyTitle="这段时间没有提权记录"
+                    emptyTitle={t('hostAudit.sudoEmpty')}
                   />
                   <PagerBar pager={sudoPage} />
                 </>
               ) : (
                 <>
                   <Table
-                    caption="登录记录"
+                    caption={t('hostAudit.loginsCaption')}
                     rows={loginPage.rows}
                     columns={loginColumns}
                     rowKey={(row) => `${row.user}-${row.tty}-${row.start ?? 0}`}
                     loading={loginsQuery.isLoading}
-                    emptyTitle={keyword ? `没有匹配「${keyword}」的记录` : '没有登录记录'}
+                    emptyTitle={
+                      keyword
+                        ? t('hostAudit.noMatchKeyword', { keyword })
+                        : t('hostAudit.noLogins')
+                    }
                     emptyDescription={
                       keyword
-                        ? `已加载的 ${loginEntries.length} 条记录里没有命中，试试换个关键词或清空搜索。`
+                        ? t('hostAudit.noMatchDesc', { n: loginEntries.length })
                         : undefined
                     }
                   />
@@ -468,22 +466,22 @@ export function HostAudit() {
 
       <Card collapsible={false}>
         <CardHeader
-          title="汇入面板审计"
-          subtitle="后台每 5 分钟自动增量汇入一次；这里可以看到各主机已汇入到什么时候"
+          title={t('hostAudit.importCardTitle')}
+          subtitle={t('hostAudit.importCardSubtitle')}
           icon={<IconClock size={16} />}
         />
         <Table
-          caption="导入进度"
+          caption={t('hostAudit.cursorCaption')}
           rows={cursorsQuery.data ?? []}
           columns={cursorColumns}
           rowKey={(row) => row.host_id}
           loading={cursorsQuery.isLoading}
         />
         <Notice tone="info">
-          汇入的是「主机级」事件：SSH 登录成功 / 失败、sudo 与 su 提权，动作名分别是
-          <span className="mono"> host.ssh_login</span> /<span className="mono"> host.ssh_failed</span> /
-          <span className="mono"> host.sudo</span>，与面板自身的操作一起出现在「系统管理 → 审计日志」里。
-          每台主机一个游标，重复汇入不会重复写；读取这些记录本身也会被记进审计（host_audit.read）。
+          {t('hostAudit.notePre')}
+          <span className="mono">host.ssh_login</span> /<span className="mono">host.ssh_failed</span> /
+          <span className="mono">host.sudo</span>
+          {t('hostAudit.noteMid')}
         </Notice>
       </Card>
     </PageShell>

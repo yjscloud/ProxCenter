@@ -25,6 +25,7 @@ import {
 import { formatDateTime, formatRelative } from '../utils/format';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useAuth } from '../hooks/useAuth';
+import { useT } from '../i18n';
 import type { Snapshot } from '../api/types';
 
 /* ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ async function mapWithConcurrency<T, R>(
    --------------------------------------------------------------------------- */
 
 export function Snapshots() {
+  const t = useT();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
@@ -83,7 +85,7 @@ export function Snapshots() {
   const nodeOptions = useMemo(() => {
     const set = new Set(vms.map((v) => v.node));
     return [
-      { label: '全部节点', value: '' },
+      { label: t('snapshots.allNodes'), value: '' },
       ...[...set].sort().map((n) => ({ label: n, value: n })),
     ];
   }, [vms]);
@@ -152,7 +154,7 @@ export function Snapshots() {
   const columns: Array<Column<Snapshot>> = [
     {
       key: 'vm',
-      header: '虚拟机',
+      header: t('common.vm'),
       render: (s) => (
         <button
           type="button"
@@ -178,14 +180,14 @@ export function Snapshots() {
     },
     {
       key: 'name',
-      header: '快照名称',
+      header: t('snapshots.colName'),
       render: (s) => <span className="mono fw-500">{s.name}</span>,
       sortable: true,
       sortValue: (s) => s.name,
     },
     {
       key: 'description',
-      header: '描述',
+      header: t('common.description'),
       render: (s) => (
         <span className="fs-sm text-secondary truncate" title={s.description}>
           {s.description || '—'}
@@ -194,7 +196,7 @@ export function Snapshots() {
     },
     {
       key: 'snaptime',
-      header: '创建时间',
+      header: t('common.createdAt'),
       render: (s) => (
         <div className="flex flex-col">
           <span className="mono fs-sm">{formatDateTime(s.snaptime)}</span>
@@ -207,18 +209,18 @@ export function Snapshots() {
     },
     {
       key: 'vmstate',
-      header: '含内存',
+      header: t('snapshots.colVmstate'),
       width: 90,
       align: 'center',
       render: (s) => (
         <Badge variant={s.vmstate ? 'info' : 'neutral'} size="sm">
-          {s.vmstate ? '是' : '否'}
+          {s.vmstate ? t('common.yes') : t('common.no')}
         </Badge>
       ),
     },
     {
       key: 'parent',
-      header: '父快照',
+      header: t('snapshots.colParent'),
       render: (s) => (
         <span className="mono fs-sm text-muted">{s.parent || '—'}</span>
       ),
@@ -226,19 +228,19 @@ export function Snapshots() {
     },
     {
       key: 'owner',
-      header: '创建者',
+      header: t('common.owner'),
       width: 90,
       render: (s) => <span className="fs-sm text-secondary">{s.owner || '—'}</span>,
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       width: 160,
       align: 'right',
       render: (s) => (
         <span className="row-actions">
           <IconButton
-            label={`回滚到快照 ${s.name}`}
+            label={t('snapshots.rollbackLabel', { name: s.name })}
             variant="primary"
             onClick={(e) => {
               e.stopPropagation();
@@ -249,7 +251,7 @@ export function Snapshots() {
             <IconRestart size={15} />
           </IconButton>
           <IconButton
-            label={`删除快照 ${s.name}`}
+            label={t('snapshots.deleteLabel', { name: s.name })}
             variant="danger"
             onClick={(e) => {
               e.stopPropagation();
@@ -277,13 +279,16 @@ export function Snapshots() {
       title={
         <>
           <IconSnapshot size={20} />
-          快照
+          {t('snapshots.title')}
         </>
       }
       subtitle={
         snapshotsQuery.isLoading
-          ? '正在扫描各虚拟机的快照…'
-          : `共 ${stats.total} 个快照 · 覆盖 ${stats.vmsWithSnapshots} 台虚拟机`
+          ? t('snapshots.subtitle.loading')
+          : t('snapshots.subtitle.summary', {
+              total: stats.total,
+              vms: stats.vmsWithSnapshots,
+            })
       }
       actions={
         <Button
@@ -295,28 +300,26 @@ export function Snapshots() {
           }}
           loading={snapshotsQuery.isFetching && !snapshotsQuery.isLoading}
         >
-          刷新
+          {t('common.refresh')}
         </Button>
       }
     >
-      <Notice tone="info" title="聚合视图说明">
-        本页汇总集群中所有虚拟机的快照，数据通过并发遍历各虚拟机获得，因此加载可能稍慢。
-        回滚与删除操作会直接作用于对应虚拟机。
-        按用户隔离：普通用户只显示自己创建的快照，管理员可见全部。
+      <Notice tone="info" title={t('snapshots.noticeTitle')}>
+        {t('snapshots.noticeBody')}
       </Notice>
 
       {/* 统计卡片 */}
       <div className="grid grid-3">
         <Card>
-          <div className="kpi-label">快照总数</div>
+          <div className="kpi-label">{t('snapshots.kpi.total')}</div>
           <div className="kpi-value">{stats.total}</div>
         </Card>
         <Card>
-          <div className="kpi-label">包含内存状态</div>
+          <div className="kpi-label">{t('snapshots.kpi.withState')}</div>
           <div className="kpi-value">{stats.withState}</div>
         </Card>
         <Card>
-          <div className="kpi-label">涉及虚拟机</div>
+          <div className="kpi-label">{t('snapshots.kpi.vms')}</div>
           <div className="kpi-value">{stats.vmsWithSnapshots}</div>
         </Card>
       </div>
@@ -327,29 +330,29 @@ export function Snapshots() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索快照名、虚拟机名、VMID…"
+            placeholder={t('snapshots.searchPlaceholder')}
             prefix={<IconSearch size={15} />}
             block={false}
-            aria-label="搜索快照"
+            aria-label={t('snapshots.searchAria')}
           />
           <Select
             value={nodeFilter}
             onChange={(e) => setNodeFilter(e.target.value)}
             options={nodeOptions}
-            aria-label="按节点筛选"
+            aria-label={t('snapshots.filterNodeAria')}
           />
         </div>
         <div className="toolbar-right">
           <span className="fs-sm text-muted">
-            显示 {snapshots.length} 个
+            {t('common.showing', { n: snapshots.length })}
           </span>
         </div>
       </div>
 
       {snapshotsQuery.isError ? (
         <ErrorState
-          title="无法加载快照数据"
-          message="请求各虚拟机快照时出错，请稍后重试。"
+          title={t('snapshots.loadErrorTitle')}
+          message={t('snapshots.loadErrorMsg')}
           onRetry={() => void snapshotsQuery.refetch()}
         />
       ) : (
@@ -358,19 +361,19 @@ export function Snapshots() {
           rows={snapshots}
           rowKey={(s) => `${s.node}/${s.vmid}/${s.name}`}
           loading={snapshotsQuery.isLoading}
-          caption="集群所有虚拟机的快照列表"
-          emptyTitle={search ? '没有匹配的快照' : '暂无快照'}
+          caption={t('snapshots.caption')}
+          emptyTitle={search ? t('snapshots.emptyNoMatch') : t('snapshots.emptyNone')}
           emptyDescription={
             search
-              ? '尝试调整搜索关键词。'
+              ? t('snapshots.emptyAdjust')
               : vms.length === 0
-                ? '集群中还没有虚拟机。'
-                : '集群中还没有任何虚拟机快照。快照可在虚拟机详情页创建。'
+                ? t('snapshots.emptyNoVms')
+                : t('snapshots.emptyHint')
           }
           emptyAction={
             !search && vms.length > 0 ? (
               <Button variant="primary" onClick={() => navigate('/vms')}>
-                前往虚拟机列表
+                {t('snapshots.goToVms')}
               </Button>
             ) : undefined
           }
@@ -392,7 +395,10 @@ export function Snapshots() {
                 rollbackTarget.name,
               ),
               {
-                title: `回滚「${rollbackTarget.vmname || rollbackTarget.vmid}」到 ${rollbackTarget.name}`,
+                title: t('snapshots.taskRollback', {
+                  vm: rollbackTarget.vmname || rollbackTarget.vmid,
+                  name: rollbackTarget.name,
+                }),
                 node: rollbackTarget.node,
                 invalidate: [
                   ['snapshots'],
@@ -408,18 +414,15 @@ export function Snapshots() {
             setBusy(false);
           }
         }}
-        title="回滚快照"
-        confirmText="执行回滚"
+        title={t('snapshots.rollbackTitle')}
+        confirmText={t('snapshots.rollbackConfirm')}
         loading={busy}
         requireText={rollbackTarget?.name}
-        message={
-          <>
-            即将把 <strong>{rollbackTarget?.vmname || rollbackTarget?.vmid}</strong>{' '}
-            回滚到快照 <strong>{rollbackTarget?.name}</strong>（
-            {formatDateTime(rollbackTarget?.snaptime)}）。
-            该快照之后的所有变更都会丢失。
-          </>
-        }
+        message={t('snapshots.rollbackMessage', {
+          vm: rollbackTarget?.vmname || rollbackTarget?.vmid || '',
+          name: rollbackTarget?.name || '',
+          time: formatDateTime(rollbackTarget?.snaptime),
+        })}
       />
 
       {/* ---- 删除确认 ---- */}
@@ -437,7 +440,7 @@ export function Snapshots() {
                 deleteTarget.name,
               ),
               {
-                title: `删除快照「${deleteTarget.name}」`,
+                title: t('snapshots.taskDelete', { name: deleteTarget.name }),
                 node: deleteTarget.node,
                 invalidate: [
                   ['snapshots'],
@@ -452,16 +455,14 @@ export function Snapshots() {
             setBusy(false);
           }
         }}
-        title="删除快照"
+        title={t('snapshots.deleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={busy}
-        message={
-          <>
-            即将删除 <strong>{deleteTarget?.vmname || deleteTarget?.vmid}</strong> 的快照{' '}
-            <strong>{deleteTarget?.name}</strong>。删除后无法再回滚到该时间点。
-          </>
-        }
+        message={t('snapshots.deleteMessage', {
+          vm: deleteTarget?.vmname || deleteTarget?.vmid || '',
+          name: deleteTarget?.name || '',
+        })}
       />
 
     </PageShell>

@@ -37,6 +37,7 @@ import {
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
 import { formatDateTime } from '../utils/format';
+import { useT, type MessageKey, type TFunc } from '../i18n';
 import type {
   BadgeVariant,
   PortDisposition,
@@ -48,10 +49,13 @@ import type {
   SuspiciousProcess,
 } from '../api/types';
 
-const SEVERITY_META: Record<PortSeverity, { label: string; variant: 'danger' | 'warning' | 'accent' }> = {
-  high: { label: '高危', variant: 'danger' },
-  medium: { label: '中危', variant: 'warning' },
-  low: { label: '低危', variant: 'accent' },
+const SEVERITY_META: Record<
+  PortSeverity,
+  { label: MessageKey; variant: 'danger' | 'warning' | 'accent' }
+> = {
+  high: { label: 'ports.sev.high', variant: 'danger' },
+  medium: { label: 'ports.sev.medium', variant: 'warning' },
+  low: { label: 'ports.sev.low', variant: 'accent' },
 };
 
 /**
@@ -62,50 +66,54 @@ const SEVERITY_META: Record<PortSeverity, { label: string; variant: 'danger' | '
  */
 const DISPOSITION_META: Record<
   'ack' | 'ignore' | 'whitelist',
-  { label: string; variant: BadgeVariant; done: string; hint: string }
+  { label: MessageKey; variant: BadgeVariant; done: MessageKey; hint: MessageKey }
 > = {
   ack: {
-    label: '已确认',
+    label: 'ports.disp.ack',
     variant: 'success',
-    done: '已标记为确认',
-    hint: '已知晓这条发现：不再计入待处理与告警，但列表里仍可见、可撤销',
+    done: 'ports.disp.ackDone',
+    hint: 'ports.disp.ackHint',
   },
   ignore: {
-    label: '已忽略',
+    label: 'ports.disp.ignore',
     variant: 'neutral',
-    done: '已忽略',
-    hint: '7 天内不再提示；到期自动回到待处理',
+    done: 'ports.disp.ignoreDone',
+    hint: 'ports.disp.ignoreHint',
   },
   whitelist: {
-    label: '已加白',
+    label: 'ports.disp.whitelist',
     variant: 'accent',
-    done: '已加入白名单',
-    hint: '永久放行：端口写进「预期端口」、进程按程序名写进「进程白名单」',
+    done: 'ports.disp.whitelistDone',
+    hint: 'ports.disp.whitelistHint',
   },
 };
 
-const SCOPE_LABEL: Record<string, string> = {
-  loopback: '仅本机',
-  all: '全部网卡',
-  specific: '指定地址',
+const SCOPE_LABEL: Record<string, MessageKey> = {
+  loopback: 'ports.scope.loopback',
+  all: 'ports.scope.all',
+  specific: 'ports.scope.specific',
 };
 
 /** 按钮顺序：确认 → 忽略 → 加白，后果由轻到重 */
 const DISPOSITION_ORDER = ['ack', 'ignore', 'whitelist'] as const;
 
-const DISPOSITION_LABEL: Record<(typeof DISPOSITION_ORDER)[number], string> = {
-  ack: '确认',
-  ignore: '忽略',
-  whitelist: '加白',
+const DISPOSITION_LABEL: Record<(typeof DISPOSITION_ORDER)[number], MessageKey> = {
+  ack: 'ports.dispAction.ack',
+  ignore: 'ports.dispAction.ignore',
+  whitelist: 'ports.dispAction.whitelist',
 };
 
 /** 处置徽章：把「什么时候、被谁、忽略到什么时候」说给看的人听 */
-function dispositionHint(item: PortDisposition): string {
+function dispositionHint(item: PortDisposition, t: TFunc): string {
   const parts: string[] = [];
   if (item.actor) parts.push(item.actor);
   parts.push(formatDateTime(new Date(item.ts * 1000)));
   if (item.action === 'ignore' && item.expires_at) {
-    parts.push(`${formatDateTime(new Date(item.expires_at * 1000))} 前不再提示`);
+    parts.push(
+      t('ports.ignoreUntil', {
+        time: formatDateTime(new Date(item.expires_at * 1000)),
+      }),
+    );
   }
   return parts.join(' · ');
 }
@@ -156,21 +164,35 @@ const SCAN_STALE_TIME = 5 * 60_000;
 const SCAN_GC_TIME = 30 * 60_000;
 
 /** 一台机器的巡检结论（卡片与列表共用同一套口径） */
-function hostStatusMeta(host: PortHostSummary): { variant: BadgeVariant; label: string } {
-  if (!host.ok) return { variant: 'neutral', label: '未巡检' };
+function hostStatusMeta(
+  host: PortHostSummary,
+  t: TFunc,
+): { variant: BadgeVariant; label: string } {
+  if (!host.ok) return { variant: 'neutral', label: t('ports.status.notScanned') };
   if (host.summary.suspicious > 0) {
-    return { variant: 'danger', label: `可疑进程 ${host.summary.suspicious}` };
+    return {
+      variant: 'danger',
+      label: t('ports.status.suspicious', { n: host.summary.suspicious }),
+    };
   }
   if (host.summary.unexpected > 0) {
-    return { variant: 'warning', label: `待确认端口 ${host.summary.unexpected}` };
+    return {
+      variant: 'warning',
+      label: t('ports.status.unexpected', { n: host.summary.unexpected }),
+    };
   }
-  return { variant: 'success', label: '未发现异常' };
+  return { variant: 'success', label: t('ports.status.clean') };
 }
 
 /** 一台机器的待处理项：可疑进程优先，其次是非预期开放端口 */
 function HostFindings({ host }: { host: PortHostSummary }) {
+  const t = useT();
   if (!host.ok) {
-    return <span className="fs-xs text-danger">{host.error || '无法连接该主机'}</span>;
+    return (
+      <span className="fs-xs text-danger">
+        {host.error || t('baseline.cannotConnectHost')}
+      </span>
+    );
   }
   if (host.top_suspicious.length > 0) {
     return (
@@ -193,7 +215,7 @@ function HostFindings({ host }: { host: PortHostSummary }) {
             <span className="mono">
               {item.address}:{item.port}
             </span>
-            <span className="text-muted">{item.process || '未知进程'}</span>
+            <span className="text-muted">{item.process || t('ports.unknownProcess')}</span>
           </span>
         ))}
       </span>
@@ -201,7 +223,7 @@ function HostFindings({ host }: { host: PortHostSummary }) {
   }
   return (
     <span className="fs-xs" style={{ color: 'var(--success)' }}>
-      没有对外开放的端口
+      {t('ports.noOpenPorts')}
     </span>
   );
 }
@@ -221,15 +243,16 @@ function HostCard({
   onScan: (hostId: string) => void;
   scanning: boolean;
 }) {
+  const t = useT();
   const { summary } = host;
-  const status = hostStatusMeta(host);
+  const status = hostStatusMeta(host, t);
   return (
     /* div + role=button：卡片里还要放「巡检」按钮，原生按钮不能嵌套 */
     <div
       className={`baseline-host-card ${host.ok ? '' : 'is-unreachable'}`}
       role="button"
       tabIndex={0}
-      aria-label={`查看 ${host.name || host.host_id} 的端口与进程`}
+      aria-label={t('ports.viewHostAria', { name: host.name || host.host_id })}
       onClick={() => onOpen(host.host_id)}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -242,20 +265,24 @@ function HostCard({
         <span className="baseline-host-ident">
           <span className="baseline-host-name">{host.name || host.host_id}</span>
           <span className="baseline-host-addr">
-            {host.local ? '面板本机' : host.host || host.host_id}
+            {host.local ? t('baseline.localPanelHost') : host.host || host.host_id}
           </span>
           <span className="form-row" style={{ gap: 6 }}>
             <Badge variant={status.variant} size="sm">
               {status.label}
             </Badge>
             {host.ok && !summary.firewall_active ? (
-              <Badge variant="danger" size="sm" title="这台主机没有活动防火墙，暴露的端口风险更高">
-                无防火墙
+              <Badge
+                variant="danger"
+                size="sm"
+                title={t('ports.noFirewallBadgeTitle')}
+              >
+                {t('ports.noFirewallBadge')}
               </Badge>
             ) : null}
             {host.ok && !host.elevated ? (
-              <Badge variant="neutral" size="sm" title="权限不足，看不到别人的进程与可执行文件">
-                只读
+              <Badge variant="neutral" size="sm" title={t('ports.readonlyTitle')}>
+                {t('baseline.readonlyBadge')}
               </Badge>
             ) : null}
           </span>
@@ -265,20 +292,23 @@ function HostCard({
       {host.ok ? (
         <span className="baseline-host-body">
           <span className="fs-xs text-muted">
-            监听 {summary.listeners} 个 · 对外开放 {summary.exposed} 个 · 非预期{' '}
-            {summary.unexpected} 个
+            {t('ports.listenSummary', {
+              listeners: summary.listeners,
+              exposed: summary.exposed,
+              unexpected: summary.unexpected,
+            })}
           </span>
           <HostFindings host={host} />
         </span>
       ) : (
         <span className="baseline-host-body fs-xs text-muted">
-          {host.error || '无法连接该主机'}
+          {host.error || t('baseline.cannotConnectHost')}
         </span>
       )}
 
       <span className="baseline-host-foot">
         <span className="baseline-host-foot-main">
-          查看详情 <IconChevronRight size={13} />
+          {t('baseline.viewDetails')} <IconChevronRight size={13} />
         </span>
         {/* 阻止冒泡：点「巡检」不该顺带打开详情 */}
         <span
@@ -289,10 +319,10 @@ function HostCard({
             type="button"
             className="baseline-host-scan"
             disabled={scanning}
-            title={`只巡检 ${host.name || host.host_id} 这一台`}
+            title={t('ports.scanOneTitle', { name: host.name || host.host_id })}
             onClick={() => onScan(host.host_id)}
           >
-            {scanning ? '巡检中…' : '巡检'}
+            {scanning ? t('ports.scanning') : t('ports.scan')}
           </button>
         </span>
       </span>
@@ -305,6 +335,7 @@ function HostCard({
    --------------------------------------------------------------------------- */
 
 export function PortGuard() {
+  const t = useT();
   const { hasPermission, isAdmin } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -381,10 +412,12 @@ export function PortGuard() {
   const hostOptions = useMemo(
     () =>
       hosts.map((host) => ({
-        label: host.local ? `本机（${host.name}）` : host.name || host.address,
+        label: host.local
+          ? `${t('baseline.localOption')}（${host.name}）`
+          : host.name || host.address,
         value: host.id,
       })),
-    [hosts],
+    [hosts, t],
   );
 
   /** 进单机详情；再点一次「总览」= 清掉 ?host= */
@@ -406,13 +439,18 @@ export function PortGuard() {
       await queryClient.invalidateQueries({ queryKey: ['ports', 'overview'] });
       const s = fresh.summary;
       toast.success(
-        `已巡检 ${fresh.name || id}`,
+        t('ports.scannedToast', { name: fresh.name || id }),
         fresh.ok
-          ? `监听 ${s.listeners} · 对外开放 ${s.exposed} · 非预期 ${s.unexpected} · 可疑进程 ${s.suspicious}`
-          : fresh.error || '这台主机连不上',
+          ? t('ports.scannedDetail', {
+              listeners: s.listeners,
+              exposed: s.exposed,
+              unexpected: s.unexpected,
+              suspicious: s.suspicious,
+            })
+          : fresh.error || t('ports.hostUnreachable'),
       );
     } catch (err) {
-      toast.error('巡检失败', errorMessage(err));
+      toast.error(t('ports.scanFailed'), errorMessage(err));
     } finally {
       setScanningId(null);
     }
@@ -423,8 +461,10 @@ export function PortGuard() {
     try {
       const result = await portsApi.check();
       toast.success(
-        result.fired ? `已推送 ${result.fired} 条通知` : '巡检完成，没有需要告警的项',
-        '同一对象在冷却期内不会重复提醒',
+        result.fired
+          ? t('ports.pushedN', { n: result.fired })
+          : t('ports.checkDone'),
+        t('ports.cooldownNote'),
       );
       /* 这一下后端已经跑完一轮全平台巡检了，再立刻把总览拉一遍等于同一轮扫两遍。
          只标脏不重取：页面上显示的就是刚刚这轮的结果，下次进这一页自然拿新的。 */
@@ -433,7 +473,7 @@ export function PortGuard() {
         refetchType: 'none',
       });
     } catch (err) {
-      toast.error('巡检失败', errorMessage(err));
+      toast.error(t('ports.checkFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -450,10 +490,10 @@ export function PortGuard() {
       setPolicyDraft(saved.policy);
       setExpectedText(saved.policy.expected_ports.join('\n'));
       setWhitelistText(saved.policy.process_whitelist.join('\n'));
-      toast.success('策略已保存', '下次巡检即按新策略判定');
+      toast.success(t('ports.policySaved'), t('ports.policySavedDetail'));
       await queryClient.invalidateQueries({ queryKey: ['ports'] });
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('ports.saveFailed'), errorMessage(err));
     } finally {
       setSavingPolicy(false);
     }
@@ -487,16 +527,16 @@ export function PortGuard() {
         detail,
       });
       toast.success(
-        DISPOSITION_META[action].done,
+        t(DISPOSITION_META[action].done),
         action === 'ignore'
-          ? '7 天内不再提示，到期会自动回到待处理'
+          ? t('ports.dispIgnoreDetail')
           : action === 'whitelist'
-            ? '已写进巡检策略，之后不再判定为异常'
-            : '不再计入待处理与告警；可在下方「已处置」里撤销',
+            ? t('ports.dispWhitelistDetail')
+            : t('ports.dispAckDetail'),
       );
       await queryClient.invalidateQueries({ queryKey: ['ports'] });
     } catch (err) {
-      toast.error('操作失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setDisposing(null);
     }
@@ -506,10 +546,10 @@ export function PortGuard() {
     setDisposing(fingerprint);
     try {
       await portsApi.dispositions.remove(hostId, fingerprint);
-      toast.success('已撤销', '下一轮巡检它会重新出现在待处理里');
+      toast.success(t('ports.undoDone'), t('ports.undoDoneDetail'));
       await queryClient.invalidateQueries({ queryKey: ['ports'] });
     } catch (err) {
-      toast.error('撤销失败', errorMessage(err));
+      toast.error(t('ports.undoFailed'), errorMessage(err));
     } finally {
       setDisposing(null);
     }
@@ -529,11 +569,14 @@ export function PortGuard() {
       const fresh = await portsApi.overview(true);
       queryClient.setQueryData(['ports', 'overview'], fresh);
       toast.success(
-        '已重新巡检全部服务器',
-        `${fresh.totals.hosts} 台 · 巡检时间 ${formatDateTime(fresh.generated_at)}`,
+        t('ports.rescannedAll'),
+        t('ports.rescannedAllDetail', {
+          hosts: fresh.totals.hosts,
+          time: formatDateTime(fresh.generated_at),
+        }),
       );
     } catch (err) {
-      toast.error('巡检失败', errorMessage(err));
+      toast.error(t('ports.checkFailed'), errorMessage(err));
     } finally {
       setRescanningAll(false);
     }
@@ -554,10 +597,10 @@ export function PortGuard() {
             size="sm"
             variant="ghost"
             disabled={disposing === fingerprint}
-            title={DISPOSITION_META[action].hint}
+            title={t(DISPOSITION_META[action].hint)}
             onClick={() => void applyDisposition(fingerprint, action, detail)}
           >
-            {DISPOSITION_LABEL[action]}
+            {t(DISPOSITION_LABEL[action])}
           </Button>
         ))}
       </div>
@@ -571,7 +614,7 @@ export function PortGuard() {
     () => [
       {
         key: 'name',
-        header: '服务器',
+        header: t('baseline.colHost'),
         width: 190,
         sortable: true,
         sortValue: (host) => host.name || host.host_id,
@@ -579,14 +622,14 @@ export function PortGuard() {
           <div className="vm-name-cell">
             <span className="fw-500">{host.name || host.host_id}</span>
             <span className="fs-xs text-muted mono">
-              {host.local ? '面板本机' : host.host || host.host_id}
+              {host.local ? t('baseline.localPanelHost') : host.host || host.host_id}
             </span>
           </div>
         ),
       },
       {
         key: 'status',
-        header: '巡检结论',
+        header: t('ports.colVerdict'),
         width: 130,
         sortable: true,
         /* 可疑进程 → 待确认端口 → 干净 → 未巡检 */
@@ -599,7 +642,7 @@ export function PortGuard() {
                 ? 1
                 : 2,
         render: (host) => {
-          const meta = hostStatusMeta(host);
+          const meta = hostStatusMeta(host, t);
           return (
             <Badge variant={meta.variant} size="sm">
               {meta.label}
@@ -609,10 +652,10 @@ export function PortGuard() {
       },
       {
         key: 'ports',
-        header: '监听 / 开放 / 非预期',
+        header: t('ports.colPorts'),
         width: 150,
         sortable: true,
-        title: '按非预期开放端口数排序',
+        title: t('ports.sortByUnexpected'),
         sortValue: (host) => (host.ok ? host.summary.unexpected : -1),
         render: (host) =>
           host.ok ? (
@@ -631,12 +674,12 @@ export function PortGuard() {
       },
       {
         key: 'findings',
-        header: '待处理',
+        header: t('baseline.colPending'),
         render: (host) => <HostFindings host={host} />,
       },
       {
         key: 'firewall',
-        header: '防火墙',
+        header: t('ports.colFirewall'),
         width: 104,
         sortable: true,
         sortValue: (host) => (host.ok && host.summary.firewall_active ? 0 : 1),
@@ -645,15 +688,15 @@ export function PortGuard() {
             <span className="fs-xs text-muted">—</span>
           ) : host.summary.firewall_active ? (
             <Badge variant="success" size="sm">
-              已启用
+              {t('ports.firewallEnabled')}
             </Badge>
           ) : (
             <Badge
               variant="danger"
               size="sm"
-              title="这台主机没有活动防火墙，暴露的端口风险更高"
+              title={t('ports.noFirewallBadgeTitle')}
             >
-              无防火墙
+              {t('ports.noFirewallBadge')}
             </Badge>
           ),
       },
@@ -663,38 +706,38 @@ export function PortGuard() {
         width: 104,
         align: 'right',
         locked: true,
-        label: '操作',
+        label: t('common.actions'),
         render: (host) => (
           <div className="form-row" style={{ gap: 6, justifyContent: 'flex-end' }}>
             <Button size="sm" variant="ghost" onClick={() => openHost(host.host_id)}>
-              详情
+              {t('baseline.details')}
             </Button>
             <button
               type="button"
               className="baseline-host-scan"
               disabled={scanningId === host.host_id}
-              title={`只巡检 ${host.name || host.host_id} 这一台`}
+              title={t('ports.scanOneTitle', { name: host.name || host.host_id })}
               onClick={() => void scanHost(host.host_id)}
             >
-              {scanningId === host.host_id ? '巡检中…' : '巡检'}
+              {scanningId === host.host_id ? t('ports.scanning') : t('ports.scan')}
             </button>
           </div>
         ),
       },
     ],
-    [openHost, scanHost, scanningId],
+    [openHost, scanHost, scanningId, t],
   );
 
   const listenerColumns: Array<Column<PortListener>> = [
     {
       key: 'proto',
-      header: '协议',
+      header: t('ports.colProto'),
       width: 70,
       render: (row) => <span className="mono fs-xs">{row.proto}</span>,
     },
     {
       key: 'address',
-      header: '监听地址',
+      header: t('ports.colAddress'),
       width: 190,
       render: (row) => (
         <span className="mono fs-xs">
@@ -704,44 +747,48 @@ export function PortGuard() {
     },
     {
       key: 'scope',
-      header: '范围',
+      header: t('ports.colScope'),
       width: 90,
       render: (row) => (
         <Badge variant={row.scope === 'loopback' ? 'neutral' : 'warning'} size="sm">
-          {SCOPE_LABEL[row.scope] ?? row.scope}
+          {SCOPE_LABEL[row.scope] ? t(SCOPE_LABEL[row.scope]) : row.scope}
         </Badge>
       ),
     },
     {
       key: 'process',
-      header: '归属进程',
+      header: t('ports.colProcess'),
       render: (row) => (
         <span className="fs-xs">
-          {row.process || <span className="text-muted">未知（需 root 查看）</span>}
+          {row.process || (
+            <span className="text-muted">{t('ports.unknownNeedsRoot')}</span>
+          )}
           {row.pid ? <span className="text-muted mono"> #{row.pid}</span> : null}
         </span>
       ),
     },
     {
       key: 'tags',
-      header: '标记',
+      header: t('ports.colTags'),
       width: 190,
       render: (row) => (
         <span className="form-row" style={{ gap: 4 }}>
           {row.sensitive ? (
-            <Badge variant="danger" size="sm">敏感服务</Badge>
+            <Badge variant="danger" size="sm">{t('ports.tagSensitive')}</Badge>
           ) : null}
           {row.exposed && !row.expected && !row.disposition ? (
-            <Badge variant="warning" size="sm">非预期开放</Badge>
+            <Badge variant="warning" size="sm">{t('ports.tagUnexpected')}</Badge>
           ) : null}
-          {row.expected ? <Badge variant="success" size="sm">预期内</Badge> : null}
+          {row.expected ? (
+            <Badge variant="success" size="sm">{t('ports.tagExpected')}</Badge>
+          ) : null}
           {row.disposition ? (
             <Badge
               variant={DISPOSITION_META[row.disposition.action].variant}
               size="sm"
-              title={dispositionHint(row.disposition)}
+              title={dispositionHint(row.disposition, t)}
             >
-              {DISPOSITION_META[row.disposition.action].label}
+              {t(DISPOSITION_META[row.disposition.action].label)}
             </Badge>
           ) : null}
         </span>
@@ -753,7 +800,7 @@ export function PortGuard() {
       width: 190,
       align: 'right',
       locked: true,
-      label: '操作',
+      label: t('common.actions'),
       render: (row) => {
         /* 只有「对外暴露且不在预期清单里」的端口需要处置；其余行不给按钮，
            否则每行挂三个按钮会把整张表撑爆 */
@@ -765,10 +812,10 @@ export function PortGuard() {
             size="sm"
             variant="ghost"
             loading={disposing === key}
-            title={dispositionHint(row.disposition)}
+            title={dispositionHint(row.disposition, t)}
             onClick={() => void undoDisposition(key)}
           >
-            撤销处置
+            {t('ports.undoDisposition')}
           </Button>
         ) : (
           renderDispositionActions(key, {
@@ -789,39 +836,48 @@ export function PortGuard() {
         <div className="baseline-item-head">
           <span className="baseline-item-title">{item.name}</span>
           <Badge variant={SEVERITY_META[item.severity].variant} size="sm">
-            {SEVERITY_META[item.severity].label}
+            {t(SEVERITY_META[item.severity].label)}
           </Badge>
           {item.disposition ? (
             <Badge
               variant={DISPOSITION_META[item.disposition.action].variant}
               size="sm"
-              title={dispositionHint(item.disposition)}
+              title={dispositionHint(item.disposition, t)}
             >
-              {DISPOSITION_META[item.disposition.action].label}
+              {t(DISPOSITION_META[item.disposition.action].label)}
             </Badge>
           ) : null}
           <span className="mono fs-xs text-muted">
-            PID {item.pid} · {item.user} · 已运行 {item.etime}
+            {t('ports.pidLine', {
+              pid: item.pid,
+              user: item.user,
+              etime: item.etime,
+            })}
           </span>
         </div>
-        <div className="baseline-item-values">命令行：{item.args}</div>
+        <div className="baseline-item-values">{t('ports.cmdline')}{item.args}</div>
         {item.exe ? (
-          <div className="baseline-item-values">可执行文件：{item.exe}</div>
+          <div className="baseline-item-values">{t('ports.exePath')}{item.exe}</div>
         ) : null}
         {item.connections.length > 0 ? (
           <div className="baseline-item-values">
-            连接：{item.connections.map((conn) => `${conn.local} → ${conn.peer}`).join('；')}
+            {t('ports.connections')}
+            {item.connections
+              .map((conn) => `${conn.local} → ${conn.peer}`)
+              .join(t('ports.connectionSeparator'))}
           </div>
         ) : null}
         <div className="fs-xs text-muted">
-          命中规则：
-          {item.signals.map((signal) => `${signal.label}（${signal.code}）`).join('；')}
+          {t('ports.signals')}
+          {item.signals
+            .map((signal) => `${signal.label}（${signal.code}）`)
+            .join(t('ports.connectionSeparator'))}
         </div>
         {item.disposition ? (
           <div className="baseline-item-values">
-            {DISPOSITION_META[item.disposition.action].label}
+            {t(DISPOSITION_META[item.disposition.action].label)}
             {item.disposition.note ? `：${item.disposition.note}` : ''}
-            <span className="text-muted"> · {dispositionHint(item.disposition)}</span>
+            <span className="text-muted"> · {dispositionHint(item.disposition, t)}</span>
           </div>
         ) : null}
         <div className="baseline-item-actions">
@@ -832,7 +888,7 @@ export function PortGuard() {
               loading={disposing === item.fingerprint}
               onClick={() => void undoDisposition(item.fingerprint)}
             >
-              撤销处置
+              {t('ports.undoDisposition')}
             </Button>
           ) : (
             renderDispositionActions(item.fingerprint, {
@@ -850,8 +906,8 @@ export function PortGuard() {
 
   return (
     <PageShell
-      title="端口与进程"
-      subtitle="巡检各服务器的监听端口与可疑进程（反弹 shell 启发式），异常时推送告警"
+      title={t('ports.title')}
+      subtitle={t('ports.subtitle')}
       actions={
         <div className="form-row">
           {canManage ? (
@@ -861,9 +917,9 @@ export function PortGuard() {
               icon={<IconShield size={14} />}
               loading={busy}
               onClick={() => void checkNow()}
-              title="立刻巡检一遍并按策略推送告警（用于验证通知是否可达）"
+              title={t('ports.checkNowTitle')}
             >
-              立即巡检
+              {t('ports.checkNow')}
             </Button>
           ) : null}
           <Button
@@ -875,20 +931,19 @@ export function PortGuard() {
               view === 'fleet' ? void rescanAll() : void reportQuery.refetch()
             }
           >
-            {view === 'fleet' ? '重新巡检全部' : '重新巡检'}
+            {view === 'fleet' ? t('ports.rescanAll') : t('ports.rescan')}
           </Button>
         </div>
       }
     >
-      <Notice tone="info" title="这是启发式检测，不是杀毒引擎">
-        每条命中都会列出「命中了哪条规则」供人工判断，面板<b>不会</b>据此杀进程。
-        误报可以用巡检策略里的「进程白名单」压掉；「对外开放」只代表监听在非回环地址，
-        是否真能被外部访问还取决于防火墙与上游网络。
+      <Notice tone="info" title={t('ports.heuristicTitle')}>
+        {t('ports.heuristicPre')}<b>{t('ports.heuristicBold')}</b>
+        {t('ports.heuristicPost')}
       </Notice>
 
       <Card collapsible={false}>
         <div className="baseline-viewbar">
-          <div className="segmented" role="tablist" aria-label="巡检视图">
+          <div className="segmented" role="tablist" aria-label={t('ports.viewAria')}>
             <button
               type="button"
               role="tab"
@@ -896,7 +951,7 @@ export function PortGuard() {
               className={`segmented-item ${view === 'fleet' ? 'is-active' : ''}`}
               onClick={showFleet}
             >
-              全平台总览
+              {t('baseline.fleetView')}
             </button>
             <button
               type="button"
@@ -905,13 +960,13 @@ export function PortGuard() {
               className={`segmented-item ${view === 'host' ? 'is-active' : ''}`}
               onClick={() => openHost(hostId)}
             >
-              单机详情
+              {t('baseline.hostView')}
             </button>
           </div>
 
           {view === 'host' ? (
             <Select
-              aria-label="选择服务器"
+              aria-label={t('baseline.selectHostAria')}
               value={hostId}
               onChange={(event) => openHost(event.target.value)}
               options={
@@ -919,7 +974,7 @@ export function PortGuard() {
                   ? hostOptions
                   : /* 兜底只给管理员：普通用户看不到本机 */
                     isAdmin
-                    ? [{ label: '本机', value: 'local' }]
+                    ? [{ label: t('baseline.localOption'), value: 'local' }]
                     : []
               }
               style={{ maxWidth: 280 }}
@@ -929,17 +984,25 @@ export function PortGuard() {
           <span className="baseline-viewbar-meta">
             {view === 'fleet' && overview ? (
               <span>
-                巡检时间 {formatDateTime(overview.generated_at)}
+                {t('ports.checkedAt', { time: formatDateTime(overview.generated_at) })}
                 {/* 缓存过期后进页面会先显示这份结果再后台重扫，得让人知道
                     屏幕上的数字正在被刷新，而不是以为它过时了 */}
-                {overviewQuery.isFetching ? ' · 正在重新巡检…' : ''}
+                {overviewQuery.isFetching ? t('ports.rescanning') : ''}
               </span>
             ) : null}
             {view === 'host' && report ? (
               <>
-                <span>巡检时间 {formatDateTime(report.checked_at)}</span>
-                <span>{report.local ? '面板所在主机' : `受管主机 ${report.address}`}</span>
-                {reportQuery.isFetching ? <span>正在重新巡检…</span> : null}
+                <span>
+                  {t('ports.checkedAt', { time: formatDateTime(report.checked_at) })}
+                </span>
+                <span>
+                  {report.local
+                    ? t('baseline.hostOfPanel')
+                    : t('baseline.managedHost', { address: report.address })}
+                </span>
+                {reportQuery.isFetching ? (
+                  <span>{t('ports.rescanningShort')}</span>
+                ) : null}
               </>
             ) : null}
           </span>
@@ -952,7 +1015,7 @@ export function PortGuard() {
           {overviewQuery.isError ? (
             <Card collapsible={false}>
               <ErrorState
-                title="巡检失败"
+                title={t('ports.checkFailed')}
                 message={errorMessage(overviewQuery.error)}
                 onRetry={() => void overviewQuery.refetch()}
               />
@@ -964,7 +1027,7 @@ export function PortGuard() {
           {!overviewQuery.isError ? (
             <div className="grid grid-4">
               <KpiCard
-                label="服务器总数"
+                label={t('baseline.kpi.hosts')}
                 value={overview?.totals.hosts ?? '—'}
                 icon={<IconServer size={16} />}
                 tone="accent"
@@ -972,13 +1035,16 @@ export function PortGuard() {
                 hint={
                   overview
                     ? overview.totals.unreachable
-                      ? `可达 ${overview.totals.reachable} · 不可达 ${overview.totals.unreachable}`
-                      : '全部可达'
+                      ? t('baseline.kpi.reachable', {
+                          reachable: overview.totals.reachable,
+                          unreachable: overview.totals.unreachable,
+                        })
+                      : t('baseline.kpi.allReachable')
                     : undefined
                 }
               />
               <KpiCard
-                label="可疑进程"
+                label={t('ports.kpi.suspicious')}
                 value={overview?.totals.suspicious ?? '—'}
                 icon={<IconAlert size={16} />}
                 tone={overview?.totals.suspicious ? 'danger' : 'success'}
@@ -986,45 +1052,47 @@ export function PortGuard() {
                 hint={
                   overview
                     ? overview.totals.suspicious
-                      ? '请登录主机人工确认'
-                      : '未发现可疑进程'
+                      ? t('ports.kpi.suspiciousHint')
+                      : t('ports.kpi.noSuspicious')
                     : undefined
                 }
               />
               <KpiCard
-                label="非预期开放端口"
+                label={t('ports.kpi.unexpected')}
                 value={overview?.totals.unexpected ?? '—'}
                 icon={<IconLock size={16} />}
                 tone={overview?.totals.unexpected ? 'warning' : 'success'}
                 loading={overviewQuery.isLoading}
-                hint={
-                  overview ? '可在策略里把确认无误的端口标记为预期' : undefined
-                }
+                hint={overview ? t('ports.kpi.unexpectedHint') : undefined}
               />
               <KpiCard
-                label="没有防火墙的主机"
+                label={t('ports.kpi.noFirewall')}
                 value={overview?.totals.no_firewall ?? '—'}
                 icon={<IconShield size={16} />}
                 tone={overview?.totals.no_firewall ? 'warning' : 'success'}
                 loading={overviewQuery.isLoading}
-                hint={overview ? '这些主机上的开放端口风险更高' : undefined}
+                hint={overview ? t('ports.kpi.noFirewallHint') : undefined}
               />
             </div>
           ) : null}
 
           <Card collapsible={false}>
             <CardHeader
-              title={overview ? `服务器（${overview.hosts.length}）` : '服务器'}
-              subtitle="按「最需要看的」排序：有可疑进程的最前，其次是有非预期开放端口的"
+              title={
+                overview
+                  ? t('ports.hostsTitle', { n: overview.hosts.length })
+                  : t('baseline.hostsTitlePlain')
+              }
+              subtitle={t('ports.hostsSubtitle')}
               icon={<IconServer size={16} />}
               actions={
                 <SegmentedControl<HostViewMode>
                   value={hostView}
                   onChange={setHostView}
-                  ariaLabel="服务器展示方式"
+                  ariaLabel={t('baseline.hostViewAria')}
                   options={[
-                    { label: '卡片', value: 'card' },
-                    { label: '列表', value: 'list' },
+                    { label: t('nodes.viewCards'), value: 'card' },
+                    { label: t('nodes.viewList'), value: 'list' },
                   ]}
                 />
               }
@@ -1032,8 +1100,7 @@ export function PortGuard() {
             {overviewQuery.isLoading ? (
               <>
                 <p className="fs-sm text-muted mb-16">
-                  正在并发巡检所有服务器…（每台一条 SSH，首次要等几秒；结果会缓存 5
-                  分钟，期间进这一页不再重扫）
+                  {t('ports.scanningAll')}
                 </p>
                 {/* 骨架沿用真卡片的外形（.baseline-host-card），
                     别在卡片里再套一排白卡 */}
@@ -1062,7 +1129,7 @@ export function PortGuard() {
                 </div>
               ) : (
                 <Table
-                  caption="服务器端口与进程巡检总览"
+                  caption={t('ports.fleetCaption')}
                   rows={overview.hosts}
                   columns={hostColumns}
                   rowKey={(host) => host.host_id}
@@ -1071,8 +1138,8 @@ export function PortGuard() {
               )
             ) : !overviewQuery.isError ? (
               <EmptyState
-                title="还没有可巡检的服务器"
-                description="本机应该总是可用；要巡检其它服务器，先去「SSH 安全 → 受管主机」把它们加进来。"
+                title={t('ports.emptyFleetTitle')}
+                description={t('ports.emptyFleetDesc')}
                 icon={<IconServer size={26} />}
               />
             ) : null}
@@ -1086,7 +1153,7 @@ export function PortGuard() {
           {reportQuery.isError ? (
             <Card collapsible={false}>
               <ErrorState
-                title="巡检失败"
+                title={t('ports.checkFailed')}
                 message={errorMessage(reportQuery.error)}
                 onRetry={() => void reportQuery.refetch()}
               />
@@ -1095,7 +1162,7 @@ export function PortGuard() {
 
           {reportQuery.isLoading ? (
             <Card collapsible={false}>
-              <div className="fs-sm text-muted">正在读取端口与进程…</div>
+              <div className="fs-sm text-muted">{t('ports.dataLoading')}</div>
             </Card>
           ) : null}
 
@@ -1103,8 +1170,12 @@ export function PortGuard() {
             <>
               <Card collapsible={false}>
                 <CardHeader
-                  title="巡检概况"
-                  subtitle={report.local ? '面板所在主机' : `受管主机 ${report.address}`}
+                  title={t('ports.reportTitle')}
+                  subtitle={
+                    report.local
+                      ? t('baseline.hostOfPanel')
+                      : t('baseline.managedHost', { address: report.address })
+                  }
                   icon={<IconShield size={16} />}
                 />
                 <div className="baseline-head">
@@ -1116,53 +1187,57 @@ export function PortGuard() {
                         size="sm"
                       >
                         {report.summary.firewall_active
-                          ? `防火墙：${report.firewall.manager || '已启用'}`
-                          : '无活动防火墙'}
+                          ? t('ports.firewallWithManager', {
+                              manager: report.firewall.manager || t('ports.firewallEnabled'),
+                            })
+                          : t('ports.noActiveFirewall')}
                       </Badge>
                       {report.ok && !report.elevated ? (
-                        <Badge variant="neutral" size="sm">只读巡检</Badge>
+                        <Badge variant="neutral" size="sm">
+                          {t('baseline.readonlyScan')}
+                        </Badge>
                       ) : null}
                     </div>
                     {report.ok ? (
                       <div className="form-row" style={{ gap: 8 }}>
                         <span className="baseline-count is-unknown">
-                          监听 {report.summary.listeners}
+                          {t('ports.count.listeners', { n: report.summary.listeners })}
                         </span>
                         <span className="baseline-count is-unknown">
-                          对外开放 {report.summary.exposed}
+                          {t('ports.count.exposed', { n: report.summary.exposed })}
                         </span>
                         <span
                           className={`baseline-count ${
                             report.summary.unexpected ? 'is-warn' : 'is-pass'
                           }`}
                         >
-                          非预期 {report.summary.unexpected}
+                          {t('ports.count.unexpected', { n: report.summary.unexpected })}
                         </span>
                         <span
                           className={`baseline-count ${
                             report.summary.suspicious ? 'is-fail' : 'is-pass'
                           }`}
                         >
-                          可疑进程 {report.summary.suspicious}
+                          {t('ports.count.suspicious', { n: report.summary.suspicious })}
                         </span>
                       </div>
                     ) : null}
                   </div>
                   <div className="baseline-head-meta">
                     <div className="baseline-meta-item">
-                      <span className="baseline-meta-label">主机名</span>
+                      <span className="baseline-meta-label">{t('baseline.metaHostname')}</span>
                       <span className="baseline-meta-value mono">
                         {report.host || report.host_id}
                       </span>
                     </div>
                     <div className="baseline-meta-item">
-                      <span className="baseline-meta-label">系统</span>
+                      <span className="baseline-meta-label">{t('baseline.metaOs')}</span>
                       <span className="baseline-meta-value">
                         {report.os.distribution || '—'}
                       </span>
                     </div>
                     <div className="baseline-meta-item">
-                      <span className="baseline-meta-label">内核</span>
+                      <span className="baseline-meta-label">{t('baseline.metaKernel')}</span>
                       <span className="baseline-meta-value mono">
                         {report.os.kernel || '—'}
                       </span>
@@ -1172,19 +1247,25 @@ export function PortGuard() {
               </Card>
 
               {!report.ok ? (
-                <Notice tone="danger" title="这台服务器巡检不了" icon={<IconAlert size={16} />}>
-                  {report.error || '无法连接'}
-                  。请先在「SSH 安全 → 受管主机」里确认它能连上，再回到这里刷新。
+                <Notice
+                  tone="danger"
+                  title={t('ports.unreachableTitle')}
+                  icon={<IconAlert size={16} />}
+                >
+                  {report.error || t('baseline.cannotConnectShort')}
+                  {t('ports.unreachableTail')}
                 </Notice>
               ) : null}
 
               <Card collapsible={false}>
                 <CardHeader
-                  title={`可疑进程（${report.summary.suspicious}）`}
+                  title={t('ports.processTitle', { n: report.summary.suspicious })}
                   subtitle={
                     report.summary.disposed
-                      ? `命中即列出规则，供人工判断；面板不会自动处置。已处置的 ${report.summary.disposed} 条排在末尾，可撤销`
-                      : '命中即列出规则，供人工判断；面板不会自动处置'
+                      ? t('ports.processSubtitleDisposed', {
+                          n: report.summary.disposed,
+                        })
+                      : t('ports.processSubtitle')
                   }
                   icon={<IconAlert size={16} />}
                 />
@@ -1193,8 +1274,8 @@ export function PortGuard() {
                 ) : (
                   <EmptyState
                     compact
-                    title="没有发现可疑进程"
-                    description="未命中任何反弹 shell / 恶意进程特征。"
+                    title={t('ports.noSuspiciousTitle')}
+                    description={t('ports.noSuspiciousDesc')}
                     icon={<IconCheck size={22} />}
                   />
                 )}
@@ -1202,17 +1283,17 @@ export function PortGuard() {
 
               <Card collapsible={false}>
                 <CardHeader
-                  title={`监听端口（${report.listeners.length}）`}
-                  subtitle="按实际暴露范围标记；「非预期开放」可就地确认 / 忽略 / 加白，也可在策略里维护"
+                  title={t('ports.listenersTitle', { n: report.listeners.length })}
+                  subtitle={t('ports.listenersSubtitle')}
                   icon={<IconLock size={16} />}
                 />
                 <Table
                   columns={listenerColumns}
                   rows={report.listeners}
                   rowKey={(row) => `${row.proto}-${row.address}-${row.port}`}
-                  caption="监听端口清单"
+                  caption={t('ports.listenersCaption')}
                   dense
-                  emptyTitle="没有监听端口"
+                  emptyTitle={t('ports.listenersEmpty')}
                 />
               </Card>
 
@@ -1221,8 +1302,10 @@ export function PortGuard() {
               {canManage && dispositionsQuery.data?.items.length ? (
                 <Card collapsible={false}>
                   <CardHeader
-                    title={`已处置（${dispositionsQuery.data.items.length}）`}
-                    subtitle="确认 / 忽略 / 加白过的条目不再计入待处理与告警；撤销后下一轮巡检会重新出现"
+                    title={t('ports.disposedTitle', {
+                      n: dispositionsQuery.data.items.length,
+                    })}
+                    subtitle={t('ports.disposedSubtitle')}
                     icon={<IconCheck size={16} />}
                   />
                   <div className="baseline-todo">
@@ -1238,14 +1321,16 @@ export function PortGuard() {
                                 variant={DISPOSITION_META[item.action].variant}
                                 size="sm"
                               >
-                                {DISPOSITION_META[item.action].label}
+                                {t(DISPOSITION_META[item.action].label)}
                               </Badge>
                               <span className="fs-xs text-muted">
-                                {dispositionHint(item)}
+                                {dispositionHint(item, t)}
                               </span>
                             </div>
                             {item.note ? (
-                              <div className="baseline-item-values">备注：{item.note}</div>
+                              <div className="baseline-item-values">
+                                {t('ports.noteLabel')}{item.note}
+                              </div>
                             ) : null}
                             <div className="fs-xs text-muted mono">
                               {item.fingerprint}
@@ -1258,7 +1343,7 @@ export function PortGuard() {
                               loading={disposing === item.fingerprint}
                               onClick={() => void undoDisposition(item.fingerprint)}
                             >
-                              撤销
+                              {t('ports.undo')}
                             </Button>
                           </div>
                         </div>
@@ -1271,8 +1356,8 @@ export function PortGuard() {
               {showManagePanel ? (
                 <Card collapsible={false}>
                   <CardHeader
-                    title="巡检策略"
-                    subtitle="预期端口与进程白名单是压掉误报的主要手段"
+                    title={t('ports.policyTitle')}
+                    subtitle={t('ports.policySubtitle')}
                     icon={<IconShield size={16} />}
                     actions={
                       <Button
@@ -1281,7 +1366,7 @@ export function PortGuard() {
                         loading={savingPolicy}
                         onClick={() => void savePolicy()}
                       >
-                        保存策略
+                        {t('ports.savePolicy')}
                       </Button>
                     }
                   />
@@ -1291,27 +1376,27 @@ export function PortGuard() {
                       onChange={(value) =>
                         setPolicyDraft((prev) => ({ ...prev, enabled: value }))
                       }
-                      label="启用定时巡检"
-                      hint="关闭后不再自动检查与告警"
+                      label={t('ports.policyEnabled')}
+                      hint={t('ports.policyEnabledHint')}
                     />
                     <Switch
                       checked={policyDraft.alert_open_ports}
                       onChange={(value) =>
                         setPolicyDraft((prev) => ({ ...prev, alert_open_ports: value }))
                       }
-                      label="端口异常告警"
+                      label={t('ports.alertOpenPorts')}
                     />
                     <Switch
                       checked={policyDraft.alert_suspicious}
                       onChange={(value) =>
                         setPolicyDraft((prev) => ({ ...prev, alert_suspicious: value }))
                       }
-                      label="可疑进程告警"
+                      label={t('ports.alertSuspicious')}
                     />
                   </div>
                   <div className="dyn-row">
                     <Input
-                      label="告警冷却（分钟）"
+                      label={t('ports.cooldown')}
                       type="number"
                       min={1}
                       max={1440}
@@ -1324,25 +1409,25 @@ export function PortGuard() {
                       }
                     />
                     <Input
-                      label="告警接收人"
+                      label={t('sshConfig.notifyUser')}
                       value={policyDraft.notify_user}
-                      placeholder="留空 = 第一个管理员"
+                      placeholder={t('sshConfig.notifyUserHint')}
                       onChange={(event) =>
                         setPolicyDraft((prev) => ({ ...prev, notify_user: event.target.value }))
                       }
                     />
                   </div>
                   <Textarea
-                    label="预期对外开放的端口"
-                    hint="每行一条：22 / 0.0.0.0:80 / *:443 —— 列在这里的不算「非预期开放」"
+                    label={t('ports.expectedPorts')}
+                    hint={t('ports.expectedPortsHint')}
                     mono
                     rows={4}
                     value={expectedText}
                     onChange={(event) => setExpectedText(event.target.value)}
                   />
                   <Textarea
-                    label="进程白名单（正则）"
-                    hint="每行一条，匹配命令行即忽略。用来压掉本环境里的已知误报"
+                    label={t('ports.processWhitelist')}
+                    hint={t('ports.processWhitelistHint')}
                     mono
                     rows={4}
                     value={whitelistText}
@@ -1351,27 +1436,26 @@ export function PortGuard() {
                 </Card>
               ) : null}
 
-              <CollapsibleCard title="这些启发式各自在找什么" icon={<IconInfo size={15} />}>
+              <CollapsibleCard
+                title={t('ports.heuristicsTitle')}
+                icon={<IconInfo size={15} />}
+              >
                 <div className="fs-sm text-secondary" style={{ lineHeight: 1.9 }}>
                   <div>
-                    <strong>反弹 shell 特征</strong>：/dev/tcp 重定向、netcat -e/--exec、
-                    socat exec、Python/Perl/Ruby/PHP 单行脚本里的 socket 与 dup2、
-                    openssl s_client 管道给 shell、mkfifo + nc —— 这些都是「把 shell 挂到
-                    网络连接上」的经典写法。
+                    <strong>{t('ports.heurShellLabel')}</strong>
+                    {t('ports.heurShell')}
                   </div>
                   <div>
-                    <strong>上下文特征</strong>：shell 进程持有对外连接（排除本地回环与
-                    22/3389 这类正常会话端口）、父进程是 Web 服务却落了个 shell、
-                    可执行文件在 /tmp 或 /dev/shm、可执行文件已被删除（跑起来就删自己）。
+                    <strong>{t('ports.heurCtxLabel')}</strong>
+                    {t('ports.heurCtx')}
                   </div>
                   <div>
-                    <strong>已知恶意</strong>：挖矿与蠕虫常见进程名（xmrig、kdevtmpfsi、
-                    kinsing 等）、netcat 监听模式、连接到常见后门/远控端口。
+                    <strong>{t('ports.heurKnownLabel')}</strong>
+                    {t('ports.heurKnown')}
                   </div>
                   <div>
-                    <strong>权限的影响</strong>：看不到别人的进程时（非 root），
-                    「归属进程」会显示未知、「可执行文件已删除」这类特征也拿不到 ——
-                    报告里会标「只读巡检」，不是问题消失了。
+                    <strong>{t('ports.heurPermLabel')}</strong>
+                    {t('ports.heurPerm')}
                   </div>
                 </div>
               </CollapsibleCard>

@@ -18,8 +18,10 @@ import { ConnectionManager } from '../components/ConnectionManager';
 import { NodeSubNav } from '../components/NodeSubNav';
 import { IconPlug } from '../components/Icons';
 import { useAuth } from '../hooks/useAuth';
+import { useT } from '../i18n';
 
 export function NodesConnections() {
+  const t = useT();
   /* 写连接需要 settings.manage；非管理员进来看只读视图（能看到地址等公开字段） */
   const { isAdmin } = useAuth();
 
@@ -28,10 +30,10 @@ export function NodesConnections() {
       title={
         <>
           <IconPlug size={20} />
-          Proxmox 连接
+          {t('nodesConnections.title')}
         </>
       }
-      subtitle="面板通过 API Token 访问各台 Proxmox VE；每台连接相互独立、地位相同"
+      subtitle={t('nodesConnections.subtitle')}
     >
       <NodeSubNav active="connections" />
 

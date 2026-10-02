@@ -12,36 +12,45 @@ import { Button } from './ui/Button';
 import { Field, Input, Select, Switch } from './ui/Input';
 import { Notice } from './ui/EmptyState';
 import { IconShield } from './Icons';
+import { useT, type TFunc } from '../i18n';
 import type { FirewallRefs, FirewallRule, FirewallRuleInput } from '../api/types';
 
-const PROTOCOLS = [
-  { label: '任意协议', value: '' },
-  { label: 'TCP', value: 'tcp' },
-  { label: 'UDP', value: 'udp' },
-  { label: 'ICMP', value: 'icmp' },
-  { label: 'IPv6-ICMP', value: 'ipv6-icmp' },
-  { label: 'IGMP', value: 'igmp' },
-  { label: 'ESP', value: 'esp' },
-  { label: 'AH', value: 'ah' },
-  { label: 'GRE', value: 'gre' },
-  { label: 'SCTP', value: 'sctp' },
-];
+/* 下面三组选项含中文标签，因此做成接收 t 的工厂函数：模块级常量会让文案
+   停在首次加载时的语言上 */
+function protoOptions(t: TFunc) {
+  return [
+    { label: t('fwRule.protoAny'), value: '' },
+    { label: 'TCP', value: 'tcp' },
+    { label: 'UDP', value: 'udp' },
+    { label: 'ICMP', value: 'icmp' },
+    { label: 'IPv6-ICMP', value: 'ipv6-icmp' },
+    { label: 'IGMP', value: 'igmp' },
+    { label: 'ESP', value: 'esp' },
+    { label: 'AH', value: 'ah' },
+    { label: 'GRE', value: 'gre' },
+    { label: 'SCTP', value: 'sctp' },
+  ];
+}
 
-const ACTIONS = [
-  { label: 'ACCEPT（放行）', value: 'ACCEPT' },
-  { label: 'DROP（丢弃，不回应）', value: 'DROP' },
-  { label: 'REJECT（拒绝，回 RST/ICMP）', value: 'REJECT' },
-];
+function actionOptions(t: TFunc) {
+  return [
+    { label: t('fwRule.actAccept'), value: 'ACCEPT' },
+    { label: t('fwRule.actDrop'), value: 'DROP' },
+    { label: t('fwRule.actReject'), value: 'REJECT' },
+  ];
+}
 
-const LOG_LEVELS = [
-  { label: '不记录', value: 'nolog' },
-  { label: 'info', value: 'info' },
-  { label: 'notice', value: 'notice' },
-  { label: 'warning', value: 'warning' },
-  { label: 'err', value: 'err' },
-  { label: 'crit', value: 'crit' },
-  { label: 'debug', value: 'debug' },
-];
+function logLevelOptions(t: TFunc) {
+  return [
+    { label: t('fwRule.logNolog'), value: 'nolog' },
+    { label: 'info', value: 'info' },
+    { label: 'notice', value: 'notice' },
+    { label: 'warning', value: 'warning' },
+    { label: 'err', value: 'err' },
+    { label: 'crit', value: 'crit' },
+    { label: 'debug', value: 'debug' },
+  ];
+}
 
 const PORT_RE = /^\d+(?::\d+)?(?:,\d+(?::\d+)?)*$/;
 
@@ -85,6 +94,10 @@ export function FirewallRuleEditor({
   onClose,
   onSubmit,
 }: FirewallRuleEditorProps) {
+  const t = useT();
+  const protocols = useMemo(() => protoOptions(t), [t]);
+  const actions = useMemo(() => actionOptions(t), [t]);
+  const logLevels = useMemo(() => logLevelOptions(t), [t]);
   const [rule, setRule] = useState<FirewallRuleInput>(emptyRule);
   const [showMore, setShowMore] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -116,27 +129,27 @@ export function FirewallRuleEditor({
 
   const groupOptions = useMemo(
     () => [
-      { label: '请选择安全组', value: '' },
+      { label: t('fwRule.selectGroup'), value: '' },
       ...((refs?.groups ?? []).map((g) => ({ label: g, value: g })) as {
         label: string;
         value: string;
       }[]),
     ],
-    [refs?.groups],
+    [refs?.groups, t],
   );
 
   const submit = () => {
     if (rule.type === 'group') {
       if (!rule.group) {
-        setError('引用安全组时必须选择一个安全组');
+        setError(t('fwRule.errGroupRequired'));
         return;
       }
     } else if (rule.dport && !PORT_RE.test(rule.dport.trim())) {
-      setError('端口写法：22 或 80,443 或 8000:8100');
+      setError(t('fwRule.errDport'));
       return;
     }
     if (rule.sport && !PORT_RE.test(rule.sport.trim())) {
-      setError('源端口写法：22 或 8000:8100');
+      setError(t('fwRule.errSport'));
       return;
     }
     onSubmit({
@@ -161,49 +174,57 @@ export function FirewallRuleEditor({
     <Modal
       open={open}
       onClose={onClose}
-      title={initial ? `编辑规则 #${initial.pos}` : '新增防火墙规则'}
-      description="防火墙按顺序从上到下匹配，命中第一条后不再继续。"
+      title={
+        initial
+          ? t('fwRule.editTitle', { pos: initial.pos })
+          : t('fwRule.newTitle')
+      }
+      description={t('fwRule.desc')}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={submit} loading={busy}>
-            {initial ? '保存' : '添加'}
+            {initial ? t('common.save') : t('fwRule.add')}
           </Button>
         </>
       }
     >
       <div className="dyn-list">
         {error ? (
-          <Notice tone="danger" title="还没法提交">
+          <Notice tone="danger" title={t('fwRule.cannotSubmit')}>
             {error}
           </Notice>
         ) : null}
 
         <div className="field-row">
-          <Field label="方向" required>
+          <Field label={t('fwRule.fieldDir')} required>
             <Select
               value={rule.type}
               onChange={(e) => patch({ type: e.target.value })}
               options={[
-                { label: '入站（in）', value: 'in' },
-                { label: '出站（out）', value: 'out' },
-                { label: '引用安全组', value: 'group' },
+                { label: t('fwRule.dirIn'), value: 'in' },
+                { label: t('fwRule.dirOut'), value: 'out' },
+                { label: t('fwRule.dirGroup'), value: 'group' },
               ]}
             />
           </Field>
-          <Field label="动作" required>
+          <Field label={t('fwRule.fieldAction')} required>
             <Select
               value={rule.action}
               onChange={(e) => patch({ action: e.target.value })}
-              options={ACTIONS}
+              options={actions}
             />
           </Field>
         </div>
 
         {isGroupRef ? (
-          <Field label="安全组" required hint="安全组是集群级的规则集合，可在「安全组」页维护">
+          <Field
+            label={t('fwRule.fieldGroup')}
+            required
+            hint={t('fwRule.groupHint')}
+          >
             <Select
               value={rule.group}
               onChange={(e) => patch({ group: e.target.value })}
@@ -213,15 +234,15 @@ export function FirewallRuleEditor({
         ) : (
           <>
             <div className="field-row">
-              <Field label="协议">
+              <Field label={t('fwRule.fieldProto')}>
                 <Select
                   value={rule.proto}
                   onChange={(e) => patch({ proto: e.target.value })}
-                  options={PROTOCOLS}
+                  options={protocols}
                   disabled={useMacro}
                 />
               </Field>
-              <Field label="端口" hint="留空 = 任意；可写 22、80,443、8000:8100">
+              <Field label={t('fwRule.fieldDport')} hint={t('fwRule.dportHint')}>
                 <Input
                   value={rule.dport}
                   onChange={(e) => patch({ dport: e.target.value })}
@@ -233,8 +254,8 @@ export function FirewallRuleEditor({
             </div>
 
             <Field
-              label="宏（可选）"
-              hint="PVE 预置的服务组合，如 SSH / HTTP；填了就忽略协议与端口"
+              label={t('fwRule.fieldMacro')}
+              hint={t('fwRule.macroHint')}
             >
               <Input
                 value={rule.macro}
@@ -253,11 +274,11 @@ export function FirewallRuleEditor({
           </>
         )}
 
-        <Field label="备注" hint="例如「运维 SSH」「放行内网监控」">
+        <Field label={t('fwRule.fieldComment')} hint={t('fwRule.commentHint')}>
           <Input
             value={rule.comment}
             onChange={(e) => patch({ comment: e.target.value })}
-            placeholder="这条规则是做什么的"
+            placeholder={t('fwRule.commentPlaceholder')}
             maxLength={120}
           />
         </Field>
@@ -266,25 +287,25 @@ export function FirewallRuleEditor({
           <Switch
             checked={rule.enable}
             onChange={(v) => patch({ enable: v })}
-            label="启用该规则"
+            label={t('fwRule.enable')}
           />
           <Button variant="ghost" size="sm" onClick={() => setShowMore((v) => !v)}>
-            {showMore ? '收起高级选项' : '高级选项'}
+            {showMore ? t('fwRule.hideAdvanced') : t('fwRule.advanced')}
           </Button>
         </div>
 
         {showMore ? (
           <>
             <div className="field-row">
-              <Field label="来源" hint="IP / CIDR，或 +集合名">
+              <Field label={t('fwRule.fieldSource')} hint={t('fwRule.sourceHint')}>
                 <Input
                   value={rule.source}
                   onChange={(e) => patch({ source: e.target.value })}
-                  placeholder="10.0.0.0/24 或 +office"
+                  placeholder={t('fwRule.sourcePlaceholder')}
                   mono
                 />
               </Field>
-              <Field label="目标" hint="IP / CIDR，或 +集合名">
+              <Field label={t('fwRule.fieldDest')} hint={t('fwRule.destHint')}>
                 <Input
                   value={rule.dest}
                   onChange={(e) => patch({ dest: e.target.value })}
@@ -295,16 +316,16 @@ export function FirewallRuleEditor({
             </div>
 
             <div className="field-row">
-              <Field label="源端口">
+              <Field label={t('fwRule.fieldSport')}>
                 <Input
                   value={rule.sport}
                   onChange={(e) => patch({ sport: e.target.value })}
-                  placeholder="留空 = 任意"
+                  placeholder={t('fwRule.anyHint')}
                   mono
                 />
               </Field>
               {inGroup ? null : (
-                <Field label="网卡" hint="限定只对某块网卡生效，留空 = 全部">
+                <Field label={t('fwRule.fieldIface')} hint={t('fwRule.ifaceHint')}>
                   <Input
                     value={rule.iface}
                     onChange={(e) => patch({ iface: e.target.value })}
@@ -316,15 +337,15 @@ export function FirewallRuleEditor({
             </div>
 
             <div className="field-row">
-              <Field label="日志级别" hint="记录到宿主机的内核日志（排查时很有用）">
+              <Field label={t('fwRule.fieldLog')} hint={t('fwRule.logHint')}>
                 <Select
                   value={rule.log}
                   onChange={(e) => patch({ log: e.target.value })}
-                  options={LOG_LEVELS}
+                  options={logLevels}
                 />
               </Field>
               {initial ? null : (
-                <Field label="插入位置" hint="留空 = 追加到最后（优先级最低）">
+                <Field label={t('fwRule.fieldPos')} hint={t('fwRule.posHint')}>
                   <Input
                     type="number"
                     min={0}
@@ -334,7 +355,7 @@ export function FirewallRuleEditor({
                         pos: e.target.value === '' ? null : Number(e.target.value),
                       })
                     }
-                    placeholder="自动"
+                    placeholder={t('fwRule.auto')}
                   />
                 </Field>
               )}
@@ -344,7 +365,7 @@ export function FirewallRuleEditor({
 
         {isGroupRef ? (
           <Notice tone="info" icon={<IconShield size={14} />}>
-            引用安全组后，该组的全部规则都会在这里生效；改安全组会同时影响所有引用它的地方。
+            {t('fwRule.groupNote')}
           </Notice>
         ) : null}
       </div>

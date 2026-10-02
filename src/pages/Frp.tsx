@@ -33,17 +33,19 @@ import {
 import type { FrpRule, FrpRuleInput } from "../api/types";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../hooks/useToast";
+import { useT } from "../i18n";
 
 export function Frp() {
+  const t = useT();
   return (
     <PageShell
       title={
         <>
           <IconNetwork size={20} />
-          内网穿透
+          {t('frp.title')}
         </>
       }
-      subtitle="以 frpc 客户端把内网服务暴露到公网 frps —— 服务端配置由管理员维护，规则按用户归属"
+      subtitle={t('frp.subtitle')}
       actions={<HeaderActions />}
     >
       <StatusRow />
@@ -63,6 +65,7 @@ export function Frp() {
    顶部右侧动作：手动启停 frpc
    --------------------------------------------------------------------------- */
 function HeaderActions() {
+  const t = useT();
   const { hasPermission } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
@@ -84,27 +87,27 @@ function HeaderActions() {
       disabled={!canManage || statusQuery.isLoading}
       onClick={async () => {
         if (!canManage) {
-          toast.error("没有权限", "启停 frpc 需要管理员（settings.manage）权限");
+          toast.error(t('frp.noPermission'), t('frp.noPermissionDetail'));
           return;
         }
         setBusy(true);
         try {
           if (running) {
             await frpApi.server.stop();
-            toast.success("已停止内网穿透", "自动拉起已同时关闭");
+            toast.success(t('frp.stopped'), t('frp.stoppedDetail'));
           } else {
             await frpApi.server.start();
-            toast.success("frpc 已启动");
+            toast.success(t('frp.started'));
           }
           void qc.invalidateQueries({ queryKey: ["frp"] });
         } catch (err) {
-          toast.error("操作失败", errorMessage(err));
+          toast.error(t('common.opFailed'), errorMessage(err));
         } finally {
           setBusy(false);
         }
       }}
     >
-      {running ? "停止穿透" : "启动穿透"}
+      {running ? t('frp.stopTunnel') : t('frp.startTunnel')}
     </Button>
   );
 }
@@ -113,6 +116,7 @@ function HeaderActions() {
    状态行：运行状态 / frpc 二进制 / 规则数
    --------------------------------------------------------------------------- */
 function StatusRow() {
+  const t = useT();
   const statusQuery = useQuery({
     queryKey: ["frp", "status"],
     queryFn: frpApi.status,
@@ -132,36 +136,36 @@ function StatusRow() {
   const running = statusQuery.data?.running ?? false;
   const available = statusQuery.data?.available ?? false;
   const ruleCount = rulesQuery.data?.rules.length ?? 0;
-  const serverAddr = serverQuery.data?.server_addr || "未配置";
+  const serverAddr = serverQuery.data?.server_addr || t('frp.notConfigured');
   const serverPort = serverQuery.data?.server_port ?? 7000;
   const tokenSet = serverQuery.data?.token_set ?? false;
 
   return (
     <Card collapsible={false}>
-      <CardHeader title="运行状态" icon={<IconNetwork size={16} />} />
+      <CardHeader title={t('frp.statusTitle')} icon={<IconNetwork size={16} />} />
       <div className="grid grid-4">
-        <Stat label="frpc 进程">
+        <Stat label={t('frp.statProcess')}>
           <Badge variant={running ? "success" : "neutral"} dot pulse={running} size="sm">
-            {running ? "运行中" : "已停止"}
+            {running ? t('frp.running') : t('frp.stoppedState')}
           </Badge>
         </Stat>
-        <Stat label="客户端程序">
+        <Stat label={t('frp.statClient')}>
           <Badge variant={available ? "success" : "warning"} size="sm">
-            {available ? "已安装" : "未安装"}
+            {available ? t('frp.installed') : t('frp.notInstalled')}
           </Badge>
         </Stat>
-        <Stat label="frps 服务端">
+        <Stat label={t('frp.statServer')}>
           {serverAddr ? (
             <span className="mono fs-sm">
               {serverAddr}:{serverPort}
               {tokenSet ? <span className="text-success"> · token</span> : null}
             </span>
           ) : (
-            <span className="text-warning fs-sm">未配置</span>
+            <span className="text-warning fs-sm">{t('frp.notConfigured')}</span>
           )}
         </Stat>
-        <Stat label="生效规则数">
-          <span className="mono">{ruleCount} 条</span>
+        <Stat label={t('frp.statRules')}>
+          <span className="mono">{t('frp.ruleCount', { n: ruleCount })}</span>
         </Stat>
       </div>
     </Card>
@@ -183,6 +187,7 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
 const EMPTY_SERVER = { server_addr: "", server_port: 7000, token: "" };
 
 function ServerCard() {
+  const t = useT();
   const { hasPermission } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
@@ -235,16 +240,19 @@ function ServerCard() {
       }
       const result = await frpApi.server.save(payload);
       if (result.restart_error) {
-        toast.warning("已保存", "但自动重启 frpc 失败：" + result.restart_error);
+        toast.warning(
+          t('frp.savedTitle'),
+          t('frp.savedRestartFailedDetail', { error: result.restart_error }),
+        );
       } else if (result.restarted) {
-        toast.success("服务端配置已保存，frpc 已重启并立即生效");
+        toast.success(t('frp.savedRestarted'));
       } else {
-        toast.success("服务端配置已保存");
+        toast.success(t('frp.saved'));
       }
       setTokenDraft("");
       void qc.invalidateQueries({ queryKey: ["frp"] });
     } catch (err) {
-      toast.error("保存失败", errorMessage(err));
+      toast.error(t('frp.saveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -259,10 +267,10 @@ function ServerCard() {
         server_port: draft.server_port,
         token_clear: true,
       });
-      toast.success("Token 已清空");
+      toast.success(t('frp.tokenCleared'));
       void qc.invalidateQueries({ queryKey: ["frp"] });
     } catch (err) {
-      toast.error("清空失败", errorMessage(err));
+      toast.error(t('frp.clearFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -271,9 +279,11 @@ function ServerCard() {
   return (
     <Card collapsible={false}>
       <CardHeader
-        title="frps 服务端"
+        title={t('frp.serverTitle')}
         icon={<IconServer size={16} />}
-        subtitle={canManage ? "仅管理员可改 —— 服务端地址 / token 属于基础设施" : "只读 —— 服务端配置仅管理员可改"}
+        subtitle={
+          canManage ? t('frp.serverSubtitleAdmin') : t('frp.serverSubtitleUser')
+        }
         actions={
           canManage ? (
             <Button
@@ -283,23 +293,23 @@ function ServerCard() {
               disabled={!dirty}
               onClick={() => void save()}
             >
-              保存修改
+              {t('frp.saveChanges')}
             </Button>
           ) : null
         }
       />
       {draft ? (
         <div className="flex flex-col gap-12">
-          <Field label="服务端地址">
+          <Field label={t('frp.fieldServerAddr')}>
             <input
               className="input"
               value={draft.server_addr}
-              placeholder="frps.example.com 或公网 IP"
+              placeholder={t('frp.serverAddrPlaceholder')}
               disabled={!canManage}
               onChange={(e) => setDraft({ ...draft, server_addr: e.target.value })}
             />
           </Field>
-          <Field label="服务端端口（frps bindPort）">
+          <Field label={t('frp.fieldServerPort')}>
             <input
               className="input"
               type="number"
@@ -311,11 +321,11 @@ function ServerCard() {
             />
           </Field>
           <Field
-            label="Token（与服务端 auth.token 一致）"
+            label={t('frp.fieldToken')}
             hint={
               serverQuery.data?.token_set
-                ? "已加密保存，前端不回显明文；输入新值可替换，留空则保持原值。"
-                : "服务端未设置则留空。保存后以 **** 显示，不会回显明文。"
+                ? t('frp.tokenHintSet')
+                : t('frp.tokenHintUnset')
             }
           >
             <div className="flex gap-8">
@@ -323,7 +333,7 @@ function ServerCard() {
                 className="input"
                 type="password"
                 value={tokenDraft}
-                placeholder={serverQuery.data?.token_set ? "****（已设置）" : ""}
+                placeholder={serverQuery.data?.token_set ? t('frp.tokenPlaceholder') : ""}
                 disabled={!canManage}
                 onChange={(e) => setTokenDraft(e.target.value)}
               />
@@ -334,14 +344,14 @@ function ServerCard() {
                   loading={busy}
                   onClick={() => void clearToken()}
                 >
-                  清空
+                  {t('frp.clear')}
                 </Button>
               ) : null}
             </div>
           </Field>
           {canManage ? (
             <p className="fs-xs text-muted">
-              修改服务端配置后，若 frpc 正在运行会自动重启使新配置生效。
+              {t('frp.restartNote')}
             </p>
           ) : null}
         </div>
@@ -374,6 +384,7 @@ function Field({
    进程控制：安装 frpc 二进制（admin only）
    --------------------------------------------------------------------------- */
 function ProcessCard() {
+  const t = useT();
   const { hasPermission } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
@@ -390,21 +401,21 @@ function ProcessCard() {
 
   return (
     <Card collapsible={false}>
-      <CardHeader title="frpc 客户端" icon={<IconNetwork size={16} />} />
+      <CardHeader title={t('frp.clientTitle')} icon={<IconNetwork size={16} />} />
       <div className="flex flex-col gap-12">
         <div className="flex items-center justify-between">
-          <span className="fs-sm text-secondary">安装位置</span>
+          <span className="fs-sm text-secondary">{t('frp.installPath')}</span>
           <span className="mono fs-xs text-secondary" title={statusQuery.data?.binary}>
-            {statusQuery.data?.binary || "未安装"}
+            {statusQuery.data?.binary || t('frp.notInstalled')}
           </span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="fs-sm text-secondary">客户端版本</span>
-          <span className="mono fs-sm">{available ? "已就绪" : "缺失"}</span>
+          <span className="fs-sm text-secondary">{t('frp.clientVersion')}</span>
+          <span className="mono fs-sm">{available ? t('frp.ready') : t('frp.missing')}</span>
         </div>
         {!available ? (
-          <Notice tone="warning" title="尚未安装 frpc">
-            面板自带目录与系统 PATH 中都没有 frpc 二进制。
+          <Notice tone="warning" title={t('frp.notInstalledTitle')}>
+            {t('frp.notInstalledBody')}
           </Notice>
         ) : null}
         {canManage && !available ? (
@@ -416,51 +427,50 @@ function ProcessCard() {
               setBusy(true);
               try {
                 const res = await frpApi.server.install();
-                toast.success("frpc 安装完成", res.binary);
+                toast.success(t('frp.installDone'), res.binary);
                 void qc.invalidateQueries({ queryKey: ["frp"] });
               } catch (err) {
-                toast.error("安装失败", errorMessage(err));
+                toast.error(t('frp.installFailed'), errorMessage(err));
               } finally {
                 setBusy(false);
               }
             }}
           >
-            下载安装 frpc
+            {t('frp.installBtn')}
           </Button>
         ) : null}
         {canManage ? (
           <div className="flex items-center justify-between gap-16">
             <div className="flex flex-col gap-2">
-              <span className="fs-sm">停止后自动拉起</span>
+              <span className="fs-sm">{t('frp.autoRestartLabel')}</span>
               <span className="fs-xs text-muted">
-                frpc 进程不在时由面板重新拉起（面板重启后也按此开关恢复）；
-                手动点「停止穿透」会顺带关掉它，免得停了又被拉起来。
+                {t('frp.autoRestartHint')}
               </span>
             </div>
             <Switch
               checked={statusQuery.data?.auto_restart ?? false}
               disabled={busy || statusQuery.isLoading || !available}
-              ariaLabel="停止后自动拉起"
+              ariaLabel={t('frp.autoRestartAria')}
               onChange={async (next) => {
                 setBusy(true);
                 try {
                   const res = await frpApi.server.autoRestart(next);
                   if (res.start_error) {
                     toast.warning(
-                      "已开启自动拉起",
-                      "但立即启动失败：" + res.start_error,
+                      t('frp.autoRestartOn'),
+                      t('frp.autoRestartStartFailed', { error: res.start_error }),
                     );
                   } else if (res.started) {
-                    toast.success("已开启自动拉起", "frpc 已启动");
+                    toast.success(t('frp.autoRestartOn'), t('frp.autoRestartStarted'));
                   } else {
                     toast.success(
-                      next ? "已开启自动拉起" : "已关闭自动拉起",
-                      next ? "进程停止后会被重新拉起" : undefined,
+                      next ? t('frp.autoRestartOn') : t('frp.autoRestartOff'),
+                      next ? t('frp.autoRestartOnDetail') : undefined,
                     );
                   }
                   void qc.invalidateQueries({ queryKey: ["frp"] });
                 } catch (err) {
-                  toast.error("操作失败", errorMessage(err));
+                  toast.error(t('common.opFailed'), errorMessage(err));
                 } finally {
                   setBusy(false);
                 }
@@ -470,7 +480,7 @@ function ProcessCard() {
         ) : null}
         {canManage ? (
           <p className="fs-xs text-muted">
-            安装完成后点上方「启动穿透」即可让 frpc 连接服务端。
+            {t('frp.installNextStep')}
           </p>
         ) : null}
       </div>
@@ -490,6 +500,7 @@ const EMPTY_RULE: FrpRuleInput = {
 };
 
 function RulesCard() {
+  const t = useT();
   const { hasPermission } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
@@ -554,12 +565,12 @@ function RulesCard() {
   return (
     <Card>
       <CardHeader
-        title="穿透规则"
+        title={t('frp.rulesTitle')}
         icon={<IconNetwork size={16} />}
         subtitle={
           isAdmin
-            ? "管理员可看到所有人的规则；非本人规则请同步删除按钮可触发认领/迁移"
-            : `只显示归属 ${ownUsername || "当前用户"} 的规则`
+            ? t('frp.rulesSubtitleAdmin')
+            : t('frp.rulesSubtitleUser', { user: ownUsername || t('frp.currentUser') })
         }
         actions={
           canManage ? (
@@ -569,31 +580,31 @@ function RulesCard() {
               icon={<IconPlus size={14} />}
               onClick={() => setCreating(true)}
             >
-              新建规则
+              {t('frp.newRule')}
             </Button>
           ) : null
         }
       />
 
       {dupNames.length > 0 ? (
-        <Notice tone="danger" title="存在重名规则">
-          以下规则名重复：{dupNames.join("、")}。frpc 启动会因此失败，请改名。
+        <Notice tone="danger" title={t('frp.dupTitle')}>
+          {t('frp.dupBody', { names: dupNames.join(t('incident.evidenceSeparator')) })}
         </Notice>
       ) : null}
 
       {rules.length === 0 ? (
-        <p className="text-secondary fs-sm">还没有规则，点击右上角「新建规则」开始。</p>
+        <p className="text-secondary fs-sm">{t('frp.noRules')}</p>
       ) : (
         <div className="table-container">
           <table className="table table-dense">
             <thead>
               <tr>
-                <th>归属</th>
-                <th>名称</th>
-                <th>本地 IP</th>
-                <th>本地端口</th>
-                <th>公网端口</th>
-                <th>状态</th>
+                <th>{t('frp.colOwner')}</th>
+                <th>{t('frp.colName')}</th>
+                <th>{t('frp.colLocalIp')}</th>
+                <th>{t('frp.colLocalPort')}</th>
+                <th>{t('frp.colRemotePort')}</th>
+                <th>{t('common.status')}</th>
                 <th style={{ width: 96 }} />
               </tr>
             </thead>
@@ -609,16 +620,16 @@ function RulesCard() {
                       await update(r.id, patch);
                       void qc.invalidateQueries({ queryKey: ["frp"] });
                     } catch (err) {
-                      toast.error("保存失败", errorMessage(err));
+                      toast.error(t('frp.saveFailed'), errorMessage(err));
                     }
                   }}
                   onDelete={async () => {
                     try {
                       await remove(r.id);
                       void qc.invalidateQueries({ queryKey: ["frp"] });
-                      toast.success("已删除");
+                      toast.success(t('frp.deleted'));
                     } catch (err) {
-                      toast.error("删除失败", errorMessage(err));
+                      toast.error(t('frp.deleteFailed'), errorMessage(err));
                     }
                   }}
                 />
@@ -657,6 +668,7 @@ function RuleDialog({
   onClose: () => void;
   onSave: (payload: FrpRuleInput) => Promise<void>;
 }) {
+  const t = useT();
   const toast = useToast();
   const [form, setForm] = useState<FrpRuleInput>({ ...EMPTY_RULE, name: initialName });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -677,14 +689,14 @@ function RuleDialog({
   function validate(): boolean {
     const next: Record<string, string> = {};
     const name = form.name.trim();
-    if (!name) next.name = "请填写规则名称";
+    if (!name) next.name = t('frp.ruleNameRequired');
     else if (!/^[A-Za-z0-9_-]+$/.test(name))
-      next.name = "只能用字母、数字、下划线与短横线";
-    if (!(form.local_ip ?? "").trim()) next.local_ip = "请填写本地 IP";
+      next.name = t('frp.ruleNameInvalid');
+    if (!(form.local_ip ?? "").trim()) next.local_ip = t('frp.localIpRequired');
     if (!(form.local_port > 0 && form.local_port <= 65535))
-      next.local_port = "端口范围 1-65535";
+      next.local_port = t('frp.portRange');
     if (!(form.remote_port > 0 && form.remote_port <= 65535))
-      next.remote_port = "端口范围 1-65535";
+      next.remote_port = t('frp.portRange');
     setErrors(next);
     return Object.keys(next).length === 0;
   }
@@ -694,10 +706,10 @@ function RuleDialog({
     setBusy(true);
     try {
       await onSave({ ...form, name: form.name.trim() });
-      toast.success("规则已创建", "frpc 正在按新配置重载");
+      toast.success(t('frp.ruleCreated'), t('frp.ruleCreatedDetail'));
       onClose();
     } catch (err) {
-      toast.error("创建失败", errorMessage(err));
+      toast.error(t('frp.createFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -707,12 +719,12 @@ function RuleDialog({
     <Modal
       open={open}
       onClose={onClose}
-      title="新建穿透规则"
-      description="把内网服务映射到公网端口，保存后 frpc 会自动重启使其生效。"
+      title={t('frp.dialogTitle')}
+      description={t('frp.dialogDesc')}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -720,41 +732,41 @@ function RuleDialog({
             loading={busy}
             onClick={() => void submit()}
           >
-            保存
+            {t('common.save')}
           </Button>
         </>
       }
     >
       <Input
-        label="规则名称"
+        label={t('frp.fieldRuleName')}
         required
         value={form.name}
         error={errors.name}
-        hint="frpc 内的唯一标识，只能用字母 / 数字 / 下划线 / 短横线"
+        hint={t('frp.ruleNameHint')}
         onChange={(e) => patch("name", e.target.value)}
       />
       <Input
-        label="本地 IP"
+        label={t('frp.fieldLocalIp')}
         className="mono"
         value={form.local_ip}
         error={errors.local_ip}
-        hint="要暴露的内网服务地址，通常填 127.0.0.1"
+        hint={t('frp.localIpHint')}
         onChange={(e) => patch("local_ip", e.target.value)}
       />
       <div className="form-grid-2">
         <Input
-          label="本地端口"
+          label={t('frp.fieldLocalPort')}
           type="number"
           value={String(form.local_port)}
           error={errors.local_port}
           onChange={(e) => patch("local_port", Number(e.target.value))}
         />
         <Input
-          label="公网端口"
+          label={t('frp.fieldRemotePort')}
           type="number"
           value={String(form.remote_port)}
           error={errors.remote_port}
-          hint="需在 frps 服务端允许的端口范围内"
+          hint={t('frp.remotePortHint')}
           onChange={(e) => patch("remote_port", Number(e.target.value))}
         />
       </div>
@@ -775,6 +787,7 @@ function RuleRow({
   onUpdate: (patch: Partial<FrpRuleInput>) => Promise<void>;
   onDelete: () => Promise<void>;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState(rule);
   const [busy, setBusy] = useState(false);
   const isDirty = JSON.stringify(draft) !== JSON.stringify(rule);
@@ -807,7 +820,7 @@ function RuleRow({
     <tr>
       <td>
         <Badge variant={rule.username === "" ? "warning" : "neutral"} size="sm">
-          {rule.username || "无主"}
+          {rule.username || t('frp.ownerless')}
         </Badge>
       </td>
       <td>
@@ -855,11 +868,11 @@ function RuleRow({
       <td>
         <div className="flex flex-wrap items-center gap-4">
           <Badge variant={isEffective ? "success" : "neutral"} size="sm" dot pulse={isEffective}>
-            {isEffective ? "已生效" : "未应用"}
+            {isEffective ? t('frp.effective') : t('frp.notApplied')}
           </Badge>
           {isDirty ? (
             <Badge variant={busy ? "info" : "warning"} size="sm" dot={busy} pulse={busy}>
-              {busy ? "保存中…" : "未保存"}
+              {busy ? t('frp.saving') : t('frp.unsaved')}
             </Badge>
           ) : null}
         </div>
@@ -869,20 +882,20 @@ function RuleRow({
           {isDirty ? (
             <>
               <IconButton
-                label="保存该规则"
+                label={t('frp.saveRow')}
                 variant="primary"
                 disabled={busy}
                 onClick={() => void save()}
               >
                 <IconCheck size={15} />
               </IconButton>
-              <IconButton label="撤销修改" disabled={busy} onClick={() => setDraft(rule)}>
+              <IconButton label={t('frp.revertRow')} disabled={busy} onClick={() => setDraft(rule)}>
                 <IconRefresh size={15} />
               </IconButton>
             </>
           ) : (
             <IconButton
-              label={`删除规则 ${rule.name}`}
+              label={t('frp.deleteRule', { name: rule.name })}
               variant="danger"
               disabled={busy}
               onClick={() => void onDelete()}
@@ -900,6 +913,7 @@ function RuleRow({
    日志
    --------------------------------------------------------------------------- */
 function LogCard() {
+  const t = useT();
   const logsQuery = useQuery({
     queryKey: ["frp", "logs"],
     queryFn: frpApi.logs,
@@ -910,7 +924,7 @@ function LogCard() {
   return (
     <Card>
       <CardHeader
-        title="frpc 运行日志"
+        title={t('frp.logsTitle')}
         icon={<IconNetwork size={16} />}
         actions={
           <Button
@@ -919,7 +933,7 @@ function LogCard() {
             icon={<IconRefresh size={14} />}
             onClick={() => void logsQuery.refetch()}
           >
-            刷新日志
+            {t('frp.refreshLogs')}
           </Button>
         }
       />
@@ -933,7 +947,7 @@ function LogCard() {
           ))}
         </div>
       ) : (
-        <p className="text-secondary fs-sm">暂无日志，启动穿透后会显示 frpc 输出。</p>
+        <p className="text-secondary fs-sm">{t('frp.noLogs')}</p>
       )}
     </Card>
   );

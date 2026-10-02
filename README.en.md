@@ -40,6 +40,7 @@ TanStack Query + Recharts · MySQL 8 (panel users, audit log, connection setting
   - [1. Create a Proxmox API token](#1-create-a-proxmox-api-token)
   - [2. Grant permissions](#2-grant-permissions)
   - [3. Run ProxCenter](#3-run-proxcenter)
+- [Languages](#languages)
 - [Configuration](#configuration)
 - [Security notes](#security-notes)
 - [Development and tests](#development-and-tests)
@@ -81,6 +82,11 @@ TanStack Query + Recharts · MySQL 8 (panel users, audit log, connection setting
   every write operation.
 - **Reset a guest's user password** — from the guest list, via the QEMU guest agent (instant),
   cloud-init (on next boot) or the host over SSH for containers. See [Security notes](#security-notes).
+- **Bilingual interface** — every screen ships in Chinese and English, switchable at any time
+  from the login page or the top bar. The panel also localizes the *structural* text the backend
+  returns (permission catalogue, built-in role names and descriptions, FAQ defaults, error
+  messages) and renders notification emails in the recipient's own language.
+  See [Languages](#languages).
 
 ## Requirements
 
@@ -144,14 +150,29 @@ cd ProxCenter
 sudo ./deploy.sh
 ```
 
-`deploy.sh` is idempotent and runs without asking anything: it checks and installs system
+`deploy.sh` first asks which language to use, then installs everything without asking anything
+else:
+
+```
+  请选择界面语言 / Choose the interface language:
+    1) 中文
+    2) English
+  序号（直接回车 = 按系统语言判定）/ Number (Enter = the system-locale default) [1]: 2
+```
+
+Press Enter to accept the system locale, or type `1` / `2`. The question is skipped — and the
+system locale decides silently — when `--lang` or `PROXCENTER_LANG` is set, or when there is no
+interactive terminal (`cron` / CI / a pipe), so it can never wedge an unattended run.
+
+After that the script is idempotent and non-interactive: it checks and installs system
 dependencies, creates `.venv`, generates `backend/.env` with a random `SECRET_KEY`, database
 password and initial admin password, creates the database and its MySQL user, builds the
 frontend, installs a systemd service and finally prints the panel URL together with the
 **one-time initial admin password** — change it right after your first login
 (user menu → **Profile** → change password).
 
-Useful flags: `--reconfigure` (ask for port / database / passwords instead of using defaults),
+Useful flags: `--lang zh|en` (skip the language question and use this language),
+`--reconfigure` (ask for port / database / passwords instead of using defaults),
 `--skip-frontend` (reuse an existing `dist/`), `--no-systemd` (prepare everything, install no
 service), `--help` (all options).
 
@@ -179,6 +200,31 @@ start, so there is no default password. Then do two things: fill in host / token
 secret under **Settings → Proxmox connection**, and change the admin password.
 
 The generated API documentation is at <http://localhost:8080/api/docs>.
+
+## Languages
+
+The panel ships in Chinese and English. Pick a language on the login page or from the top bar at
+any time; the choice is stored per browser and sent to the backend on every request.
+
+Three layers are localized, and it is worth knowing which is which:
+
+| Layer | Where it lives | Notes |
+|---|---|---|
+| Interface text | `src/i18n/locales/` | 5276 keys per language. Rendered through `t()`. Switching language clears the react-query cache and refetches, so no data from the previous language lingers on screen. |
+| Structural text from the API | `backend/app/i18n.py` | The permission catalogue, built-in role names and descriptions, FAQ defaults, error messages and metric names are returned in the language of the `Accept-Language` header. |
+| Notification emails | `backend/app/i18n.py` | Approval and alert mails render in the **recipient's** language (from their user preferences), not the admin's. |
+
+Chinese is the source text: English lives in a lookup table next to it, and **anything missing
+falls back to Chinese** rather than failing. A missing translation therefore degrades to "still
+Chinese" instead of breaking the feature, and an untranslated string is logged as a warning so
+the table can be topped up from the logs.
+
+`npm run verify` runs `scripts/check-i18n.mjs`, which fails the build when the two tables drift
+apart, when code references a key that does not exist, or when a backend message is only
+present in one language.
+
+> The public marketing pages under `landing/` ship as bilingual arrays rather than going through
+> `t()`, so a few of their strings are not yet covered by the key check.
 
 ## Configuration
 
@@ -235,13 +281,17 @@ is stored and is never sent back to the browser.
 cd backend
 ../.venv/bin/python -m pytest
 
-# frontend — type check, dependency graph check, production build
+# frontend — type check, dependency graph check, i18n consistency check, production build
 npm run verify
 ```
 
 The backend suite covers configuration building, the API surface with RBAC and audit, firewall,
 hardening, SSH security, port guarding, bulk operations, containers and the guest-password
 channels. It needs no Proxmox host: the API layer is tested against a simulated Proxmox server.
+
+`npm run verify` also runs `scripts/check-i18n.mjs`, which fails on any drift between the
+Chinese and English tables, on a `t('…')` reference to a key that does not exist, or on a
+backend message that exists in only one language.
 
 ## Proxmox VE compatibility
 

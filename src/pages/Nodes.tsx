@@ -48,7 +48,8 @@ import {
   toPercent,
   usageColor,
 } from '../utils/format';
-import { nodeStatusMeta } from '../utils/status';
+import { nodeStatusMeta } from '../utils/status'
+import { useT, type MessageKey } from '../i18n';
 import { useAuth } from '../hooks/useAuth';
 import { NodeNoteField, useNodeMeta } from '../components/NodeMeta';
 import type { NodeInfo } from '../api/types';
@@ -61,15 +62,16 @@ const VIEW_KEY = 'pve_nodes_view';
 type ViewMode = 'list' | 'cards';
 type SortKey = 'name' | 'cpu' | 'mem' | 'disk' | 'status';
 
-const SORT_OPTIONS: Array<{ label: string; value: SortKey }> = [
-  { label: '按名称排序', value: 'name' },
-  { label: '按 CPU 负载排序', value: 'cpu' },
-  { label: '按内存占用排序', value: 'mem' },
-  { label: '按磁盘占用排序', value: 'disk' },
-  { label: '离线优先', value: 'status' },
+const SORT_OPTIONS: Array<{ label: MessageKey; value: SortKey }> = [
+  { label: 'nodes.sortName', value: 'name' },
+  { label: 'nodes.sortCpu', value: 'cpu' },
+  { label: 'nodes.sortMem', value: 'mem' },
+  { label: 'nodes.sortDisk', value: 'disk' },
+  { label: 'nodes.sortStatus', value: 'status' },
 ];
 
 export function Nodes() {
+  const t = useT();
   const navigate = useNavigate();
   /* 连接写操作需要 settings.manage，仅管理员可进入表单 */
   const { isAdmin } = useAuth();
@@ -190,33 +192,37 @@ export function Nodes() {
         existing.nodes.push(node);
       } else {
         map.set(key, {
-          label: node.connection_name || node.node || '默认连接',
+          label: node.connection_name || node.node || t('nodes.defaultConnection'),
           nodes: [node],
         });
       }
     }
     return [...map.entries()].map(([id, value]) => ({ id, ...value }));
-  }, [visible]);
+  }, [visible, t]);
   const grouped = groups.length > 1;
 
   const connectionOptions = useMemo(() => {
     const seen = new Map<string, string>();
     for (const n of list) {
       const id = n.connection_id ?? '';
-      if (!seen.has(id)) seen.set(id, n.connection_name || '默认连接');
+      if (!seen.has(id)) seen.set(id, n.connection_name || t('nodes.defaultConnection'));
     }
     return [
-      { label: '全部 PVE 主机', value: '' },
+      { label: t('nodes.allHosts'), value: '' },
       ...[...seen.entries()].map(([value, label]) => ({ label, value })),
     ];
-  }, [list]);
+  }, [list, t]);
 
   /* 后端在「单机（未组集群）」时返回 quorate=null —— 那不是失去仲裁，不能报警。
      所以必须用 === false 判断；写成 !quorate 会把单机环境也误报成集群故障。 */
   const quorate = clusterQuery.data?.quorate ?? null;
   const showQuorumWarning = quorate === false && !quorumDismissed;
   const quorumLabel =
-    quorate === true ? '仲裁正常' : quorate === false ? '仲裁异常' : '单机模式';
+    quorate === true
+      ? t('nodes.quorumOk')
+      : quorate === false
+        ? t('nodes.quorumBad')
+        : t('nodes.quorumStandalone');
 
   const onlineCount = list.filter((n) => n.status === 'online').length;
 
@@ -256,23 +262,29 @@ export function Nodes() {
       title={
         <>
           <IconServer size={20} />
-          节点
+          {t('nodes.title')}
         </>
       }
       subtitle={
         clusterQuery.data
-          ? `集群版本 ${clusterQuery.data.version || '未知'} · ${quorumLabel} · ${onlineCount}/${list.length} 在线 · ${groups.length} 个 PVE 连接`
-          : '正在加载集群信息…'
+          ? t('nodes.subtitle', {
+              version: clusterQuery.data.version || t('common.unknown'),
+              quorum: quorumLabel,
+              online: onlineCount,
+              total: list.length,
+              connections: groups.length,
+            })
+          : t('dashboard.subtitle.loading')
       }
       actions={
         <>
           <SegmentedControl<ViewMode>
             value={view}
             onChange={setView}
-            ariaLabel="节点展示方式"
+            ariaLabel={t('nodes.viewAria')}
             options={[
-              { label: '卡片', value: 'cards' },
-              { label: '列表', value: 'list' },
+              { label: t('nodes.viewCards'), value: 'cards' },
+              { label: t('nodes.viewList'), value: 'list' },
             ]}
           />
           {isAdmin ? (
@@ -280,9 +292,9 @@ export function Nodes() {
               variant="primary"
               icon={<IconPlus size={15} />}
               onClick={addNode}
-              title="接入一台新的 Proxmox 主机（新增 PVE 连接）"
+              title={t('nodes.addNodeTitle')}
             >
-              添加节点
+              {t('nodes.addNode')}
             </Button>
           ) : null}
           <Button
@@ -295,7 +307,7 @@ export function Nodes() {
             }}
             loading={nodesQuery.isFetching && !nodesQuery.isLoading}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
         </>
       }
@@ -305,28 +317,30 @@ export function Nodes() {
       {showQuorumWarning ? (
         <Notice
           tone="danger"
-          title="集群失去仲裁"
+          title={t('nodes.quorumNoticeTitle')}
           action={
-            <IconButton label="关闭提示" onClick={dismissQuorumNotice}>
+            <IconButton label={t('nodes.dismissNotice')} onClick={dismissQuorumNotice}>
               <IconClose size={15} />
             </IconButton>
           }
         >
-          当前集群不满足法定节点数（quorate=false），部分操作可能被拒绝。请检查各节点间的
-          Corosync 通信与网络状态。
+          {t('nodes.quorumNoticeBody')}
         </Notice>
       ) : null}
 
       {failedConnections.length > 0 ? (
-        <Notice tone="warning" title={`${failedConnections.length} 台 PVE 连接异常`}>
-          以下主机暂时取不到数据，其余主机不受影响：
+        <Notice
+          tone="warning"
+          title={t('nodes.failedConnsTitle', { n: failedConnections.length })}
+        >
+          {t('nodes.failedConnsBody')}
           {failedConnections.map((c) => (
             <span key={c.id} className="mono">
               {' '}
               {c.name || c.host}
             </span>
           ))}
-          {`。${isAdmin ? '可在「连接配置」子页面中修正（例如使用「修复权限」）。' : '请联系管理员在「连接配置」子页面中修正。'}`}
+          {isAdmin ? t('nodes.failedConnsTailAdmin') : t('nodes.failedConnsTailUser')}
           {isAdmin ? (
             <div className="mt-8">
               <Button
@@ -334,7 +348,7 @@ export function Nodes() {
                 size="sm"
                 onClick={() => navigate('/nodes/connections')}
               >
-                前往连接配置
+                {t('nodes.goConnections')}
               </Button>
             </div>
           ) : null}
@@ -342,16 +356,18 @@ export function Nodes() {
       ) : null}
 
       {limitedConnections.length > 0 ? (
-        <Notice tone="warning" title={`${limitedConnections.length} 台 PVE 的令牌权限不足`}>
-          这些主机能连上，但读不到节点指标与虚拟机/模板列表（Proxmox 对无权限的读取
-          返回空结果，而不是报错）：
+        <Notice
+          tone="warning"
+          title={t('nodes.limitedConnsTitle', { n: limitedConnections.length })}
+        >
+          {t('nodes.limitedConnsBody')}
           {limitedConnections.map((c) => (
             <span key={c.id} className="mono">
               {' '}
               {c.name || c.host}
             </span>
           ))}
-          {`。${isAdmin ? '请到「连接配置」子页面对该连接使用「修复权限」。' : '请联系管理员处理。'}`}
+          {isAdmin ? t('nodes.limitedConnsTailAdmin') : t('nodes.limitedConnsTailUser')}
         </Notice>
       ) : null}
 
@@ -362,29 +378,29 @@ export function Nodes() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索节点名、来源主机…"
+              placeholder={t('nodes.searchPlaceholder')}
               prefix={<IconSearch size={15} />}
               block={false}
-              aria-label="搜索节点"
+              aria-label={t('nodes.searchAria')}
             />
             {connectionOptions.length > 2 ? (
               <Select
                 value={connFilter}
                 onChange={(e) => setConnFilter(e.target.value)}
                 options={connectionOptions}
-                aria-label="按来源 PVE 筛选"
+                aria-label={t('nodes.filterConnAria')}
               />
             ) : null}
             <Select
               value={sortKey}
               onChange={(e) => setSortKey(e.target.value as SortKey)}
-              options={SORT_OPTIONS.map((s) => ({ label: s.label, value: s.value }))}
-              aria-label="排序方式"
+              options={SORT_OPTIONS.map((s) => ({ label: t(s.label), value: s.value }))}
+              aria-label={t('nodes.sortAria')}
             />
           </div>
           <div className="toolbar-right">
             <span className="fs-sm text-muted">
-              显示 {visible.length} / {list.length} 个节点
+              {t('nodes.showing', { shown: visible.length, total: list.length })}
             </span>
           </div>
         </div>
@@ -394,19 +410,15 @@ export function Nodes() {
         <CardSkeleton count={3} height={220} />
       ) : nodesQuery.isError ? (
         <ErrorState
-          title="无法加载节点列表"
+          title={t('nodes.loadFailed')}
           message={errorMessage(nodesQuery.error)}
           onRetry={() => void nodesQuery.refetch()}
         />
       ) : list.length === 0 ? (
         <Card>
           <EmptyState
-            title="暂无节点"
-            description={
-              isAdmin
-                ? '面板还没有接入可用的 Proxmox 主机。点「添加节点」填写 PVE 地址与 API Token 即可。'
-                : '集群中没有检测到任何节点，请联系管理员检查 Proxmox 连接配置。'
-            }
+            title={t('nodes.emptyTitle')}
+            description={isAdmin ? t('nodes.emptyAdmin') : t('nodes.emptyUser')}
             icon={<IconServer size={30} />}
             action={
               isAdmin ? (
@@ -415,7 +427,7 @@ export function Nodes() {
                   icon={<IconPlus size={15} />}
                   onClick={addNode}
                 >
-                  添加节点
+                  {t('nodes.addNode')}
                 </Button>
               ) : undefined
             }
@@ -424,8 +436,8 @@ export function Nodes() {
       ) : visible.length === 0 ? (
         <Card>
           <EmptyState
-            title="没有匹配的节点"
-            description="调整搜索关键词或来源主机筛选试试。"
+            title={t('nodes.noMatchTitle')}
+            description={t('nodes.noMatchDesc')}
             compact
           />
         </Card>
@@ -438,21 +450,23 @@ export function Nodes() {
                   <IconServer size={14} />
                   <span className="fw-600">{group.label}</span>
                   <span className="fs-xs text-muted">
-                    {group.nodes.filter((n) => n.status === 'online').length}/
-                    {group.nodes.length} 在线
+                    {t('nodes.onlineRatio', {
+                      online: group.nodes.filter((n) => n.status === 'online').length,
+                      total: group.nodes.length,
+                    })}
                   </span>
                 </div>
               ) : null}
 
               <div className="node-list" role="list">
                 <div className="node-list-row is-head" aria-hidden="true">
-                  <span>节点</span>
-                  <span>状态</span>
-                  <span>CPU</span>
-                  <span>内存</span>
-                  <span>磁盘</span>
-                  <span>运行时长</span>
-                  <span>备注</span>
+                  <span>{t('nodes.colNode')}</span>
+                  <span>{t('common.status')}</span>
+                  <span>{t('nodes.colCpu')}</span>
+                  <span>{t('nodes.colMem')}</span>
+                  <span>{t('nodes.colDisk')}</span>
+                  <span>{t('nodes.colUptime')}</span>
+                  <span>{t('nodes.colNote')}</span>
                   <span />
                 </div>
                 {group.nodes.map((node) => (
@@ -471,8 +485,10 @@ export function Nodes() {
                   <IconServer size={14} />
                   {group.label}
                   <span className="fs-xs text-muted">
-                    {group.nodes.filter((n) => n.status === 'online').length}/
-                    {group.nodes.length} 在线
+                    {t('nodes.onlineRatio', {
+                      online: group.nodes.filter((n) => n.status === 'online').length,
+                      total: group.nodes.length,
+                    })}
                   </span>
                 </div>
               ) : null}
@@ -513,9 +529,10 @@ function nodePercents(node: NodeInfo) {
    --------------------------------------------------------------------------- */
 
 function NodeListRow({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
+  const t = useT();
   const { canWrite } = useAuth();
   const pct = nodePercents(node);
-  const meta = nodeStatusMeta(node.status);
+  const meta = nodeStatusMeta(node.status, t);
   const offline = node.status !== 'online';
   const { version, address } = useNodeMeta(node.node, !offline, node.connection_id);
 
@@ -524,7 +541,7 @@ function NodeListRow({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
       className={`node-list-row${offline ? ' is-offline' : ''}`}
       role="button"
       tabIndex={0}
-      aria-label={`查看节点 ${node.node} 详情`}
+      aria-label={t('nodes.viewNodeAria', { node: node.node })}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === 'Enter') onOpen();
@@ -533,7 +550,11 @@ function NodeListRow({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
       <div className="node-list-name">
         <span className="fw-600 truncate">{node.node}</span>
         <span className="fs-xs text-muted truncate">
-          {version ? `PVE ${version}` : node.kernel ? `内核 ${node.kernel}` : ''}
+          {version
+            ? t('nodes.pveVersion', { version })
+            : node.kernel
+              ? t('nodes.kernel', { kernel: node.kernel })
+              : ''}
           {address ? ` · ${address}` : ''}
         </span>
       </div>
@@ -543,18 +564,22 @@ function NodeListRow({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
           {meta.label}
         </Badge>
         {node.level ? (
-          <Badge variant="warning" size="sm" title={`维护级别 ${node.level}`}>
-            维护
+          <Badge variant="warning" size="sm" title={t('nodes.maintenanceLevel', { level: node.level })}>
+            {t('nodes.maintenance')}
           </Badge>
         ) : null}
       </div>
 
-      <NodeListMetric percent={pct.cpu} sub={node.maxcpu ? `${node.maxcpu} 核` : '—'} offline={offline} />
+      <NodeListMetric
+        percent={pct.cpu}
+        sub={node.maxcpu ? t('dashboard.nodes.cores', { n: node.maxcpu }) : '—'}
+        offline={offline}
+      />
       <NodeListMetric percent={pct.mem} sub={formatBytes(node.maxmem, 0)} offline={offline} />
       <NodeListMetric percent={pct.disk} sub={formatBytes(node.maxdisk, 0)} offline={offline} />
 
       <span className="fs-sm text-secondary truncate">
-        {offline ? '节点离线' : formatUptimeShort(node.uptime)}
+        {offline ? t('nodes.offline') : formatUptimeShort(node.uptime)}
       </span>
 
       {/* 备注是可编辑输入框，必须拦住冒泡 —— 否则点一下就会触发跳转 */}
@@ -597,9 +622,10 @@ function NodeListMetric({
    --------------------------------------------------------------------------- */
 
 function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
+  const t = useT();
   const { canWrite } = useAuth();
   const pct = nodePercents(node);
-  const meta = nodeStatusMeta(node.status);
+  const meta = nodeStatusMeta(node.status, t);
   const offline = node.status !== 'online';
   /* 地址与 PVE 版本是按需拉取的补充信息 */
   const { version, address } = useNodeMeta(node.node, !offline, node.connection_id);
@@ -613,17 +639,17 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
       }}
       role="button"
       tabIndex={0}
-      aria-label={`查看节点 ${node.node} 详情`}
+      aria-label={t('nodes.viewNodeAria', { node: node.node })}
     >
       <div className="entity-card-head">
         <div className="entity-card-title">
           <span className="entity-card-name">{node.node}</span>
           <span className="entity-card-sub">
             {version
-              ? `PVE ${version}`
+              ? t('nodes.pveVersion', { version })
               : node.kernel
-                ? `内核 ${node.kernel}`
-                : `节点 ${node.node}`}
+                ? t('nodes.kernel', { kernel: node.kernel })
+                : t('nodes.nodeLabel', { node: node.node })}
             {address ? ` · ${address}` : ''}
           </span>
         </div>
@@ -632,7 +658,7 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
             <Badge
               variant="neutral"
               size="sm"
-              title={`来源主机：${node.connection_name}`}
+              title={t('nodes.sourceHost', { name: node.connection_name })}
             >
               {node.connection_name}
             </Badge>
@@ -647,21 +673,21 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
       <div className="node-metrics">
         <NodeMetric
           icon={<IconCpu size={12} />}
-          label="CPU"
+          label={t('nodes.colCpu')}
           percent={pct.cpu}
-          sub={node.maxcpu ? `${node.maxcpu} 核` : '—'}
+          sub={node.maxcpu ? t('dashboard.nodes.cores', { n: node.maxcpu }) : '—'}
           offline={offline}
         />
         <NodeMetric
           icon={<IconMemory size={12} />}
-          label="内存"
+          label={t('nodes.colMem')}
           percent={pct.mem}
           sub={formatBytes(node.maxmem, 0)}
           offline={offline}
         />
         <NodeMetric
           icon={<IconDisk size={12} />}
-          label="磁盘"
+          label={t('nodes.colDisk')}
           percent={pct.disk}
           sub={formatBytes(node.maxdisk, 0)}
           offline={offline}
@@ -680,11 +706,13 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
       <div className="node-card-foot">
         <span className="fs-xs text-muted flex items-center gap-6">
           <IconActivity size={12} />
-          {offline ? '节点离线' : `运行 ${formatUptimeShort(node.uptime)}`}
+          {offline
+            ? t('nodes.offline')
+            : t('dashboard.nodes.uptime', { uptime: formatUptimeShort(node.uptime) })}
         </span>
         {node.level ? (
           <Badge variant="warning" size="sm">
-            维护级别 {node.level}
+            {t('nodes.maintenanceLevel', { level: node.level })}
           </Badge>
         ) : (
           <span className="fs-xs text-muted">

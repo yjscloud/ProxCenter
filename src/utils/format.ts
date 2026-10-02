@@ -2,6 +2,8 @@
    ProxCenter — 格式化工具
    ========================================================================== */
 
+import { getLang, tStatic } from '../i18n';
+
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'] as const;
 
 /**
@@ -33,23 +35,29 @@ export function formatRate(bytesPerSec?: number | null): string {
 }
 
 /**
- * 运行时长格式化：秒 → 中文可读
- * 例：3661 → "1 小时 1 分"
+ * 运行时长格式化：秒 → 可读文本
+ * 例：3661 → "1 小时 1 分" / "1 hr 1 min"
  */
 export function formatUptime(seconds?: number | null): string {
   if (seconds === undefined || seconds === null || Number.isNaN(seconds)) {
     return '—';
   }
-  if (seconds <= 0) return '0 秒';
+  if (seconds <= 0) return tStatic('format.seconds', { n: 0 });
 
   const days = Math.floor(seconds / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
 
-  if (days > 0) return hours > 0 ? `${days} 天 ${hours} 小时` : `${days} 天`;
-  if (hours > 0) return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`;
-  if (minutes > 0) return `${minutes} 分`;
-  return `${Math.floor(seconds)} 秒`;
+  if (days > 0) {
+    const d = tStatic('format.days', { n: days });
+    return hours > 0 ? `${d} ${tStatic('format.hours', { n: hours })}` : d;
+  }
+  if (hours > 0) {
+    const h = tStatic('format.hours', { n: hours });
+    return minutes > 0 ? `${h} ${tStatic('format.minutes', { n: minutes })}` : h;
+  }
+  if (minutes > 0) return tStatic('format.minutes', { n: minutes });
+  return tStatic('format.seconds', { n: Math.floor(seconds) });
 }
 
 /**
@@ -171,17 +179,17 @@ export function formatDate(value?: number | string | Date | null): string {
 }
 
 /**
- * 相对时间："3 分钟前"
+ * 相对时间："3 分钟前" / "3 min ago"
  */
 export function formatRelative(value?: number | string | Date | null): string {
   const d = toDate(value);
   if (!d) return '—';
   const diff = Math.floor((Date.now() - d.getTime()) / 1000);
   if (diff < 0) return formatDateTime(d);
-  if (diff < 60) return '刚刚';
-  if (diff < 3_600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86_400) return `${Math.floor(diff / 3_600)} 小时前`;
-  if (diff < 2_592_000) return `${Math.floor(diff / 86_400)} 天前`;
+  if (diff < 60) return tStatic('format.justNow');
+  if (diff < 3_600) return tStatic('format.minutesAgo', { n: Math.floor(diff / 60) });
+  if (diff < 86_400) return tStatic('format.hoursAgo', { n: Math.floor(diff / 3_600) });
+  if (diff < 2_592_000) return tStatic('format.daysAgo', { n: Math.floor(diff / 86_400) });
   return formatDate(d);
 }
 
@@ -203,7 +211,7 @@ export function formatTimeLabel(value: number | string, span?: number): string {
  */
 export function formatNumber(value?: number | null, decimals = 0): string {
   if (value === undefined || value === null || Number.isNaN(value)) return '—';
-  return value.toLocaleString('zh-CN', {
+  return value.toLocaleString(getLang() === 'en' ? 'en-US' : 'zh-CN', {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });

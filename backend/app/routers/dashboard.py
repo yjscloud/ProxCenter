@@ -90,7 +90,7 @@ async def dashboard_summary(
         "version": {
             "pve": version.get("version"),
             "release": version.get("release"),
-            "panel": "1.0.0",
+            "panel": "0.1.1",
         },
         "vms": {
             "total": len(vms),

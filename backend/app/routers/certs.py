@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
-from .. import certs, security
+from .. import certs, i18n, security
 from ..tencent_ssl import TencentCloudError
 
 router = APIRouter(prefix="/api/certs", tags=["certs"])
@@ -31,6 +31,11 @@ def _site_view(site: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     view["days_left"] = left
     view["renew_before_days_effective"] = threshold
     view["needs_renew"] = left is not None and left <= threshold
+    # 腾云状态与上一次错误是存库的中文字符串，出口按请求语言渲染：
+    # 状态是固定枚举（tencent_ssl.STATUS_TEXT）一定命中；last_error 多为
+    # 「前缀 + 动态值」，在生成处已用双语拼好，这里兜底整句命中的情况。
+    view["cert_status_text"] = i18n.tr(str(view.get("cert_status_text") or ""))
+    view["last_error"] = i18n.tr(str(view.get("last_error") or ""))
     return view
 
 
@@ -63,7 +68,13 @@ async def _view(site: Dict[str, Any], own: str, own_cfg: Dict[str, Any]) -> Dict
 
 
 def _bad_request(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(exc))
+    """把模块抛出的业务错误转成 400，并按请求语言翻译。
+
+    证书模块的校验消息（域名、目录、SSH、部署方式……几十条）都集中在
+    ``certs`` 里以中文抛出，在这里收口翻译比在每个 ``raise`` 处包 ``tr()``
+    干净得多；腾讯云返回的英文报错查不到译表，原样透传，不受影响。
+    """
+    return HTTPException(status_code=400, detail=i18n.tr(str(exc)))
 
 
 @router.get("")
@@ -87,16 +98,25 @@ async def get_certs(
         "is_admin": scope is None,
         "options": {
             "dv_auth_methods": [
-                {"value": "DNS_AUTO", "label": "DNS_AUTO（自动添加解析，域名需托管在腾讯云 DNSPod）"},
-                {"value": "DNS", "label": "DNS（手动添加解析记录）"},
-                {"value": "FILE", "label": "FILE（站点根目录放置验证文件，需海外 CA 可访问）"},
+                {
+                    "value": "DNS_AUTO",
+                    "label": i18n.tr("DNS_AUTO（自动添加解析，域名需托管在腾讯云 DNSPod）"),
+                },
+                {"value": "DNS", "label": i18n.tr("DNS（手动添加解析记录）")},
+                {
+                    "value": "FILE",
+                    "label": i18n.tr("FILE（站点根目录放置验证文件，需海外 CA 可访问）"),
+                },
             ],
             "encrypt_algos": [
                 {"value": "RSA", "label": "RSA 2048"},
                 {"value": "ECC", "label": "ECC prime256v1"},
             ],
             "deploy_methods": [
-                {"value": value, "label": certs.DEPLOY_METHOD_LABELS[value]}
+                {
+                    "value": value,
+                    "label": i18n.tr(certs.DEPLOY_METHOD_LABELS[value]),
+                }
                 for value in certs.DEPLOY_METHODS
             ],
         },
@@ -185,7 +205,7 @@ async def update_site(
     scope = _own(user)
     existing = await certs.get_site(site_id, scope)
     if not existing:
-        raise HTTPException(status_code=404, detail="站点不存在")
+        raise HTTPException(status_code=404, detail=i18n.tr("站点不存在"))
     try:
         site = certs.normalise_site(payload, existing)
     except certs.CertError as exc:
@@ -208,20 +228,23 @@ async def remove_site(
     # 只能删自己的站点：管理员能看见别人的，但不能替他删
     existing = await certs.get_site(site_id, _own(user))
     if not existing:
-        raise HTTPException(status_code=404, detail="站点不存在")
+        raise HTTPException(status_code=404, detail=i18n.tr("站点不存在"))
     await certs.delete_site(site_id)
     await security.audit(
         request, user, "cert.site.delete", existing.get("domain", ""), "success",
         "删除证书站点 " + str(existing.get("name") or ""),
     )
-    return {"removed": True, "detail": "站点已删除（已部署的证书文件未做改动）"}
+    return {
+        "removed": True,
+        "detail": i18n.tr("站点已删除（已部署的证书文件未做改动）"),
+    }
 
 
 async def _require_site(site_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
     """取自己的站点：站点变更一律只作用于本人（管理员也只读他人的）。"""
     site = await certs.get_site(site_id, _own(user))
     if not site:
-        raise HTTPException(status_code=404, detail="站点不存在")
+        raise HTTPException(status_code=404, detail=i18n.tr("站点不存在"))
     return site
 
 

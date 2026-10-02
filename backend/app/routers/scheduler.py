@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import scheduler, security
+from .. import i18n, scheduler, security
 
 router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 
@@ -67,9 +67,11 @@ async def configure_job(
 ) -> Dict[str, Any]:
     """改间隔 / 启停。改完立刻重算下次唤醒时刻，不必等旧间隔到期。"""
     if not scheduler.is_registered(job_id):
-        raise HTTPException(status_code=404, detail=f"作业 {job_id} 不存在")
+        raise HTTPException(
+            status_code=404, detail=i18n.t("error.job_not_found", job_id=job_id)
+        )
     if payload.interval is None and payload.enabled is None:
-        raise HTTPException(status_code=400, detail="没有需要修改的字段")
+        raise HTTPException(status_code=400, detail=i18n.t("error.no_fields_to_update"))
 
     before = next(
         (job for job in scheduler.snapshot() if job["id"] == job_id), {}
@@ -105,7 +107,9 @@ async def run_job_now(
     巡检，等一下是可以接受的。
     """
     if not scheduler.is_registered(job_id):
-        raise HTTPException(status_code=404, detail=f"作业 {job_id} 不存在")
+        raise HTTPException(
+            status_code=404, detail=i18n.t("error.job_not_found", job_id=job_id)
+        )
 
     try:
         result = await scheduler.trigger(job_id)
@@ -135,7 +139,9 @@ async def reset_job(
 ) -> Dict[str, Any]:
     """恢复该作业的代码默认间隔与启用状态。"""
     if not scheduler.is_registered(job_id):
-        raise HTTPException(status_code=404, detail=f"作业 {job_id} 不存在")
+        raise HTTPException(
+            status_code=404, detail=i18n.t("error.job_not_found", job_id=job_id)
+        )
 
     updated = await scheduler.reset(job_id)
     await security.audit(

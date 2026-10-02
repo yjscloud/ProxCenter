@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import prefs, security
+from .. import i18n, prefs, security
 
 router = APIRouter(prefix="/api/prefs", tags=["prefs"])
 
@@ -64,9 +64,19 @@ def _validate_dashboard_layout(value: Any) -> Dict[str, Any]:
     return {"order": seen, "hidden": deduped_hidden}
 
 
+def _validate_language(value: Any) -> str:
+    """界面语言：只接受面板支持的语言码（见 i18n.SUPPORTED）。"""
+    code = i18n.normalize(value if isinstance(value, str) else None)
+    if not code:
+        raise HTTPException(status_code=400, detail="不支持的语言")
+    return code
+
+
 def _validate(key: str, value: Any) -> Any:
     if key == prefs.PREF_DASHBOARD_LAYOUT:
         return _validate_dashboard_layout(value)
+    if key == prefs.PREF_LANGUAGE:
+        return _validate_language(value)
     # 白名单之外的 key 在入口就已经被挡掉了，走到这里说明漏加了校验分支
     raise HTTPException(status_code=400, detail=f"暂不支持的偏好：{key}")
 

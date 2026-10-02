@@ -11,6 +11,8 @@ import { ToastProvider } from './hooks/useToast';
 import { AuthProvider } from './hooks/useAuth';
 import { StepUpProvider } from './hooks/useStepUp';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { LanguageCacheReset } from './components/LanguageCacheReset';
+import { I18nProvider } from './i18n';
 
 import './styles/theme.css';
 import './styles/global.css';
@@ -67,18 +69,24 @@ if (!container) {
 createRoot(container).render(
   <StrictMode>
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
-          <ToastProvider>
-            <AuthProvider>
-              {/* 必须在 AuthProvider 内层：二次确认要按当前用户判断有没有开 2FA */}
-              <StepUpProvider>
-                <App />
-              </StepUpProvider>
-            </AuthProvider>
-          </ToastProvider>
-        </BrowserRouter>
-      </QueryClientProvider>
+      {/* 语言放在最外层：登录页、路由错误页这些「还没有用户」的界面也要能切换语言 */}
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          {/* 后端按 Accept-Language 本地化的接口（作业名、权限目录、角色名…）
+              其 queryKey 不含语言，切语言后必须重取，否则一直显示旧语言 */}
+          <LanguageCacheReset />
+          <BrowserRouter>
+            <ToastProvider>
+              <AuthProvider>
+                {/* 必须在 AuthProvider 内层：二次确认要按当前用户判断有没有开 2FA */}
+                <StepUpProvider>
+                  <App />
+                </StepUpProvider>
+              </AuthProvider>
+            </ToastProvider>
+          </BrowserRouter>
+        </QueryClientProvider>
+      </I18nProvider>
     </ErrorBoundary>
   </StrictMode>,
 );

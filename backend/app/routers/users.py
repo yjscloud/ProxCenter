@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import mailer, panel_url, security, store
+from .. import i18n, mailer, panel_url, prefs, security, store
 from ..schemas import ApprovalRequest, UserCreate, UserUpdate
 
 
@@ -30,14 +30,16 @@ async def _notify_decision(
 
     # 对外链接优先用「面板全局地址」；未配置才回落到本次请求的 Host
     url = await panel_url.resolve(request)
-    if decision == "approve":
-        subject, text, html = mailer.approval_mail(
-            record["username"], role_label, url
-        )
-    else:
-        subject, text, html = mailer.rejection_mail(
-            record["username"], reason, url
-        )
+
+    # 审批通知按**收件人**的语言渲染：收件人就是被审批的那个用户，
+    # 其语言存在 user_prefs 里，与管理员当前界面语言无关。
+    recipient = str(record.get("username") or "")
+    lang = await prefs.get(recipient, prefs.PREF_LANGUAGE, i18n.DEFAULT_LANG)
+    with i18n.use_language(lang):
+        if decision == "approve":
+            subject, text, html = mailer.approval_mail(recipient, role_label, url)
+        else:
+            subject, text, html = mailer.rejection_mail(recipient, reason, url)
 
     ok, detail = await mailer.send_mail(to, subject, text, html=html)
     return detail if ok else f"通知用户失败：{detail}"
@@ -58,8 +60,11 @@ async def list_roles(
             # 同时给出 id 与 role：前端新的角色模型用 id，旧代码用 role
             "id": item["id"],
             "role": item["id"],
-            "name": item.get("name") or item["id"],
-            "description": item.get("description") or "",
+            # 内置角色的名称与说明按请求语言返回（与 /api/roles 保持一致，
+            # 否则这里会原样吐出库里存的中文，英文界面下角色卡片仍是中文）。
+            # 自定义角色是用户自己起的名字，译表查不到就原样透传（见 i18n.tr）。
+            "name": i18n.tr(item.get("name") or item["id"]),
+            "description": i18n.tr(item.get("description") or ""),
             "permissions": item.get("permissions") or [],
             "builtin": bool(item.get("builtin")),
         }

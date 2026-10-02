@@ -22,6 +22,7 @@ import { ErrorState } from './ui/EmptyState';
 import { SegmentedControl } from './ui/Input';
 import { ChartSkeleton } from './ui/Spinner';
 import { formatBytes, formatTimeLabel, trendColor } from '../utils/format';
+import { useT, type TFunc } from '../i18n';
 
 const AXIS_STYLE = { stroke: '#c9cdd4', fontSize: 11 } as const;
 const GRID_STYLE = { stroke: 'rgba(0,0,0,0.07)', strokeDasharray: '4 4' } as const;
@@ -48,17 +49,24 @@ function axisTick(value: number, span: number): string {
 /** 后端 rrddata 支持的三种回溯窗口 */
 export type CapacityTimeframe = 'week' | 'month' | 'year';
 
-const WINDOW_LABEL: Record<CapacityTimeframe, string> = {
-  week: '近 7 天',
-  month: '近 30 天',
-  year: '近 1 年',
-};
+/* 窗口名与选项含中文，因此在组件内构造（模块级常量会让文案停在首次加载时的语言） */
+function windowLabels(t: TFunc): Record<CapacityTimeframe, string> {
+  return {
+    week: t('capacity.windowWeek'),
+    month: t('capacity.windowMonth'),
+    year: t('capacity.windowYear'),
+  };
+}
 
-const TIMEFRAME_OPTIONS: Array<{ label: string; value: CapacityTimeframe }> = [
-  { label: '1 周', value: 'week' },
-  { label: '1 月', value: 'month' },
-  { label: '1 年', value: 'year' },
-];
+function timeframeOptions(
+  t: TFunc,
+): Array<{ label: string; value: CapacityTimeframe }> {
+  return [
+    { label: t('capacity.optWeek'), value: 'week' },
+    { label: t('capacity.optMonth'), value: 'month' },
+    { label: t('capacity.optYear'), value: 'year' },
+  ];
+}
 
 interface ChartDatum {
   time: number;
@@ -114,6 +122,7 @@ function TooltipBox({
   label?: number | string;
   span?: number;
 }) {
+  const t = useT();
   if (!active || !payload || payload.length === 0) return null;
   const point = payload.find((p) => p.value != null);
   if (!point || point.value == null) return null;
@@ -124,7 +133,9 @@ function TooltipBox({
       </div>
       <div className="chart-tooltip-row">
         <span className="chart-tooltip-name">
-          {point.dataKey === 'proj' ? '预测已用' : '已用'}
+          {point.dataKey === 'proj'
+            ? t('capacity.seriesProjected')
+            : t('capacity.seriesUsed')}
         </span>
         <span className="chart-tooltip-value mono">
           {formatBytes(point.value, 0)}
@@ -147,27 +158,34 @@ export function CapacityCard({
   timeframe?: CapacityTimeframe;
   onTimeframeChange?: (value: CapacityTimeframe) => void;
 }) {
+  const t = useT();
   const hasData = !!forecast && forecast.history.length >= 2;
   const { data, span } = hasData ? buildData(forecast) : { data: [], span: 0 };
-  const windowLabel = WINDOW_LABEL[timeframe];
+  const windowLabel = windowLabels(t)[timeframe];
 
   /* ---- 满容结论 ---- */
   let verdict: { text: string; tone: 'danger' | 'warning' | 'success' | 'neutral' };
   if (!forecast || forecast.history.length < 2) {
-    verdict = { text: '数据不足（需节点磁盘历史）', tone: 'neutral' };
+    verdict = { text: t('capacity.verdictInsufficient'), tone: 'neutral' };
   } else if (forecast.days_to_full != null) {
     const days = Math.round(forecast.days_to_full);
     verdict = {
-      text: `预计 ${days.toLocaleString('zh-CN')} 天后写满`,
+      text: t('capacity.verdictFillIn', { days: days.toLocaleString() }),
       tone: days < 90 ? 'danger' : days < 365 ? 'warning' : 'success',
     };
   } else if ((forecast.daily_rate_bytes ?? 0) < 0) {
     /* 负增长说明在清空间（删备份 / 清日志），不是「平稳」也不是「要满」 */
-    verdict = { text: `${windowLabel}用量在下降`, tone: 'success' };
+    verdict = {
+      text: t('capacity.verdictDecreasing', { window: windowLabel }),
+      tone: 'success',
+    };
   } else if ((forecast.daily_rate_bytes ?? 0) === 0) {
-    verdict = { text: `${windowLabel}趋势平稳`, tone: 'success' };
+    verdict = {
+      text: t('capacity.verdictStable', { window: windowLabel }),
+      tone: 'success',
+    };
   } else {
-    verdict = { text: '已接近满容', tone: 'danger' };
+    verdict = { text: t('capacity.verdictNearFull'), tone: 'danger' };
   }
 
   const rate = forecast?.daily_rate_bytes ?? null;
@@ -178,8 +196,8 @@ export function CapacityCard({
   return (
     <Card>
       <CardHeader
-        title="磁盘容量预测"
-        subtitle={`基于${windowLabel}节点根分区趋势线性外推`}
+        title={t('capacity.title')}
+        subtitle={t('capacity.subtitle', { window: windowLabel })}
         icon={<span className="fs-lg">📈</span>}
         actions={
           <>
@@ -187,8 +205,8 @@ export function CapacityCard({
               <SegmentedControl<CapacityTimeframe>
                 value={timeframe}
                 onChange={onTimeframeChange}
-                ariaLabel="容量趋势回溯窗口"
-                options={TIMEFRAME_OPTIONS}
+                ariaLabel={t('capacity.windowAria')}
+                options={timeframeOptions(t)}
               />
             ) : null}
             <Badge variant={verdict.tone}>{verdict.text}</Badge>
@@ -220,7 +238,7 @@ export function CapacityCard({
               {formatBytes(used, 0)}
               <span className="fs-xs text-muted"> / {formatBytes(total, 0)}</span>
             </span>
-            <span className="capacity-stat-label">当前已用</span>
+            <span className="capacity-stat-label">{t('capacity.currentUsed')}</span>
           </div>
           <div className="capacity-stat">
             <span
@@ -232,15 +250,20 @@ export function CapacityCard({
               {/* formatBytes 对负数一律返回「—」，增速为负时得自己带上符号 */}
               {rate == null
                 ? '—'
-                : `${rate >= 0 ? '+' : '-'}${formatBytes(Math.abs(rate), 0)}/天`}
+                : t('capacity.perDay', {
+                    sign: rate >= 0 ? '+' : '-',
+                    size: formatBytes(Math.abs(rate), 0),
+                  })}
             </span>
             <span className="capacity-stat-label">
-              {rate != null && rate < 0 ? '日均回落' : '日均增长'}
+              {rate != null && rate < 0
+                ? t('capacity.avgDrop')
+                : t('capacity.avgGrow')}
             </span>
           </div>
           <div className="capacity-stat">
             <span className="capacity-stat-value mono">{usedPct.toFixed(1)}%</span>
-            <span className="capacity-stat-label">已用占比</span>
+            <span className="capacity-stat-label">{t('capacity.usedRatio')}</span>
           </div>
         </div>
       ) : null}
@@ -248,11 +271,14 @@ export function CapacityCard({
       {loading ? (
         <ChartSkeleton height={200} />
       ) : error ? (
-        <ErrorState title="加载容量数据失败" message="无法获取节点磁盘历史。" />
+        <ErrorState
+          title={t('capacity.loadFailed')}
+          message={t('capacity.loadFailedMsg')}
+        />
       ) : !hasData ? (
         <EmptyState
-          title="暂无容量数据"
-          description="节点未上报磁盘历史，无法预测满容时间。"
+          title={t('capacity.empty')}
+          description={t('capacity.emptyDesc')}
           compact
         />
       ) : (
@@ -289,7 +315,7 @@ export function CapacityCard({
                 stroke="#d54941"
                 strokeDasharray="6 4"
                 label={{
-                  value: '容量上限',
+                  value: t('capacity.seriesLimit'),
                   position: 'insideTopRight',
                   fontSize: 10,
                   fill: '#d54941',
@@ -298,7 +324,7 @@ export function CapacityCard({
               <Area
                 type="monotone"
                 dataKey="used"
-                name="已用"
+                name={t('capacity.seriesUsed')}
                 stroke="#0052d9"
                 strokeWidth={2.4}
                 fill="url(#gradCapacity)"
@@ -308,7 +334,7 @@ export function CapacityCard({
               <Line
                 type="monotone"
                 dataKey="proj"
-                name="预测"
+                name={t('capacity.seriesProjectedName')}
                 stroke="#e37318"
                 strokeWidth={2}
                 strokeDasharray="6 4"

@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from . import store
+from . import i18n, store
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,16 @@ DEFAULT_FAQS: List[Dict[str, str]] = [
 ]
 
 
+def _localized_defaults() -> List[Dict[str, str]]:
+    """内置默认 FAQ 按请求语言返回。
+
+    译表缺条目时 ``i18n.tr`` 会原样返回中文原文，不会露出 key。
+    """
+    return [
+        {"q": i18n.tr(item["q"]), "a": i18n.tr(item["a"])} for item in DEFAULT_FAQS
+    ]
+
+
 def _clean_text(value: Any, limit: int) -> str:
     """折叠空白并截断；返回空串表示这一项无效。"""
     return " ".join(str(value or "").split())[:limit]
@@ -84,19 +94,19 @@ async def get_faqs() -> List[Dict[str, str]]:
     """读取 FAQ；从未配置过时返回内置默认值，配置为空则返回空列表。"""
     raw = await store.get_setting(FAQ_KEY)
     if not raw:
-        return [dict(item) for item in DEFAULT_FAQS]
+        return _localized_defaults()
 
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
         logger.warning("site_faq 配置损坏，已回落到默认值：%r", raw)
-        return [dict(item) for item in DEFAULT_FAQS]
+        return _localized_defaults()
 
     # 库里的数据可能是旧版本写入或被手工改过，读的时候也过一遍清洗
     items = _clean_items(parsed)
     if items is None:
         logger.warning("site_faq 不是列表，已回落到默认值：%r", parsed)
-        return [dict(item) for item in DEFAULT_FAQS]
+        return _localized_defaults()
     return items
 
 

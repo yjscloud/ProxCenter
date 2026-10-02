@@ -42,6 +42,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .formatters import short_hostname
+from .i18n import pick, tr
 
 logger = logging.getLogger(__name__)
 
@@ -181,13 +182,15 @@ def _check(
     return {
         "key": key,
         "category": category,
-        "label": label,
+        # 检查项文案是**全平台唯一出口**：本机与远程、单机与总览都从这里出去，
+        # 所以本地化只在这一处做，各 _check_* 仍照常写字面量。
+        "label": tr(label),
         "status": status,
         "severity": severity,
-        "value": value,
-        "expected": expected,
-        "detail": detail,
-        "hint": hint,
+        "value": tr(value),
+        "expected": tr(expected),
+        "detail": tr(detail),
+        "hint": tr(hint),
         "fixable": bool(fixable),
         # auto=False 的项仍可「单独修复」，但不参与「一键加固」——这类改动一旦
         # 生效可能把人关在门外（典型的例子：关闭 SSH 口令认证），必须由用户点名执行。
@@ -303,8 +306,8 @@ def _check_ssh(ssh: Dict[str, Any]) -> List[Dict[str, Any]]:
     files = ssh.get("files") or {}
     # sshd -T 是权威答案；拿不到时退回配置文件（此时看不到展开后的默认值）
     settings: Dict[str, str] = effective or files
-    source = str(
-        ssh.get("source") or ("sshd -T（生效配置）" if effective else "配置文件")
+    source = tr(
+        str(ssh.get("source") or ("sshd -T（生效配置）" if effective else "配置文件"))
     )
     checks: List[Dict[str, Any]] = []
 
@@ -331,8 +334,11 @@ def _check_ssh(ssh: Dict[str, Any]) -> List[Dict[str, Any]]:
             value,
             "no 或 prohibit-password",
             detail,
-            "Root 是攻击者唯一确定的用户名。改为 prohibit-password 既保留密钥登录，"
-            "又堵死口令爆破。数据来源：" + source,
+            tr(
+                "Root 是攻击者唯一确定的用户名。改为 prohibit-password 既保留密钥登录，"
+                "又堵死口令爆破。数据来源："
+            )
+            + source,
             fixable=True,
         )
     )
@@ -379,7 +385,7 @@ def _check_ssh(ssh: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "medium",
                 password_auth,
                 "no",
-                f"当前值 {password_auth}",
+                pick(f"当前值 {password_auth}", f"Current value {password_auth}"),
                 "确认无误后设为 no。",
                 fixable=True,
                 auto=False,
@@ -457,7 +463,10 @@ def _check_ssh(ssh: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "low",
                 max_tries or str(tries),
                 "≤ 4",
-                f"允许 {tries} 次认证尝试，给爆破留的空间偏大",
+                pick(
+                    f"允许 {tries} 次认证尝试，给爆破留的空间偏大",
+                    f"Allows {tries} authentication attempts, leaving too much room for brute force",
+                ),
                 "设为 MaxAuthTries 4。",
                 fixable=True,
             )
@@ -534,9 +543,17 @@ def _check_password(
     except ValueError:
         max_days = 99999
     if max_days != 99999 and 1 <= max_days <= 90:
-        status, detail = "pass", f"口令最长有效期 {max_days} 天"
+        status = "pass"
+        detail = pick(
+            f"口令最长有效期 {max_days} 天",
+            f"Maximum password age {max_days} days",
+        )
     elif max_days != 99999 and max_days <= 365:
-        status, detail = "warn", f"口令最长有效期 {max_days} 天，建议不超过 90 天"
+        status = "warn"
+        detail = pick(
+            f"口令最长有效期 {max_days} 天，建议不超过 90 天",
+            f"Maximum password age {max_days} days; 90 days or fewer is recommended",
+        )
     else:
         status, detail = "fail", "口令几乎不会过期（PASS_MAX_DAYS 未设置或过大）"
     checks.append(
@@ -570,7 +587,10 @@ def _check_password(
             min_len_raw if readable else "无法读取 /etc/login.defs",
             "≥ 8 位",
             (
-                f"最小长度 {min_len} 位"
+                pick(
+                    f"最小长度 {min_len} 位",
+                    f"Minimum length {min_len} characters",
+                )
                 if readable
                 else "读不到 /etc/login.defs（需要 root 权限）"
             ),
@@ -645,7 +665,10 @@ def firewall_status() -> Dict[str, Any]:
             return {
                 "active": True,
                 "manager": label,
-                "detail": f"{label} 服务处于 active 状态",
+                "detail": pick(
+                    f"{label} 服务处于 active 状态",
+                    f"The {label} service is active",
+                ),
                 "detected": detected + [label],
             }
         detected.append(label)
@@ -742,7 +765,12 @@ def _check_firewall(
         "high",
         "未检测到",
         "存在活动的防火墙",
-        status["detail"] + ("" if elevated else "（权限不足，无法完整探测，结果仅供参考）"),
+        tr(status["detail"])
+        + (
+            ""
+            if elevated
+            else tr("（权限不足，无法完整探测，结果仅供参考）")
+        ),
         "这台主机没有活动的防火墙，暴露的端口可被直接访问。Proxmox 宿主可用内置的"
         "pve-firewall（在面板的「防火墙」页里配置），普通主机可启用 ufw / firewalld"
         " 并只放行必要端口。注意：启用前务必先放行 SSH 端口，否则会把自己关在门外。",
@@ -772,7 +800,14 @@ def time_sync_status() -> Dict[str, Any]:
         ("ntpd", "ntpd"),
     ):
         if _systemd_active(unit):
-            return {"synced": True, "service": label, "detail": f"{label} 服务处于 active 状态"}
+            return {
+                "synced": True,
+                "service": label,
+                "detail": pick(
+                    f"{label} 服务处于 active 状态",
+                    f"The {label} service is active",
+                ),
+            }
     return {"synced": False, "service": "", "detail": "没有找到正在运行的时间同步服务"}
 
 
@@ -886,7 +921,11 @@ def _check_accounts(
                     "high",
                     "、".join(weak),
                     "没有可登录的空口令账号",
-                    f"发现 {len(weak)} 个可登录且没有口令的账号：{'、'.join(weak)}",
+                    pick(
+                        f"发现 {len(weak)} 个可登录且没有口令的账号：{'、'.join(weak)}",
+                        f"{len(weak)} login-capable account(s) without a password: "
+                        f"{', '.join(weak)}",
+                    ),
                     "这些账号无需口令即可登录，应立即锁定（passwd -l <用户>）或设置强口令。",
                     fixable=elevated,
                 )
@@ -930,7 +969,11 @@ def _check_accounts(
                     "high",
                     "、".join(extra),
                     "除 root 外没有 UID 0 账号",
-                    f"发现 {len(extra)} 个 UID 为 0 的账号：{'、'.join(extra)}（等同于 root）",
+                    pick(
+                        f"发现 {len(extra)} 个 UID 为 0 的账号：{'、'.join(extra)}（等同于 root）",
+                        f"{len(extra)} account(s) with UID 0: {', '.join(extra)} "
+                        "(equivalent to root)",
+                    ),
                     "若非刻意设置，删除或改掉这些账号的 UID；这类账号常被用作持久化后门。",
                 )
             )
@@ -1071,7 +1114,10 @@ def _check_kernel(
                     spec["severity"],
                     "无法读取",
                     spec["expected"],
-                    f"读不到 /proc/sys/{spec['name'].replace('.', '/')}",
+                    pick(
+                        f"读不到 /proc/sys/{spec['name'].replace('.', '/')}",
+                        f"Cannot read /proc/sys/{spec['name'].replace('.', '/')}",
+                    ),
                 )
             )
             continue
@@ -1087,8 +1133,12 @@ def _check_kernel(
                 spec["expected"],
                 spec["detail"],
                 "" if ok else
-                f"执行 sysctl -w {spec['name']}={spec['fix_value']} 可立即生效，"
-                f"写入 /etc/sysctl.d/ 可持久化。",
+                pick(
+                    f"执行 sysctl -w {spec['name']}={spec['fix_value']} 可立即生效，"
+                    f"写入 /etc/sysctl.d/ 可持久化。",
+                    f"Run sysctl -w {spec['name']}={spec['fix_value']} to apply it "
+                    "immediately; write it under /etc/sysctl.d/ to make it persistent.",
+                ),
                 fixable=not ok,
             )
         )
@@ -1217,7 +1267,7 @@ def evaluate(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         categories.append(
             {
                 "key": key,
-                "label": CATEGORY_LABELS.get(key, key),
+                "label": tr(CATEGORY_LABELS.get(key, key)),
                 "score": cat_score,
                 "checks": items,
             }
@@ -1230,7 +1280,7 @@ def evaluate(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "score": score,
         "grade": grade,
-        "grade_label": grade_label,
+        "grade_label": tr(grade_label),
         "summary": summary,
         "categories": categories,
         "checks": checks,
@@ -1357,7 +1407,10 @@ def parse_firewall_probe(
             return {
                 "active": True,
                 "manager": name,
-                "detail": f"{name} 服务处于 active 状态",
+                "detail": pick(
+                    f"{name} 服务处于 active 状态",
+                    f"The {name} service is active",
+                ),
             }
     if "status: active" in (sections.get("fw-ufw") or "").lower():
         return {"active": True, "manager": "ufw", "detail": "ufw status = active"}
@@ -1418,7 +1471,10 @@ def _parse_ntp_probe(sections: Dict[str, str]) -> Dict[str, Any]:
             return {
                 "synced": True,
                 "service": label,
-                "detail": f"{label} 服务处于 active 状态",
+                "detail": pick(
+                    f"{label} 服务处于 active 状态",
+                    f"The {label} service is active",
+                ),
             }
     return {"synced": False, "service": "", "detail": "没有找到正在运行的时间同步服务"}
 
@@ -1482,12 +1538,12 @@ def _remote_error_report(row: Dict[str, Any], error: str) -> Dict[str, Any]:
         "address": str(row.get("host") or ""),
         "checked_at": int(time.time()),
         "ok": False,
-        "error": error[:300],
+        "error": tr(error[:300]),
         "elevated": False,
         "privilege": "none",
         "score": 0,
         "grade": "",
-        "grade_label": "未体检",
+        "grade_label": tr("未体检"),
         "summary": _empty_summary(),
         "categories": [],
         "checks": [],
@@ -1598,7 +1654,9 @@ async def collect_host(host_id: str) -> Dict[str, Any]:
         return await collect()
     row = await _sshremote().get_host(host_id)
     if not row:
-        raise LookupError(f"受管主机 {host_id} 不存在")
+        raise LookupError(
+            pick(f"受管主机 {host_id} 不存在", f"Managed host {host_id} does not exist")
+        )
     return await collect_remote(row)
 
 
@@ -1628,7 +1686,7 @@ def compact_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "privilege": report.get("privilege") or "none",
         "score": report.get("score") or 0,
         "grade": report.get("grade") or "",
-        "grade_label": report.get("grade_label") or "未体检",
+        "grade_label": report.get("grade_label") or tr("未体检"),
         "summary": report.get("summary") or _empty_summary(),
         "os": report.get("os") or {},
         "issues": [
@@ -1719,8 +1777,12 @@ class FixError(RuntimeError):
 def _require_root(action: str) -> None:
     if not _elevated():
         raise FixError(
-            f"{action}需要 root 权限：面板进程当前不是 root，"
-            "请用 root 运行面板（或用 systemd 以 root 托管）后再试。"
+            pick(
+                f"{action}需要 root 权限：面板进程当前不是 root，"
+                "请用 root 运行面板（或用 systemd 以 root 托管）后再试。",
+                f"{tr(action)} requires root: the panel process is not running as root. "
+                "Run the panel as root (or manage it with systemd as root) and try again.",
+            )
         )
 
 
@@ -1803,7 +1865,7 @@ def apply_sshd_settings(updates: Dict[str, str]) -> Dict[str, Any]:
     _require_root("修改 SSH 配置")
     binary = _sshd_binary()
     if not binary:
-        raise FixError("没有找到 sshd 可执行文件，无法校验配置")
+        raise FixError(tr("没有找到 sshd 可执行文件，无法校验配置"))
 
     before = _read_text(SSHD_DROPIN)
     current = _parse_kv_file(before)
@@ -1815,7 +1877,7 @@ def apply_sshd_settings(updates: Dict[str, str]) -> Dict[str, Any]:
     ok, output = _run([binary, "-t"], timeout=10)
     if not ok:
         _restore(SSHD_DROPIN, before)
-        raise FixError("sshd 配置校验失败，已回滚：" + output.strip()[:300])
+        raise FixError(tr("sshd 配置校验失败，已回滚：") + output.strip()[:300])
 
     # 确认 drop-in 真的被主配置 Include 了：没有的话设置不会生效，写了也是白写
     effective, _ = sshd_settings()
@@ -1827,17 +1889,19 @@ def apply_sshd_settings(updates: Dict[str, str]) -> Dict[str, Any]:
     if not_applied:
         _restore(SSHD_DROPIN, before)
         raise FixError(
-            "写入成功但设置未生效：主配置可能没有 Include "
-            f"{SSHD_DROPIN_DIR}/*.conf。请在 /etc/ssh/sshd_config 里加上 "
-            "`Include /etc/ssh/sshd_config.d/*.conf` 后重试（已回滚本次改动）。"
+            tr(
+                "写入成功但设置未生效：主配置可能没有 Include "
+                f"{SSHD_DROPIN_DIR}/*.conf。请在 /etc/ssh/sshd_config 里加上 "
+                "`Include /etc/ssh/sshd_config.d/*.conf` 后重试（已回滚本次改动）。"
+            )
         )
 
-    reload_detail = _reload_ssh() or "（未能自动重载，请手动 systemctl reload sshd）"
+    reload_detail = _reload_ssh() or tr("（未能自动重载，请手动 systemctl reload sshd）")
     return {
         "ok": True,
         "path": SSHD_DROPIN,
         "config": content,
-        "detail": f"已写入并生效，{reload_detail}",
+        "detail": tr("已写入并生效，") + reload_detail,
     }
 
 
@@ -1893,7 +1957,7 @@ def apply_login_defs(updates: Dict[str, str]) -> Dict[str, Any]:
     _require_root("修改口令策略")
     text = _read_text(LOGIN_DEFS)
     if text is None:
-        raise FixError(f"读不到 {LOGIN_DEFS}")
+        raise FixError(pick(f"读不到 {LOGIN_DEFS}", f"Cannot read {LOGIN_DEFS}"))
     backup = LOGIN_DEFS + ".panel.bak"
     if not os.path.exists(backup):
         _write_text(backup, text)
@@ -1901,10 +1965,16 @@ def apply_login_defs(updates: Dict[str, str]) -> Dict[str, Any]:
     return {
         "ok": True,
         "path": LOGIN_DEFS,
-        "detail": "已更新口令策略（原文件备份为 "
-        + backup
-        + "；PASS_MAX_DAYS / PASS_MIN_LEN 只对新建用户生效，"
-        "已有账号可用 chage -M 90 <用户> 逐个调整）",
+        "detail": pick(
+            "已更新口令策略（原文件备份为 "
+            + backup
+            + "；PASS_MAX_DAYS / PASS_MIN_LEN 只对新建用户生效，"
+            "已有账号可用 chage -M 90 <用户> 逐个调整）",
+            "Password policy updated (the original file was backed up to "
+            + backup
+            + "; PASS_MAX_DAYS / PASS_MIN_LEN apply to new users only — adjust "
+            "existing accounts one by one with chage -M 90 <user>)",
+        ),
     }
 
 
@@ -1948,22 +2018,32 @@ def apply_sysctl(updates: Dict[str, str]) -> Dict[str, Any]:
         if not ok:
             ok2, output2 = _run([sysctl, "-p", SYSCTL_FILE], timeout=15)
             if not ok2:
-                raise FixError("写入成功但 sysctl 应用失败：" + (output2.strip() or output.strip())[:300])
-        detail = "已应用"
+                raise FixError(
+                    tr("写入成功但 sysctl 应用失败：")
+                    + (output2.strip() or output.strip())[:300]
+                )
+        detail = tr("已应用")
 
     # 复验：确认每个键真的生效了
     failed: List[str] = []
     for name, value in updates.items():
         actual = read_sysctl(name)
         if actual is not None and actual.strip() != str(value).strip():
-            failed.append(f"{name}={actual}（期望 {value}）")
+            failed.append(
+                pick(
+                    f"{name}={actual}（期望 {value}）",
+                    f"{name}={actual} (expected {value})",
+                )
+            )
     if failed:
-        raise FixError("内核参数未按预期生效：" + "、".join(failed))
+        raise FixError(
+            tr("内核参数未按预期生效：") + pick("、", ", ").join(failed)
+        )
     return {
         "ok": True,
         "path": SYSCTL_FILE,
         "config": content,
-        "detail": detail or "已写入",
+        "detail": detail or tr("已写入"),
     }
 
 
@@ -1983,18 +2063,20 @@ def fix_time_sync() -> Dict[str, Any]:
     if timedatectl:
         ok, output = _run([timedatectl, "set-ntp", "true"], timeout=10)
         if ok:
-            return {"ok": True, "detail": "已执行 timedatectl set-ntp true"}
+            return {"ok": True, "detail": tr("已执行 timedatectl set-ntp true")}
         detail = output.strip()[:200]
     else:
-        detail = "没有 timedatectl"
+        detail = tr("没有 timedatectl")
     # 退回到启用 systemd-timesyncd
     systemctl = _which("systemctl")
     if systemctl:
         ok, output = _run([systemctl, "enable", "--now", "systemd-timesyncd"], timeout=15)
         if ok:
-            return {"ok": True, "detail": "已启用 systemd-timesyncd"}
-        raise FixError("启用时间同步失败：" + (output.strip() or detail)[:300])
-    raise FixError("无法启用时间同步：" + detail)
+            return {"ok": True, "detail": tr("已启用 systemd-timesyncd")}
+        raise FixError(
+            tr("启用时间同步失败：") + (output.strip() or detail)[:300]
+        )
+    raise FixError(tr("无法启用时间同步：") + detail)
 
 
 # ---- 弱口令账号 ----
@@ -2005,7 +2087,7 @@ def fix_empty_password_accounts() -> Dict[str, Any]:
     passwd = _read_text(PASSWD_FILE)
     users = empty_password_users(shadow, passwd)
     if not users:
-        return {"ok": True, "detail": "没有需要处理的空口令账号"}
+        return {"ok": True, "detail": tr("没有需要处理的空口令账号")}
     passwd_bin = _which("passwd") or "/usr/bin/passwd"
     locked: List[str] = []
     for user in users:
@@ -2013,9 +2095,17 @@ def fix_empty_password_accounts() -> Dict[str, Any]:
             continue
         ok, output = _run([passwd_bin, "-l", user], timeout=10)
         if not ok:
-            raise FixError(f"锁定账号 {user} 失败：{output.strip()[:200]}")
+            raise FixError(
+                pick(
+                    f"锁定账号 {user} 失败：{output.strip()[:200]}",
+                    f"Failed to lock the account {user}: {output.strip()[:200]}",
+                )
+            )
         locked.append(user)
-    return {"ok": True, "detail": "已锁定账号：" + "、".join(locked)}
+    return {
+        "ok": True,
+        "detail": tr("已锁定账号：") + pick("、", ", ").join(locked),
+    }
 
 
 # ------------------------------------------------------------- 远程加固（SSH）
@@ -2053,7 +2143,12 @@ async def _remote_write_file(
         await _remote_run(row, f"{sudo}mkdir -p {directory} 2>/dev/null")
     ok, error = await _sshremote().write_file(row, path, content)
     if not ok:
-        raise FixError(f"写入 {path} 失败：{error.strip()[:240]}")
+        raise FixError(
+            pick(
+                f"写入 {path} 失败：{error.strip()[:240]}",
+                f"Failed to write {path}: {error.strip()[:240]}",
+            )
+        )
 
 
 async def _remote_restore(
@@ -2114,7 +2209,7 @@ async def _remote_apply_sshd(
     ok, output = await _remote_run(row, f"{sudo}{binary} -t")
     if not ok:
         await _remote_restore(row, SSHD_DROPIN, before, sudo)
-        raise FixError("sshd 配置校验失败，已回滚：" + output.strip()[:300])
+        raise FixError(tr("sshd 配置校验失败，已回滚：") + output.strip()[:300])
 
     effective = await _remote_sshd_settings(row, sudo)
     not_applied = [
@@ -2125,9 +2220,11 @@ async def _remote_apply_sshd(
     if not_applied:
         await _remote_restore(row, SSHD_DROPIN, before, sudo)
         raise FixError(
-            f"写入成功但设置未生效：主配置可能没有 Include {SSHD_DROPIN_DIR}/*.conf。"
-            "请在它的 /etc/ssh/sshd_config 里加上 "
-            "`Include /etc/ssh/sshd_config.d/*.conf` 后重试（已回滚本次改动）。"
+            tr(
+                f"写入成功但设置未生效：主配置可能没有 Include {SSHD_DROPIN_DIR}/*.conf。"
+                "请在它的 /etc/ssh/sshd_config 里加上 "
+                "`Include /etc/ssh/sshd_config.d/*.conf` 后重试（已回滚本次改动）。"
+            )
         )
 
     reload_detail = ""
@@ -2140,8 +2237,8 @@ async def _remote_apply_sshd(
         "ok": True,
         "path": SSHD_DROPIN,
         "config": content,
-        "detail": "已写入并生效，"
-        + (reload_detail or "（未能自动重载，请手动 reload sshd）"),
+        "detail": tr("已写入并生效，")
+        + (reload_detail or tr("（未能自动重载，请手动 reload sshd）")),
     }
 
 
@@ -2150,7 +2247,12 @@ async def _remote_apply_login_defs(
 ) -> Dict[str, Any]:
     before = await _remote_read_file(row, LOGIN_DEFS, sudo)
     if before is None:
-        raise FixError(f"读不到远程主机上的 {LOGIN_DEFS}")
+        raise FixError(
+            pick(
+                f"读不到远程主机上的 {LOGIN_DEFS}",
+                f"Cannot read {LOGIN_DEFS} on the remote host",
+            )
+        )
     backup = LOGIN_DEFS + ".panel.bak"
     if await _remote_read_file(row, backup, sudo) is None:
         await _remote_write_file(row, backup, before, sudo)
@@ -2158,8 +2260,12 @@ async def _remote_apply_login_defs(
     return {
         "ok": True,
         "path": LOGIN_DEFS,
-        "detail": f"已更新远程主机口令策略（原文件备份为 {backup}；"
-        "只对新建用户生效，已有账号可用 chage -M 90 <用户> 调整）",
+        "detail": pick(
+            f"已更新远程主机口令策略（原文件备份为 {backup}；"
+            "只对新建用户生效，已有账号可用 chage -M 90 <用户> 调整）",
+            f"Remote password policy updated (the original file was backed up to {backup}; "
+            "applies to new users only — adjust existing accounts with chage -M 90 <user>)",
+        ),
     }
 
 
@@ -2175,7 +2281,7 @@ async def _remote_apply_sysctl(
     if not ok:
         ok, output = await _remote_run(row, f"{sudo}sysctl --system 2>/dev/null", timeout=30)
         if not ok:
-            raise FixError("写入成功但 sysctl 应用失败：" + output.strip()[:300])
+            raise FixError(tr("写入成功但 sysctl 应用失败：") + output.strip()[:300])
 
     # 复验：逐个读回 /proc/sys，确认真的生效
     failed: List[str] = []
@@ -2184,22 +2290,36 @@ async def _remote_apply_sysctl(
         _ok, out = await _remote_run(row, f"cat {path} 2>/dev/null")
         actual = out.strip().splitlines()[-1].strip() if out.strip() else ""
         if actual and actual != str(value).strip():
-            failed.append(f"{name}={actual}（期望 {value}）")
+            failed.append(
+                pick(
+                    f"{name}={actual}（期望 {value}）",
+                    f"{name}={actual} (expected {value})",
+                )
+            )
     if failed:
-        raise FixError("远程内核参数未按预期生效：" + "、".join(failed))
-    return {"ok": True, "path": SYSCTL_FILE, "config": content, "detail": "已应用"}
+        raise FixError(
+            tr("远程内核参数未按预期生效：") + pick("、", ", ").join(failed)
+        )
+    return {
+        "ok": True,
+        "path": SYSCTL_FILE,
+        "config": content,
+        "detail": tr("已应用"),
+    }
 
 
 async def _remote_fix_time_sync(row: Dict[str, Any], sudo: str) -> Dict[str, Any]:
     ok, output = await _remote_run(row, f"{sudo}timedatectl set-ntp true 2>&1", timeout=20)
     if ok:
-        return {"ok": True, "detail": "已执行 timedatectl set-ntp true"}
+        return {"ok": True, "detail": tr("已执行 timedatectl set-ntp true")}
     ok2, out2 = await _remote_run(
         row, f"{sudo}systemctl enable --now systemd-timesyncd 2>&1", timeout=30
     )
     if ok2:
-        return {"ok": True, "detail": "已启用 systemd-timesyncd"}
-    raise FixError("启用时间同步失败：" + (out2.strip() or output.strip())[:300])
+        return {"ok": True, "detail": tr("已启用 systemd-timesyncd")}
+    raise FixError(
+        tr("启用时间同步失败：") + (out2.strip() or output.strip())[:300]
+    )
 
 
 async def _remote_fix_empty_password_accounts(
@@ -2209,16 +2329,24 @@ async def _remote_fix_empty_password_accounts(
     passwd = await _remote_read_file(row, PASSWD_FILE, sudo)
     users = empty_password_users(shadow, passwd)
     if not users:
-        return {"ok": True, "detail": "没有需要处理的空口令账号"}
+        return {"ok": True, "detail": tr("没有需要处理的空口令账号")}
     locked: List[str] = []
     for user in users:
         if not re.match(r"^[A-Za-z0-9._-]{1,32}$", user):
             continue
         ok, output = await _remote_run(row, f"{sudo}passwd -l {user} 2>&1")
         if not ok:
-            raise FixError(f"锁定账号 {user} 失败：{output.strip()[:200]}")
+            raise FixError(
+                pick(
+                    f"锁定账号 {user} 失败：{output.strip()[:200]}",
+                    f"Failed to lock the account {user}: {output.strip()[:200]}",
+                )
+            )
         locked.append(user)
-    return {"ok": True, "detail": "已锁定账号：" + "、".join(locked)}
+    return {
+        "ok": True,
+        "detail": tr("已锁定账号：") + pick("、", ", ").join(locked),
+    }
 
 
 async def _apply_remote_fix(row: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -2265,12 +2393,19 @@ def fixable_keys() -> List[str]:
 async def apply_fix(key: str, host_id: str = "local") -> Dict[str, Any]:
     """执行单个加固项（本机或受管主机）。失败抛 :class:`FixError`（路由转 400）。"""
     if key not in FIXERS:
-        raise FixError(f"「{key}」不支持一键修复，请按建议手动处理")
+        raise FixError(
+            pick(
+                f"「{key}」不支持一键修复，请按建议手动处理",
+                f"“{key}” cannot be fixed automatically; follow the recommendation manually",
+            )
+        )
     if host_id in ("", "local"):
         return await asyncio.to_thread(FIXERS[key])
     row = await _sshremote().get_host(host_id)
     if not row:
-        raise FixError(f"受管主机 {host_id} 不存在")
+        raise FixError(
+            pick(f"受管主机 {host_id} 不存在", f"Managed host {host_id} does not exist")
+        )
     return await _apply_remote_fix(row, key)
 
 

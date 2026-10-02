@@ -8,6 +8,7 @@ import axios, {
   type AxiosRequestConfig,
   type InternalAxiosRequestConfig,
 } from 'axios';
+import { detectLang, tStatic } from '../i18n';
 
 export const USER_KEY = 'pve_user';
 
@@ -131,6 +132,9 @@ export const http: AxiosInstance = axios.create({
 /* ---- 请求拦截器：带上 CSRF 头 ---- */
 http.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
+    // 界面语言：后端据此返回权限目录 / FAQ / 内置角色名与错误消息
+    // （见 backend/app/i18n.py）。这个模块在 React 之外，所以直接读持久化的语言。
+    config.headers.set?.('Accept-Language', detectLang());
     // 访问令牌在 HttpOnly Cookie 里，浏览器自动带 —— 这里只处理 CSRF：
     // 后端要求改状态的方法回填 X-CSRF-Token，值是那枚「非 HttpOnly」的 cookie。
     const method = (config.method ?? 'get').toLowerCase();
@@ -247,9 +251,7 @@ http.interceptors.response.use(
       const isTimeout = error.code === 'ECONNABORTED';
       return Promise.reject(
         new ApiError(
-          isTimeout
-            ? '请求超时，后端响应过慢'
-            : '无法连接到后端服务，请确认服务已启动',
+          isTimeout ? tStatic('api.timeout') : tStatic('api.unreachable'),
           0,
           error.message,
         ),
@@ -257,7 +259,7 @@ http.interceptors.response.use(
     }
 
     const { status, data } = error.response;
-    const fallback = `请求失败 (HTTP ${status})`;
+    const fallback = tStatic('api.httpFailed', { status });
     const message = extractMessage(data, fallback);
 
     if (status === 401) {
@@ -282,7 +284,7 @@ http.interceptors.response.use(
       const text =
         typeof data === 'object' && data && 'detail' in data
           ? message
-          : '登录已过期，请重新登录';
+          : tStatic('api.sessionExpired');
       return Promise.reject(new ApiError(text, status, data));
     }
 
@@ -302,7 +304,7 @@ http.interceptors.response.use(
 
     if (status === 501) {
       return Promise.reject(
-        new ApiError('该功能需要后端支持（未实现）', status, data),
+        new ApiError(tStatic('api.notImplemented'), status, data),
       );
     }
 
@@ -390,5 +392,5 @@ export function isNotImplemented(err: unknown): boolean {
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) return err.detail;
   if (err instanceof Error) return err.message;
-  return '发生未知错误';
+  return tStatic('api.unknown');
 }

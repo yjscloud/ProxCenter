@@ -31,6 +31,15 @@ function Icon({ size = 18, children, ...rest }: IconProps) {
 
 /* --------------------------------------------------------------------------- */
 
+/** 地球：语言切换。面板里唯一的「非功能性」图标，故单独放在最前面。 */
+export const IconGlobe = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <ellipse cx="12" cy="12" rx="4" ry="9" />
+  </Icon>
+);
+
 export const IconDashboard = (p: IconProps) => (
   <Icon {...p}>
     <rect x="3" y="3" width="7.5" height="7.5" rx="1.5" />

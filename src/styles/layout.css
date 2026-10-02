@@ -701,6 +701,95 @@
   color: var(--danger);
 }
 
+/* --- 语言下拉（顶栏菜单 / 认证页顶栏共用） ---
+   原生 select 不能直接继承容器的字色与字体，这里逐项对齐；option 在部分
+   浏览器里由系统绘制，显式给一对前景/背景色，避免深色主题下白底白字。 */
+.lang-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+
+.lang-select select {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.lang-select select option {
+  color: #111;
+  background: #fff;
+}
+
+.lang-select.is-menu {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-base);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.lang-select.is-menu:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.lang-select.is-pill {
+  padding: 8px 18px;
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--bg-surface);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.lang-select.is-pill:hover {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 顶栏常驻：与旁边的图标按钮同一视觉重量，不抢搜索与头像的注意力 */
+.lang-select.is-topbar {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: var(--font-size-sm);
+  gap: 7px;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.lang-select.is-topbar:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.lang-select.is-topbar select {
+  /* 只占它需要的宽度：顶栏右侧要挤下状态点、搜索、通知、刷新与头像 */
+  width: auto;
+  max-width: 92px;
+}
+
+@media (max-width: 640px) {
+  /* 窄屏优先保功能按钮：语言图标留着，文字收进原生下拉里 */
+  .lang-select.is-topbar {
+    padding: 6px;
+  }
+
+  .lang-select.is-topbar select {
+    max-width: 74px;
+  }
+}
+
 /* --- 面包屑 --- */
 .breadcrumb {
   display: flex;

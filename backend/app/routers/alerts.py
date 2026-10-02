@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import alerting, mailer, security, store
+from .. import alerting, i18n, mailer, security, store
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -57,6 +57,46 @@ def _own(user: Dict[str, Any]) -> str:
     return str(user.get("username") or "")
 
 
+def _localized_notify_sources() -> List[Dict[str, str]]:
+    """推送来源开关的名称与说明。
+
+    常量本身保持中文：它同时是审计日志与内部日志的用词（见
+    ``alerting.NOTIFY_LABELS``），在这里按请求语言渲染才是对的出口。
+    """
+    return [
+        {
+            "id": item["id"],
+            "label": i18n.tr(item["label"]),
+            "description": i18n.tr(item["description"]),
+        }
+        for item in alerting.NOTIFY_SOURCES
+    ]
+
+
+def _localized_presets() -> Dict[str, Dict[str, str]]:
+    """Webhook 请求体预设：只翻译名称，模板本身是 JSON，不能动。"""
+    return {
+        key: {**preset, "label": i18n.tr(str(preset.get("label") or ""))}
+        for key, preset in alerting.WEBHOOK_PRESETS.items()
+    }
+
+
+def _localized_metrics() -> Dict[str, str]:
+    """指标名（cpu / mem / …）→ 展示名，前端拿它渲染规则与历史里的指标列。"""
+    return {key: i18n.tr(value) for key, value in alerting.METRIC_LABELS.items()}
+
+
+def _localized_history(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """历史行的 ``detail`` 是投递结果文本。
+
+    它在写入时就被拼成了整句（「飞书：已发送；邮件：SMTP 未配置」），这里再兜
+    一次翻译：整句能命中译表的（如「已发送」「告警通知已停用，仅记录」）跟着
+    界面语言走，命中不了的（含网关返回的动态原因）原样保留 —— 宁可露中文细节，
+    也不要吞掉失败原因。
+    """
+    return [{**row, "detail": i18n.tr(str(row.get("detail") or ""))} for row in rows]
+
+
 @router.get("")
 async def get_alerts(
     user: Dict[str, Any] = Depends(ALERT_VIEW),
@@ -71,7 +111,7 @@ async def get_alerts(
         **_masked_hook(hook),
         # 预设模板与可用占位符随配置一起给前端：让用户「一键填企微/钉钉/Slack」
         # 而不是对着空文本框猜 JSON 怎么写
-        "hook_presets": alerting.WEBHOOK_PRESETS,
+        "hook_presets": _localized_presets(),
         "hook_placeholders": alerting.WEBHOOK_PLACEHOLDERS,
         "email": email,
         # 邮件要能发出去得先有全局 SMTP；没有就把状态一起回给前端，
@@ -79,15 +119,15 @@ async def get_alerts(
         "mail_ready": mailer.is_configured(await mailer.load_mail()),
         "account_email": (await store.get_user(_own(user)) or {}).get("email") or "",
         "rules": alerting.visible_rules(await alerting.load_rules(), scope),
-        "history": await alerting.history(80, scope),
+        "history": _localized_history(await alerting.history(80, scope)),
         # 此刻还没恢复的告警。与 history 的区别：history 是「发生过什么」，
         # 这里是「还有几件事没解决」—— 首页工作台的待办数量以它为准。
         "active": await alerting.visible_active(scope),
-        "metrics": alerting.METRIC_LABELS,
+        "metrics": _localized_metrics(),
         # 推送来源开关是**全局**（跨用户）设置，读取不设门槛 —— 每个能看告警页的
         # 人都该知道「现在这类告警是被关掉的」，否则会误以为系统没告警能力。
         # 改是管理员权限，见 PUT /notify-sources。
-        "notify_sources": alerting.NOTIFY_SOURCES,
+        "notify_sources": _localized_notify_sources(),
         "notify_enabled": await alerting.load_notify_sources(),
         "own_username": _own(user),
         "is_admin": scope is None,
@@ -126,7 +166,7 @@ async def save_notify_sources(
         ),
     )
     return {
-        "notify_sources": alerting.NOTIFY_SOURCES,
+        "notify_sources": _localized_notify_sources(),
         "notify_enabled": saved,
     }
 
@@ -232,8 +272,8 @@ async def test_notify(
     """发一条测试通知。``channel`` 默认飞书，保持既有前端调用不变。"""
     if channel == "webhook":
         ok, detail = await alerting.send_webhook(
-            "测试通知",
-            "这是一条来自 ProxCenter 的测试消息，收到即表示通用 Webhook 配置正确。",
+            i18n.tr("测试通知"),
+            i18n.tr("这是一条来自 ProxCenter 的测试消息，收到即表示通用 Webhook 配置正确。"),
             {"level": "test", "target": "-", "metric": "-", "value": "-"},
             _own(user),
         )
@@ -275,4 +315,10 @@ async def clear_history(
     await security.audit(
         request, user, "alert.history.clear", "alerts", "success", "清空告警历史 " + str(removed) + " 条"
     )
-    return {"removed": removed, "detail": "已清除 " + str(removed) + " 条告警历史"}
+    return {
+        "removed": removed,
+        "detail": i18n.pick(
+            "已清除 " + str(removed) + " 条告警历史",
+            str(removed) + " alert history entries cleared",
+        ),
+    }

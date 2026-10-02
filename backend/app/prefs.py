@@ -40,9 +40,13 @@ CREATE TABLE IF NOT EXISTS user_prefs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
-# 允许保存的偏好键。仪表盘布局是当前唯一的一项。
+# 允许保存的偏好键。
 PREF_DASHBOARD_LAYOUT = "dashboard_layout"
-ALLOWED_KEYS = frozenset({PREF_DASHBOARD_LAYOUT})
+# 界面语言：浏览器里那份 localStorage 决定「这台设备立刻显示哪种语言」，
+# 服务端这份决定「发给这个人的通知邮件用哪种语言」。两者刻意各存一份 ——
+# 同一账号在公司电脑看英文、在家看中文是合理的。
+PREF_LANGUAGE = "language"
+ALLOWED_KEYS = frozenset({PREF_DASHBOARD_LAYOUT, PREF_LANGUAGE})
 
 # 单个偏好的体积上限。布局就是个 widget id 数组，几 KB 顶天；留 64 KB 是给
 # 未来的偏好（比如保存的筛选条件组合）留余量，同时挡住把这张表当文件存的用法。

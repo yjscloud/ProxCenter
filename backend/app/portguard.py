@@ -25,7 +25,7 @@ import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import alerting, baseline, store
+from . import alerting, baseline, i18n, store
 from .formatters import short_hostname
 
 logger = logging.getLogger(__name__)
@@ -732,7 +732,9 @@ def _signals_for_process(
 
     for code, pattern, severity, label in SUSPICIOUS_PATTERNS:
         if re.search(pattern, args, re.IGNORECASE):
-            signals.append({"code": code, "severity": severity, "label": label})
+            signals.append(
+                {"code": code, "severity": severity, "label": i18n.tr(label)}
+            )
 
     exe_path = str(exe_info.get("exe") or "")
     has_external = any(
@@ -743,7 +745,11 @@ def _signals_for_process(
             {
                 "code": "deleted_exe",
                 "severity": "high" if has_external else "medium",
-                "label": f"可执行文件已被删除（{exe_path or '未知'}）：常见于「跑起来就删掉自己」的恶意程序",
+                "label": i18n.pick(
+                    f"可执行文件已被删除（{exe_path or '未知'}）：常见于「跑起来就删掉自己」的恶意程序",
+                    f"Its executable was deleted ({exe_path or 'unknown'}): typical of "
+                    "malware that removes itself once running",
+                ),
             }
         )
     if exe_path and exe_path.startswith(TMP_PREFIXES):
@@ -751,7 +757,11 @@ def _signals_for_process(
             {
                 "code": "tmp_exe",
                 "severity": "high" if has_external else "medium",
-                "label": f"可执行文件位于临时目录（{exe_path}）：正常服务不该从 /tmp、/dev/shm 里启动",
+                "label": i18n.pick(
+                    f"可执行文件位于临时目录（{exe_path}）：正常服务不该从 /tmp、/dev/shm 里启动",
+                    f"Its executable lives in a temp directory ({exe_path}): no "
+                    "legitimate service starts from /tmp or /dev/shm",
+                ),
             }
         )
 
@@ -766,9 +776,13 @@ def _signals_for_process(
                 {
                     "code": "shell_with_external_conn",
                     "severity": "high",
-                    "label": (
+                    "label": i18n.pick(
                         f"shell 进程持有对外连接 {conn['local_address']}:{conn['local_port']}"
-                        f" → {conn['peer_address']}:{conn['peer_port']}：典型的反弹 shell"
+                        f" → {conn['peer_address']}:{conn['peer_port']}：典型的反弹 shell",
+                        f"A shell holds an outbound connection "
+                        f"{conn['local_address']}:{conn['local_port']} → "
+                        f"{conn['peer_address']}:{conn['peer_port']}: a classic "
+                        "reverse shell",
                     ),
                 }
             )
@@ -783,7 +797,11 @@ def _signals_for_process(
                 {
                     "code": "web_child_shell",
                     "severity": "high",
-                    "label": f"父进程是 Web 服务（{parent.get('name')}）：Web 漏洞利用后落 shell 的特征",
+                    "label": i18n.pick(
+                        f"父进程是 Web 服务（{parent.get('name')}）：Web 漏洞利用后落 shell 的特征",
+                        f"Its parent is a web service ({parent.get('name')}): the "
+                        "signature of a shell dropped by exploiting a web flaw",
+                    ),
                 }
             )
 
@@ -793,7 +811,11 @@ def _signals_for_process(
                 {
                     "code": "c2_port",
                     "severity": "medium",
-                    "label": f"连接到常见后门/远控端口 {conn['peer_port']}（对端 {conn['peer_address']}）",
+                    "label": i18n.pick(
+                        f"连接到常见后门/远控端口 {conn['peer_port']}（对端 {conn['peer_address']}）",
+                        f"Connected to common backdoor / C2 port {conn['peer_port']} "
+                        f"(peer {conn['peer_address']})",
+                    ),
                 }
             )
             break
@@ -1175,6 +1197,7 @@ async def fleet_overview(
 
 def _finding_text(report: Dict[str, Any], kind: str, limit: int = 6) -> str:
     firewall = report.get("firewall") or {}
+    host = report.get("name") or report.get("host_id")
     if kind == "ports":
         rows = sorted(
             report.get("unexpected") or [],
@@ -1182,16 +1205,27 @@ def _finding_text(report: Dict[str, Any], kind: str, limit: int = 6) -> str:
         )[:limit]
         lines = [
             f"· {item['address']}:{item['port']}/{item['proto']}"
-            f"（{item['process'] or '未知进程'}）"
-            + (f" — 敏感服务：{SENSITIVE_PORTS[item['port']]}" if item["port"] in SENSITIVE_PORTS else "")
+            + i18n.pick("（", " (")
+            + str(item["process"] or i18n.tr("未知进程"))
+            + i18n.pick("）", ")")
+            + (
+                i18n.pick(" — 敏感服务：", " — sensitive service: ")
+                + str(SENSITIVE_PORTS[item["port"]])
+                if item["port"] in SENSITIVE_PORTS
+                else ""
+            )
             for item in rows
         ]
-        head = (
-            f"{report.get('name') or report.get('host_id')} 上有 "
-            f"{report['summary']['unexpected']} 个非预期对外开放端口"
+        head = i18n.pick(
+            f"{host} 上有 {report['summary']['unexpected']} 个非预期对外开放端口",
+            f"{host} has {report['summary']['unexpected']} unexpected "
+            "externally exposed port(s)",
         )
         if not firewall.get("active"):
-            head += "，**且这台主机没有活动防火墙**"
+            head += i18n.pick(
+                "，**且这台主机没有活动防火墙**",
+                ", **and this host has no active firewall**",
+            )
         return head + "\n" + "\n".join(lines)
     # 处置过的不进告警：人已经看过了，再推一遍等于把「忽略」按钮作废
     rows = [
@@ -1200,22 +1234,36 @@ def _finding_text(report: Dict[str, Any], kind: str, limit: int = 6) -> str:
         if not item.get("disposition")
     ][:limit]
     lines = [
-        f"· [PID {item['pid']}] {item['name']}（{item['user']}）"
-        + "；".join(s["label"] for s in item["signals"][:2])
+        f"· [PID {item['pid']}] {item['name']}"
+        + i18n.pick("（", " (")
+        + str(item["user"])
+        + i18n.pick("）", ")")
+        + i18n.pick("；", "; ").join(
+            i18n.tr(str(s["label"])) for s in item["signals"][:2]
+        )
         for item in rows
     ]
     return (
-        f"{report.get('name') or report.get('host_id')} 上发现 "
-        f"{report['summary']['suspicious']} 个可疑进程\n" + "\n".join(lines)
+        i18n.pick(
+            f"{host} 上发现 {report['summary']['suspicious']} 个可疑进程",
+            f"{host} has {report['summary']['suspicious']} suspicious process(es)",
+        )
+        + "\n"
+        + "\n".join(lines)
     )
 
 
-def _card(report: Dict[str, Any], kind: str, kind_name: str, at: float):
+def _card(
+    report: Dict[str, Any], kind: str, kind_name: str, kind_name_en: str, at: float
+):
     """告警卡片。
 
     没有复用 ``alerting.build_alert_card``：那张卡片是按「百分比阈值」设计的
     （会显示「当前值 3.0%」），而这里统计的是「几个端口 / 几个进程」，套上去
     反而误导。直接用底层的 ``build_card`` 拼一张说人话的。
+
+    ``kind_name`` 是系统内的标识（会进 ``alarm_key``，所以**不能**随语言变），
+    ``kind_name_en`` 只用于给英文收件人看的文案。
     """
     summary = report["summary"]
     firewall = report.get("firewall") or {}
@@ -1223,29 +1271,48 @@ def _card(report: Dict[str, Any], kind: str, kind_name: str, at: float):
     is_ports = kind == "ports"
     count = summary["unexpected"] if is_ports else summary["suspicious"]
     fields: List[Tuple[str, str]] = [
-        ("主机", f"{host_label}（{report.get('address') or '-'}）"),
-        ("系统", (report.get("os") or {}).get("distribution") or "未获取"),
         (
-            "非预期开放端口" if is_ports else "可疑进程",
-            f"**{count}** 个",
+            i18n.tr("主机"),
+            f"{host_label}"
+            + i18n.pick("（", " (")
+            + str(report.get("address") or "-")
+            + i18n.pick("）", ")"),
         ),
         (
-            "主机防火墙",
-            (firewall.get("manager") or "未检测到") if firewall.get("active") else "**未启用**",
+            i18n.tr("系统"),
+            str((report.get("os") or {}).get("distribution") or i18n.tr("未获取")),
+        ),
+        (
+            i18n.tr("非预期开放端口") if is_ports else i18n.tr("可疑进程"),
+            f"**{count}**" + i18n.pick(" 个", ""),
+        ),
+        (
+            i18n.tr("主机防火墙"),
+            str(firewall.get("manager") or i18n.tr("未检测到"))
+            if firewall.get("active")
+            else "**" + i18n.tr("未启用") + "**",
         ),
     ]
     # 严重程度：可疑进程一定算严重；端口只有「没有防火墙兜底」时才升级为严重
     critical = (not is_ports) or (not firewall.get("active"))
     detail = _finding_text(report, kind, limit=5)
-    note = (
-        f"触发时间 {alerting._now_text(at)} · 这是启发式判断，请登录主机人工确认"
-        + ("" if is_ports else "；面板不会自动处置进程")
+    note = i18n.pick(
+        f"触发时间 {alerting._now_text(at)} · 这是启发式判断，请登录主机人工确认",
+        f"Triggered at {alerting._now_text(at)} · this is a heuristic result; "
+        "sign in to the host and confirm it manually",
+    ) + (
+        ""
+        if is_ports
+        else i18n.pick(
+            "；面板不会自动处置进程",
+            "; the panel never handles processes automatically",
+        )
     )
     return alerting.build_card(
         "critical" if critical else "warning",
-        ("🔴 " if critical else "🟠 ") + "ProxCenter 端口/进程告警",
-        f"主机{kind_name}异常",
-        fields + [("明细", detail)],
+        ("🔴 " if critical else "🟠 ") + i18n.tr("ProxCenter 端口/进程告警"),
+        i18n.pick(f"主机{kind_name}异常", f"Host abnormal: {kind_name_en}"),
+        fields + [(i18n.tr("明细"), detail)],
         note,
     )
 
@@ -1266,6 +1333,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     reachable = [r for r in reports if r.get("ok")]
 
     target_owner = policy.get("notify_user") or await store.first_admin_username() or ""
+    # 按收件人的语言渲染（巡检是后台跑的，没有请求上下文，见 alerting.resolve_language）
+    i18n.pin_language(await alerting.resolve_language(target_owner))
     feishu = await alerting.load_feishu(target_owner)
     email_cfg = await alerting.load_alert_email(target_owner)
     cooldown = int(policy["cooldown_minutes"]) * 60
@@ -1279,13 +1348,13 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     fired: List[Dict[str, Any]] = []
 
     checks = (
-        ("ports", "对外开放端口", "port-open", "port_exposure", bool(policy.get("alert_open_ports"))),
-        ("susp", "可疑进程", "port-susp", "susp_process", bool(policy.get("alert_suspicious"))),
+        ("ports", "对外开放端口", "open ports", "port-open", "port_exposure", bool(policy.get("alert_open_ports"))),
+        ("susp", "可疑进程", "suspicious processes", "port-susp", "susp_process", bool(policy.get("alert_suspicious"))),
     )
 
     for report in reachable:
         summary = report["summary"]
-        for kind, kind_name, rule_id, metric, enabled in checks:
+        for kind, kind_name, kind_name_en, rule_id, metric, enabled in checks:
             if not enabled:
                 continue
             value = summary["unexpected"] if kind == "ports" else summary["suspicious"]
@@ -1299,20 +1368,26 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             last = float(prev.get("ts") or 0)
             if now - last < cooldown:
                 continue
+            host_label = report.get("name") or report.get("host_id")
             text = _finding_text(report, kind)
             ok, detail = await alerting.dispatch(
                 target_owner,
                 feishu,
                 email_cfg,
-                f"端口/进程异常：{report.get('name') or report.get('host_id')}（{kind_name}）",
+                i18n.pick(
+                    f"端口/进程异常：{host_label}（{kind_name}）",
+                    f"Port/process anomaly: {host_label} ({kind_name_en})",
+                ),
                 text,
-                _card(report, kind, kind_name, now),
+                _card(report, kind, kind_name, kind_name_en, now),
                 source=alerting.SOURCE_PORTGUARD,
             )
             state = {
                 "username": target_owner,
                 "rule_id": rule_id,
-                "rule_name": f"主机{kind_name}",
+                "rule_name": i18n.pick(
+                    f"主机{kind_name}", f"Host · {kind_name_en}"
+                ),
                 "target_type": "host",
                 "target": report.get("name") or report.get("host_id"),
                 "metric": metric,
@@ -1340,12 +1415,16 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         if not await alerting.recovery_confirmed(key, row):
             continue  # 本轮只是没命中，还没到「连续 N 轮正常」的恢复门槛
         card = alerting.build_recovery_card(row, None, at=now)
-        text = f"{row.get('target')} 的{row.get('rule_name')}已恢复正常，告警解除"
+        text = i18n.pick(
+            f"{row.get('target')} 的{row.get('rule_name')}已恢复正常，告警解除",
+            f"{row.get('target')} · {row.get('rule_name')} recovered; "
+            "the alert is cleared",
+        )
         ok, detail = await alerting.dispatch(
             target_owner,
             feishu,
             email_cfg,
-            "恢复通知：" + str(row.get("target")),
+            i18n.tr("恢复通知：") + str(row.get("target")),
             text,
             card,
             source=alerting.SOURCE_PORTGUARD,

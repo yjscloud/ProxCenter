@@ -2,23 +2,27 @@
    产品官网 — 上手流程 + 部署命令 + 技术栈
    ========================================================================== */
 
-import { DEPLOY_LINES, STACK, STEPS } from './content';
+import { useT } from '../../i18n';
+import { useLandingContent } from './hooks';
 import { SectionHead } from './Common';
 
 export function Start() {
+  const t = useT();
+  const { steps, deployLines, stack } = useLandingContent();
+
   return (
     <section className="lp-section lp-section-tint" id="start">
       <div className="lp-container">
         <SectionHead
           index="07"
           eyebrow="Getting started"
-          title="四步开始用"
-          desc="从部署到拥有第一台自动化交付的虚拟机，通常不超过半小时。命令就是下面这三行，复制即可。"
+          title={t('landing.start.title')}
+          desc={t('landing.start.desc')}
         />
 
         <div className="lp-start">
           <ol className="lp-flow">
-            {STEPS.map((step, index) => (
+            {steps.map((step, index) => (
               <li
                 className="lp-flow-step lp-reveal"
                 key={step.title}
@@ -42,7 +46,7 @@ export function Start() {
             </div>
 
             <pre className="lp-code">
-              {DEPLOY_LINES.map((line) => (
+              {deployLines.map((line) => (
                 <code
                   className={`lp-code-line${line.startsWith('#') ? ' is-comment' : ''}`}
                   key={line}
@@ -53,7 +57,7 @@ export function Start() {
             </pre>
 
             <div className="lp-stack">
-              {STACK.map((group) => (
+              {stack.map((group) => (
                 <div className="lp-stack-col" key={group.title}>
                   <div className="lp-stack-title">
                     <span className="lp-stack-icon">{group.icon}</span>

@@ -84,6 +84,7 @@ from . import sshremote
 from . import throttle
 # 与 routers.hostaudit 同名，取个别名避免混淆
 from . import hostaudit as host_audit
+from . import i18n
 from .routers import frp as frp_router
 from . import backupguard
 from . import portguard
@@ -176,7 +177,7 @@ app = FastAPI(
         "Provides VM lifecycle, template building, networking, "
         "monitoring, backup and console access."
     ),
-    version="1.0.0",
+    version="0.1.1",
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -381,11 +382,15 @@ class PveConnectionScopeMiddleware:
             return
 
         conn_id = ""
+        accept_language = ""
         for key, value in scope.get("headers") or []:
             if key == b"x-pve-connection":
                 conn_id = value.decode("latin-1").strip()
-                break
+            elif key == b"accept-language":
+                # 界面语言（见 i18n.py）：权限目录、内置角色名、FAQ 与错误消息按它返回
+                accept_language = value.decode("latin-1").strip()
 
+        i18n.set_language(accept_language)
         token = set_request_connection(conn_id)
         try:
             await self.app(scope, receive, send)
@@ -580,7 +585,7 @@ app.include_router(search.router)
 @app.get("/api/version", tags=["meta"])
 async def version() -> Dict[str, Any]:
     info = await site.get_site_info()
-    return {"name": info["name"], "version": "1.0.0", "api": "v1"}
+    return {"name": info["name"], "version": "0.1.1", "api": "v1"}
 
 
 # ------------------------------------------------------------ front-end UI

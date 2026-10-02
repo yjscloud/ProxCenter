@@ -36,7 +36,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from . import store
+from . import i18n, store
 
 logger = logging.getLogger(__name__)
 
@@ -206,9 +206,11 @@ def describe(state: JobState) -> Dict[str, Any]:
     next_in = max(state.next_mono - now_mono, 0.0) if state.enabled else 0.0
     return {
         "id": job.id,
-        "name": job.name,
-        "group": job.group,
-        "description": job.description,
+        # 作业的名称 / 分组 / 说明与最近一次摘要都是中文原文，出口按请求语言
+        # 本地化（见 i18n.py）；译表里没有的条目原样透传。
+        "name": i18n.tr(job.name),
+        "group": i18n.tr(job.group),
+        "description": i18n.tr(job.description),
         "interval": state.interval,
         "default_interval": job.default_interval,
         "min_interval": MIN_INTERVAL,
@@ -224,7 +226,7 @@ def describe(state: JobState) -> Dict[str, Any]:
         "last_end": state.last_end,
         "last_duration_ms": state.last_duration_ms,
         "last_error": state.last_error,
-        "last_summary": state.last_summary,
+        "last_summary": i18n.tr(state.last_summary),
         "last_manual": state.last_manual,
         # 下次执行的相对秒数与绝对墙钟时间：内部按单调钟算，给界面看绝对时间
         "next_in": round(next_in, 1),
@@ -281,7 +283,7 @@ async def trigger(job_id: str) -> Dict[str, Any]:
     if state is None:
         raise KeyError(job_id)
     if state.running:
-        raise RuntimeError("该作业正在执行中")
+        raise RuntimeError(i18n.t("error.job_running"))
     state.running = True
     try:
         return await _execute(state, manual=True)

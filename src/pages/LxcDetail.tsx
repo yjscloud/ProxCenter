@@ -55,7 +55,8 @@ import {
   IconEdit,
 } from '../components/Icons';
 import { formatBytes, formatDateTime, formatUptimeShort, parseTags, toPercent } from '../utils/format';
-import { isRunning, isTransient, vmStatusMeta } from '../utils/status';
+import { isRunning, isTransient, vmStatusMeta } from '../utils/status'
+import { useT } from '../i18n';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -64,13 +65,7 @@ import type { LxcMountConfig, LxcNetworkConfig } from '../api/types';
 
 type TabKey = 'overview' | 'network' | 'storage' | 'snapshot' | 'console';
 
-const TABS: Array<{ label: string; value: TabKey }> = [
-  { label: '概览', value: 'overview' },
-  { label: '网络', value: 'network' },
-  { label: '存储', value: 'storage' },
-  { label: '快照', value: 'snapshot' },
-  { label: '控制台', value: 'console' },
-];
+/* 分区页签在组件内构造（文案随语言走），见 LxcDetail 里的 tabs */
 
 /* ---------------------------------------------------------------------------
    小工具
@@ -83,6 +78,7 @@ function toNumber(value: unknown): number {
 }
 
 export function LxcDetail() {
+  const t = useT();
   const { node = '', vmid = '' } = useParams<{ node: string; vmid: string }>();
   const ctId = Number(vmid);
   const navigate = useNavigate();
@@ -90,6 +86,17 @@ export function LxcDetail() {
   const runner = useTaskRunner();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
+
+  const tabs = useMemo(
+    () => [
+      { label: t('lxcDetail.tabOverview'), value: 'overview' as TabKey },
+      { label: t('lxcDetail.tabNetwork'), value: 'network' as TabKey },
+      { label: t('lxcDetail.tabStorage'), value: 'storage' as TabKey },
+      { label: t('lxcDetail.tabSnapshot'), value: 'snapshot' as TabKey },
+      { label: t('lxcDetail.tabConsole'), value: 'console' as TabKey },
+    ],
+    [t],
+  );
 
   const [tab, setTab] = useState<TabKey>('overview');
   const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
@@ -142,11 +149,19 @@ export function LxcDetail() {
 
   /* ---- 电源操作 ---- */
   const doPower = async (action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
-    const labels = { start: '启动', stop: '停止', shutdown: '关机', reboot: '重启' };
+    const labels = {
+      start: t('lxcDetail.powerStart'),
+      stop: t('lxcDetail.powerStop'),
+      shutdown: t('lxcDetail.powerShutdown'),
+      reboot: t('lxcDetail.powerReboot'),
+    };
     setPending(true);
     try {
       await runner.run(guestPower[action]({ node, vmid: ctId, type: 'lxc' }), {
-        title: `${labels[action]}容器「${ct?.name ?? ctId}」`,
+        title: t('lxcDetail.powerTask', {
+          action: labels[action],
+          name: ct?.name ?? ctId,
+        }),
         node,
         invalidate: [['lxc', node, ctId], ['vms'], ['lxc']],
       });
@@ -163,12 +178,12 @@ export function LxcDetail() {
     setPending(true);
     try {
       await runner.run(lxcApi.delete(node, ctId, true), {
-        title: `删除容器「${ct?.name ?? ctId}」`,
+        title: t('lxcDetail.deleteTask', { name: ct?.name ?? ctId }),
         node,
         invalidate: [['vms'], ['lxc'], ['cluster']],
         destructive: true,
       });
-      toast.destructive('容器已删除', '该容器及其磁盘卷已从集群中移除');
+      toast.destructive(t('lxcDetail.deleted'), t('lxcDetail.deletedHint'));
       navigate('/lxc');
     } catch {
       /* toast 已提示 */
@@ -217,7 +232,7 @@ export function LxcDetail() {
           description: cfgForm.description,
         }),
         {
-          title: `更新容器「${ct?.name ?? ctId}」配置`,
+          title: t('lxcDetail.updateConfigTask', { name: ct?.name ?? ctId }),
           node,
           invalidate: [['lxc', node, ctId], ['vms']],
         },
@@ -252,7 +267,7 @@ export function LxcDetail() {
           firewall: netForm.firewall,
         }),
         {
-          title: '新增网卡',
+          title: t('lxcDetail.addNetworkTask'),
           node,
           invalidate: [['lxc', node, ctId]],
         },
@@ -284,7 +299,7 @@ export function LxcDetail() {
 
   const submitMount = async () => {
     if (!mountForm.mp.trim()) {
-      toast.warning('请填写挂载路径', '例如 /data');
+      toast.warning(t('lxcDetail.mountPathRequired'), t('lxcDetail.mountPathExample'));
       return;
     }
     setPending(true);
@@ -296,7 +311,11 @@ export function LxcDetail() {
           mp: mountForm.mp.trim(),
           backup: mountForm.backup,
         }),
-        { title: '新增挂载点', node, invalidate: [['lxc', node, ctId]] },
+        {
+          title: t('lxcDetail.addMountTask'),
+          node,
+          invalidate: [['lxc', node, ctId]],
+        },
       );
       setMountOpen(false);
     } catch {
@@ -315,7 +334,7 @@ export function LxcDetail() {
     setPending(true);
     try {
       await runner.run(lxcApi.resize(node, ctId, { disk, size: resizeSize }), {
-        title: `扩容 ${disk}`,
+        title: t('lxcDetail.resizeTask', { disk }),
         node,
         invalidate: [['lxc', node, ctId]],
       });
@@ -333,7 +352,7 @@ export function LxcDetail() {
   const [snapDesc, setSnapDesc] = useState('');
   const submitSnapshot = async () => {
     if (!snapName.trim()) {
-      toast.warning('请填写快照名称');
+      toast.warning(t('lxcDetail.snapshotNameRequired'));
       return;
     }
     setPending(true);
@@ -344,7 +363,7 @@ export function LxcDetail() {
           description: snapDesc,
         }),
         {
-          title: '创建快照',
+          title: t('lxcDetail.createSnapshotTask'),
           node,
           invalidate: [['lxc', node, ctId, 'snapshots'], ['lxc', node, ctId]],
         },
@@ -367,7 +386,7 @@ export function LxcDetail() {
     setPending(true);
     try {
       await runner.run(lxcApi.removeHardware(node, ctId, key), {
-        title: `移除 ${key}`,
+        title: t('lxcDetail.removeTask', { key }),
         node,
         invalidate: [['lxc', node, ctId]],
       });
@@ -396,8 +415,8 @@ export function LxcDetail() {
       await runner.run(promise, {
         title:
           snapAction.kind === 'rollback'
-            ? `回滚到快照「${snapAction.name}」`
-            : `删除快照「${snapAction.name}」`,
+            ? t('lxcDetail.rollbackTask', { name: snapAction.name })
+            : t('lxcDetail.deleteSnapshotTask', { name: snapAction.name }),
         node,
         invalidate: [['lxc', node, ctId, 'snapshots'], ['lxc', node, ctId]],
         /* 回滚会丢弃快照之后的全部改动，删除则不可撤销 —— 两者都算不可逆 */
@@ -418,7 +437,7 @@ export function LxcDetail() {
     return (
       <div className="page">
         <ErrorState
-          title="无法加载容器详情"
+          title={t('lxcDetail.loadFailed')}
           message={errorMessage(ctQuery.error)}
           onRetry={() => void ctQuery.refetch()}
         />
@@ -426,7 +445,7 @@ export function LxcDetail() {
     );
   }
 
-  const status = vmStatusMeta(ct.status);
+  const status = vmStatusMeta(ct.status, t);
   const running = isRunning(ct.status);
   const busy = isTransient(ct.status) || pending || Boolean(ct.lock);
 
@@ -436,28 +455,54 @@ export function LxcDetail() {
   const diskPct = toPercent(toNumber(ct.disk) / Math.max(toNumber(ct.maxdisk), 1));
 
   const networkColumns: Array<Column<LxcNetworkConfig>> = [
-    { key: 'interface', header: '接口', width: 110, render: (r) => <code>{r.interface}</code> },
-    { key: 'name', header: '容器内', width: 100, render: (r) => r.name ?? '-' },
-    { key: 'bridge', header: '网桥', width: 120, render: (r) => r.bridge ?? '-' },
+    {
+      key: 'interface',
+      header: t('lxcDetail.colInterface'),
+      width: 110,
+      render: (r) => <code>{r.interface}</code>,
+    },
+    {
+      key: 'name',
+      header: t('lxcDetail.colContainerSide'),
+      width: 100,
+      render: (r) => r.name ?? '-',
+    },
+    {
+      key: 'bridge',
+      header: t('lxcDetail.colBridge'),
+      width: 120,
+      render: (r) => r.bridge ?? '-',
+    },
     { key: 'ip', header: 'IPv4', render: (r) => r.ip ?? '-' },
-    { key: 'gw', header: '网关', width: 140, render: (r) => r.gw ?? '-' },
+    {
+      key: 'gw',
+      header: t('lxcDetail.colGateway'),
+      width: 140,
+      render: (r) => r.gw ?? '-',
+    },
     { key: 'ip6', header: 'IPv6', render: (r) => r.ip6 ?? '-' },
     {
       key: 'firewall',
-      header: '防火墙',
+      header: t('lxcDetail.colFirewall'),
       width: 90,
       align: 'center',
       render: (r) =>
-        r.firewall === '1' ? <Badge variant="success" size="sm">开</Badge> : <span className="text-muted">关</span>,
+        r.firewall === '1' ? (
+          <Badge variant="success" size="sm">
+            {t('lxcDetail.on')}
+          </Badge>
+        ) : (
+          <span className="text-muted">{t('lxcDetail.off')}</span>
+        ),
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('nodeDetail.colActions'),
       width: 90,
       align: 'right',
       render: (r) => (
         <IconButton
-          label={`移除 ${r.interface}`}
+          label={t('lxcDetail.removeAria', { name: r.interface })}
           variant="ghost"
           disabled={!canConfig || busy}
           onClick={() => setRemoveTarget(r.interface)}
@@ -474,14 +519,38 @@ export function LxcDetail() {
   ];
 
   const storageColumns: Array<Column<LxcMountConfig & { interface: string }>> = [
-    { key: 'interface', header: '键', width: 100, render: (r) => <code>{r.interface}</code> },
-    { key: 'mp', header: '挂载路径', width: 160, render: (r) => r.mp ?? '-' },
-    { key: 'storage', header: '存储', width: 130, render: (r) => r.storage ?? '-' },
-    { key: 'size', header: '容量', width: 100, render: (r) => r.size || '-' },
-    { key: 'volid', header: '卷', render: (r) => <code className="fs-xs">{r.volid || '-'}</code> },
+    {
+      key: 'interface',
+      header: t('lxcDetail.colKey'),
+      width: 100,
+      render: (r) => <code>{r.interface}</code>,
+    },
+    {
+      key: 'mp',
+      header: t('lxcDetail.colMountPath'),
+      width: 160,
+      render: (r) => r.mp ?? '-',
+    },
+    {
+      key: 'storage',
+      header: t('lxcDetail.colStorage'),
+      width: 130,
+      render: (r) => r.storage ?? '-',
+    },
+    {
+      key: 'size',
+      header: t('lxcDetail.colSize'),
+      width: 100,
+      render: (r) => r.size || '-',
+    },
+    {
+      key: 'volid',
+      header: t('lxcDetail.colVolume'),
+      render: (r) => <code className="fs-xs">{r.volid || '-'}</code>,
+    },
     {
       key: 'actions',
-      header: '操作',
+      header: t('nodeDetail.colActions'),
       width: 150,
       align: 'right',
       render: (r) => (
@@ -495,11 +564,11 @@ export function LxcDetail() {
               setResizeSize('+8G');
             }}
           >
-            扩容
+            {t('lxcDetail.resize')}
           </Button>
           {r.interface !== 'rootfs' ? (
             <IconButton
-              label={`移除 ${r.interface}`}
+              label={t('lxcDetail.removeAria', { name: r.interface })}
               variant="ghost"
               disabled={!canConfig || busy}
               onClick={() => setRemoveTarget(r.interface)}
@@ -513,23 +582,32 @@ export function LxcDetail() {
   ];
 
   const snapshotColumns: Array<Column<Record<string, unknown>>> = [
-    { key: 'name', header: '名称', render: (r) => <code>{String(r.name)}</code> },
-    { key: 'description', header: '描述', render: (r) => String(r.description ?? '-') },
+    {
+      key: 'name',
+      header: t('common.name'),
+      render: (r) => <code>{String(r.name)}</code>,
+    },
+    {
+      key: 'description',
+      header: t('lxcDetail.colDescription'),
+      render: (r) => String(r.description ?? '-'),
+    },
     {
       key: 'snaptime',
-      header: '创建时间',
+      header: t('common.createdAt'),
       width: 180,
       render: (r) =>
-        r.snaptime ? new Date(Number(r.snaptime) * 1000).toLocaleString('zh-CN') : '-',
+        r.snaptime ? new Date(Number(r.snaptime) * 1000).toLocaleString() : '-',
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('nodeDetail.colActions'),
       width: 160,
       align: 'right',
       render: (r) => {
         const name = String(r.name);
-        if (name === 'current') return <span className="text-muted">当前状态</span>;
+        if (name === 'current')
+          return <span className="text-muted">{t('lxcDetail.currentState')}</span>;
         return (
           <div className="flex items-center gap-4 justify-end">
             <Button
@@ -538,10 +616,10 @@ export function LxcDetail() {
               disabled={!canSnapshot || busy}
               onClick={() => setSnapAction({ kind: 'rollback', name })}
             >
-              回滚
+              {t('lxcDetail.rollback')}
             </Button>
             <IconButton
-              label={`删除快照 ${name}`}
+              label={t('lxcDetail.deleteSnapshotAria', { name })}
               variant="ghost"
               disabled={!canSnapshot || busy}
               onClick={() => setSnapAction({ kind: 'delete', name })}
@@ -560,7 +638,7 @@ export function LxcDetail() {
         <div className="flex items-center gap-8">
           <Breadcrumb
             items={[
-              { label: '容器', to: '/lxc' },
+              { label: t('lxcDetail.breadcrumbLxc'), to: '/lxc' },
               { label: ct.name || `CT ${ctId}` },
             ]}
           />
@@ -568,19 +646,27 @@ export function LxcDetail() {
             {status.label}
           </Badge>
           <Badge variant="neutral" size="sm">
-            容器 LXC
+            {t('lxcDetail.lxcBadge')}
           </Badge>
-          {ct.lock ? <Badge variant="warning" size="sm">锁定：{ct.lock}</Badge> : null}
+          {ct.lock ? (
+            <Badge variant="warning" size="sm">
+              {t('lxcDetail.locked', { lock: ct.lock })}
+            </Badge>
+          ) : null}
         </div>
       }
       subtitle={`${node} · CT ${ctId}${ct.ostemplate ? ` · ${ct.ostemplate.split('/').pop()}` : ''}`}
       actions={
         <div className="flex items-center gap-8">
-          <IconButton label="刷新" variant="secondary" onClick={invalidate}>
+          <IconButton
+            label={t('common.refresh')}
+            variant="secondary"
+            onClick={invalidate}
+          >
             <IconRefresh size={16} />
           </IconButton>
           <IconButton
-            label="编辑配置"
+            label={t('lxcDetail.editConfig')}
             variant="secondary"
             disabled={!canConfig || busy}
             onClick={() => setConfigOpen(true)}
@@ -595,7 +681,7 @@ export function LxcDetail() {
                 disabled={!canPower || busy}
                 onClick={() => void doPower('reboot')}
               >
-                重启
+                {t('lxcDetail.powerReboot')}
               </Button>
               <Button
                 variant="secondary"
@@ -603,7 +689,7 @@ export function LxcDetail() {
                 disabled={!canPower || busy}
                 onClick={() => void doPower('shutdown')}
               >
-                关机
+                {t('lxcDetail.powerShutdown')}
               </Button>
               <Button
                 variant="danger"
@@ -611,7 +697,7 @@ export function LxcDetail() {
                 disabled={!canPower || busy}
                 onClick={() => void doPower('stop')}
               >
-                强制停止
+                {t('lxcDetail.forceStop')}
               </Button>
             </>
           ) : (
@@ -621,7 +707,7 @@ export function LxcDetail() {
               disabled={!canPower || busy}
               onClick={() => void doPower('start')}
             >
-              启动
+              {t('lxcDetail.powerStart')}
             </Button>
           )}
           <Button
@@ -630,7 +716,7 @@ export function LxcDetail() {
             disabled={!canDelete || busy}
             onClick={() => setDeleteOpen(true)}
           >
-            删除
+            {t('common.delete')}
           </Button>
         </div>
       }
@@ -639,8 +725,8 @@ export function LxcDetail() {
         <SegmentedControl<TabKey>
           value={tab}
           onChange={setTab}
-          options={TABS}
-          ariaLabel="容器详情分区"
+          options={tabs}
+          ariaLabel={t('lxcDetail.tabsAria')}
         />
       </div>
 
@@ -651,47 +737,50 @@ export function LxcDetail() {
             <KpiCard
               label="CPU"
               value={`${cpuPct.toFixed(1)}%`}
-              hint={`${ct.cpus ?? 1} 核`}
+              hint={t('lxcDetail.kpiCpuHint', { n: ct.cpus ?? 1 })}
               icon={<IconCpu size={18} />}
               progress={Math.min(100, cpuPct)}
             />
             <KpiCard
-              label="内存"
+              label={t('lxcDetail.kpiMem')}
               value={`${memPct.toFixed(0)}%`}
               hint={`${formatBytes(toNumber(ct.mem))} / ${formatBytes(toNumber(ct.maxmem))}`}
               icon={<IconMemory size={18} />}
               progress={memPct}
             />
             <KpiCard
-              label="磁盘"
+              label={t('lxcDetail.kpiDisk')}
               value={`${diskPct.toFixed(0)}%`}
               hint={`${formatBytes(toNumber(ct.disk))} / ${formatBytes(toNumber(ct.maxdisk))}`}
               icon={<IconStorage size={18} />}
               progress={diskPct}
             />
             <KpiCard
-              label="运行时长"
+              label={t('lxcDetail.kpiUptime')}
               value={formatUptimeShort(ct.uptime)}
-              hint={running ? '运行中' : '已停止'}
+              hint={running ? t('lxcDetail.running') : t('lxcDetail.stopped')}
               icon={<IconLayers size={18} />}
             />
           </div>
 
           <div className="grid grid-2 mb-16">
             <Card>
-              <CardHeader title="基本信息" icon={<IconLayers size={16} />} />
+              <CardHeader
+                title={t('lxcDetail.basicInfo')}
+                icon={<IconLayers size={16} />}
+              />
               <InfoGrid>
                 {/* 容器没有独立的 name 字段，主机名就是它的名字。
                     编辑入口直接开「编辑配置」弹窗（第一项就是主机名），
                     不另做一个只改一行的弹窗 —— 两处表单会各自漂移。 */}
                 <InfoRow
-                  label="主机名"
+                  label={t('lxcDetail.fieldHostname')}
                   value={
                     <span className="info-editable">
                       <span className="truncate">{ct.hostname || ct.name}</span>
                       {canConfig && !busy ? (
                         <IconButton
-                          label="修改主机名"
+                          label={t('lxcDetail.renameHostname')}
                           onClick={() => setConfigOpen(true)}
                         >
                           <IconEdit size={13} />
@@ -701,27 +790,57 @@ export function LxcDetail() {
                   }
                 />
                 <InfoRow label="VMID" value={String(ctId)} />
-                <InfoRow label="节点" value={node} />
-                <InfoRow label="类型" value={ct.unprivileged ? '非特权容器' : '特权容器'} />
-                <InfoRow label="状态" value={status.label} />
-                <InfoRow label="运行时长" value={formatUptimeShort(ct.uptime)} />
+                <InfoRow label={t('lxcDetail.fieldNode')} value={node} />
                 <InfoRow
-                  label="创建时间"
+                  label={t('lxcDetail.fieldType')}
+                  value={
+                    ct.unprivileged
+                      ? t('lxcDetail.unprivileged')
+                      : t('lxcDetail.privileged')
+                  }
+                />
+                <InfoRow label={t('lxcDetail.fieldStatus')} value={status.label} />
+                <InfoRow
+                  label={t('lxcDetail.fieldUptime')}
+                  value={formatUptimeShort(ct.uptime)}
+                />
+                <InfoRow
+                  label={t('lxcDetail.fieldCreated')}
                   /* 容器实测都没有 meta，通常是「—」；留着是为了以后 PVE 补上时
                      自动显示，不必再改一次界面 */
-                  title="面板发起的新建 / 克隆按实际时刻记录；容器普遍没有 PVE 的 meta 记录，取不到时显示 —"
+                  title={t('lxcDetail.createdTitle')}
                   value={ct.created ? formatDateTime(ct.created) : '—'}
                 />
-                <InfoRow label="CPU 核心" value={String(ct.cpus ?? '-')} />
-                <InfoRow label="内存" value={`${formatBytes(toNumber(ct.maxmem))}`} />
-                <InfoRow label="Swap" value={`${formatBytes(toNumber(ct.maxswap))}`} />
                 <InfoRow
-                  label="特性"
-                  value={ct.features || '无'}
+                  label={t('lxcDetail.fieldCpuCores')}
+                  value={String(ct.cpus ?? '-')}
                 />
-                <InfoRow label="系统模板" value={ct.ostemplate || '-'} />
-                <InfoRow label="SSH 公钥" value={ct.ssh_keys_set ? '已注入' : '未设置'} />
-                <InfoRow label="DNS" value={ct.nameserver || '默认'} />
+                <InfoRow
+                  label={t('lxcDetail.fieldMemory')}
+                  value={`${formatBytes(toNumber(ct.maxmem))}`}
+                />
+                <InfoRow
+                  label={t('lxcDetail.fieldSwap')}
+                  value={`${formatBytes(toNumber(ct.maxswap))}`}
+                />
+                <InfoRow
+                  label={t('lxcDetail.fieldFeatures')}
+                  value={ct.features || t('lxcDetail.none')}
+                />
+                <InfoRow
+                  label={t('lxcDetail.fieldTemplate')}
+                  value={ct.ostemplate || '-'}
+                />
+                <InfoRow
+                  label={t('lxcDetail.fieldSshKeys')}
+                  value={
+                    ct.ssh_keys_set ? t('lxcDetail.injected') : t('lxcDetail.notSet')
+                  }
+                />
+                <InfoRow
+                  label={t('lxcDetail.fieldDns')}
+                  value={ct.nameserver || t('lxcDetail.default')}
+                />
               </InfoGrid>
               {ct.tags ? (
                 <div className="mt-12">
@@ -735,17 +854,17 @@ export function LxcDetail() {
 
             <Card>
               <CardHeader
-                title="监控"
+                title={t('lxcDetail.monitor')}
                 icon={<IconNetwork size={16} />}
                 actions={
                   <SegmentedControl<RrdTimeframe>
                     value={timeframe}
                     onChange={setTimeframe}
                     options={[
-                      { label: '小时', value: 'hour' },
-                      { label: '天', value: 'day' },
-                      { label: '周', value: 'week' },
-                      { label: '月', value: 'month' },
+                      { label: t('lxcDetail.tfHour'), value: 'hour' },
+                      { label: t('lxcDetail.tfDay'), value: 'day' },
+                      { label: t('lxcDetail.tfWeek'), value: 'week' },
+                      { label: t('lxcDetail.tfMonth'), value: 'month' },
                     ]}
                   />
                 }
@@ -781,7 +900,7 @@ export function LxcDetail() {
       {tab === 'network' ? (
         <Card>
           <CardHeader
-            title="网卡"
+            title={t('lxcDetail.netCard')}
             icon={<IconNetwork size={16} />}
             actions={
               <Button
@@ -790,20 +909,20 @@ export function LxcDetail() {
                 disabled={!canConfig || busy}
                 onClick={() => setNetOpen(true)}
               >
-                新增网卡
+                {t('lxcDetail.addNetwork')}
               </Button>
             }
           />
-          <Notice tone="info" title="容器的 IP 写在网卡配置里">
-            容器没有 cloud-init，改 IP 需要改网卡配置后重启容器才生效。
+          <Notice tone="info" title={t('lxcDetail.ipNoticeTitle')}>
+            {t('lxcDetail.ipNoticeBody')}
           </Notice>
           <Table
             columns={networkColumns}
             rows={ct.networks}
             rowKey={(r) => r.interface}
-            caption="容器网卡列表"
-            emptyTitle="没有网卡"
-            emptyDescription="容器至少需要一张网卡才能联网"
+            caption={t('lxcDetail.netCaption')}
+            emptyTitle={t('lxcDetail.netEmpty')}
+            emptyDescription={t('lxcDetail.netEmptyDesc')}
           />
         </Card>
       ) : null}
@@ -812,7 +931,7 @@ export function LxcDetail() {
       {tab === 'storage' ? (
         <Card>
           <CardHeader
-            title="存储"
+            title={t('lxcDetail.storageCard')}
             icon={<IconStorage size={16} />}
             actions={
               <Button
@@ -821,19 +940,19 @@ export function LxcDetail() {
                 disabled={!canConfig || busy}
                 onClick={() => setMountOpen(true)}
               >
-                新增挂载点
+                {t('lxcDetail.addMount')}
               </Button>
             }
           />
-          <Notice tone="warning" title="扩容不可逆">
-            容器只支持**增加**容量，缩容会被 PVE 直接拒绝。
+          <Notice tone="warning" title={t('lxcDetail.resizeWarnTitle')}>
+            {t('lxcDetail.resizeWarnBody')}
           </Notice>
           <Table
             columns={storageColumns}
             rows={mountRows}
             rowKey={(r) => r.interface}
-            caption="容器存储列表"
-            emptyTitle="没有存储卷"
+            caption={t('lxcDetail.storageCaption')}
+            emptyTitle={t('lxcDetail.storageEmpty')}
           />
         </Card>
       ) : null}
@@ -842,7 +961,7 @@ export function LxcDetail() {
       {tab === 'snapshot' ? (
         <Card>
           <CardHeader
-            title="快照"
+            title={t('lxcDetail.snapshotCard')}
             icon={<IconSnapshot size={16} />}
             actions={
               <Button
@@ -851,20 +970,20 @@ export function LxcDetail() {
                 disabled={!canSnapshot || busy}
                 onClick={() => setSnapOpen(true)}
               >
-                创建快照
+                {t('lxcDetail.createSnapshot')}
               </Button>
             }
           />
-          <Notice tone="info" title="容器快照不含内存状态">
-            与虚拟机不同，容器快照只保存磁盘与配置，不能保存运行时内存。
+          <Notice tone="info" title={t('lxcDetail.snapshotNoticeTitle')}>
+            {t('lxcDetail.snapshotNoticeBody')}
           </Notice>
           <Table
             columns={snapshotColumns}
             rows={(snapshotsQuery.data ?? []) as unknown as Array<Record<string, unknown>>}
             rowKey={(r) => String(r.name)}
             loading={snapshotsQuery.isLoading}
-            caption="容器快照列表"
-            emptyTitle="还没有快照"
+            caption={t('lxcDetail.snapshotCaption')}
+            emptyTitle={t('lxcDetail.snapshotEmpty')}
           />
         </Card>
       ) : null}
@@ -884,28 +1003,28 @@ export function LxcDetail() {
       <Modal
         open={configOpen}
         onClose={() => setConfigOpen(false)}
-        title="编辑容器配置"
-        description="CPU / 内存等改动在容器重启后完全生效"
+        title={t('lxcDetail.configTitle')}
+        description={t('lxcDetail.configDesc')}
         footer={
           <div className="flex items-center gap-8 justify-end">
             <Button variant="secondary" onClick={() => setConfigOpen(false)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" loading={pending} onClick={() => void submitConfig()}>
-              保存
+              {t('common.save')}
             </Button>
           </div>
         }
       >
         <div className="form-grid">
           <Input
-            label="主机名"
+            label={t('lxcDetail.fieldHostname')}
             value={cfgForm.hostname}
             onChange={(e) => setCfgForm({ ...cfgForm, hostname: e.target.value })}
-            hint="容器的名称：面板列表与 PVE 里显示的都是它"
+            hint={t('lxcDetail.hostnameHint')}
           />
           <Input
-            label="内存（MB）"
+            label={t('lxcDetail.memoryMb')}
             type="number"
             min={16}
             step={128}
@@ -915,7 +1034,7 @@ export function LxcDetail() {
             }
           />
           <Input
-            label="Swap（MB）"
+            label={t('lxcDetail.swapMb')}
             type="number"
             min={0}
             step={128}
@@ -923,7 +1042,7 @@ export function LxcDetail() {
             onChange={(e) => setCfgForm({ ...cfgForm, swap: Number(e.target.value) || 0 })}
           />
           <Input
-            label="CPU 核心"
+            label={t('lxcDetail.fieldCpuCores')}
             type="number"
             min={1}
             value={cfgForm.cores}
@@ -933,15 +1052,15 @@ export function LxcDetail() {
         <Switch
           checked={cfgForm.onboot}
           onChange={(v) => setCfgForm({ ...cfgForm, onboot: v })}
-          label="开机自启"
+          label={t('lxcDetail.onboot')}
         />
         <Switch
           checked={cfgForm.protection}
           onChange={(v) => setCfgForm({ ...cfgForm, protection: v })}
-          label="保护模式"
-          hint="开启后禁止删除该容器"
+          label={t('lxcDetail.protection')}
+          hint={t('lxcDetail.protectionHint')}
         />
-        <Field label="描述">
+        <Field label={t('lxcDetail.description')}>
           <Textarea
             rows={3}
             value={cfgForm.description}
@@ -956,39 +1075,39 @@ export function LxcDetail() {
       <Modal
         open={netOpen}
         onClose={() => setNetOpen(false)}
-        title="新增网卡"
-        description="键名（netN）与容器内接口名（ethN）由后端自动分配"
+        title={t('lxcDetail.addNetwork')}
+        description={t('lxcDetail.addNetworkDesc')}
         footer={
           <div className="flex items-center gap-8 justify-end">
             <Button variant="secondary" onClick={() => setNetOpen(false)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" loading={pending} onClick={() => void submitNetwork()}>
-              添加
+              {t('lxcDetail.add')}
             </Button>
           </div>
         }
       >
         <div className="form-grid">
           <Input
-            label="网桥"
+            label={t('lxcDetail.colBridge')}
             value={netForm.bridge}
             onChange={(e) => setNetForm({ ...netForm, bridge: e.target.value })}
-            hint="常见为 vmbr0"
+            hint={t('lxcDetail.bridgeHint')}
           />
           <Input
             label="IPv4"
             value={netForm.ip}
             onChange={(e) => setNetForm({ ...netForm, ip: e.target.value })}
-            hint="dhcp 或 192.168.1.50/24"
+            hint={t('lxcDetail.ipHint')}
           />
           <Input
-            label="网关"
+            label={t('lxcDetail.colGateway')}
             value={netForm.gateway}
             onChange={(e) => setNetForm({ ...netForm, gateway: e.target.value })}
           />
           <Input
-            label="VLAN Tag"
+            label={t('lxcDetail.vlanTag')}
             type="number"
             min={1}
             max={4094}
@@ -999,7 +1118,7 @@ export function LxcDetail() {
         <Switch
           checked={netForm.firewall}
           onChange={(v) => setNetForm({ ...netForm, firewall: v })}
-          label="启用防火墙"
+          label={t('lxcDetail.enableFirewall')}
         />
       </Modal>
 
@@ -1007,28 +1126,31 @@ export function LxcDetail() {
       <Modal
         open={mountOpen}
         onClose={() => setMountOpen(false)}
-        title="新增挂载点"
-        description="给容器额外挂一块数据盘，键名（mpN）由后端自动分配"
+        title={t('lxcDetail.addMount')}
+        description={t('lxcDetail.addMountDesc')}
         footer={
           <div className="flex items-center gap-8 justify-end">
             <Button variant="secondary" onClick={() => setMountOpen(false)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" loading={pending} onClick={() => void submitMount()}>
-              添加
+              {t('lxcDetail.add')}
             </Button>
           </div>
         }
       >
         <div className="form-grid">
           <Select
-            label="存储池"
+            label={t('lxcDetail.storagePool')}
             value={mountForm.storage}
             onChange={(e) => setMountForm({ ...mountForm, storage: e.target.value })}
-            options={[{ label: '请选择存储池', value: '' }, ...mountStorageOptions]}
+            options={[
+              { label: t('lxcDetail.selectStoragePool'), value: '' },
+              ...mountStorageOptions,
+            ]}
           />
           <Input
-            label="容量（GB）"
+            label={t('lxcDetail.sizeGb')}
             type="number"
             min={1}
             value={mountForm.size}
@@ -1037,16 +1159,16 @@ export function LxcDetail() {
             }
           />
           <Input
-            label="容器内挂载路径"
+            label={t('lxcDetail.mountPathLabel')}
             value={mountForm.mp}
             onChange={(e) => setMountForm({ ...mountForm, mp: e.target.value })}
-            hint="如 /data"
+            hint={t('lxcDetail.mountPathHint')}
           />
         </div>
         <Switch
           checked={mountForm.backup}
           onChange={(v) => setMountForm({ ...mountForm, backup: v })}
-          label="纳入备份"
+          label={t('lxcDetail.includeBackup')}
         />
       </Modal>
 
@@ -1054,24 +1176,24 @@ export function LxcDetail() {
       <Modal
         open={Boolean(resizeTarget)}
         onClose={() => setResizeTarget(null)}
-        title={`扩容 ${resizeTarget ?? ''}`}
-        description="支持绝对值（20G）与增量（+10G）；容器不支持缩容"
+        title={t('lxcDetail.resizeTitle', { disk: resizeTarget ?? '' })}
+        description={t('lxcDetail.resizeDesc')}
         footer={
           <div className="flex items-center gap-8 justify-end">
             <Button variant="secondary" onClick={() => setResizeTarget(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" loading={pending} onClick={() => void submitResize()}>
-              扩容
+              {t('lxcDetail.resize')}
             </Button>
           </div>
         }
       >
         <Input
-          label="目标容量"
+          label={t('lxcDetail.targetSize')}
           value={resizeSize}
           onChange={(e) => setResizeSize(e.target.value)}
-          hint="填 20G 表示扩到 20G，填 +10G 表示增加 10G"
+          hint={t('lxcDetail.targetSizeHint')}
         />
       </Modal>
 
@@ -1079,27 +1201,27 @@ export function LxcDetail() {
       <Modal
         open={snapOpen}
         onClose={() => setSnapOpen(false)}
-        title="创建快照"
+        title={t('lxcDetail.createSnapshot')}
         footer={
           <div className="flex items-center gap-8 justify-end">
             <Button variant="secondary" onClick={() => setSnapOpen(false)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" loading={pending} onClick={() => void submitSnapshot()}>
-              创建
+              {t('common.create')}
             </Button>
           </div>
         }
       >
         <div className="form-grid">
           <Input
-            label="快照名称"
+            label={t('lxcDetail.snapshotName')}
             value={snapName}
             onChange={(e) => setSnapName(e.target.value)}
-            hint="字母、数字、连字符与下划线"
+            hint={t('lxcDetail.snapshotNameHint')}
           />
           <Input
-            label="描述"
+            label={t('lxcDetail.colDescription')}
             value={snapDesc}
             onChange={(e) => setSnapDesc(e.target.value)}
           />
@@ -1111,15 +1233,15 @@ export function LxcDetail() {
         open={deleteOpen}
         onCancel={() => setDeleteOpen(false)}
         onConfirm={() => void confirmDelete()}
-        title="删除容器"
+        title={t('lxcDetail.deleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={pending}
         requireText={ct.name || String(ctId)}
         message={
           running
-            ? `容器 ${ctId} 正在运行，请先关机后再删除。`
-            : `将删除容器「${ct.name}」（CT ${ctId}）及其全部数据，此操作不可恢复。请输入容器名称以确认。`
+            ? t('lxcDetail.deleteRunning', { vmid: ctId })
+            : t('lxcDetail.deleteMessage', { name: ct.name, vmid: ctId })
         }
       />
 
@@ -1128,11 +1250,11 @@ export function LxcDetail() {
         open={Boolean(removeTarget)}
         onCancel={() => setRemoveTarget(null)}
         onConfirm={() => void confirmRemove()}
-        title={`移除 ${removeTarget ?? ''}`}
+        title={t('lxcDetail.removeTitle', { key: removeTarget ?? '' })}
         danger
-        confirmText="移除"
+        confirmText={t('lxcDetail.removeConfirm')}
         loading={pending}
-        message="只删除配置项，卷数据会作为孤立卷留在存储池（可在「存储」页回收）。"
+        message={t('lxcDetail.removeMessage')}
       />
 
       {/* ---- 快照回滚 / 删除确认 ---- */}
@@ -1142,16 +1264,20 @@ export function LxcDetail() {
         onConfirm={() => void confirmSnapAction()}
         title={
           snapAction?.kind === 'rollback'
-            ? `回滚到快照「${snapAction?.name}」`
-            : `删除快照「${snapAction?.name}」`
+            ? t('lxcDetail.rollbackTitle', { name: snapAction?.name ?? '' })
+            : t('lxcDetail.deleteSnapTitle', { name: snapAction?.name ?? '' })
         }
         danger={snapAction?.kind === 'delete'}
-        confirmText={snapAction?.kind === 'rollback' ? '回滚' : '删除'}
+        confirmText={
+          snapAction?.kind === 'rollback'
+            ? t('lxcDetail.rollback')
+            : t('common.delete')
+        }
         loading={pending}
         message={
           snapAction?.kind === 'rollback'
-            ? '容器会回到该快照的状态，之后的变更将丢失。'
-            : '删除后无法恢复。'
+            ? t('lxcDetail.rollbackMessage')
+            : t('lxcDetail.deleteSnapMessage')
         }
       />
     </PageShell>

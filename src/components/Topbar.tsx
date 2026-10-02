@@ -24,6 +24,8 @@ import {
 import { NotificationBell } from './NotificationBell';
 import { ConsoleStatus } from './ConsoleStatus';
 import { roleMeta } from '../utils/status';
+import { useI18n, useT } from '../i18n';
+import { LanguageSelect } from './LanguageSelect';
 
 /** 命令面板的快捷键提示：Mac 上是 ⌘K，其它平台是 Ctrl K */
 const SHORTCUT =
@@ -43,6 +45,7 @@ export interface TopbarProps {
 
 export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
   const { user, logout, isAdmin } = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   /* 这个菜单是个人中心 / 系统设置 / 用户管理的第二个入口。
      被面板级开关关闭的入口这里也要跟着消失 —— 否则「侧边栏里关掉了，
@@ -80,13 +83,13 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
     return () => document.removeEventListener('keydown', handler);
   }, [menuOpen]);
 
-  const role = roleMeta(user?.role);
+  const role = roleMeta(user?.role, t);
 
   return (
     <header className="topbar">
       <div className="topbar-left">
         <IconButton
-          label="打开导航菜单"
+          label={t('topbar.openNav')}
           className="topbar-hamburger"
           onClick={onOpenMobileNav}
         >
@@ -106,11 +109,11 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
             type="button"
             className="topbar-search"
             onClick={onOpenSearch}
-            aria-label="全局搜索（页面与资源）"
-            title="全局搜索：页面 / 虚拟机 / 容器 / 节点 / 存储 / 用户"
+            aria-label={t('topbar.searchAria')}
+            title={t('topbar.searchTitle')}
           >
             <IconSearch size={15} />
-            <span className="topbar-search-text">搜索…</span>
+            <span className="topbar-search-text">{t('topbar.searchPlaceholder')}</span>
             <kbd className="cmd-kbd">{SHORTCUT}</kbd>
           </button>
         ) : null}
@@ -119,7 +122,7 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
 
         {/* 手动刷新全局 query */}
         <IconButton
-          label="刷新全部数据"
+          label={t('topbar.refreshAll')}
           onClick={() => {
             void health.refetch();
             window.dispatchEvent(new CustomEvent('ProxCenter:refresh'));
@@ -127,6 +130,9 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
         >
           <IconRefresh size={16} />
         </IconButton>
+
+        {/* 语言切换：常驻顶栏。收进头像菜单里等于没有 —— 用户找不到就不会用 */}
+        <LanguageSelect variant="topbar" />
 
         {/* 用户菜单 */}
         <div className="user-menu" ref={menuRef}>
@@ -141,7 +147,7 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
               {(user?.username ?? '?').slice(0, 1).toUpperCase()}
             </span>
             <span className="user-meta">
-              <span className="user-name">{user?.username ?? '未登录'}</span>
+              <span className="user-name">{user?.username ?? t('topbar.notLoggedIn')}</span>
               <span className="user-role">{role.label}</span>
             </span>
             <IconChevronDown size={14} />
@@ -168,7 +174,7 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
                   }}
                 >
                   <IconUser size={15} />
-                  <span>个人中心</span>
+                  <span>{t('topbar.profile')}</span>
                 </button>
               )}
               {/* 「系统管理」下的页面仅管理员可见，普通用户菜单里不出现 */}
@@ -184,7 +190,7 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
                     }}
                   >
                     <IconSettings size={15} />
-                    <span>系统设置</span>
+                    <span>{t('topbar.settings')}</span>
                   </button>
                   {/* 用户管理：入口被关掉时这里也不出现 */}
                   {isPathDisabled('/users', disabledPaths) ? null : (
@@ -198,7 +204,7 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
                       }}
                     >
                       <IconUsers size={15} />
-                      <span>用户管理</span>
+                      <span>{t('topbar.users')}</span>
                     </button>
                   )}
                 </>
@@ -214,7 +220,7 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
                 }}
               >
                 <IconLogout size={15} />
-                <span>退出登录</span>
+                <span>{t('topbar.logout')}</span>
               </button>
             </div>
           ) : null}
@@ -233,8 +239,9 @@ export function Breadcrumb({
 }: {
   items: Array<{ label: string; to?: string }>;
 }) {
+  const t = useT();
   return (
-    <nav className="breadcrumb" aria-label="面包屑导航">
+    <nav className="breadcrumb" aria-label={t('breadcrumb.aria')}>
       {items.map((item, i) => (
         <span className="breadcrumb-item" key={`${item.label}-${i}`}>
           {item.to ? <Link to={item.to}>{item.label}</Link> : <span>{item.label}</span>}

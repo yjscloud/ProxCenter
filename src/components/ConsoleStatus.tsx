@@ -23,17 +23,19 @@ import { useAuth } from '../hooks/useAuth';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
 import { IconChevronDown, IconRefresh } from './Icons';
+import { useT, type MessageKey } from '../i18n';
 
 /** 总体状态的档位：决定圆点颜色与面板标题 */
 type OverallTone = 'success' | 'warning' | 'danger';
 
-const TONE_LABEL: Record<OverallTone, string> = {
-  success: '运行正常',
-  warning: '部分异常',
-  danger: '服务异常',
+const TONE_LABEL_KEYS: Record<OverallTone, MessageKey> = {
+  success: 'status.console.toneSuccess',
+  warning: 'status.console.toneWarning',
+  danger: 'status.console.toneDanger',
 };
 
 export function ConsoleStatus() {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const { hasPermission } = useAuth();
@@ -104,12 +106,16 @@ export function ConsoleStatus() {
   const nodeCount = totals ? totals.nodes : health.data?.node_count;
 
   const summary = !backendUp
-    ? '无法连接到后端服务'
+    ? t('status.console.summaryBackendDown')
     : totals
-      ? `后端服务正常，${totals.online}/${totals.connections} 条 PVE 连接在线，共 ${totals.nodes} 个节点`
+      ? t('status.console.summaryFleet', {
+          online: totals.online,
+          total: totals.connections,
+          nodes: totals.nodes,
+        })
       : connected
-        ? '后端服务正常，已连接 Proxmox VE'
-        : '后端服务正常，但未连接到 Proxmox VE';
+        ? t('status.console.summaryConnected')
+        : t('status.console.summaryDisconnected');
 
   return (
     <div className="topbar-status" ref={rootRef}>
@@ -122,22 +128,24 @@ export function ConsoleStatus() {
         onClick={() => setOpen((value) => !value)}
       >
         <span className={`cs-dot cs-dot-${tone}`} aria-hidden="true" />
-        <span className="topbar-stat-label">控制台状态</span>
+        <span className="topbar-stat-label">{t('status.console.label')}</span>
         <span className="cs-caret" aria-hidden="true">
           <IconChevronDown size={13} />
         </span>
       </button>
 
       {open ? (
-        <div className="cs-panel" role="dialog" aria-label="控制台状态">
+        <div className="cs-panel" role="dialog" aria-label={t('status.console.aria')}>
           <div className="cs-panel-head">
-            <span className="cs-panel-title">控制台状态</span>
-            <span className={`cs-tone cs-tone-${tone}`}>{TONE_LABEL[tone]}</span>
+            <span className="cs-panel-title">{t('status.console.label')}</span>
+            <span className={`cs-tone cs-tone-${tone}`}>
+              {t(TONE_LABEL_KEYS[tone])}
+            </span>
           </div>
 
           <div className="cs-rows">
             <div className="cs-row">
-              <span className="cs-row-key">后端服务</span>
+              <span className="cs-row-key">{t('status.console.backend')}</span>
               <span className="cs-row-val">
                 <Badge
                   variant={backendUp ? 'success' : 'danger'}
@@ -145,7 +153,7 @@ export function ConsoleStatus() {
                   pulse={backendUp}
                   size="sm"
                 >
-                  {backendUp ? '正常' : '离线'}
+                  {backendUp ? t('status.console.ok') : t('status.console.offline')}
                 </Badge>
               </span>
             </div>
@@ -160,7 +168,10 @@ export function ConsoleStatus() {
                     pulse={totals.online > 0}
                     size="sm"
                   >
-                    {totals.online}/{totals.connections} 条连接在线
+                    {t('status.console.connectionsOnline', {
+                      online: totals.online,
+                      total: totals.connections,
+                    })}
                   </Badge>
                 ) : (
                   <Badge
@@ -169,7 +180,9 @@ export function ConsoleStatus() {
                     pulse={connected}
                     size="sm"
                   >
-                    {connected ? '已连接' : '未连接'}
+                    {connected
+                      ? t('status.console.connected')
+                      : t('status.console.disconnected')}
                   </Badge>
                 )}
               </span>
@@ -177,7 +190,7 @@ export function ConsoleStatus() {
 
             {versions ? (
               <div className="cs-row">
-                <span className="cs-row-key">PVE 版本</span>
+                <span className="cs-row-key">{t('status.console.pveVersion')}</span>
                 <span className="cs-row-val mono fs-sm">{versions}</span>
               </div>
             ) : null}
@@ -185,15 +198,19 @@ export function ConsoleStatus() {
             {nodeCount !== undefined ? (
               <div className="cs-row">
                 <span className="cs-row-key">
-                  {totals ? 'PVE 节点（所有连接合计）' : '集群节点'}
+                  {totals
+                    ? t('status.console.nodesAll')
+                    : t('status.console.nodesCluster')}
                 </span>
-                <span className="cs-row-val mono fs-sm">{nodeCount} 个</span>
+                <span className="cs-row-val mono fs-sm">
+                  {t('status.console.nodeCount', { count: nodeCount })}
+                </span>
               </div>
             ) : null}
 
             {health.data?.version ? (
               <div className="cs-row">
-                <span className="cs-row-key">面板版本</span>
+                <span className="cs-row-key">{t('status.console.panelVersion')}</span>
                 <span className="cs-row-val mono fs-sm">{health.data.version}</span>
               </div>
             ) : null}
@@ -207,7 +224,7 @@ export function ConsoleStatus() {
               loading={health.isFetching && !health.isLoading}
               onClick={() => void health.refetch()}
             >
-              刷新状态
+              {t('status.console.refresh')}
             </Button>
           </div>
         </div>

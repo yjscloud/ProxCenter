@@ -46,6 +46,7 @@ import {
   IconUsers,
   IconVm,
 } from './Icons';
+import { useT } from '../i18n';
 
 /* ---------------------------------------------------------------------------
    类型
@@ -95,6 +96,8 @@ export function Workbench() {
   const canAlert = hasPermission('alert.view');
   const canBaseline = hasPermission('baseline.view');
   const canNodes = hasPermission('node.view');
+
+  const t = useT();
 
   /* ---- 数据 ---- */
   const connectionsQuery = useQuery({
@@ -160,8 +163,8 @@ export function Workbench() {
         items.push({
           id: 'conn-missing',
           tone: 'danger',
-          title: '尚未配置 Proxmox 连接',
-          detail: '面板还连不上任何 PVE，节点与虚拟机数据都是空的',
+          title: t('wb.todo.connMissing'),
+          detail: t('wb.todo.connMissingDetail'),
           to: '/settings',
           icon: <IconPlug size={16} />,
         });
@@ -171,11 +174,11 @@ export function Workbench() {
           items.push({
             id: 'conn-down',
             tone: 'danger',
-            title: `${down.length} 个 PVE 连接不可用`,
+            title: t('wb.todo.connDown', { n: down.length }),
             detail: down
               .map((c) => c.name || c.host)
               .filter(Boolean)
-              .join('、'),
+              .join(t('wb.listSep')),
             to: '/settings',
             icon: <IconAlert size={16} />,
           });
@@ -189,8 +192,8 @@ export function Workbench() {
       items.push({
         id: 'pending-users',
         tone: 'warning',
-        title: `${pendingCount} 个注册申请待审批`,
-        detail: '通过并分配角色后对方才能登录',
+        title: t('wb.todo.pending', { n: pendingCount }),
+        detail: t('wb.todo.pendingDetail'),
         to: '/users',
         icon: <IconUsers size={16} />,
       });
@@ -208,11 +211,13 @@ export function Workbench() {
           id: 'quota-low',
           tone: exhausted ? 'danger' : 'warning',
           title: exhausted
-            ? '下发配额已用尽，无法再创建机器'
-            : `下发配额仅剩 ${quota.remaining} 台`,
-          detail: `已用 ${quota.used} / ${quota.quota} 台${
-            exhausted ? '' : '，请提前调整额度'
-          }`,
+            ? t('wb.todo.quotaExhausted')
+            : t('wb.todo.quotaLow', { n: quota.remaining }),
+          detail: t('wb.todo.quotaDetail', {
+            used: quota.used,
+            quota: quota.quota,
+            hint: exhausted ? '' : t('wb.todo.quotaAdjust'),
+          }),
           to: isAdmin ? '/settings' : '/vms',
           icon: <IconVm size={16} />,
         });
@@ -231,12 +236,15 @@ export function Workbench() {
       new Set(activeAlarms.map((a) => String(a.target || '')).filter(Boolean)),
     );
     if (alarmingTargets.length > 0) {
-      const shown = alarmingTargets.slice(0, 3).join('、');
+      const shown = alarmingTargets.slice(0, 3).join(t('wb.listSep'));
       items.push({
         id: 'alerts',
         tone: 'warning',
-        title: `${alarmingTargets.length} 个对象正在告警`,
-        detail: `${shown}${alarmingTargets.length > 3 ? ' 等' : ''}（已恢复的不计入）`,
+        title: t('wb.todo.alerts', { n: alarmingTargets.length }),
+        detail: t('wb.todo.alertsDetail', {
+          shown,
+          more: alarmingTargets.length > 3 ? t('wb.todo.andMore') : '',
+        }),
         to: '/alerts',
         icon: <IconBell size={16} />,
       });
@@ -248,8 +256,11 @@ export function Workbench() {
       items.push({
         id: 'baseline',
         tone: 'info',
-        title: `${totals.fail} 项安全基线未通过`,
-        detail: `${totals.hosts} 台服务器受检，其中 ${totals.fixable} 项可一键加固`,
+        title: t('wb.todo.baseline', { n: totals.fail }),
+        detail: t('wb.todo.baselineDetail', {
+          hosts: totals.hosts,
+          fixable: totals.fixable,
+        }),
         to: '/security-baseline',
         icon: <IconShield size={16} />,
       });
@@ -264,6 +275,7 @@ export function Workbench() {
     quotaQuery.data,
     alertsQuery.data,
     baselineQuery.data,
+    t,
   ]);
 
   /* ---- 快捷操作：按权限裁剪，最多 6 个（两列三行正好铺满，再多就不「快」了） ---- */
@@ -273,8 +285,8 @@ export function Workbench() {
     if (canVmCreate) {
       list.push({
         id: 'create-vm',
-        label: '创建虚拟机',
-        hint: '直接打开创建向导',
+        label: t('wb.action.createVm'),
+        hint: t('wb.action.createVmHint'),
         key: 'c',
         to: '/vms?new=1',
         icon: <IconPlus size={15} />,
@@ -285,8 +297,8 @@ export function Workbench() {
     if (canFrp) {
       list.push({
         id: 'frp',
-        label: '内网穿透',
-        hint: '用 frp 把内网服务映射到公网',
+        label: t('wb.action.frp'),
+        hint: t('wb.action.frpHint'),
         key: 'f',
         to: '/frp',
         icon: <IconPlug size={15} />,
@@ -295,8 +307,8 @@ export function Workbench() {
     if (isAdmin) {
       list.push({
         id: 'tasks',
-        label: '任务队列',
-        hint: '查看最近的集群任务',
+        label: t('wb.action.tasks'),
+        hint: t('wb.action.tasksHint'),
         key: 't',
         to: '/tasks',
         icon: <IconTasks size={15} />,
@@ -305,8 +317,8 @@ export function Workbench() {
     if (canAlert) {
       list.push({
         id: 'alerts',
-        label: '查看告警',
-        hint: '监控规则与告警历史',
+        label: t('wb.action.alerts'),
+        hint: t('wb.action.alertsHint'),
         key: 'a',
         to: '/alerts',
         icon: <IconBell size={15} />,
@@ -315,8 +327,8 @@ export function Workbench() {
     if (canNodes) {
       list.push({
         id: 'nodes',
-        label: '节点总览',
-        hint: '集群节点负载与状态',
+        label: t('wb.action.nodes'),
+        hint: t('wb.action.nodesHint'),
         key: 'n',
         to: '/nodes',
         icon: <IconServer size={15} />,
@@ -325,15 +337,15 @@ export function Workbench() {
     if (canBaseline) {
       list.push({
         id: 'baseline',
-        label: '安全体检',
-        hint: '基线评分与一键加固',
+        label: t('wb.action.baseline'),
+        hint: t('wb.action.baselineHint'),
         key: 'b',
         to: '/security-baseline',
         icon: <IconShield size={15} />,
       });
     }
     return list.slice(0, 6);
-  }, [canVmCreate, canFrp, isAdmin, canAlert, canNodes, canBaseline]);
+  }, [canVmCreate, canFrp, isAdmin, canAlert, canNodes, canBaseline, t]);
 
   /* ---- 单键快捷键 ----
      只在「没在输入框里、没按修饰键」时生效：面板里到处是搜索框，若不加这层
@@ -375,24 +387,24 @@ export function Workbench() {
   if (todos.length === 0 && actions.length === 0) return null;
 
   return (
-    <section className="wb" aria-label="工作台">
+    <section className="wb" aria-label={t('wb.aria')}>
       <div className="wb-head">
         <div className="wb-head-title">
           <IconLayout size={16} />
-          <span>工作台</span>
+          <span>{t('wb.title')}</span>
           {todos.length > 0 ? (
             <span className={`wb-head-count wb-tone-${todos[0].tone}`}>
-              {todos.length} 项待办
+              {t('wb.todoCount', { n: todos.length })}
             </span>
           ) : null}
         </div>
-        <div className="wb-head-note">按快捷键直达常用操作</div>
+        <div className="wb-head-note">{t('wb.shortcutNote')}</div>
       </div>
 
       <div className="wb-grid">
         {/* ---- 待办事项 ---- */}
         <div className="wb-col">
-          <div className="wb-col-title">待办事项</div>
+          <div className="wb-col-title">{t('wb.colTodos')}</div>
 
           {loading ? (
             <div className="wb-list" aria-hidden="true">
@@ -411,10 +423,8 @@ export function Workbench() {
                 <IconCheck size={17} />
               </span>
               <div className="wb-clear-text">
-                <div className="wb-clear-title">待办已清空</div>
-                <div className="wb-clear-desc">
-                  集群运转正常，当前没有需要你处理的事项
-                </div>
+                <div className="wb-clear-title">{t('wb.clearTitle')}</div>
+                <div className="wb-clear-desc">{t('wb.clearDesc')}</div>
               </div>
             </div>
           ) : (
@@ -447,14 +457,17 @@ export function Workbench() {
         {/* ---- 快捷操作 ---- */}
         {actions.length > 0 ? (
           <div className="wb-col">
-            <div className="wb-col-title">快捷操作</div>
+            <div className="wb-col-title">{t('wb.colActions')}</div>
             <div className="wb-actions">
               {actions.map((action) => (
                 <button
                   key={action.id}
                   type="button"
                   className="wb-action"
-                  title={`${action.hint}（快捷键 ${action.key.toUpperCase()}）`}
+                  title={t('wb.actionTitle', {
+                    hint: action.hint,
+                    key: action.key.toUpperCase(),
+                  })}
                   aria-keyshortcuts={action.key}
                   onClick={() => navigate(action.to)}
                 >

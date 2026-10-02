@@ -68,75 +68,431 @@ DB_PASSWORD="${DB_PASSWORD:-}"
 DB_HOST="${DB_HOST:-}"
 DB_PORT="${DB_PORT:-}"
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
+LANG_OPT=""
 
-usage() {
-  cat <<'EOF'
-ProxCenter 一键部署
+# --- 界面语言 -----------------------------------------------------------------
+# 与前端（src/i18n）、后端（backend/app/i18n.py）**同一套约定**：
+# 中文是源文案，英文译文放在下面的 MSG_EN 里查表，查不到就原样返回中文。
+# 所以漏翻一条不会让脚本崩掉，只会在英文界面下继续显示中文 —— 与后端
+# tr() 的兜底行为一致，不会出现「因为少一句译文就装不上」的情况。
+#
+# 优先级：--lang > PROXCENTER_LANG > $LC_ALL/$LC_MESSAGES/$LANG > 中文
+LANG_UI="zh"
 
-用法： sudo ./deploy.sh [选项]
+resolve_lang() {
+  local want="$LANG_OPT"
+  [ -n "$want" ] || want="${PROXCENTER_LANG:-}"
+  if [ -z "$want" ]; then
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+      en|en_US|en_US.*|en_GB|en_GB.*) want="en" ;;
+      *) want="zh" ;;
+    esac
+  fi
+  case "$want" in
+    en|en-US|en_US|en-GB|en_GB|english) LANG_UI="en" ;;
+    *) LANG_UI="zh" ;;
+  esac
+}
 
-选项：
-  --port PORT             面板监听端口（默认沿用 .env，首次为 8080）
-  --service NAME          systemd 服务名（默认 proxcenter）
-  --user USER             systemd 运行用户（默认 root）
-  --skip-frontend         跳过前端构建，复用已有的 dist/（服务器上没有 Node.js 时用）
-  --skip-deps             只检查系统依赖，不自动安装（离线 / 内网 / 想自己管依赖时用）
-  --no-install-db         本机没有 MySQL/MariaDB 时也不代装（默认代装，见下）
-  --install-db            兼容旧用法，等于默认行为（保留参数，不再需要显式指定）
-  --reset-db-password     把数据库账号的口令对齐成 backend/.env 里的值（账号被别的
-                          应用共用时别用；建号时不会改已存在账号的口令）
-  -y, --yes               不提问，全部用默认值（**这就是默认行为**，保留参数以便旧脚本）
-  --reconfigure           逐项提问一遍（端口 / 库名 / 账号 / 口令 / 是否代装数据库）：
-                          默认值取自现有配置，回车即保持不变（SECRET_KEY 不动，
-                          口令留空 = 沿用，不会被换成新生成的）
-  --no-systemd            只准备虚拟环境 / 依赖 / .env / 前端产物，不装服务（无需 root）
-  --db-host HOST          数据库地址（默认 127.0.0.1）
-  --db-port PORT          数据库端口（默认 3306）
-  --db-name NAME          面板数据库名（默认 proxcenter_panel）
-  --db-user USER          面板数据库账号（默认 proxcenter）
-  --db-password PASS      面板数据库口令（默认随机生成）
-  --mysql-root-password P 仅用于自动建库建号的 MySQL 管理员口令（选填）
-  -h, --help              显示本帮助
+# 「挂着一个可交互的终端」吗？
+#
+# 刻意不写 `[ -r /dev/tty ]`：在**没有控制终端**的环境里（容器、cron、CI、
+# 某些 IDE 的终端面板），/dev/tty 依然存在、ls 出来也是可读的 rwx，
+# 可一 open 就失败并报 `No such device or address`。用 -r 判断会把这些环境
+# 误判成「有终端」，于是该问的不问、不该问的乱问，输出也被搅乱。
+#
+# 所以这里真开一次：开得到才算数。失败时的 2>/dev/null 是必须的 ——
+# 关着的 tty 会往 stderr 吐一行错误，而 set -e 下这行会直接终止脚本。
+have_tty() {
+  # 放在子 shell 里试，且把 2>/dev/null 写在**外面**：
+  # `exec 3<>/dev/tty 2>/dev/null` 那种写法救不了 —— 重定向是按从左到右生效的，
+  # 3<> 先失败，2>/dev/null 还没来得及把 stderr 收走，shell 已经把
+  # 「No such device or address」打出去了。子 shell 里 fd 3 也天然不会漏给父 shell。
+  ( exec 3<>/dev/tty ) 2>/dev/null
+}
 
-环境变量同名可用：DB_NAME / DB_USER / DB_PASSWORD / DB_HOST / DB_PORT /
-MYSQL_ROOT_PASSWORD
+# 语言选择：只在「用户没指定语言 + 挂着终端」时问一次，然后照常往下自动装。
+#
+# 三条克制，是刻意加的：
+#   1. 显式指定过（--lang / PROXCENTER_LANG）就不问 —— 用户已经说过了，再问是噪音；
+#   2. 没有可交互终端就不问 —— cron / CI / 管道里提问会把部署直接卡死，
+#      这条比「是否提示」重要得多；
+#   3. 放在主解析循环**之后** —— --help 与未知参数要在解析阶段就说话，
+#      提前插一句提问会让「看个帮助」也被问一遍。
+# 读 /dev/tty 而不是 stdin：与下面的 ask() 同一套做法，stdout 被 tee 进日志、
+# stdin 是管道时交互依然正常。
+choose_lang() {
+  resolve_lang   # 先按 --lang / 环境变量 / locale 定出默认值，供回车采纳
 
-交互：
-  **默认不提问。** sudo ./deploy.sh 会一条命令跑到底：端口用 8080、库名用
-  proxcenter_panel、账号用 proxcenter，SECRET_KEY / 数据库口令 / 管理员口令全部
-  随机生成（后端对「首次建号口令」有「至少 12 位、且不能是常见弱口令」的硬性要求，
-  不满足会拒绝启动，所以这里必须给一个随机强口令）。
+  [ -n "$LANG_OPT" ] && return 0
+  [ -n "${PROXCENTER_LANG:-}" ] && return 0
+  have_tty || return 0
+
+  local reply="" tries=0
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    # 提示语中英并列：此刻还没决定用哪种语言，只印一种的话，
+    # 另一种语言的用户只能靠数字猜。语言名也照原样写 ——
+    # 把「中文 / English」翻译成第三种语言反而更难认。
+    printf '\n  请选择界面语言 / Choose the interface language:\n' >&2
+    printf '    1) 中文\n' >&2
+    printf '    2) English\n' >&2
+    printf '    序号（直接回车 = 按系统语言判定）/ Number (Enter = the system-locale default) [1]: ' >&2
+    reply=""
+    IFS= read -r reply < /dev/tty || reply=""
+    case "$reply" in
+      1 | zh | cn | 中文)         LANG_UI="zh"; return 0 ;;
+      2 | en | English | english) LANG_UI="en"; return 0 ;;
+      '')                                return 0 ;;   # 回车 = 保持默认
+    esac
+    printf '    只能输入 1 或 2。/ Please enter 1 or 2.\n' >&2
+  done
+  # 连着三次都不认，按默认值继续 —— 不该为了界面语言把部署堵在这儿
+  return 0
+}
+
+declare -A MSG_EN=(
+  # ---- 启动横幅 ----
+  ['本脚本需要 bash（当前 shell 不是 bash，且系统里找不到 bash）。']='This script needs bash (the current shell is not bash, and bash was not found on this system).'
+  ['ProxCenter 部署']='ProxCenter deployment'
+  ['部署完成']='Deployment complete'
+  ['下一步：']='Next steps:'
+
+  # ---- 运行环境 ----
+  ['检查运行环境']='Checking the environment'
+  ['已指定 --skip-deps：只检查依赖、不自动安装']='--skip-deps given: checking dependencies only, nothing will be installed'
+  ['没有找到 apt-get / dnf / yum / zypper / apk，无法自动安装依赖']='None of apt-get / dnf / yum / zypper / apk was found, cannot install dependencies automatically'
+  ['当前不是 root 且没有 sudo，无法自动安装依赖（改用 sudo 重跑，或手工装）']='Not running as root and sudo is unavailable, cannot install dependencies automatically (re-run with sudo, or install them yourself)'
+  ['未识别']='unrecognised'
+  ['未知']='unknown'
+  ['无']='none'
+  ['<本机IP>']='<this host IP>'
+  ['未知参数：%s（用 --help 看用法）']='Unknown option: %s (run --help for usage)'
+
+  # ---- 帮助文本（usage）----------------------------------------------------
+  ['ProxCenter 一键部署']='ProxCenter one-click deployment'
+  ['用法： sudo ./deploy.sh [选项]']='Usage: sudo ./deploy.sh [options]'
+  ['选项：']='Options:'
+  ['--port PORT|面板监听端口（默认沿用 .env，首次为 8080）']='--port PORT|Port the panel listens on (defaults to the value in .env, or 8080 on a first run)'
+  ['--service NAME|systemd 服务名（默认 proxcenter）']='--service NAME|systemd service name (default: proxcenter)'
+  ['--user USER|systemd 运行用户（默认 root）']='--user USER|User the systemd service runs as (default: root)'
+  ['--skip-frontend|跳过前端构建，复用已有的 dist/（服务器上没有 Node.js 时用）']='--skip-frontend|Skip the frontend build and reuse the existing dist/ (for servers without Node.js)'
+  ['--skip-deps|只检查系统依赖，不自动安装（离线 / 内网 / 想自己管依赖时用）']='--skip-deps|Only check system dependencies, install nothing (offline, intranet, or when you manage dependencies yourself)'
+  ['--no-install-db|本机没有 MySQL/MariaDB 时也不代装（默认是代装的）']='--no-install-db|Do not install MySQL/MariaDB even if it is missing locally (it is installed by default)'
+  ['--install-db|兼容旧用法，等于默认行为（保留参数，不再需要显式指定）']='--install-db|Kept for compatibility; this is already the default behaviour'
+  ['--reset-db-password|把数据库账号的口令对齐成 .env 里的值（账号被别的应用共用时别用）']='--reset-db-password|Align the database account password with the value in .env (do not use it when the account is shared with another application)'
+  ['-y, --yes|不提问，全部用默认值（**这就是默认行为**，保留参数以便旧脚本）']='-y, --yes|Ask nothing and use every default (**this is already the default**; kept so older scripts keep working)'
+  ['--reconfigure|逐项提问一遍；默认值取自现有配置，回车即保持不变']='--reconfigure|Ask for each value; defaults come from the current configuration and pressing Enter keeps them'
+  ['--no-systemd|只准备虚拟环境 / 依赖 / .env / 前端产物，不装服务（无需 root）']='--no-systemd|Only prepare the virtualenv, dependencies, .env and frontend build; install no service (no root needed)'
+  ['--db-host HOST|数据库地址（默认 127.0.0.1）']='--db-host HOST|Database host (default: 127.0.0.1)'
+  ['--db-port PORT|数据库端口（默认 3306）']='--db-port PORT|Database port (default: 3306)'
+  ['--db-name NAME|面板数据库名（默认 proxcenter_panel）']='--db-name NAME|Database name for the panel (default: proxcenter_panel)'
+  ['--db-user USER|面板数据库账号（默认 proxcenter）']='--db-user USER|Database user for the panel (default: proxcenter)'
+  ['--db-password PASS|面板数据库口令（默认随机生成）']='--db-password PASS|Database password for the panel (generated randomly by default)'
+  ['--mysql-root-password P|仅用于自动建库建号的 MySQL 管理员口令（选填）']='--mysql-root-password P|MySQL administrator password, used only to create the database and grant rights (optional)'
+  ['--lang LANG|界面语言：zh 或 en（默认按系统语言判定）']='--lang LANG|Interface language: zh or en (defaults to the system locale)'
+  ['-h, --help|显示本帮助']='-h, --help|Show this help'
+  ['没指定语言时会先问一句']='When no language is given, the script asks first'
+  ['直接在命令上给 --lang 时不会再问；没有终端（cron / CI / 管道）也不问，按系统语言（$LC_ALL / $LANG）静默判定。']='It does not ask when --lang is given on the command line, nor when there is no terminal (cron / CI / a pipe); in that case the system locale ($LC_ALL / $LANG) decides silently.'
+  ['环境变量同名可用：DB_NAME / DB_USER / DB_PASSWORD / DB_HOST / DB_PORT / MYSQL_ROOT_PASSWORD']='The same names also work as environment variables: DB_NAME / DB_USER / DB_PASSWORD / DB_HOST / DB_PORT / MYSQL_ROOT_PASSWORD'
+  ['交互：']='Interactive mode:'
+  ['**默认不提问。** sudo ./deploy.sh 会一条命令跑到底：端口用 8080、库名用
+  proxcenter_panel、账号用 proxcenter，SECRET_KEY / 数据库口令 / 管理员口令全部随机生成
+  （后端要求「首次建号口令」至少 12 位且不是常见弱口令，所以这里必须给随机强口令）。
   装完最后一屏会把面板地址、管理员账号与初始口令打印出来 —— 口令只显示这一次，
   请登录后立即在「个人中心 → 修改密码」里改掉。
   要自己指定参数：加 --port / --db-* 等（仍然不提问）；
   要逐项确认：加 --reconfigure（默认值取自现有 backend/.env，回车即保持不变）。
-  重复执行只覆盖命令行显式给的值，不会动已有配置（backend/.env 已存在就沿用）。
-  没有终端（cron / CI / 管道）时不提问，全部用默认值。
+  重复执行只覆盖命令行显式给的值，不会动已有配置。
+  没有终端（cron / CI / 管道）时不提问，全部用默认值。']='**It asks nothing by default.** sudo ./deploy.sh runs all the way through in one command: port 8080, database
+  proxcenter_panel, user proxcenter, and randomly generated SECRET_KEY / database password /
+  administrator password (the backend requires the initial administrator password to be at
+  least 12 characters and not a common weak password, so it has to be a strong random one).
+  The last screen prints the panel address, the administrator account and the initial password —
+  the password is shown only once, so change it under "Profile → Change password" right after
+  signing in.
+  To choose values yourself, pass --port / --db-* and friends (still without questions);
+  to be asked about each one, add --reconfigure (defaults come from the existing backend/.env,
+  and pressing Enter keeps them).
+  Re-running only overwrites values given explicitly on the command line.
+  Without a terminal (cron / CI / a pipe) nothing is asked and every default is used.'
+  ['示例：']='Examples:'
+  ['# 最常见的用法：全自动一键部署（不提问；缺依赖就装，缺库就装 MariaDB，口令随机）']='# The common case: fully automatic (no questions; missing dependencies are installed, a missing database gets MariaDB, passwords are random)'
+  ['# 想自己定端口 / 库名 / 口令：逐项提问，回车即用默认值']='# To pick the port / database name / password yourself: asked one by one, Enter accepts the default'
+  ['# 数据库已经有人管（远程库 / 已有实例），只填面板要用的凭据']='# When the database is already managed elsewhere (remote host, existing instance), just supply the credentials'
+  ['强口令']='a-strong-password'
+  ['# 只更新代码后重新部署（复用已有 .env 与 dist）']='# To redeploy after a code update (reusing the existing .env and dist)'
+  ['# 没有 root 权限 / 不想装服务：只把环境和依赖备好']='# Without root, or when you do not want a service: prepare the environment and dependencies only'
 
-示例：
-  # 最常见的用法：全自动一键部署（不提问；缺依赖就装，缺库就装 MariaDB，口令随机）
-  sudo ./deploy.sh
+  # ---- 交互提问（--reconfigure）--------------------------------------------
+  ['回车保留已设置的值']='press Enter to keep the value already set'
+  ['面板监听端口']='Port the panel listens on'
+  ['数据库名']='Database name'
+  ['数据库账号']='Database user'
+  ['数据库口令（留空 = 随机生成）']='Database password (empty = generate a random one)'
+  ['MySQL 管理员口令（留空 = 试本机免密凭据；只用于建库授权）']='MySQL administrator password (empty = try the local passwordless credentials; only used to grant rights)'
+  ['面板初始管理员口令（admin 用；留空 = 随机生成）']='Initial password for the panel administrator (used by admin; empty = generate a random one)'
+  ['面板管理员口令（留空 = 不改）']='Panel administrator password (empty = leave it unchanged)'
+  ['本机没有数据库时自动安装 MariaDB 并启动']='Install and start MariaDB automatically when this machine has no database'
+  ['面板管理员（admin）口令（至少 12 位；留空 = 随机生成）']='Password for the panel administrator (admin), at least 12 characters (empty = generate a random one)'
 
-  # 想自己定端口 / 库名 / 口令：逐项提问，回车即用默认值
-  sudo ./deploy.sh --reconfigure
+  # ---- 故障排查用的「标签|命令」对照表（print_hint_list）--------------------
+  ['Debian / Ubuntu|sudo apt install python3 python3-venv']='Debian / Ubuntu|sudo apt install python3 python3-venv'
+  ['RHEL 8 / CentOS 8|sudo dnf module enable python311 && sudo dnf install python3.11 python3.11-pip']='RHEL 8 / CentOS 8|sudo dnf module enable python311 && sudo dnf install python3.11 python3.11-pip'
+  ['RHEL 9 / TencentOS 4 / Rocky / Alma|sudo dnf install python3.11']='RHEL 9 / TencentOS 4 / Rocky / Alma|sudo dnf install python3.11'
+  ['其它发行版|用系统包管理器装 python3 ≥ 3.11']='Other distributions|install python3 ≥ 3.11 with your package manager'
+  ['Debian / Ubuntu|sudo apt install python3-venv']='Debian / Ubuntu|sudo apt install python3-venv'
+  ['RHEL 系|sudo dnf install python3-pip']='RHEL family|sudo dnf install python3-pip'
 
-  # --yes 与默认行为等价（保留参数，旧脚本不用改）
-  sudo ./deploy.sh --yes
+  # ---- 故障排查的长提示 ----------------------------------------------------
+  ['未找到 Python 3.11+，且自动安装没成功。请手工装一个再重跑：']='No Python 3.11+ was found and installing it automatically did not work. Install one and re-run:'
+  ['装好后也可以指定路径重跑：PYTHON_BIN=/usr/bin/python3.11 ./deploy.sh ...']='Once installed you can also point at it explicitly: PYTHON_BIN=/usr/bin/python3.11 ./deploy.sh ...'
+  ['无法创建虚拟环境。请手工安装 venv 支持后重跑：']='Could not create the virtualenv. Install venv support and re-run:'
+  ['后端依赖安装失败。请检查网络，或改用镜像源：']='Installing the backend dependencies failed. Check the network, or use a mirror:'
+  ['自动建库失败，请手工执行下面这段 SQL：']='Automatic database creation failed; run this SQL yourself:'
+  ['backend/.env 里的 DB_PASSWORD']='DB_PASSWORD in backend/.env'
+  ['连不上数据库的管理员账号（试过 --mysql-root-password / 免密 root / /etc/mysql/debian.cnf / ~/.my.cnf），跳过自动建库。手工建库命令：']='Could not connect to the database as administrator (tried --mysql-root-password / passwordless root / /etc/mysql/debian.cnf / ~/.my.cnf), so automatic creation is skipped. Commands to create it yourself:'
+  ["给管理员口令也行：sudo ./deploy.sh --mysql-root-password '<root口令>'"]="You can also supply the administrator password: sudo ./deploy.sh --mysql-root-password '<root password>'"
+  ['backend/.env 里的 SECRET_KEY 太短或仍是占位值，后端会拒绝启动。']='SECRET_KEY in backend/.env is too short or still a placeholder, and the backend will refuse to start.'
+  ['它既是登录 JWT 的签名密钥，也是库里密文的加密根 ——']='It is both the signing key for login JWTs and the encryption root for the secrets stored in the database —'
+  ['· 全新安装：删掉 .env 里那一行（或删掉整个 .env 重新生成）再重跑即可；']='· fresh install: delete that line from .env (or delete .env entirely to regenerate it) and re-run;'
+  ['· 已有数据：换掉它会让已存的密文（PVE Token / SMTP 口令）全部解不开，确认清楚再改：']='· existing data: replacing it makes every stored secret (PVE tokens, SMTP passwords) undecryptable — change it only if you are sure:'
+  ['backend/.env 里的 ADMIN_PASSWORD 偏弱，但库里已有管理员（改它不影响现有登录）；以后若要重建账号，请先换成至少 12 位的随机口令。']='ADMIN_PASSWORD in backend/.env is weak, but the database already has an administrator (changing it does not affect existing sign-ins); replace it with a random password of at least 12 characters before recreating any account.'
 
-  # 数据库已经有人管（远程库 / 已有实例），只填面板要用的凭据
-  sudo ./deploy.sh --db-host 10.0.0.9 --db-name proxcenter_panel \
-       --db-user proxcenter --db-password '强口令'
+  # ---- Python ----
+  ['本机没有 Python 3.11+，尝试安装']='No Python 3.11+ on this machine, trying to install it'
+  ['尝试启用 python311 模块流（RHEL 8 系需要）']='Trying to enable the python311 module stream (needed on RHEL 8)'
 
-  # 库和账号已经建好了，只填面板要用的凭据
-  sudo ./deploy.sh --db-name proxcenter_panel --db-user proxcenter --db-password '强口令'
+  # ---- Node.js ----
+  ['缺少可用的 Node.js 18+，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）']='No usable Node.js 18+, and it cannot be installed automatically under the current conditions (--skip-deps / no package manager / not root)'
+  ['本机没有可用的 Node.js 18+，尝试安装']='No usable Node.js 18+ on this machine, trying to install it'
+  ['尝试启用 nodejs:20 模块流']='Trying to enable the nodejs:20 module stream'
+  ['构建：npm run build → dist/']='Building: npm run build → dist/'
 
-  # 只更新代码后重新部署（复用已有 .env 与 dist）
-  sudo ./deploy.sh --skip-frontend
+  # ---- 虚拟环境与依赖 ----
+  ['[1/5] 准备后端虚拟环境与依赖']='[1/5] Preparing the backend virtualenv and dependencies'
+  ['补装 venv 相关包后创建成功']='Created successfully after installing the venv packages'
+  ['安装 backend/requirements.txt（已装则跳过）']='Installing backend/requirements.txt (skipped if already satisfied)'
+  ['依赖安装失败，尝试补装编译工具后重试（可能是缺预编译轮子的架构）']='Dependency installation failed, retrying with build tools installed (this architecture may lack prebuilt wheels)'
+  ['补装编译工具后安装成功']='Installed successfully after adding the build tools'
 
-  # 没有 root 权限 / 不想装服务：只把环境和依赖备好
-  ./deploy.sh --no-systemd
-EOF
+  # ---- 配置 ----
+  ['[2/5] 准备后端配置']='[2/5] Preparing the backend configuration'
+  ['已从 .env.example 生成 backend/.env']='Generated backend/.env from .env.example'
+  ['backend/.env 已存在，保留现有值（只覆盖命令行显式指定的项）']='backend/.env already exists, keeping the current values (only options given on the command line are overwritten)'
+  ['（--reconfigure）默认值取自现有 backend/.env，回车即保持不变；']='(--reconfigure) Defaults come from the existing backend/.env; pressing Enter keeps them unchanged;'
+  ['口令留空则沿用（不会被换成新生成的）。SECRET_KEY 不动。']='leaving a password empty keeps the current one (it is never replaced with a freshly generated value). SECRET_KEY is left alone.'
+  ['下面几项可以直接回车用默认值（口令留空 = 自动生成随机值）：']='You can press Enter to accept the defaults below (an empty password means a random one is generated):'
+  ['数据库凭据缺失，已自动生成并写入 backend/.env（口令随机生成，不回显）']='Database credentials were missing; they have been generated and written to backend/.env (passwords are random and never echoed)'
+  ['--no-systemd：继续执行，但这样生成的配置装成服务后起不来。']='--no-systemd: continuing, but a service installed from this configuration will not start.'
+
+  # ---- 数据库 ----
+  ['本机没有 systemd，请手工启动 MariaDB 后重跑']='This machine has no systemd; start MariaDB yourself and re-run'
+  ['自动安装 MariaDB 失败，请手工装好数据库后重跑']='Automatic MariaDB installation failed; install the database yourself and re-run'
+  ['本机没有数据库在跑，且指定了 --no-install-db：请手工准备']='No database is running locally and --no-install-db was given: please prepare one yourself'
+  ['已用面板账号连库验证通过']='Verified by connecting to the database with the panel account'
+  ['已生成随机 SECRET_KEY']='Generated a random SECRET_KEY'
+  ['backend/.env 里的 ADMIN_PASSWORD 为空或太弱，而库里还没有管理员 ——']='ADMIN_PASSWORD in backend/.env is empty or too weak, and the database has no administrator yet —'
+  ['后端会以「首次建号口令过弱」为由拒绝启动（至少 12 位，且不能是常见弱口令）。']='the backend will refuse to start because the initial password is too weak (at least 12 characters, and not a common weak password).'
+  ['已自动生成面板管理员（admin）的初始口令（装完在结尾打印一次）']='Generated the initial password for the panel administrator (admin) (printed once at the end)'
+  ['已写入 backend/.env 的 ADMIN_PASSWORD']='Wrote ADMIN_PASSWORD to backend/.env'
+  ['太短或太常见，请再试一次（至少 12 位）']='Too short or too common, please try again (at least 12 characters)'
+  ['配置预检通过']='Configuration pre-check passed'
+  ['后端拒绝了这份配置（原文如下）：']='The backend rejected this configuration (message below):'
+
+  # ---- 前端构建 ----
+  ['[3/5] 准备前端构建产物']='[3/5] Preparing the frontend build'
+  ['跳过构建，复用已有 dist/']='Skipping the build, reusing the existing dist/'
+  ['安装前端依赖（首次较慢）']='Installing frontend dependencies (slow the first time)'
+  ['复用已有 node_modules（要强制重装请先删除该目录）']='Reusing the existing node_modules (delete the directory to force a reinstall)'
+
+  # ---- systemd ----
+  ['[4/5] 跳过 systemd（--no-systemd）']='[4/5] Skipping systemd (--no-systemd)'
+  ['服务已启动并设为开机自启']='Service started and enabled at boot'
+
+  # ---- 健康检查 ----
+  ['[5/5] 健康检查']='[5/5] Health check'
+  ['未安装服务，跳过（起服务后自行访问 /api/health 即可）']='No service installed, skipping (once it runs, visit /api/health yourself)'
+  ['健康检查未通过（服务没起来，或在反复重启）。先把最近的日志抓出来：']='Health check failed (the service did not start, or it is restarting repeatedly). Here are the most recent logs:'
+  ['怎么读这几段：']='How to read these:'
+  ['    ·「面板启动被拒绝」→ .env 配置问题，后面那句已写明改哪个键']='    · "Panel startup was rejected" → a backend/.env problem; the message names the key to change'
+  ['    · Access denied for user      → 数据库账号/授权不对（带 --db-* 重跑可改写 .env）']='    · Access denied for user      → wrong database account or grants (re-run with --db-* to rewrite .env)'
+  ["    · Can't connect to MySQL      → 数据库没起（本机：systemctl status mariadb）"]="    · Can't connect to MySQL      → the database is not running (locally: systemctl status mariadb)"
+  ['    · ModuleNotFoundError / 找不到 app → 依赖没装好，去掉 --skip-deps 重跑']='    · ModuleNotFoundError / app not found → dependencies are incomplete; re-run without --skip-deps'
+
+  # ---- 结尾提示 ----
+  ['★ 初始管理员口令（只显示这一次）：']='★ Initial administrator password (shown only this once):'
+  ['请立即登录后改掉：右上角用户名 →「个人中心」→ 修改密码。']='Change it right after signing in: top-right username → "Profile" → Change password.'
+  ['（管理员也可以去「设置 → 用户管理」给自己重置密码。）']='(Administrators can also reset it under "Settings → Users".)'
+  ['库里已有管理员时，本次只改了 backend/.env，现有登录口令不变。']='When the database already has an administrator, only backend/.env was changed and existing passwords still work.'
+  ['1) 用上面的账号登录，先改掉初始口令；']='1) Sign in with the account above and change the initial password;'
+  ['2) 在「设置 → Proxmox 连接配置」填入 PVE 地址与 API Token；']='2) Add the PVE address and API token under "Settings → Proxmox connection";'
+  ['3) 公网访问：按 README「用 Nginx 上 HTTPS」配好反代与证书，再在']='3) For public access, set up the reverse proxy and certificate as described in the README ("put it behind Nginx with HTTPS"), then'
+
+  # ---- 带变量的整句（tf）----------------------------------------------------
+  # 键是中文模板，%s 按「含义」占位；英文可以自己决定语序。
+  [' 仓库目录 : %s']=' Repository   : %s'
+  [' 服务名   : %s']=' Service     : %s'
+  ['系统：%s｜包管理器：%s']='OS: %s | package manager: %s'
+  ['本系统（%s）不认识「%s」对应的包，跳过']='This system (%s) has no package for "%s"; skipping'
+  ['安装：%s']='Installing: %s'
+  ['缺少「%s」，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）']='Missing "%s", and it cannot be installed automatically under the current conditions (--skip-deps / no package manager / not root)'
+  ['Node.js：%s / npm：%s']='Node.js: %s / npm: %s'
+  ['Python：%s（%s）']='Python: %s (%s)'
+  ['[4/5] 安装 systemd 服务：%s']='[4/5] Installing the systemd service: %s'
+  ['创建虚拟环境：%s']='Creating the virtualenv: %s'
+  ['创建虚拟环境失败：%s']='Failed to create the virtualenv: %s'
+  ['本机 %s:%s 没有数据库在跑，安装 MariaDB']='No database is running on %s:%s, installing MariaDB'
+  ['启动并设为开机自启：%s']='Enabling and starting %s'
+  ['创建数据库 %s 与账号 %s（管理员连接方式：%s）']='Creating database %s and account %s (admin connection method: %s)'
+  ['（--reset-db-password）把 %s 的口令对齐成 %s 里的值']='(--reset-db-password) aligning the password of %s with the value in %s'
+  ['数据库不可达（%s:%s）或没有 mysql 客户端，跳过自动建库']='Database unreachable (%s:%s) or no mysql client available, skipping automatic database creation'
+  ['MySQL 可达：%s:%s / 库 %s']='MySQL reachable: %s:%s / database %s'
+  ['手动启动：%s']='Start manually: %s'
+  ['[4/5] 安装 systemd 服务：%s']='[4/5] Installing the systemd service: %s'
+  ['服务将以 %s 运行，请确认该用户能读 %s（含 .venv / dist / backend/.env）。']='The service will run as %s; make sure that user can read %s (including .venv / dist / backend/.env).'
+  ['已写入 %s']='Wrote %s'
+  ['面板已就绪：%s']='Panel is ready: %s'
+  ['---- journalctl -u %s（最近 40 行）----']='---- journalctl -u %s (last 40 lines)----'
+  ['---- %s/logs/panel.log（最近 40 行）----']='---- %s/logs/panel.log (last 40 lines)----'
+  ['    · Address already in use      → %s 被占用，用 --port 换一个']='    · Address already in use      → port %s is already taken, pick another one with --port'
+  ['    持续跟踪： journalctl -u %s -f']='    Follow along: journalctl -u %s -f'
+  ['   面板地址 : http://%s:%s']='   Panel      : http://%s:%s'
+  ['   登录账号 : %s']='   Sign in as : %s'
+  ['   API 文档 : http://%s:%s/api/docs']='   API docs  : http://%s:%s/api/docs'
+  ['   数据库   : %s @ %s:%s（账号 %s）']='   Database  : %s @ %s:%s (account %s)'
+  ['   配置文件 : %s  ← 数据库口令在里面（自动生成，不回显）']='   Config    : %s  ← the database password lives here (generated, never echoed)'
+  ['   服务管理 : systemctl {status|restart|stop} %s']='   Service   : systemctl {status|restart|stop} %s'
+  ['   日志     : journalctl -u %s -f   或   tail -f %s/logs/panel.log']='   Logs      : journalctl -u %s -f   or   tail -f %s/logs/panel.log'
+  ['      backend/.env 里设 FORCE_HTTPS=true 并 systemctl restart %s。']='      set FORCE_HTTPS=true in backend/.env and run systemctl restart %s.'
+
+  # ---- 多行的整句：单引号串可以跨行，直接原样保留原来的排版 ----------
+  ['未找到可用的 Node.js 18+，无法构建前端（当前：%s）。三种选择：
+      ① 手工装 Node.js 18+（Debian/Ubuntu：apt install nodejs npm；RHEL 系：dnf module enable nodejs:20 && dnf install nodejs npm）后重跑；
+      ② 在装有 Node.js 18+ 的机器上执行 npm install && npm run build，把 dist/ 拷到 %s/ 后加 --skip-frontend 重跑；
+      ③ 用 nvm 装好 Node.js 后重跑本脚本。']='No usable Node.js 18+ was found, so the frontend cannot be built (currently: %s). Three options:
+      ① install Node.js 18+ yourself (Debian/Ubuntu: apt install nodejs npm; RHEL family: dnf module enable nodejs:20 && dnf install nodejs npm) and re-run;
+      ② run npm install && npm run build on a machine that has Node.js 18+, copy dist/ to %s/, then re-run with --skip-frontend;
+      ③ install Node.js with nvm and re-run this script.'
+)
+
+# t：整句查表。英文模式下查不到就原样返回中文（与后端 tr() 同一套兜底）。
+t() {
+  if [ "$LANG_UI" = "zh" ]; then printf '%s' "$1"; return 0; fi
+  local out="${MSG_EN["$1"]-}"
+  [ -n "$out" ] || out="$1"
+  printf '%s' "$out"
 }
+
+# tf：带变量的整句。中文模板作为译表键，参数按「含义」顺序传入；
+# 两种语言各自决定 %s 的顺序，所以英文可以自由调整语序而不用改调用点。
+tf() {
+  local zh="$1"; shift
+  local fmt="$zh"
+  [ "$LANG_UI" = "zh" ] || fmt="${MSG_EN["$zh"]-$zh}"
+  # shellcheck disable=SC2059
+  printf "$fmt" "$@"
+}
+
+# --- 输出helper --------------------------------------------------------------
+# 这四个是全脚本唯一的输出出口，所以翻译放在这里做 —— 纯文案调用点
+# 一行都不用改，只有内嵌变量的句子才需要显式走 tf。
+step() { echo; echo "==> $(t "$*")"; }
+info() { echo "    $(t "$*")"; }
+warn() { echo "    [!] $(t "$*")" >&2; }
+die()  { echo "[x] $(t "$*")" >&2; exit 1; }
+
+# 故障排查用的「标签 : 命令」对照表。查表用的是**整行**（标签|命令），
+# 译表里也存整行 —— 与 usage() 的选项表同一套做法：键天然唯一，
+# 标签与命令的顺序/断行两种语言可以各自决定，命令本身两边一致、可直接复制。
+# 只在失败路径用，所以一律写 stderr。
+print_hint_list() {
+  local line translated
+  while IFS= read -r line; do
+    [ -n "${line:-}" ] || continue
+    translated="$(t "$line")"
+    printf '      %-40s %s\n' "${translated%%|*}" "${translated#*|}" >&2
+  done
+  return 0
+}
+
+usage() {
+  resolve_lang
+  printf '%s\n\n' "$(t 'ProxCenter 一键部署')"
+  printf '%s\n\n' "$(t '用法： sudo ./deploy.sh [选项]')"
+  printf '%s\n' "$(t '选项：')"
+  # 选项表：左边参数、右边说明。查表用的是**整行**（参数 + 说明），译表里存的
+  # 也是整行 —— 键因此天然唯一（两个选项的说明文字撞车也不会互相覆盖）。
+  # 于是选项列表只有这一份：加一条就是加一行，中英文说明都在译表里，不会漏。
+  # 宽度固定 26 列：两个语言的参数名都是 ASCII，列宽自然对齐。
+  while IFS= read -r optline; do
+    [ -n "${optline:-}" ] || continue
+    # 先整行翻译，再按第一个 | 拆开排版：说明的语序/长度两种语言可以各自决定，
+    # 而参数名与列宽仍然对齐。
+    __line="$(t "$optline")"
+    printf '  %-26s %s\n' "${__line%%|*}" "${__line#*|}"
+  done <<'OPTS'
+--port PORT|面板监听端口（默认沿用 .env，首次为 8080）
+--service NAME|systemd 服务名（默认 proxcenter）
+--user USER|systemd 运行用户（默认 root）
+--skip-frontend|跳过前端构建，复用已有的 dist/（服务器上没有 Node.js 时用）
+--skip-deps|只检查系统依赖，不自动安装（离线 / 内网 / 想自己管依赖时用）
+--no-install-db|本机没有 MySQL/MariaDB 时也不代装（默认是代装的）
+--install-db|兼容旧用法，等于默认行为（保留参数，不再需要显式指定）
+--reset-db-password|把数据库账号的口令对齐成 .env 里的值（账号被别的应用共用时别用）
+-y, --yes|不提问，全部用默认值（**这就是默认行为**，保留参数以便旧脚本）
+--reconfigure|逐项提问一遍；默认值取自现有配置，回车即保持不变
+--no-systemd|只准备虚拟环境 / 依赖 / .env / 前端产物，不装服务（无需 root）
+--db-host HOST|数据库地址（默认 127.0.0.1）
+--db-port PORT|数据库端口（默认 3306）
+--db-name NAME|面板数据库名（默认 proxcenter_panel）
+--db-user USER|面板数据库账号（默认 proxcenter）
+--db-password PASS|面板数据库口令（默认随机生成）
+--mysql-root-password P|仅用于自动建库建号的 MySQL 管理员口令（选填）
+--lang LANG|界面语言：zh 或 en（默认按系统语言判定）
+-h, --help|显示本帮助
+OPTS
+  printf '\n%s\n' "$(t '环境变量同名可用：DB_NAME / DB_USER / DB_PASSWORD / DB_HOST / DB_PORT / MYSQL_ROOT_PASSWORD')"
+  printf '\n%s\n' "$(t '交互：')"
+  printf '%s\n' "$(t '**默认不提问。** sudo ./deploy.sh 会一条命令跑到底：端口用 8080、库名用
+  proxcenter_panel、账号用 proxcenter，SECRET_KEY / 数据库口令 / 管理员口令全部随机生成
+  （后端要求「首次建号口令」至少 12 位且不是常见弱口令，所以这里必须给随机强口令）。
+  装完最后一屏会把面板地址、管理员账号与初始口令打印出来 —— 口令只显示这一次，
+  请登录后立即在「个人中心 → 修改密码」里改掉。
+  要自己指定参数：加 --port / --db-* 等（仍然不提问）；
+  要逐项确认：加 --reconfigure（默认值取自现有 backend/.env，回车即保持不变）。
+  重复执行只覆盖命令行显式给的值，不会动已有配置。
+  没有终端（cron / CI / 管道）时不提问，全部用默认值。')"
+  printf '  %s\n' "$(t '没指定语言时会先问一句')"
+  printf '  %s\n' "$(t '直接在命令上给 --lang 时不会再问；没有终端（cron / CI / 管道）也不问，按系统语言（$LC_ALL / $LANG）静默判定。')"
+  printf '\n%s\n' "$(t '示例：')"
+  # 命令本身与语言无关，只有注释要翻译。
+  printf '  %s\n' "$(t '# 最常见的用法：全自动一键部署（不提问；缺依赖就装，缺库就装 MariaDB，口令随机）')"
+  printf '  sudo ./deploy.sh\n'
+  printf '\n  %s\n' "$(t '# 想自己定端口 / 库名 / 口令：逐项提问，回车即用默认值')"
+  printf '  sudo ./deploy.sh --reconfigure\n'
+  printf '\n  %s\n' "$(t '# 数据库已经有人管（远程库 / 已有实例），只填面板要用的凭据')"
+  printf "  sudo ./deploy.sh --db-host 10.0.0.9 --db-name proxcenter_panel --db-user proxcenter --db-password '%s'\n" \
+    "$(t '强口令')"
+  printf '\n  %s\n' "$(t '# 只更新代码后重新部署（复用已有 .env 与 dist）')"
+  printf '  sudo ./deploy.sh --skip-frontend\n'
+  printf '\n  %s\n' "$(t '# 没有 root 权限 / 不想装服务：只把环境和依赖备好')"
+  printf '  ./deploy.sh --no-systemd\n'
+  printf '\n'
+}
+
+# 预扫一遍 --lang：--help 与「未知参数」都发生在主解析循环里那时 LANG_OPT
+# 还没赋值，所以这里先取一次语言，否则「英文用户跑 --help 看中文帮助」没意义。
+# 只认 --lang X 与 --lang=X 两种写法；认错了最坏结果是回落中文，不会误事。
+__prev=""
+for __a in "$@"; do
+  if [ "$__prev" = "--lang" ]; then LANG_OPT="$__a"; break; fi
+  case "$__a" in
+    --lang=*) LANG_OPT="${__a#--lang=}"; break ;;
+  esac
+  __prev="$__a"
+done
+resolve_lang
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -157,16 +513,19 @@ while [ $# -gt 0 ]; do
     --db-user) DB_USER="${2:-}"; shift 2 ;;
     --db-password) DB_PASSWORD="${2:-}"; shift 2 ;;
     --mysql-root-password) MYSQL_ROOT_PASSWORD="${2:-}"; shift 2 ;;
+    --lang) LANG_OPT="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "[x] 未知参数：$1（用 --help 看用法）" >&2; exit 2 ;;
+    *) die "$(tf '未知参数：%s（用 --help 看用法）' "$1")" ;;
   esac
 done
 
-# --- 输出helper --------------------------------------------------------------
-step() { echo; echo "==> $*"; }
-info() { echo "    $*"; }
-warn() { echo "    [!] $*" >&2; }
-die()  { echo "[x] $*" >&2; exit 1; }
+# 主循环把 --lang 也认了一遍，这里再定一次语言：预扫只为了 --help / 未知参数
+# 能说对语言，真正生效的取值以主循环解析出来的 LANG_OPT 为准。
+resolve_lang
+
+# 没指定语言且挂着终端时，问一句就往下走。必须在下面任何输出之前 ——
+# 横幅、步骤名、结尾汇总全都要跟着选出来的语言走。
+choose_lang
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1
@@ -179,17 +538,19 @@ need_cmd() {
 # 注意方向：默认值是 0，这里要**显式打开**（早先默认是开、判定只负责关，改默认值
 # 时很容易漏掉另一半 —— 那样 --reconfigure 会变成空操作）。
 # 提示写 stderr、输入读 /dev/tty —— 这样即使 stdout 被 tee 进日志，交互也照常。
-if [ "$RECONFIGURE" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ] && [ -r /dev/tty ]; then
+if [ "$RECONFIGURE" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ] && have_tty; then
   INTERACTIVE=1
 else
   INTERACTIVE=0
 fi
 
 # 普通提问：显示默认值，直接回车即接受
+# 提示语在这一层统一翻译：调用点有十来处（全在 --reconfigure 分支里），
+# 逐个包 t() 容易漏，而漏一条就是「英文界面里冒出一句中文提问」。
 ask() {
   local prompt="$1" default="$2" reply=""
   [ "$INTERACTIVE" -eq 1 ] || { printf '%s' "$default"; return 0; }
-  printf '    %s [%s]: ' "$prompt" "$default" >&2
+  printf '    %s [%s]: ' "$(t "$prompt")" "$default" >&2
   IFS= read -r reply < /dev/tty || reply=""
   printf '%s' "${reply:-$default}"
 }
@@ -199,9 +560,9 @@ ask_secret() {
   local prompt="$1" default="$2" reply=""
   [ "$INTERACTIVE" -eq 1 ] || { printf '%s' "$default"; return 0; }
   if [ -n "$default" ]; then
-    printf '    %s [回车保留已设置的值]: ' "$prompt" >&2
+    printf '    %s [%s]: ' "$(t "$prompt")" "$(t '回车保留已设置的值')" >&2
   else
-    printf '    %s: ' "$prompt" >&2
+    printf '    %s: ' "$(t "$prompt")" >&2
   fi
   IFS= read -r -s reply < /dev/tty || reply=""
   printf '\n' >&2
@@ -213,7 +574,7 @@ ask_yesno() {
   local prompt="$1" default="${2:-y}" reply="" hint="Y/n"
   [ "$default" = "y" ] || hint="y/N"
   [ "$INTERACTIVE" -eq 1 ] || { [ "$default" = "y" ]; return $?; }
-  printf '    %s [%s]: ' "$prompt" "$hint" >&2
+  printf '    %s [%s]: ' "$(t "$prompt")" "$hint" >&2
   IFS= read -r reply < /dev/tty || reply=""
   case "${reply:-$default}" in
     [Yy]*) return 0 ;;
@@ -266,9 +627,9 @@ PY
 }
 
 echo "============================================================"
-echo " ProxCenter 部署"
-echo " 仓库目录 : $ROOT"
-echo " 服务名   : $SERVICE"
+echo " $(t 'ProxCenter 部署')"
+echo "$(tf ' 仓库目录 : %s' "$ROOT")"
+echo "$(tf ' 服务名   : %s' "$SERVICE")"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
@@ -299,6 +660,11 @@ elif need_cmd apk;     then PKG="apk"
 fi
 [ "$(id -u)" -eq 0 ] || { need_cmd sudo && SUDO="sudo"; }
 
+# 系统名带上发行版 ID。括号用半角：发行版 ID 是标识符的一部分而不是正文，
+# 中文界面下写成「（TencentOS 4）」和后面的「｜」挤在一起反而不匀。
+os_label="$OS_NAME"
+[ -n "$OS_ID" ] && os_label="$OS_NAME ($OS_ID)"
+
 CAN_INSTALL=1
 if [ "$INSTALL_DEPS" -eq 0 ]; then
   CAN_INSTALL=0
@@ -310,7 +676,7 @@ elif [ "$(id -u)" -ne 0 ] && [ -z "$SUDO" ]; then
   CAN_INSTALL=0
   warn "当前不是 root 且没有 sudo，无法自动安装依赖（改用 sudo 重跑，或手工装）"
 fi
-info "系统：$OS_NAME${OS_ID:+（$OS_ID）}｜包管理器：${PKG:-未识别}"
+info "$(tf '系统：%s｜包管理器：%s' "$os_label" "${PKG:-$(t '未识别')}")"
 
 # 需求名 → 该发行版要装的包。返回非 0 = 这个发行版没有对应包（调用方给手工指引）。
 # 只列真正用得上的：Python 运行时 / venv / MySQL 客户端 / 构建前端用的 Node.js。
@@ -359,11 +725,11 @@ pkg_install() {
       # shellcheck disable=SC2206
       all+=($names)
     else
-      warn "本系统（${PKG:-未知}）不认识「$want」对应的包，跳过"
+      warn "$(tf '本系统（%s）不认识「%s」对应的包，跳过' "${PKG:-$(t '未知')}" "$want")"
     fi
   done
   [ ${#all[@]} -gt 0 ] || return 1
-  info "安装：${all[*]}"
+  info "$(tf '安装：%s' "${all[*]}")"
   case "$PKG" in
     apt-get)
       # 只 update 一次：多轮安装时反复 update 既慢又容易撞上镜像抖动
@@ -386,10 +752,10 @@ ensure_pkg() {
   if [ "$CAN_INSTALL" -eq 1 ]; then
     pkg_install "$want"
   else
-    warn "缺少「$want」，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）"
+    warn "$(tf '缺少「%s」，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）' "$want")"
     return 1
   fi
-}
+  }
 
 # --- 基础工具：脚本自己就要用（curl 做健康检查，tar/gzip 解压前端产物）--------
 for tool in curl tar gzip; do
@@ -437,14 +803,17 @@ if [ -z "$PYTHON" ] && [ "$CAN_INSTALL" -eq 1 ]; then
   PYTHON="$(find_python || true)"
 fi
 if [ -z "$PYTHON" ]; then
-  die "未找到 Python 3.11+，且自动安装没成功。请手工装一个再重跑：
-      Debian / Ubuntu : sudo apt install python3 python3-venv
-      RHEL 8 / CentOS 8: sudo dnf module enable python311 && sudo dnf install python3.11 python3.11-pip
-      RHEL 9 / TencentOS 4 / Rocky / Alma: sudo dnf install python3.11
-      其它发行版      : 用系统包管理器装 python3 ≥ 3.11
-    装好后也可以指定路径重跑：PYTHON_BIN=/usr/bin/python3.11 ./deploy.sh ..."
+  echo "[x] $(t '未找到 Python 3.11+，且自动安装没成功。请手工装一个再重跑：')" >&2
+  print_hint_list <<'CMDS'
+Debian / Ubuntu|sudo apt install python3 python3-venv
+RHEL 8 / CentOS 8|sudo dnf module enable python311 && sudo dnf install python3.11 python3.11-pip
+RHEL 9 / TencentOS 4 / Rocky / Alma|sudo dnf install python3.11
+其它发行版|用系统包管理器装 python3 ≥ 3.11
+CMDS
+  echo "    $(t '装好后也可以指定路径重跑：PYTHON_BIN=/usr/bin/python3.11 ./deploy.sh ...')" >&2
+  exit 1
 fi
-info "Python：$PYTHON（$("$PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')）"
+info "$(tf 'Python：%s（%s）' "$PYTHON" "$("$PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')")"
 
 # 仓库完整性：脚本要用的三个入口文件缺一个都跑不下去。
 # 提前检查而不是等 pip / npm 报「文件不存在」——那种报错看不出「需要重新拉取」。
@@ -477,12 +846,14 @@ if [ "$SKIP_FRONTEND" -eq 0 ]; then
   fi
 
   if ! need_cmd npm || [ "$(node_major || echo 0)" -lt 18 ]; then
-    die "未找到可用的 Node.js 18+，无法构建前端（当前：$(node --version 2>/dev/null || echo 无)）。三种选择：
+    die "$(tf '未找到可用的 Node.js 18+，无法构建前端（当前：%s）。三种选择：
       ① 手工装 Node.js 18+（Debian/Ubuntu：apt install nodejs npm；RHEL 系：dnf module enable nodejs:20 && dnf install nodejs npm）后重跑；
-      ② 在装有 Node.js 18+ 的机器上执行 npm install && npm run build，把 dist/ 拷到 $ROOT/ 后加 --skip-frontend 重跑；
-      ③ 用 nvm 装好 Node.js 后重跑本脚本。"
+      ② 在装有 Node.js 18+ 的机器上执行 npm install && npm run build，把 dist/ 拷到 %s/ 后加 --skip-frontend 重跑；
+      ③ 用 nvm 装好 Node.js 后重跑本脚本。' "$(node --version 2>/dev/null || echo "$(t '无')")" "$ROOT")"
   fi
-  info "Node.js：$(node --version 2>/dev/null || echo 未知) / npm：$(npm --version 2>/dev/null || echo 未知)"
+  info "$(tf 'Node.js：%s / npm：%s' \
+    "$(node --version 2>/dev/null || echo "$(t '未知')")" \
+    "$(npm --version 2>/dev/null || echo "$(t '未知')")")"
 fi
 
 # MySQL / MariaDB 的安装与建库放到 [2/5] 步做：只有读完 .env 才知道库地址是不是
@@ -494,18 +865,21 @@ fi
 step "[1/5] 准备后端虚拟环境与依赖"
 
 if [ ! -x "$VENV/bin/python" ]; then
-  info "创建虚拟环境：$VENV"
+  info "$(tf '创建虚拟环境：%s' "$VENV")"
   # venv 在 Debian 系是独立包（python3-venv），RHEL 系靠 python3-pip 提供
   # ensurepip。不猜包名，直接试一次，失败了补包再试。
   if ! "$PYTHON" -m venv "$VENV" 2>/tmp/pc_venv.$$; then
-    warn "创建虚拟环境失败：$(tail -n 1 /tmp/pc_venv.$$ 2>/dev/null)"
+    warn "$(tf '创建虚拟环境失败：%s' "$(tail -n 1 /tmp/pc_venv.$$ 2>/dev/null)")"
     rm -f /tmp/pc_venv.$$
     if ensure_pkg venv && "$PYTHON" -m venv "$VENV"; then
       info "补装 venv 相关包后创建成功"
     else
-      die "无法创建虚拟环境。请手工安装 venv 支持后重跑：
-      Debian / Ubuntu : sudo apt install python3-venv
-      RHEL 系         : sudo dnf install python3-pip"
+      echo "[x] $(t '无法创建虚拟环境。请手工安装 venv 支持后重跑：')" >&2
+      print_hint_list <<'CMDS'
+Debian / Ubuntu|sudo apt install python3-venv
+RHEL 系|sudo dnf install python3-pip
+CMDS
+      exit 1
     fi
   fi
   rm -f /tmp/pc_venv.$$
@@ -524,8 +898,9 @@ info "安装 backend/requirements.txt（已装则跳过）"
        "$VPY" -m pip install -q -r "$ROOT/backend/requirements.txt"; then
       info "补装编译工具后安装成功"
     else
-      die "后端依赖安装失败。请检查网络，或改用镜像源：
-        $VPY -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r $ROOT/backend/requirements.txt"
+      echo "[x] $(t '后端依赖安装失败。请检查网络，或改用镜像源：')" >&2
+      echo "      $VPY -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r $ROOT/backend/requirements.txt" >&2
+      exit 1
     fi
   }
 
@@ -693,13 +1068,13 @@ fi
 # 2) 本机没有库就装一个（默认行为；--no-install-db 可关）
 if db_is_local && ! db_listening "$DBH" "$DBP"; then
   if [ "$INSTALL_DB" -eq 1 ]; then
-    info "本机 $DBH:$DBP 没有数据库在跑，安装 MariaDB"
+    info "$(tf '本机 %s:%s 没有数据库在跑，安装 MariaDB' "$DBH" "$DBP")"
     if ensure_pkg mysql-srv; then
       # 发行版里这个服务的 unit 名有 mariadb / mysqld / mysql 三种写法，挨个试
       if need_cmd systemctl; then
         for unit in mariadb mysqld mysql; do
           if systemctl cat "${unit}.service" >/dev/null 2>&1; then
-            info "启动并设为开机自启：${unit}.service"
+            info "$(tf '启动并设为开机自启：%s' "${unit}.service")"
             $SUDO systemctl enable --now "$unit" >/dev/null 2>&1 \
               || warn "启动 ${unit} 失败，请手工检查：systemctl status ${unit}"
             break
@@ -726,13 +1101,14 @@ fi
 if need_cmd mysql && db_listening "$DBH" "$DBP"; then
   ADMIN_MODE="$(find_mysql_admin || true)"
   if [ -n "$ADMIN_MODE" ]; then
-    info "创建数据库 $DB_NAME_NOW 与账号 $DB_USER_NOW（管理员连接方式：$ADMIN_MODE）"
+    info "$(tf '创建数据库 %s 与账号 %s（管理员连接方式：%s）' \
+      "$DB_NAME_NOW" "$DB_USER_NOW" "$ADMIN_MODE")"
     # CREATE USER IF NOT EXISTS 对**已存在**的账号不会改口令 —— 这是最容易踩的一步：
     # .env 里的口令被重新生成过（例如删过 .env 再重跑），账号却还停在旧口令上，
     # 于是命令全绿、应用启动时才报 Access denied。--reset-db-password 显式对齐。
     RESET_SQL=""
     if [ "$RESET_DB_PASSWORD" -eq 1 ]; then
-      info "（--reset-db-password）把 $DB_USER_NOW 的口令对齐成 $ENV_FILE 里的值"
+      info "$(tf '（--reset-db-password）把 %s 的口令对齐成 %s 里的值' "$DB_USER_NOW" "$ENV_FILE")"
       RESET_SQL="ALTER USER '$DB_USER_NOW'@'%' IDENTIFIED BY '$DB_PASSWORD_SQL';
 ALTER USER '$DB_USER_NOW'@'localhost' IDENTIFIED BY '$DB_PASSWORD_SQL';"
     fi
@@ -767,21 +1143,20 @@ SQL
               cd $ROOT && ./.venv/bin/python -c \"import sys; sys.path.insert(0,'backend'); from app.config import settings; print('app 长度', len(settings.db_password))\""
       fi
     else
-      warn "自动建库失败，请手工执行下面这段 SQL：
-      CREATE DATABASE IF NOT EXISTS \`$DB_NAME_NOW\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-      CREATE USER IF NOT EXISTS '$DB_USER_NOW'@'%' IDENTIFIED BY '<backend/.env 里的 DB_PASSWORD>';
-      GRANT ALL PRIVILEGES ON \`$DB_NAME_NOW\`.* TO '$DB_USER_NOW'@'%';"
+      warn "自动建库失败，请手工执行下面这段 SQL："
+      echo "      CREATE DATABASE IF NOT EXISTS \`$DB_NAME_NOW\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" >&2
+      echo "      CREATE USER IF NOT EXISTS '$DB_USER_NOW'@'%' IDENTIFIED BY '<$(t 'backend/.env 里的 DB_PASSWORD')>';" >&2
+      echo "      GRANT ALL PRIVILEGES ON \`$DB_NAME_NOW\`.* TO '$DB_USER_NOW'@'%';" >&2
     fi
   else
-    warn "连不上数据库的管理员账号（试过 --mysql-root-password / 免密 root /
-    /etc/mysql/debian.cnf / ~/.my.cnf），跳过自动建库。手工建库命令：
-      mysql -u root -e \"CREATE DATABASE IF NOT EXISTS \\\`$DB_NAME_NOW\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\"
-      mysql -u root -e \"CREATE USER IF NOT EXISTS '$DB_USER_NOW'@'%' IDENTIFIED BY '<backend/.env 里的 DB_PASSWORD>';\"
-      mysql -u root -e \"GRANT ALL PRIVILEGES ON \\\`$DB_NAME_NOW\\\`.* TO '$DB_USER_NOW'@'%';\"
-    给管理员口令也行：sudo ./deploy.sh --mysql-root-password '<root口令>'"
+    warn "$(t '连不上数据库的管理员账号（试过 --mysql-root-password / 免密 root / /etc/mysql/debian.cnf / ~/.my.cnf），跳过自动建库。手工建库命令：')"
+    echo "      mysql -u root -e \"CREATE DATABASE IF NOT EXISTS \\\`$DB_NAME_NOW\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\"" >&2
+    echo "      mysql -u root -e \"CREATE USER IF NOT EXISTS '$DB_USER_NOW'@'%' IDENTIFIED BY '<$(t 'backend/.env 里的 DB_PASSWORD')>';\"" >&2
+    echo "      mysql -u root -e \"GRANT ALL PRIVILEGES ON \\\`$DB_NAME_NOW\\\`.* TO '$DB_USER_NOW'@'%';\"" >&2
+    echo "    $(t "给管理员口令也行：sudo ./deploy.sh --mysql-root-password '<root口令>'")" >&2
   fi
 else
-  warn "数据库不可达（$DBH:$DBP）或没有 mysql 客户端，跳过自动建库"
+  warn "$(tf '数据库不可达（%s:%s）或没有 mysql 客户端，跳过自动建库' "$DBH" "$DBP")"
 fi
 
 # --- 口令强度：后端会拒绝启动的两件事，在这里先说清楚并补上 ---------------------
@@ -827,11 +1202,12 @@ if ! secret_key_ok "$(env_get SECRET_KEY)"; then
     env_set SECRET_KEY "$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(48))')"
     info "已生成随机 SECRET_KEY"
   else
-    die "backend/.env 里的 SECRET_KEY 太短或仍是占位值，后端会拒绝启动。
-    它既是登录 JWT 的签名密钥，也是库里密文的加密根 ——
-      · 全新安装：删掉 .env 里那一行（或删掉整个 .env 重新生成）再重跑即可；
-      · 已有数据：换掉它会让已存的密文（PVE Token / SMTP 口令）全部解不开，
-        确认清楚再改：$ENV_FILE"
+    echo "[x] $(t 'backend/.env 里的 SECRET_KEY 太短或仍是占位值，后端会拒绝启动。')" >&2
+    echo "    $(t '它既是登录 JWT 的签名密钥，也是库里密文的加密根 ——')" >&2
+    echo "      $(t '· 全新安装：删掉 .env 里那一行（或删掉整个 .env 重新生成）再重跑即可；')" >&2
+    echo "      $(t '· 已有数据：换掉它会让已存的密文（PVE Token / SMTP 口令）全部解不开，确认清楚再改：')" >&2
+    echo "        $ENV_FILE" >&2
+    exit 1
   fi
 fi
 
@@ -875,8 +1251,7 @@ elif admin_still_needs_creating; then
       python -c \"import secrets; print(secrets.token_urlsafe(16))\""
   fi
 else
-  warn "backend/.env 里的 ADMIN_PASSWORD 偏弱，但库里已有管理员（改它不影响现有登录）；
-    以后若要重建账号，请先换成至少 12 位的随机口令。"
+  warn "backend/.env 里的 ADMIN_PASSWORD 偏弱，但库里已有管理员（改它不影响现有登录）；以后若要重建账号，请先换成至少 12 位的随机口令。"
 fi
 
 # 配置预检：让后端自己读一遍 .env。弱 SECRET_KEY / 弱管理员口令 / 缺项都会在这里
@@ -911,7 +1286,8 @@ finally:
     s.close()
 PY
   then
-    info "MySQL 可达：${DB_HOST_NOW:-127.0.0.1}:${DB_PORT_NOW:-3306} / 库 ${DB_NAME_NOW}"
+    info "$(tf 'MySQL 可达：%s:%s / 库 %s' \
+      "${DB_HOST_NOW:-127.0.0.1}" "${DB_PORT_NOW:-3306}" "$DB_NAME_NOW")"
   else
     db_problem "连不上 MySQL（$DBH:$DBP），服务即使装上也会一直重启。请确认：
       · 数据库已启动（本机：systemctl status mariadb / mysqld）
@@ -950,9 +1326,9 @@ PORT_NOW="${PORT_NOW:-8080}"
 
 if [ "$USE_SYSTEMD" -eq 0 ]; then
   step "[4/5] 跳过 systemd（--no-systemd）"
-  info "手动启动：$ROOT/start-prod.sh"
+  info "$(tf '手动启动：%s' "$ROOT/start-prod.sh")"
 else
-  step "[4/5] 安装 systemd 服务：$SERVICE"
+  step "$(tf '[4/5] 安装 systemd 服务：%s' "$SERVICE")"
 
   mkdir -p "$ROOT/logs"
   UNIT="/etc/systemd/system/${SERVICE}.service"
@@ -963,7 +1339,7 @@ else
   if [ "$RUN_USER" != "root" ]; then
     id "$RUN_USER" >/dev/null 2>&1 || die "指定的运行用户 $RUN_USER 不存在。"
     chown -R "$RUN_USER" "$ROOT/logs" 2>/dev/null || true
-    warn "服务将以 $RUN_USER 运行，请确认该用户能读 $ROOT（含 .venv / dist / backend/.env）。"
+    warn "$(tf '服务将以 %s 运行，请确认该用户能读 %s（含 .venv / dist / backend/.env）。' "$RUN_USER" "$ROOT")"
   fi
 
   # 单元文件由脚本渲染，而不是仓库里放一份写死路径的模板：
@@ -993,7 +1369,7 @@ StandardError=append:${ROOT}/logs/panel.log
 [Install]
 WantedBy=multi-user.target
 EOF
-  info "已写入 $UNIT"
+  info "$(tf '已写入 %s' "$UNIT")"
 
   systemctl daemon-reload
   systemctl enable "$SERVICE" >/dev/null 2>&1 || true
@@ -1023,7 +1399,7 @@ urllib.request.urlopen('http://127.0.0.1:${PORT_NOW}/api/health', timeout=2)
   done
 
   if [ "$OK" -eq 1 ]; then
-    info "面板已就绪：$(cat /tmp/pc_health.$$ 2>/dev/null || true)"
+    info "$(tf '面板已就绪：%s' "$(cat /tmp/pc_health.$$ 2>/dev/null || true)")"
     rm -f /tmp/pc_health.$$
   else
     echo
@@ -1032,21 +1408,21 @@ urllib.request.urlopen('http://127.0.0.1:${PORT_NOW}/api/health', timeout=2)
     echo "---- systemctl status ${SERVICE} ----"
     systemctl status "$SERVICE" --no-pager -l 2>&1 | tail -n 14 || true
     echo
-    echo "---- journalctl -u ${SERVICE}（最近 40 行）----"
+    echo "$(tf '---- journalctl -u %s（最近 40 行）----' "$SERVICE")"
     journalctl -u "$SERVICE" -n 40 --no-pager 2>&1 || true
     if [ -f "$ROOT/logs/panel.log" ]; then
       echo
-      echo "---- ${ROOT}/logs/panel.log（最近 40 行）----"
+      echo "$(tf '---- %s/logs/panel.log（最近 40 行）----' "$ROOT")"
       tail -n 40 "$ROOT/logs/panel.log" || true
     fi
     echo
     warn "怎么读这几段："
-    echo "    ·「面板启动被拒绝」→ .env 配置问题，后面那句已写明改哪个键"
-    echo "    · Access denied for user      → 数据库账号/授权不对（带 --db-* 重跑可改写 .env）"
-    echo "    · Can't connect to MySQL      → 数据库没起（本机：systemctl status mariadb）"
-    echo "    · Address already in use      → ${PORT_NOW} 被占用，用 --port 换一个"
-    echo "    · ModuleNotFoundError / 找不到 app → 依赖没装好，去掉 --skip-deps 重跑"
-    echo "    持续跟踪： journalctl -u ${SERVICE} -f"
+    echo " $(t '    ·「面板启动被拒绝」→ .env 配置问题，后面那句已写明改哪个键')"
+    echo " $(t '    · Access denied for user      → 数据库账号/授权不对（带 --db-* 重跑可改写 .env）')"
+    echo " $(t "    · Can't connect to MySQL      → 数据库没起（本机：systemctl status mariadb）")"
+    echo "$(tf '    · Address already in use      → %s 被占用，用 --port 换一个' "${PORT_NOW}")"
+    echo " $(t '    · ModuleNotFoundError / 找不到 app → 依赖没装好，去掉 --skip-deps 重跑')"
+    echo "$(tf '    持续跟踪： journalctl -u %s -f' "$SERVICE")"
     exit 1
   fi
 fi
@@ -1060,32 +1436,33 @@ LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 if [ -z "$LAN_IP" ]; then
   LAN_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
 fi
-[ -n "$LAN_IP" ] || LAN_IP="<本机IP>"
+[ -n "$LAN_IP" ] || LAN_IP="$(t '<本机IP>')"
 ADMIN_USERNAME_NOW="$(env_get ADMIN_USERNAME)"
 ADMIN_USERNAME_NOW="${ADMIN_USERNAME_NOW:-admin}"
 
 echo
 echo "============================================================"
-echo " 部署完成"
-echo "   面板地址 : http://${LAN_IP}:${PORT_NOW}"
-echo "   登录账号 : ${ADMIN_USERNAME_NOW}"
-echo "   API 文档 : http://${LAN_IP}:${PORT_NOW}/api/docs"
-echo "   数据库   : ${DB_NAME_NOW:-?} @ ${DBH:-?}:${DBP:-?}（账号 ${DB_USER_NOW:-?}）"
-echo "   配置文件 : $ENV_FILE  ← 数据库口令在里面（自动生成，不回显）"
-echo "   服务管理 : systemctl {status|restart|stop} $SERVICE"
-echo "   日志     : journalctl -u $SERVICE -f   或   tail -f $ROOT/logs/panel.log"
+echo " $(t '部署完成')"
+echo "$(tf '   面板地址 : http://%s:%s' "$LAN_IP" "$PORT_NOW")"
+echo "$(tf '   登录账号 : %s' "$ADMIN_USERNAME_NOW")"
+echo "$(tf '   API 文档 : http://%s:%s/api/docs' "$LAN_IP" "$PORT_NOW")"
+echo "$(tf '   数据库   : %s @ %s:%s（账号 %s）' \
+  "${DB_NAME_NOW:-?}" "${DBH:-?}" "${DBP:-?}" "${DB_USER_NOW:-?}")"
+echo "$(tf '   配置文件 : %s  ← 数据库口令在里面（自动生成，不回显）' "$ENV_FILE")"
+echo "$(tf '   服务管理 : systemctl {status|restart|stop} %s' "$SERVICE")"
+echo "$(tf '   日志     : journalctl -u %s -f   或   tail -f %s/logs/panel.log' "$SERVICE" "$ROOT")"
 if [ "${FIRST_RUN:-0}" -eq 1 ] || [ "${ADMIN_PW_CHANGED:-0}" -eq 1 ]; then
   echo
-  echo "   ★ 初始管理员口令（只显示这一次）："
+  echo "   $(t '★ 初始管理员口令（只显示这一次）：')"
   echo "       $(env_get ADMIN_PASSWORD)"
-  echo "     请立即登录后改掉：右上角用户名 →「个人中心」→ 修改密码。"
-  echo "     （管理员也可以去「设置 → 用户管理」给自己重置密码。）"
-  echo "     库里已有管理员时，本次只改了 backend/.env，现有登录口令不变。"
+  echo "     $(t '请立即登录后改掉：右上角用户名 →「个人中心」→ 修改密码。')"
+  echo "     $(t '（管理员也可以去「设置 → 用户管理」给自己重置密码。）')"
+  echo "     $(t '库里已有管理员时，本次只改了 backend/.env，现有登录口令不变。')"
 fi
 echo
-echo " 下一步："
-echo "   1) 用上面的账号登录，先改掉初始口令；"
-echo "   2) 在「设置 → Proxmox 连接配置」填入 PVE 地址与 API Token；"
-echo "   3) 公网访问：按 README「用 Nginx 上 HTTPS」配好反代与证书，再在"
-echo "      backend/.env 里设 FORCE_HTTPS=true 并 systemctl restart $SERVICE。"
+echo " $(t '下一步：')"
+echo "   $(t '1) 用上面的账号登录，先改掉初始口令；')"
+echo "   $(t '2) 在「设置 → Proxmox 连接配置」填入 PVE 地址与 API Token；')"
+echo "   $(t '3) 公网访问：按 README「用 Nginx 上 HTTPS」配好反代与证书，再在')"
+echo "$(tf '      backend/.env 里设 FORCE_HTTPS=true 并 systemctl restart %s。' "$SERVICE")"
 echo "============================================================"

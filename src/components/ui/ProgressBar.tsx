@@ -23,6 +23,7 @@ export interface ProgressBarProps {
 
 import { usageColor } from '../../utils/format';
 import { useAnimatedNumber } from '../../hooks/useAnimatedNumber';
+import { useT } from '../../i18n';
 
 export function ProgressBar({
   value,
@@ -34,6 +35,7 @@ export function ProgressBar({
   className,
   ariaLabel,
 }: ProgressBarProps) {
+  const t = useT();
   const pct = Math.min(100, Math.max(0, value));
   const animated = useAnimatedNumber(pct);
   const fill = color ?? usageColor(pct);
@@ -55,7 +57,7 @@ export function ProgressBar({
         aria-valuenow={Math.round(pct)}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label={ariaLabel ?? label ?? '进度'}
+        aria-label={ariaLabel ?? label ?? t('progress.aria')}
       >
         {segments && segments.length > 0 ? (
           segments.map((s, i) => (

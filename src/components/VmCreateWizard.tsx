@@ -44,21 +44,22 @@ import {
 } from './Icons';
 import { useToast } from '../hooks/useToast';
 import {
-  BIOS_OPTIONS,
-  CPU_TYPE_OPTIONS,
+  biosOptions,
+  cpuTypeOptions,
   DISK_FORMAT_OPTIONS,
   DISK_INTERFACE_OPTIONS,
-  EFI_TYPE_OPTIONS,
-  MACHINE_OPTIONS,
-  NET_MODEL_OPTIONS,
-  NUMA_POLICY_OPTIONS,
-  OSTYPE_OPTIONS,
+  efiTypeOptions,
+  machineOptions,
+  netModelOptions,
+  numaPolicyOptions,
+  ostypeOptions,
   SCSIHW_OPTIONS,
-  TPM_VERSION_OPTIONS,
+  tpmVersionOptions,
   initAgentName,
   isWindowsOstype,
   ostypeLabel,
-} from '../utils/status';
+} from '../utils/status'
+import { useT, type MessageKey, type TFunc } from '../i18n';
 import { formatBytes } from '../utils/format';
 import type {
   CloudInitConfig,
@@ -73,16 +74,18 @@ import type {
    步骤定义
    --------------------------------------------------------------------------- */
 
-const STEPS = [
-  '基本信息',
-  '创建方式',
-  '系统配置',
-  '磁盘与网络',
-  'Cloud-Init',
-  '确认创建',
-] as const;
+/* 步骤标题。第 CI_STEP 项在渲染时会被客户机系统的初始化工具名覆盖（Cloud-Init /
+   Cloudbase-Init），这里放「初始化」只是兜底，免得覆盖逻辑漏掉时标题空着 */
+const STEP_KEYS: MessageKey[] = [
+  'vmCreate.stepBasic',
+  'vmCreate.stepMode',
+  'vmCreate.stepSystem',
+  'vmCreate.stepDisks',
+  'vmCreate.stepInit',
+  'vmCreate.stepConfirm',
+];
 
-/* 第 5 步（初始化）在 STEPS 里的下标。它的标题要随客户机系统变，步骤条与确认页
+/* 第 5 步（初始化）在 STEP_KEYS 里的下标。它的标题要随客户机系统变，步骤条与确认页
    共用这个下标，避免各处硬编码 4。 */
 const CI_STEP = 4;
 
@@ -326,6 +329,7 @@ function initActive(form: FormState): boolean {
 }
 
 function validateStep(
+  t: TFunc,
   step: StepIndex,
   form: FormState,
   takenVmids?: Set<number>,
@@ -333,77 +337,79 @@ function validateStep(
   const e: Errors = {};
 
   if (step === 0) {
-    if (!form.name.trim()) e.name = '请输入虚拟机名称';
-    else if (form.name.length > 63) e.name = '名称不能超过 63 个字符';
+    if (!form.name.trim()) e.name = t('vmCreate.vNameRequired');
+    else if (form.name.length > 63) e.name = t('vmCreate.vNameTooLong');
 
-    if (!form.vmid.trim()) e.vmid = '请输入 VMID';
+    if (!form.vmid.trim()) e.vmid = t('vmCreate.vVmidRequired');
     else {
       const n = Number(form.vmid);
       if (!Number.isInteger(n) || n < 100 || n > 999999999) {
-        e.vmid = 'VMID 需为 100 ~ 999999999 之间的整数';
+        e.vmid = t('vmCreate.vVmidRange');
       } else if (takenVmids?.has(n)) {
         /* VMID 按主机独立分配，照搬另一台主机的号会直接撞车 */
-        e.vmid = `VMID ${n} 在目标主机上已被占用，请换一个`;
+        e.vmid = t('vmCreate.vVmidTaken', { vmid: n });
       }
     }
-    if (!form.node) e.node = '请选择节点';
+    if (!form.node) e.node = t('vmCreate.vNodeRequired');
   }
 
   if (step === 1) {
-    if (form.mode === 'clone' && !form.cloneFrom) e.cloneFrom = '请选择克隆源（模板）';
+    if (form.mode === 'clone' && !form.cloneFrom) {
+      e.cloneFrom = t('vmCreate.vCloneSource');
+    }
   }
 
   if (step === 2) {
-    if (form.cores < 1 || form.cores > 128) e.cores = '核心数需在 1 ~ 128 之间';
-    if (form.sockets < 1 || form.sockets > 4) e.sockets = '插槽数需在 1 ~ 4 之间';
-    if (form.memory < 512) e.memory = '内存不能小于 512 MB';
-    else if (form.memory > 1_048_576) e.memory = '内存不能超过 1048576 MB';
+    if (form.cores < 1 || form.cores > 128) e.cores = t('vmCreate.vCores');
+    if (form.sockets < 1 || form.sockets > 4) e.sockets = t('vmCreate.vSockets');
+    if (form.memory < 512) e.memory = t('vmCreate.vMemoryMin');
+    else if (form.memory > 1_048_576) e.memory = t('vmCreate.vMemoryMax');
 
     /* 内存气球：留空 = 不回收（不下发该键），0 = 关闭气球驱动。填了值就必须
        低于内存上限，否则 PVE 直接拒掉建机请求。 */
     if (form.balloon.trim()) {
       const balloon = Number(form.balloon);
       if (!Number.isFinite(balloon) || balloon < 0) {
-        e.balloon = '最低保留内存需为不小于 0 的整数';
+        e.balloon = t('vmCreate.vBalloonInt');
       } else if (balloon > 0 && balloon < 128) {
-        e.balloon = '最低保留内存不能小于 128 MB';
+        e.balloon = t('vmCreate.vBalloonMin');
       } else if (balloon > 0 && form.memory && balloon >= form.memory) {
-        e.balloon = '最低保留内存必须小于内存上限';
+        e.balloon = t('vmCreate.vBalloonVsMemory');
       }
     }
 
     /* 高级硬件：cpuset 是唯一会被 PVE 直接拒的输入，格式必须在提交前拦住 */
     if (form.numaAffinity.trim() && !isCpuset(form.numaAffinity)) {
-      e.numaAffinity = 'CPU 列表格式如 0-3,8-11（仅数字、逗号与连字符）';
+      e.numaAffinity = t('vmCreate.vCpuset');
     }
     form.numaNodes.forEach((node, i) => {
       if (!isCpuset(node.cpus)) {
-        e[`numa-cpus-${i}`] = '请填写该节点的 CPU 列表，如 0-3';
+        e[`numa-cpus-${i}`] = t('vmCreate.vNumaCpus');
       }
       if (node.hostnodes.trim() && !isCpuset(node.hostnodes)) {
-        e[`numa-hostnodes-${i}`] = '宿主 NUMA 节点格式如 0 或 0-1';
+        e[`numa-hostnodes-${i}`] = t('vmCreate.vNumaHostnodes');
       }
       const mem = Number(node.memory);
       if (node.memory.trim() && (!Number.isFinite(mem) || mem < 16)) {
-        e[`numa-memory-${i}`] = '节点内存至少 16 MB，或留空自动均分';
+        e[`numa-memory-${i}`] = t('vmCreate.vNumaMemory');
       }
     });
 
-    if (form.efiEnabled && !form.efiStorage) e.efiStorage = '请选择 EFI 盘的存储池';
-    if (form.tpmEnabled && !form.tpmStorage) e.tpmStorage = '请选择 TPM 状态盘的存储池';
+    if (form.efiEnabled && !form.efiStorage) e.efiStorage = t('vmCreate.vEfiStorage');
+    if (form.tpmEnabled && !form.tpmStorage) e.tpmStorage = t('vmCreate.vTpmStorage');
   }
 
   if (step === 3 && form.mode === 'new') {
     form.disks.forEach((d, i) => {
-      if (!d.storage) e[`disk-storage-${i}`] = '请选择存储池';
-      if (d.size < 1) e[`disk-size-${i}`] = '磁盘大小至少 1 GB';
+      if (!d.storage) e[`disk-storage-${i}`] = t('vmDetail.selectStorage');
+      if (d.size < 1) e[`disk-size-${i}`] = t('vmCreate.vDiskSize');
     });
-    if (form.disks.length === 0) e.disks = '至少需要一块磁盘';
+    if (form.disks.length === 0) e.disks = t('vmCreate.vDisksRequired');
     form.networks.forEach((n, i) => {
-      if (!n.bridge) e[`net-bridge-${i}`] = '请选择网桥';
+      if (!n.bridge) e[`net-bridge-${i}`] = t('vmDetail.addNicBridgePlaceholder');
       const ip = (n.ip || '').trim();
       if (ip && ip.toLowerCase() !== 'dhcp' && !ip.includes('/')) {
-        e[`net-ip-${i}`] = '静态地址需带 CIDR 前缀，如 192.168.1.10/24';
+        e[`net-ip-${i}`] = t('vmDetail.ipCidr');
       }
     });
   }
@@ -412,13 +418,13 @@ function validateStep(
   // 确实会下发，用户名就必须校验。
   if (step === CI_STEP && initActive(form)) {
     if (!form.ciUser.trim()) {
-      e.ciUser = `请输入 ${initAgentName(form.ostype)} 用户名`;
+      e.ciUser = t('vmCreate.vCiUser', { agent: initAgentName(form.ostype) });
     }
     // 全新创建时 IP 在「磁盘与网络」的网卡里配置，这里只校验克隆模式下的 IP 列表。
     if (form.mode !== 'new') {
       form.ciIps.forEach((row, i) => {
         if (row.ip !== 'dhcp' && !row.ip.includes('/')) {
-          e[`ip-${i}`] = '静态地址需带 CIDR 前缀，如 192.168.1.10/24';
+          e[`ip-${i}`] = t('vmDetail.ipCidr');
         }
       });
     }
@@ -438,6 +444,7 @@ export interface VmCreateWizardProps {
 }
 
 export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps) {
+  const t = useT();
   const toast = useToast();
 
   const [step, setStep] = useState<StepIndex>(0);
@@ -659,7 +666,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
 
   const storageOptions = useMemo(
     () => [
-      { label: '请选择存储池', value: '' },
+      { label: t('vmDetail.selectStorage'), value: '' },
       ...(storagesQuery.data ?? [])
         .filter(
           (s) =>
@@ -667,11 +674,15 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             s.content.split(/[,;]/).some((c) => c.trim() === 'images'),
         )
         .map((s) => ({
-          label: `${s.storage} (${s.type}, 可用 ${formatBytes(s.avail)})`,
+          label: t('vmCreate.storageOption', {
+            storage: s.storage,
+            type: s.type,
+            avail: formatBytes(s.avail),
+          }),
           value: s.storage,
         })),
     ],
-    [storagesQuery.data],
+    [storagesQuery.data, t],
   );
 
   /* 「目标 PVE 主机」：始终对应一条具体连接。
@@ -680,14 +691,21 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
   const connectionOptions = useMemo(
     () =>
       (connectionsQuery.data ?? []).map((c) => ({
-        label: `${c.name || c.host}${c.active ? '（当前连接）' : ''} · ${c.host}:${c.port}`,
+        label: t('vmCreate.connOption', {
+          name: `${c.name || c.host}${
+            c.active ? t('vmCreate.connCurrentTag') : ''
+          }`,
+          host: c.host,
+          port: c.port,
+        }),
         value: c.id,
       })),
-    [connectionsQuery.data],
+    [connectionsQuery.data, t],
   );
 
   const targetConnLabel =
-    connectionOptions.find((o) => o.value === targetConn)?.label ?? '当前连接';
+    connectionOptions.find((o) => o.value === targetConn)?.label ??
+    t('vmCreate.connCurrent');
 
   /* 可用作网桥的网卡 */
   const bridgesQuery = useQuery({
@@ -704,13 +722,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     );
     const list = bridges.length > 0 ? bridges : ifaces;
     return [
-      { label: '请选择网桥', value: '' },
+      { label: t('vmDetail.addNicBridgePlaceholder'), value: '' },
       ...list.map((i) => ({
-        label: `${i.iface}${i.active ? '' : '（未激活）'}`,
+        label: `${i.iface}${i.active ? '' : t('vmDetail.addNicInactive')}`,
         value: i.iface,
       })),
     ];
-  }, [bridgesQuery.data]);
+  }, [bridgesQuery.data, t]);
 
   /* ---- 克隆源：只给模板 ----
      后端 /api/templates 已经筛过「type = qemu 且 template = 1」，拿到的就是
@@ -731,9 +749,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
        * 归属 —— 模板必须来自「即将创建虚拟机的那台 PVE」：不同主机的节点名与
          VMID 不通用，混入别家的模板会导致克隆打到错误的连接上。 */
     return (templatesQuery.data ?? []).filter(
-      (t) =>
-        (t.guest_type ?? 'qemu') !== 'lxc' &&
-        (!targetConn || !t.connection_id || t.connection_id === targetConn),
+      (tpl) =>
+        (tpl.guest_type ?? 'qemu') !== 'lxc' &&
+        (!targetConn ||
+          !tpl.connection_id ||
+          tpl.connection_id === targetConn),
     );
   }, [templatesQuery.data, targetConn]);
 
@@ -747,14 +767,19 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
 
   const cloneOptions = useMemo(
     () => [
-      { label: '请选择克隆源', value: '' },
-      ...cloneSources.map((t) => ({
+      { label: t('vmCreate.cloneSourcePlaceholder'), value: '' },
+      /* 内层变量改叫 tpl：若沿用 t 会把外层的翻译函数遮住 */
+      ...cloneSources.map((tpl) => ({
         /* 全部是模板，不再带 [模板] 后缀 —— 只有一种东西时那个后缀就是噪音 */
-        label: `${t.name || `模板 ${t.vmid}`} · ${t.vmid} @ ${t.node}`,
-        value: `${t.node}:${t.vmid}`,
+        label: t('vmCreate.cloneSourceOption', {
+          name: tpl.name || t('vmCreate.templateName', { vmid: tpl.vmid }),
+          vmid: tpl.vmid,
+          node: tpl.node,
+        }),
+        value: `${tpl.node}:${tpl.vmid}`,
       })),
     ],
-    [cloneSources],
+    [cloneSources, t],
   );
 
   const selectedCloneSource: TemplateItem | undefined = useMemo(() => {
@@ -825,10 +850,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
 
   /* ---- 步骤导航 ---- */
   const goNext = () => {
-    const e = validateStep(step, form, takenVmids);
+    const e = validateStep(t, step, form, takenVmids);
     setErrors(e);
     if (Object.keys(e).length > 0) {
-      toast.warning('请检查表单', '有必填项或格式错误未通过校验');
+      toast.warning(
+        t('vmCreate.toastCheckForm'),
+        t('vmCreate.toastCheckFormHint'),
+      );
       return;
     }
     if (step < 5) setStep((s) => (s + 1) as StepIndex);
@@ -842,15 +870,18 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
   const submit = async () => {
     /* 全量校验 */
     const allErrors: Errors = {
-      ...validateStep(0, form, takenVmids),
-      ...validateStep(1, form, takenVmids),
-      ...validateStep(2, form, takenVmids),
-      ...validateStep(3, form, takenVmids),
-      ...validateStep(4, form, takenVmids),
+      ...validateStep(t, 0, form, takenVmids),
+      ...validateStep(t, 1, form, takenVmids),
+      ...validateStep(t, 2, form, takenVmids),
+      ...validateStep(t, 3, form, takenVmids),
+      ...validateStep(t, 4, form, takenVmids),
     };
     setErrors(allErrors);
     if (Object.keys(allErrors).length > 0) {
-      toast.error('校验未通过', '请返回上一步修正表单错误');
+      toast.error(
+        t('vmCreate.toastInvalid'),
+        t('vmCreate.toastInvalidHint'),
+      );
       return;
     }
 
@@ -992,13 +1023,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       /* targetConn 为空表示用面板当前连接，否则在指定 PVE 主机上创建 */
       const result = await vmsApi.create(payload, targetConn);
       toast.success(
-        '创建虚拟机成功',
-        `VMID ${result.vmid ?? form.vmid} 已提交创建，可在任务队列查看进度`,
+        t('vmCreate.toastCreated'),
+        t('vmCreate.toastCreatedHint', { vmid: result.vmid ?? form.vmid }),
       );
       onCreated?.(result.vmid ?? Number(form.vmid));
       onClose();
     } catch (err) {
-      toast.error('创建虚拟机失败', errorMessage(err));
+      toast.error(t('vmCreate.toastCreateFailed'), errorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -1133,8 +1164,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       return next;
     });
     toast.success(
-      '已应用 Windows 11 推荐配置',
-      'BIOS=OVMF、机型=q35、CPU=host，启用 EFI 盘与虚拟 TPM，磁盘改 SATA、网卡改 Intel E1000',
+      t('vmCreate.toastWin11'),
+      t('vmCreate.toastWin11Hint'),
     );
   };
 
@@ -1166,8 +1197,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     <Modal
       open={open}
       onClose={onClose}
-      title="创建虚拟机"
-      description="按步骤填写配置，创建后将作为后台任务执行"
+      title={t('vmCreate.modalTitle')}
+      description={t('vmCreate.modalDesc')}
       size="lg"
       closeOnOverlay={false}
       footer={
@@ -1178,7 +1209,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             {currentErrors > 0 ? (
               <span className="fs-sm text-danger flex items-center gap-6">
                 <IconAlert size={14} />
-                有 {currentErrors} 处需要修正
+                {t('vmCreate.errorsCount', { count: currentErrors })}
               </span>
             ) : null}
           </div>
@@ -1187,11 +1218,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             onClick={step === 0 ? onClose : goPrev}
             disabled={submitting}
           >
-            {step === 0 ? '取消' : '上一步'}
+            {step === 0 ? t('common.cancel') : t('vmCreate.prev')}
           </Button>
           {step < 5 ? (
             <Button variant="primary" onClick={goNext}>
-              下一步
+              {t('vmCreate.next')}
             </Button>
           ) : (
             <Button
@@ -1201,11 +1232,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               disabled={quotaQuery.data ? !quotaQuery.data.can_create : false}
               title={
                 quotaQuery.data && !quotaQuery.data.can_create
-                  ? '可下发虚拟机数量已用尽，请联系管理员'
+                  ? t('vmCreate.quotaExhaustedHint')
                   : undefined
               }
             >
-              创建虚拟机
+              {t('vmCreate.submit')}
             </Button>
           )}
         </>
@@ -1217,16 +1248,16 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         <SegmentedControl<CreateMode>
           value={mode}
           onChange={pickMode}
-          ariaLabel="创建方式"
+          ariaLabel={t('vmCreate.modeAria')}
           options={[
-            { label: '快速部署', value: 'quick' },
-            { label: '自定义部署', value: 'custom' },
+            { label: t('vmCreate.modeQuick'), value: 'quick' },
+            { label: t('vmCreate.modeCustom'), value: 'custom' },
           ]}
         />
         <span className="fs-sm text-muted">
           {mode === 'quick'
-            ? '选规格、选位置、起名即下发；规格由管理员在「设置 → 资源规格」里定义'
-            : '逐步填写：系统、硬件、磁盘、网络、初始化'}
+            ? t('vmCreate.modeQuickHint')
+            : t('vmCreate.modeCustomHint')}
         </span>
       </div>
 
@@ -1242,10 +1273,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       ) : (
         <>
       {/* ---- 步骤条 ---- */}
-      <div className="wizard-steps" role="list" aria-label="创建步骤">
-        {STEPS.map((label, i) => (
+      <div
+        className="wizard-steps"
+        role="list"
+        aria-label={t('vmCreate.stepsAria')}
+      >
+        {STEP_KEYS.map((key, i) => (
           <div
-            key={label}
+            key={key}
             role="listitem"
             className={`wizard-step ${i === step ? 'is-active' : ''} ${
               i < step ? 'is-done' : ''
@@ -1255,9 +1290,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               {i < step ? <IconCheck size={12} /> : i + 1}
             </span>
             <span className="wizard-step-label">
-              {i === CI_STEP ? ciName : label}
+              {i === CI_STEP ? ciName : t(key)}
             </span>
-            {i < STEPS.length - 1 ? (
+            {i < STEP_KEYS.length - 1 ? (
               <span
                 className={`wizard-connector ${i < step ? 'is-done' : ''}`}
                 aria-hidden="true"
@@ -1277,26 +1312,38 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 tone={quotaQuery.data.can_create ? 'info' : 'warning'}
                 title={
                   quotaQuery.data.can_create
-                    ? `还可下发 ${quotaQuery.data.remaining} 台虚拟机`
-                    : '可下发数量已用尽'
+                    ? t('vmCreate.quotaRemaining', {
+                        count: quotaQuery.data.remaining,
+                      })
+                    : t('vmCreate.quotaUsedUp')
                 }
               >
-                面板总配额 {quotaQuery.data.quota} 台，当前已有{' '}
-                {quotaQuery.data.used} 台
-                {quotaQuery.data.can_create ? '' : '，已无法再创建'}。
+                {quotaQuery.data.can_create
+                  ? t('vmCreate.quotaSummaryOk', {
+                      quota: quotaQuery.data.quota,
+                      used: quotaQuery.data.used,
+                    })
+                  : t('vmCreate.quotaSummaryFull', {
+                      quota: quotaQuery.data.quota,
+                      used: quotaQuery.data.used,
+                    })}
                 {quotaQuery.data.count_error ? (
-                  <>（部分 PVE 连接读取失败：{quotaQuery.data.count_error}）</>
+                  <>
+                    {t('vmCreate.quotaCountError', {
+                      count: quotaQuery.data.count_error,
+                    })}
+                  </>
                 ) : null}
               </Notice>
             ) : null}
 
             <div className="form-grid">
               <Input
-                label="虚拟机名称"
+                label={t('vmCreate.fieldName')}
                 required
                 value={form.name}
                 onChange={(e) => update('name', e.target.value)}
-                placeholder="如 web-01"
+                placeholder={t('vmCreate.fieldNamePlaceholder')}
                 error={errors.name}
                 autoFocus
               />
@@ -1305,32 +1352,37 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 required
                 value={form.vmid}
                 onChange={(e) => update('vmid', e.target.value.replace(/\D/g, ''))}
-                placeholder="如 100"
+                placeholder={t('vmCreate.fieldVmidPlaceholder')}
                 error={errors.vmid}
                 hint={
                   nextIdQuery.data
-                    ? `「${targetConnLabel}」建议的可用 ID：${nextIdQuery.data.vmid}（VMID 按主机独立，换主机会重新取号）`
-                    : '需为 100 ~ 999999999 之间的唯一整数'
+                    ? t('vmCreate.vmidHintSuggested', {
+                        conn: targetConnLabel,
+                        vmid: nextIdQuery.data.vmid,
+                      })
+                    : t('vmCreate.vmidHint')
                 }
               />
               <Select
-                label="目标 PVE 主机"
+                label={t('vmCreate.fieldTargetConn')}
                 value={targetConn}
                 onChange={(e) => setTargetConn(e.target.value)}
                 options={connectionOptions}
-                hint="可在已配置的多台 PVE 之间选择，默认使用面板当前连接"
+                hint={t('vmCreate.fieldTargetConnHint')}
               />
               <Field
-                label="节点"
+                label={t('common.node')}
                 required
                 error={
                   errors.node ??
-                  (nodesQuery.isError ? '读取节点失败，请检查该主机的连接' : undefined)
+                  (nodesQuery.isError
+                    ? t('vmCreate.nodesLoadFailed')
+                    : undefined)
                 }
                 hint={
                   nodesQuery.isError
                     ? errorMessage(nodesQuery.error)
-                    : '虚拟机将在此节点上创建；卡片上是各节点当前的资源占用'
+                    : t('vmCreate.fieldNodeHint')
                 }
               >
                 <NodePicker
@@ -1341,18 +1393,18 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 />
               </Field>
               <Input
-                label="标签"
+                label={t('vmCreate.fieldTags')}
                 value={form.tags}
                 onChange={(e) => update('tags', e.target.value)}
-                placeholder="如 web;prod（分号分隔）"
+                placeholder={t('vmCreate.fieldTagsPlaceholder')}
               />
             </div>
 
             <Textarea
-              label="描述"
+              label={t('common.description')}
               value={form.description}
               onChange={(e) => update('description', e.target.value)}
-              placeholder="记录该虚拟机的用途、负责人等信息"
+              placeholder={t('vmCreate.fieldDescPlaceholder')}
               rows={3}
             />
           </div>
@@ -1361,8 +1413,12 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         {/* ================= 第 2 步：创建方式 ================= */}
         {step === 1 ? (
           <div className="wizard-section">
-            <div className="wizard-section-title">创建方式</div>
-            <div className="choice-cards" role="radiogroup" aria-label="创建方式">
+            <div className="wizard-section-title">{t('vmCreate.stepMode')}</div>
+            <div
+              className="choice-cards"
+              role="radiogroup"
+              aria-label={t('vmCreate.modeAria')}
+            >
               <button
                 type="button"
                 role="radio"
@@ -1375,11 +1431,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 </span>
                 <span className="choice-card-body">
                   <span className="choice-card-title">
-                    从模板克隆
-                    <Badge variant="accent" size="sm">推荐</Badge>
+                    {t('vmCreate.cloneFromTemplate')}
+                    <Badge variant="accent" size="sm">
+                      {t('vmCreate.recommended')}
+                    </Badge>
                   </span>
                   <span className="choice-card-desc">
-                    基于已有模板快速克隆，秒级完成，默认链接克隆、几乎不占额外空间。
+                    {t('vmCreate.cloneFromTemplateDesc')}
                   </span>
                 </span>
                 <span className="choice-card-check" aria-hidden="true">
@@ -1398,9 +1456,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   <IconDisk size={20} />
                 </span>
                 <span className="choice-card-body">
-                  <span className="choice-card-title">全新安装</span>
+                  <span className="choice-card-title">{t('vmCreate.installFresh')}</span>
                   <span className="choice-card-desc">
-                    从零分配磁盘并挂载 ISO 安装操作系统，适合全新部署。
+                    {t('vmCreate.installFreshDesc')}
                   </span>
                 </span>
                 <span className="choice-card-check" aria-hidden="true">
@@ -1412,12 +1470,12 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             {form.mode === 'clone' ? (
               <div className="choice-panel">
                 <div className="choice-panel-head">
-                  <span className="choice-panel-title">克隆参数</span>
-                  <span className="choice-panel-hint">选择模板并设置克隆方式</span>
+                  <span className="choice-panel-title">{t('vmCreate.cloneParams')}</span>
+                  <span className="choice-panel-hint">{t('vmCreate.cloneParamsHint')}</span>
                 </div>
 
                 <Select
-                  label="克隆源（模板）"
+                  label={t('vmCreate.cloneSource')}
                   required
                   value={form.cloneFrom}
                   onChange={(e) => update('cloneFrom', e.target.value)}
@@ -1425,21 +1483,26 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   error={errors.cloneFrom}
                   hint={
                     cloneSources.length === 0
-                      ? '该主机上还没有任何模板可作克隆源'
-                      : '只列出该主机上的虚拟机模板（普通虚拟机不可克隆）'
+                      ? t('vmCreate.cloneSourceNoTemplates')
+                      : t('vmCreate.cloneSourceHint')
                   }
                 />
 
                 {vmsQuery.isError || templatesQuery.isError ? (
-                  <Notice tone="danger" title="无法读取克隆源列表">
+                  <Notice
+                    tone="danger"
+                    title={t('vmCreate.cloneSourceLoadFailed')}
+                  >
                     {errorMessage(vmsQuery.error ?? templatesQuery.error)}
                   </Notice>
                 ) : null}
 
                 {cloneSources.length === 0 && !templatesQuery.isLoading ? (
-                  <Notice tone="warning" title="该主机上没有可用的克隆源">
-                    目标 PVE「{targetConnLabel}」上还没有任何模板。
-                    请先在该主机上创建模板，或把上方「创建方式」切换为「全新安装」。
+                  <Notice
+                    tone="warning"
+                    title={t('vmCreate.cloneSourceEmptyTitle')}
+                  >
+                    {t('vmCreate.cloneSourceEmptyBody', { conn: targetConnLabel })}
                   </Notice>
                 ) : null}
 
@@ -1455,30 +1518,40 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                           VMID {selectedCloneSource.vmid}
                         </Badge>
                       </div>
-                      <div className="clone-preview-node">节点 {selectedCloneSource.node}</div>
+                      <div className="clone-preview-node">
+                        {t('vmCreate.clonePreviewNode', {
+                          node: selectedCloneSource.node,
+                        })}
+                      </div>
                     </div>
                     <div className="clone-preview-specs">
                       <span className="spec-chip">{selectedCloneSource.maxcpu ?? '?'} vCPU</span>
-                      <span className="spec-chip">{formatBytes(selectedCloneSource.maxmem)} 内存</span>
-                      <span className="spec-chip">{ostypeLabel(selectedCloneSource.type ?? '')}</span>
+                      <span className="spec-chip">
+                        {t('vmCreate.clonePreviewMemory', {
+                          size: formatBytes(selectedCloneSource.maxmem),
+                        })}
+                      </span>
+                      <span className="spec-chip">
+                        {ostypeLabel(selectedCloneSource.type ?? '', t)}
+                      </span>
                     </div>
                   </div>
                 ) : null}
 
                 <Select
-                  label="目标存储（可选）"
+                  label={t('vmCreate.cloneStorage')}
                   value={form.cloneStorage}
                   onChange={(e) => update('cloneStorage', e.target.value)}
                   options={storageOptions}
                   disabled={!form.cloneFull}
                   hint={
                     form.cloneFull
-                      ? '用于存放独立磁盘副本'
-                      : '链接克隆复用模板磁盘，无需指定存储'
+                      ? t('vmCreate.cloneStorageHintFull')
+                      : t('vmCreate.cloneStorageHintLinked')
                   }
                 />
 
-                <Field label="克隆方式">
+                <Field label={t('vmCreate.cloneMethod')}>
                   <div className="clone-methods">
                     <button
                       type="button"
@@ -1493,11 +1566,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       </span>
                       <span className="clone-method-body">
                         <span className="clone-method-title">
-                          链接克隆
-                          <span className="clone-method-tag">默认</span>
+                          {t('vmCreate.cloneLinked')}
+                          <span className="clone-method-tag">
+                            {t('vmCreate.cloneDefault')}
+                          </span>
                         </span>
                         <span className="clone-method-desc">
-                          秒级完成、几乎不占额外空间，但依赖源磁盘
+                          {t('vmCreate.cloneLinkedDesc')}
                         </span>
                       </span>
                     </button>
@@ -1510,9 +1585,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                         {form.cloneFull ? <IconCheck size={12} /> : null}
                       </span>
                       <span className="clone-method-body">
-                        <span className="clone-method-title">完整克隆</span>
+                        <span className="clone-method-title">{t('vmCreate.cloneFull')}</span>
                         <span className="clone-method-desc">
-                          复制独立磁盘副本，占用额外空间，与模板完全解耦
+                          {t('vmCreate.cloneFullDesc')}
                         </span>
                       </span>
                     </button>
@@ -1522,14 +1597,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 <Switch
                   checked={form.cloneStart}
                   onChange={(v) => update('cloneStart', v)}
-                  label="创建后自动开机"
-                  hint="克隆完成并应用配置后自动启动这台虚拟机"
+                  label={t('vmCreate.cloneStart')}
+                  hint={t('vmCreate.cloneStartHint')}
                 />
               </div>
             ) : (
               <div className="choice-panel">
-                <Notice tone="warning" title="全新安装">
-                  将从零分配磁盘并挂载 ISO 安装系统，相关配置在第 4 步「磁盘与网络」中设置。
+                <Notice tone="warning" title={t('vmCreate.installFresh')}>
+                  {t('vmCreate.installFreshNotice')}
                 </Notice>
               </div>
             )}
@@ -1539,36 +1614,39 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         {/* ================= 第 3 步：系统配置 ================= */}
         {step === 2 ? (
           <div className="wizard-section">
-            <div className="wizard-section-title">操作系统与固件</div>
+            <div className="wizard-section-title">{t('vmCreate.secOsFirmware')}</div>
             <div className="form-grid">
               <Select
-                label="客户机操作系统类型"
+                label={t('vmCreate.fieldOstype')}
                 value={form.ostype}
                 onChange={(e) => changeOstype(e.target.value)}
-                options={OSTYPE_OPTIONS.map((o) => ({
+                options={ostypeOptions(t).map((o) => ({
                   label: o.label,
                   value: o.value,
                 }))}
-                hint="影响 Proxmox 的硬件模拟与优化策略；Windows 与 Linux 的初始化工具不同（Cloudbase-Init / Cloud-Init），第 5 步会跟着变"
+                hint={t('vmCreate.fieldOstypeHint')}
               />
               <Select
                 label="BIOS"
                 value={form.bios}
                 onChange={(e) => update('bios', e.target.value)}
-                options={BIOS_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
-                hint="Windows 11 必须使用 OVMF"
+                options={biosOptions(t).map((o) => ({
+                  label: o.label,
+                  value: o.value,
+                }))}
+                hint={t('vmCreate.biosWin11Hint')}
               />
               <Select
-                label="机型"
+                label={t('vmDetail.hwMachine')}
                 value={form.machine}
                 onChange={(e) => update('machine', e.target.value)}
-                options={MACHINE_OPTIONS.map((o) => ({
+                options={machineOptions(t).map((o) => ({
                   label: o.label,
                   value: o.value,
                 }))}
               />
               <Select
-                label="SCSI 控制器"
+                label={t('vmDetail.hwScsihw')}
                 value={form.scsihw}
                 onChange={(e) => update('scsihw', e.target.value)}
                 options={SCSIHW_OPTIONS.map((o) => ({
@@ -1581,25 +1659,22 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             {/* 固件三件套（OVMF / EFI 变量盘 / q35）要配套，缺一个就起不来。
                 后端只在「请求了 EFI 盘或 TPM」时才自动校准，所以这里要主动提醒。 */}
             {form.bios === 'ovmf' && !form.efiEnabled ? (
-              <Notice tone="warning" title="选了 OVMF，但还没启用 EFI 变量盘">
-                UEFI 固件必须有一块 EFI 变量盘才能真正引导。请在下面的「固件扩展」
-                里启用它，或直接点「一键应用 Windows 11 推荐配置」—— 否则这台机器
-                建出来是起不来的。
+              <Notice tone="warning" title={t('vmCreate.ovmfNoEfiTitle')}>
+                {t('vmCreate.ovmfNoEfiBody')}
               </Notice>
             ) : null}
             {form.bios === 'ovmf' && form.machine !== 'q35' ? (
-              <Notice tone="warning" title="OVMF 需要 q35 机型">
-                当前机型是 i440fx，OVMF 在它上面不可用。请把机型改成 q35，
-                否则虚拟机会引导失败。
+              <Notice tone="warning" title={t('vmCreate.ovmfNeedQ35Title')}>
+                {t('vmCreate.ovmfNeedQ35Body')}
               </Notice>
             ) : null}
 
             {/* --- 高级硬件：EFI 变量盘与虚拟 TPM（Windows 11 必需）--- */}
-            <div className="wizard-section-title mt-8">固件扩展</div>
-            <Notice tone="info" title="Windows 11 需要 UEFI + 安全启动 + TPM 2.0">
-              EFI 变量盘与虚拟 TPM 会在目标存储上各开一个小卷（1MB / 4MB）。
-              启用任意一项时，后端都会把 BIOS 校准成 OVMF、机型校准成 q35 ——
-              缺了这一步，机器即使建出来也引导不起来。
+            <div className="wizard-section-title mt-8">
+              {t('vmCreate.secFirmwareExt')}
+            </div>
+            <Notice tone="info" title={t('vmCreate.win11NoticeTitle')}>
+              {t('vmCreate.win11NoticeBody')}
             </Notice>
 
             <div className="flex items-center gap-8 flex-wrap mt-16">
@@ -1609,10 +1684,10 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 icon={<IconCheck size={14} />}
                 onClick={applyWindows11Preset}
               >
-                一键应用 Windows 11 推荐配置
+                {t('vmCreate.applyWin11')}
               </Button>
               <span className="fs-sm text-muted">
-                同时设置 ostype=win11、BIOS=OVMF、机型=q35、CPU 类型=host
+                {t('vmCreate.applyWin11Hint')}
               </span>
             </div>
 
@@ -1620,13 +1695,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               <Switch
                 checked={form.efiEnabled}
                 onChange={(v) => update('efiEnabled', v)}
-                label="EFI 变量盘（efidisk0）"
-                hint="UEFI 启动必需，Windows 11 的安全启动依赖它"
+                label={t('vmCreate.fieldEfi')}
+                hint={t('vmCreate.fieldEfiHint')}
               />
               {form.efiEnabled ? (
                 <>
                   <Select
-                    label="EFI 盘存储池"
+                    label={t('vmCreate.fieldEfiStorage')}
                     required
                     value={form.efiStorage}
                     onChange={(e) => update('efiStorage', e.target.value)}
@@ -1634,20 +1709,20 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     error={errors.efiStorage}
                   />
                   <Select
-                    label="EFI 格式"
+                    label={t('vmCreate.fieldEfiFormat')}
                     value={form.efiType}
                     onChange={(e) => update('efiType', e.target.value)}
-                    options={EFI_TYPE_OPTIONS.map((o) => ({
+                    options={efiTypeOptions(t).map((o) => ({
                       label: o.label,
                       value: o.value,
                     }))}
-                    hint="只有 4m 能预置安全启动密钥"
+                    hint={t('vmCreate.fieldEfiFormatHint')}
                   />
                   <div className="mt-8">
                     <Checkbox
                       checked={form.efiPreEnrolled}
                       onChange={(e) => update('efiPreEnrolled', e.target.checked)}
-                      label="预置安全启动密钥（pre-enrolled-keys）"
+                      label={t('vmCreate.fieldEfiKeys')}
                     />
                   </div>
                 </>
@@ -1656,13 +1731,13 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               <Switch
                 checked={form.tpmEnabled}
                 onChange={(v) => update('tpmEnabled', v)}
-                label="虚拟 TPM（tpmstate0）"
-                hint="Windows 11 强制要求 TPM 2.0"
+                label={t('vmCreate.fieldTpm')}
+                hint={t('vmCreate.fieldTpmHint')}
               />
               {form.tpmEnabled ? (
                 <>
                   <Select
-                    label="TPM 状态盘存储池"
+                    label={t('vmCreate.fieldTpmStorage')}
                     required
                     value={form.tpmStorage}
                     onChange={(e) => update('tpmStorage', e.target.value)}
@@ -1670,10 +1745,10 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     error={errors.tpmStorage}
                   />
                   <Select
-                    label="TPM 版本"
+                    label={t('vmCreate.fieldTpmVersion')}
                     value={form.tpmVersion}
                     onChange={(e) => update('tpmVersion', e.target.value)}
-                    options={TPM_VERSION_OPTIONS.map((o) => ({
+                    options={tpmVersionOptions(t).map((o) => ({
                       label: o.label,
                       value: o.value,
                     }))}
@@ -1682,30 +1757,30 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               ) : null}
             </div>
 
-            <div className="wizard-section-title mt-8">处理器与内存</div>
+            <div className="wizard-section-title mt-8">{t('vmCreate.secCpuMem')}</div>
             <div className="form-grid">
               <Select
-                label="CPU 类型"
+                label={t('vmDetail.hwCpuType')}
                 value={form.cpuType}
                 onChange={(e) => update('cpuType', e.target.value)}
-                options={CPU_TYPE_OPTIONS.map((o) => ({
+                options={cpuTypeOptions(t).map((o) => ({
                   label: o.label,
                   value: o.value,
                 }))}
-                hint="host 性能最佳，但跨节点迁移受限"
+                hint={t('vmCreate.fieldCpuTypeHint')}
               />
               <Input
-                label="核心数（每插槽）"
+                label={t('vmDetail.cfgCores')}
                 type="number"
                 min={1}
                 max={128}
                 value={form.cores}
                 onChange={(e) => update('cores', Number(e.target.value) || 0)}
                 error={errors.cores}
-                hint={`总 vCPU = ${form.cores * form.sockets}`}
+                hint={t('vmCreate.totalVcpu', { count: form.cores * form.sockets })}
               />
               <Input
-                label="插槽数"
+                label={t('vmDetail.hwSockets')}
                 type="number"
                 min={1}
                 max={4}
@@ -1714,71 +1789,71 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 error={errors.sockets}
               />
               <Input
-                label="内存（MB）"
+                label={t('vmDetail.cfgMemory')}
                 type="number"
                 min={512}
                 step={512}
                 value={form.memory}
                 onChange={(e) => update('memory', Number(e.target.value) || 0)}
                 error={errors.memory}
-                hint={`约 ${formatBytes(form.memory * 1024 ** 2)}`}
+                hint={t('vmCreate.approxSize', {
+                  size: formatBytes(form.memory * 1024 ** 2),
+                })}
               />
               {/* 气球：PVE 没这个键时按整份内存算，宿主机收不回空闲内存。
                   留空保持原行为，填了才有回收空间。 */}
               <Input
-                label="最低保留内存（MB）"
+                label={t('vmCreate.fieldBalloon')}
                 type="number"
                 min={0}
                 step={256}
                 value={form.balloon}
                 onChange={(e) => update('balloon', e.target.value)}
                 error={errors.balloon}
-                hint="留空 = 不回收（默认）；如 1024 = 至少保留 1G，余量可被宿主机收回"
+                hint={t('vmCreate.fieldBalloonHint')}
               />
             </div>
 
             {/* --- 高级硬件：NUMA 绑定与 CPU 亲和性 --- */}
-            <div className="wizard-section-title mt-8">NUMA 绑定与 CPU 亲和性</div>
-            <Notice tone="info" title="什么时候需要">
-              宿主机有多个 NUMA 节点、且跑的是延迟敏感负载（数据库、缓存）时，把
-              vCPU 钉在固定节点上能避免跨节点访存带来的尾延迟抖动。不确定就保持关闭
-              —— 关闭时 PVE 按默认调度策略走。
+            <div className="wizard-section-title mt-8">{t('vmCreate.secNuma')}</div>
+            <Notice tone="info" title={t('vmCreate.numaWhenTitle')}>
+              {t('vmCreate.numaWhenBody')}
             </Notice>
 
             <div className="form-grid mt-16">
               <Switch
                 checked={form.numaEnabled}
                 onChange={(v) => update('numaEnabled', v)}
-                label="启用 NUMA"
-                hint="给客户机呈现 NUMA 拓扑（numa=1）；单独开启不绑定宿主机节点"
+                label={t('vmCreate.fieldNuma')}
+                hint={t('vmCreate.fieldNumaHint')}
               />
               <Input
-                label="CPU 亲和性（可选）"
+                label={t('vmCreate.fieldAffinity')}
                 value={form.numaAffinity}
                 onChange={(e) => update('numaAffinity', e.target.value)}
-                placeholder="如 0-7"
+                placeholder={t('vmDetail.affinityPlaceholder')}
                 mono
                 error={errors.numaAffinity}
-                hint="整机允许落在哪些宿主逻辑 CPU 上；与下面的节点绑定相互独立"
+                hint={t('vmCreate.fieldAffinityHint')}
               />
             </div>
 
             <div className="mt-16">
               <div className="flex items-center justify-between">
-                <span className="fs-sm fw-500">NUMA 节点绑定（可选）</span>
+                <span className="fs-sm fw-500">{t('vmCreate.numaBind')}</span>
                 <Button
                   variant="secondary"
                   size="sm"
                   icon={<IconPlus size={14} />}
                   onClick={addNumaNode}
                 >
-                  添加节点
+                  {t('vmCreate.numaAddNode')}
                 </Button>
               </div>
 
               {form.numaNodes.length === 0 ? (
                 <div className="fs-sm text-muted mt-8">
-                  未添加节点：只开启 NUMA 开关，不做 CPU 绑定。
+                  {t('vmCreate.numaNoNodes')}
                 </div>
               ) : (
                 <div className="dyn-list">
@@ -1787,45 +1862,45 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       <div className="dyn-item-fields">
                         <div className="form-grid-2">
                           <Input
-                            label={`节点 #${i + 1} CPU 列表`}
+                            label={t('vmCreate.numaCpus', { index: i + 1 })}
                             required
                             value={node.cpus}
                             onChange={(e) =>
                               patchNumaNode(node.key, { cpus: e.target.value })
                             }
-                            placeholder="如 0-3"
+                            placeholder={t('vmCreate.numaCpusPlaceholder')}
                             mono
                             error={errors[`numa-cpus-${i}`]}
                           />
                           <Input
-                            label="内存（MB）"
+                            label={t('vmDetail.cfgMemory')}
                             value={node.memory}
                             onChange={(e) =>
                               patchNumaNode(node.key, { memory: e.target.value })
                             }
-                            placeholder="留空自动均分"
+                            placeholder={t('vmCreate.numaMemoryPlaceholder')}
                             error={errors[`numa-memory-${i}`]}
                           />
                           <Input
-                            label="宿主 NUMA 节点"
+                            label={t('vmCreate.numaHostnodes')}
                             value={node.hostnodes}
                             onChange={(e) =>
                               patchNumaNode(node.key, { hostnodes: e.target.value })
                             }
-                            placeholder="如 0 或 0-1"
+                            placeholder={t('vmCreate.numaHostnodesPlaceholder')}
                             mono
                             error={errors[`numa-hostnodes-${i}`]}
-                            hint="留空 = 只做客户机内部拓扑"
+                            hint={t('vmCreate.numaHostnodesHint')}
                           />
                           <Select
-                            label="内存策略"
+                            label={t('vmCreate.numaPolicy')}
                             value={node.policy}
                             onChange={(e) =>
                               patchNumaNode(node.key, { policy: e.target.value })
                             }
                             options={[
-                              { label: '不指定', value: '' },
-                              ...NUMA_POLICY_OPTIONS.map((o) => ({
+                              { label: t('vmCreate.numaPolicyNone'), value: '' },
+                              ...numaPolicyOptions(t).map((o) => ({
                                 label: o.label,
                                 value: o.value,
                               })),
@@ -1834,14 +1909,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             hint={
                               node.hostnodes.trim()
                                 ? undefined
-                                : '先填宿主 NUMA 节点'
+                                : t('vmCreate.numaPolicyNeedHost')
                             }
                           />
                         </div>
                       </div>
                       <div className="dyn-item-remove">
                         <IconButton
-                          label={`移除节点 #${i + 1}`}
+                          label={t('vmCreate.numaRemoveNode', { index: i + 1 })}
                           variant="danger"
                           onClick={() => removeNumaNode(node.key)}
                         >
@@ -1854,21 +1929,21 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               )}
             </div>
 
-            <div className="wizard-section-title mt-8">启动</div>
+            <div className="wizard-section-title mt-8">{t('vmCreate.secBoot')}</div>
             <div className="form-grid">
               <Input
-                label="启动顺序"
+                label={t('vmDetail.hwBoot')}
                 value={form.bootOrder}
                 onChange={(e) => update('bootOrder', e.target.value)}
-                placeholder="留空即自动（磁盘 → 光驱 → 网卡）"
-                hint="按顺序尝试引导设备，分号分隔。留空最稳：面板按「磁盘 → 光驱 → 网卡」设置，空盘时才能从安装 ISO 启动"
+                placeholder={t('vmCreate.bootPlaceholderAuto')}
+                hint={t('vmCreate.bootHintFull')}
               />
             </div>
             <Switch
               checked={form.startOnBoot}
               onChange={(v) => update('startOnBoot', v)}
-              label="随宿主机启动"
-              hint="节点启动后自动开机该虚拟机"
+              label={t('vmCreate.fieldStartOnBoot')}
+              hint={t('vmCreate.fieldStartOnBootHint')}
             />
           </div>
         ) : null}
@@ -1877,15 +1952,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         {step === 3 ? (
           <div className="wizard-section">
             {form.mode === 'clone' ? (
-              <Notice tone="info" title="使用模板克隆">
-                磁盘与网络来自所选模板；克隆源、目标存储与克隆方式已在第 2 步「创建方式」中设置。
-                如需调整网卡 IP，请在第 5 步「Cloud-Init」中配置。
+              <Notice tone="info" title={t('vmCreate.cloneDisksNoticeTitle')}>
+                {t('vmCreate.cloneDisksNoticeBody')}
               </Notice>
             ) : (
               <>
                 {/* --- 磁盘 --- */}
                 <div className="wizard-section-title">
-                  磁盘
+                  {t('vmCreate.secDisks')}
                   {errors.disks ? (
                     <span className="fs-xs text-danger">{errors.disks}</span>
                   ) : null}
@@ -1896,7 +1970,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       <div className="dyn-item-fields">
                         <div className="form-grid-2">
                           <Select
-                            label={`存储池 #${i + 1}`}
+                            label={t('vmCreate.diskStorage', { index: i + 1 })}
                             required
                             value={disk.storage}
                             onChange={(e) => patchDisk(disk.key, { storage: e.target.value })}
@@ -1904,7 +1978,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             error={errors[`disk-storage-${i}`]}
                           />
                           <Input
-                            label="大小（GB）"
+                            label={t('vmCreate.diskSize')}
                             required
                             type="number"
                             min={1}
@@ -1915,7 +1989,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             error={errors[`disk-size-${i}`]}
                           />
                           <Select
-                            label="总线/接口"
+                            label={t('vmCreate.diskBus')}
                             /* Windows 客户机锁死 SATA：安装程序没有 virtio 驱动，
                                挂在 virtio 上会卡在「选择安装位置」一个分区都看不到。
                                与其让用户踩进去再解释，不如这里不让改（切换系统时
@@ -1923,7 +1997,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             disabled={windowsGuest}
                             hint={
                               windowsGuest
-                                ? 'Windows 安装程序不认 virtio 磁盘（要自备 virtio-win 驱动盘才能加载），已固定为 SATA'
+                                ? t('vmCreate.diskBusWinHint')
                                 : undefined
                             }
                             value={disk.interface.replace(/\d+$/, '')}
@@ -1938,7 +2012,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             }))}
                           />
                           <Select
-                            label="磁盘格式"
+                            label={t('vmDetail.addDiskFormat')}
                             value={disk.format}
                             onChange={(e) => patchDisk(disk.key, { format: e.target.value })}
                             options={DISK_FORMAT_OPTIONS.map((o) => ({
@@ -1951,7 +2025,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       {form.disks.length > 1 ? (
                         <div className="dyn-item-remove">
                           <IconButton
-                            label={`移除磁盘 #${i + 1}`}
+                            label={t('vmCreate.diskRemove', { index: i + 1 })}
                             variant="danger"
                             onClick={() => removeDisk(disk.key)}
                           >
@@ -1968,18 +2042,18 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   icon={<IconPlus size={14} />}
                   onClick={addDisk}
                 >
-                  添加磁盘
+                  {t('vmCreate.diskAdd')}
                 </Button>
 
                 {/* --- 网卡 --- */}
-                <div className="wizard-section-title mt-8">网络</div>
+                <div className="wizard-section-title mt-8">{t('vmCreate.secNetwork')}</div>
                 <div className="dyn-list">
                   {form.networks.map((net, i) => (
                     <div className="dyn-item" key={net.key}>
                       <div className="dyn-item-fields">
                         <div className="form-grid-2">
                           <Select
-                            label={`网桥 #${i + 1}`}
+                            label={t('vmCreate.nicBridge', { index: i + 1 })}
                             required
                             value={net.bridge}
                             onChange={(e) => patchNet(net.key, { bridge: e.target.value })}
@@ -1987,68 +2061,68 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             error={errors[`net-bridge-${i}`]}
                             hint={
                               bridgesQuery.isError
-                                ? '无法读取节点网卡列表，请手动确认网桥名'
+                                ? t('vmCreate.nicBridgeLoadFailed')
                                 : undefined
                             }
                           />
                           <Select
-                            label="网卡型号"
+                            label={t('vmDetail.addNicModel')}
                             /* Windows 同样锁死 E1000：安装介质里没有 virtio-net
                                驱动，装完系统会是没有网络适配器的状态。切换系统时
                                已由 applyWindowsCompat 换好，所以显示的必然是 E1000。*/
                             disabled={windowsGuest}
                             hint={
                               windowsGuest
-                                ? 'Windows 没有 virtio 网卡驱动（装完连不上网），已固定为 Intel E1000（系统自带驱动）'
+                                ? t('vmCreate.nicModelWinHint')
                                 : undefined
                             }
                             value={net.model}
                             onChange={(e) => patchNet(net.key, { model: e.target.value })}
-                            options={NET_MODEL_OPTIONS.map((o) => ({
+                            options={netModelOptions(t).map((o) => ({
                               label: o.label,
                               value: o.value,
                             }))}
                           />
                           <Input
-                            label="VLAN Tag"
+                            label={t('vmDetail.addNicVlan')}
                             type="number"
                             min={1}
                             max={4094}
                             value={net.vlan_tag}
                             onChange={(e) => patchNet(net.key, { vlan_tag: e.target.value })}
-                            placeholder="留空表示无 VLAN"
+                            placeholder={t('vmCreate.nicVlanPlaceholder')}
                           />
                           <Input
-                            label="MAC 地址"
+                            label={t('vmCreate.nicMac')}
                             value={net.macaddr}
                             onChange={(e) => patchNet(net.key, { macaddr: e.target.value })}
-                            placeholder="留空自动生成"
+                            placeholder={t('vmCreate.nicMacPlaceholder')}
                             mono
                           />
                           <Input
-                            label={`IP 地址 #${i + 1}`}
+                            label={t('vmCreate.nicIp', { index: i + 1 })}
                             value={net.ip}
                             onChange={(e) => patchNet(net.key, { ip: e.target.value })}
-                            placeholder="dhcp 或 192.168.1.10/24"
+                            placeholder={t('vmCreate.nicIpPlaceholder')}
                             error={errors[`net-ip-${i}`]}
                             mono
                             hint={
                               windowsGuest
-                                ? 'Windows 不会自动下发：需在第 5 步手动开启 Cloudbase-Init'
-                                : '填静态地址将自动启用 Cloud-Init 下发'
+                                ? t('vmCreate.nicIpWinHint')
+                                : t('vmCreate.nicIpHint')
                             }
                           />
                           <Input
-                            label="网关"
+                            label={t('vmCreate.nicGateway')}
                             value={net.gateway}
                             onChange={(e) => patchNet(net.key, { gateway: e.target.value })}
-                            placeholder="如 192.168.1.1"
+                            placeholder={t('vmCreate.nicGatewayPlaceholder')}
                             mono
                             disabled={(net.ip || '').trim().toLowerCase() === 'dhcp'}
-                            hint="DHCP 时无需填写"
+                            hint={t('vmCreate.nicGatewayHint')}
                           />
                           <Select
-                            label="从地址池选择（可选）"
+                            label={t('vmCreate.nicPool')}
                             value=""
                             onChange={(e) => {
                               const opt = poolIpOptions.find(
@@ -2059,15 +2133,17 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             }}
                             options={[
                               {
-                                label: poolIpOptions.length ? '手动输入 / 不选' : '暂无空闲地址',
+                                label: poolIpOptions.length
+                                  ? t('vmCreate.poolManual')
+                                  : t('vmCreate.poolEmpty'),
                                 value: '',
                               },
                               ...poolIpOptions.map((o) => ({ label: o.label, value: o.value })),
                             ]}
                             hint={
                               poolIpOptions.length
-                                ? '选中后自动填入上方 IP 与网关'
-                                : '可到「网络」页配置 IP 地址池'
+                                ? t('vmCreate.poolHint')
+                                : t('vmCreate.poolHintEmpty')
                             }
                           />
                         </div>
@@ -2075,14 +2151,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                           <Checkbox
                             checked={net.firewall}
                             onChange={(e) => patchNet(net.key, { firewall: e.target.checked })}
-                            label="启用防火墙"
+                            label={t('vmDetail.addNicFirewall')}
                           />
                         </div>
                       </div>
                       {form.networks.length > 1 ? (
                         <div className="dyn-item-remove">
                           <IconButton
-                            label={`移除网卡 #${i + 1}`}
+                            label={t('vmCreate.nicRemove', { index: i + 1 })}
                             variant="danger"
                             onClick={() => removeNet(net.key)}
                           >
@@ -2099,28 +2175,27 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   icon={<IconPlus size={14} />}
                   onClick={addNet}
                 >
-                  添加网卡
+                  {t('vmDetail.addNic')}
                 </Button>
 
-                <Notice tone="info" title="网络配置指引（如何选择 IP）">
-                  虚拟机通过<b>网桥</b>（如 vmbr0）接入网络，<b>网桥本身不分配 IP</b>：
-                  <br />· 若该网段已有 DHCP 服务（如路由器），填 <code>dhcp</code> 即可自动获取；
-                  <br />· 否则请填写<b>静态 IP</b>（如 <code>192.168.1.10/24</code>）并填网关；也可以从上方
-                  「地址池」下拉里挑一个<b>未被使用</b>的地址，会自动填入 IP 与网关；
-                  <br />· 静态 IP 通过 {ciName} 下发：
+                <Notice tone="info" title={t('vmCreate.netGuideTitle')}>
+                  {t('vmCreate.netGuideBody')}
+                  <br />· {t('vmCreate.netGuideDhcp')}
+                  <br />· {t('vmCreate.netGuideStatic')}
+                  <br />· {t('vmCreate.netGuideCi', { agent: ciName })}
                   {windowsGuest
-                    ? 'Windows 客户机需要先装好 Cloudbase-Init（官方 cloud-init 不支持 Windows 原生系统），所以这里填了也不会自动开启第 5 步 —— 装好之后请手动打开。'
-                    : '需要虚拟机使用支持 cloud-init 的镜像，填写后会自动启用第 5 步的 Cloud-Init。'}
+                    ? t('vmCreate.netGuideCiWin')
+                    : t('vmCreate.netGuideCiLinux')}
                 </Notice>
 
                 {/* --- ISO --- */}
-                <div className="wizard-section-title mt-8">安装介质（可选）</div>
+                <div className="wizard-section-title mt-8">{t('vmCreate.secIso')}</div>
                 <Select
-                  label="挂载 ISO 镜像"
+                  label={t('vmCreate.fieldIso')}
                   value={form.iso}
                   onChange={(e) => update('iso', e.target.value)}
                   options={[
-                    { label: '不挂载 ISO', value: '' },
+                    { label: t('vmCreate.isoNone'), value: '' },
                     ...(isoQuery.data ?? []).map(({ storage, item }) => ({
                       label: `${item.volid} (${formatBytes(item.size)}, ${storage})`,
                       value: item.volid,
@@ -2128,17 +2203,16 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   ]}
                   hint={
                     isoQuery.isLoading
-                      ? '正在读取 ISO 列表…'
+                      ? t('vmCreate.isoLoading')
                       : (isoQuery.data ?? []).length === 0
-                        ? '未在该节点找到 ISO 镜像，可稍后到「存储」页上传'
+                        ? t('vmCreate.isoEmpty')
                         : undefined
                   }
                 />
 
                 {diskTotal > 0 ? (
                   <Notice tone="info">
-                    磁盘总容量约 <strong>{formatBytes(diskTotal)}</strong>
-                    （未含快照与元数据开销）。
+                    {t('vmCreate.diskTotal', { size: formatBytes(diskTotal) })}
                   </Notice>
                 ) : null}
               </>
@@ -2152,54 +2226,46 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             <Switch
               checked={form.ciEnabled}
               onChange={(v) => update('ciEnabled', v)}
-              label={`启用 ${ciName}`}
+              label={t('vmCreate.ciEnable', { agent: ciName })}
               hint={
-                windowsGuest
-                  ? 'Windows 客户机里跑的是 Cloudbase-Init：需要你先在系统内装好它，面板只预置用户与网络元数据，不会替你安装'
-                  : '通过 cloud-init 镜像自动完成初始化（用户、SSH 密钥、网络）'
+                windowsGuest ? t('vmCreate.ciWinHint') : t('vmCreate.ciHint')
               }
             />
 
             {!form.ciEnabled ? (
-              <Notice tone="info" title={`未启用 ${ciName}`}>
+              <Notice tone="info" title={t('vmCreate.ciOffTitle', { agent: ciName })}>
                 {windowsGuest ? (
-                  <>
-                    Windows 装完后不会自动初始化：账号与网络都要在系统里手动配。
-                    Cloudbase-Init <b>需要你在客户机内自行安装</b>（官方 cloud-init
-                    不支持 Windows 原生系统），装好之后再回到这里打开开关，才会下发用户与网络配置。
-                  </>
+                  <>{t('vmCreate.ciOffWinBody')}</>
                 ) : (
-                  <>虚拟机创建后将使用镜像内的默认账号。若需要自动配置用户与网络，请在上方开启。</>
+                  <>{t('vmCreate.ciOffBody')}</>
                 )}
               </Notice>
             ) : (
               <>
                 <div className="form-grid-2">
                   <Input
-                    label="默认用户名"
+                    label={t('vmCreate.ciUser')}
                     required
                     value={form.ciUser}
                     onChange={(e) => update('ciUser', e.target.value)}
                     placeholder={windowsGuest ? 'Administrator' : 'ubuntu'}
                     error={errors.ciUser}
                     hint={
-                      windowsGuest
-                        ? 'Cloudbase-Init 会配置这个账号，Windows 上通常是 Administrator'
-                        : undefined
+                      windowsGuest ? t('vmCreate.ciUserWinHint') : undefined
                     }
                   />
                   <Input
-                    label="密码"
+                    label={t('vmCreate.ciPassword')}
                     type="password"
                     value={form.ciPassword}
                     onChange={(e) => update('ciPassword', e.target.value)}
-                    placeholder="留空则仅使用 SSH 密钥"
+                    placeholder={t('vmCreate.ciPasswordPlaceholder')}
                     autoComplete="new-password"
                   />
                 </div>
 
                 <Textarea
-                  label="SSH 公钥"
+                  label={t('vmCreate.ciSshKeys')}
                   mono
                   rows={4}
                   value={form.ciSshKeys}
@@ -2207,34 +2273,36 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   placeholder="ssh-ed25519 AAAAC3Nza... user@host"
                   hint={
                     windowsGuest
-                      ? '每行一个公钥；Windows 需客户机内已装 OpenSSH，Cloudbase-Init 才会写入 authorized_keys'
-                      : '每行一个公钥，将写入 ~/.ssh/authorized_keys'
+                      ? t('vmCreate.ciSshKeysWinHint')
+                      : t('vmCreate.ciSshKeysHint')
                   }
                 />
 
                 <Input
-                  label="DNS 服务器"
+                  label={t('vmCreate.ciDns')}
                   value={form.ciDns}
                   onChange={(e) => update('ciDns', e.target.value)}
-                  placeholder="如 223.5.5.5 1.1.1.1"
+                  placeholder={t('vmCreate.ciDnsPlaceholder')}
                   hint={
                     vmDefaultsQuery.data?.dns
-                      ? `多个用空格分隔。已预填面板默认 DNS（${vmDefaultsQuery.data.dns}），留空则仍按该默认值下发。`
-                      : '多个用空格分隔，留空则继承（可在「设置 → 虚拟机创建默认值」里配置默认 DNS）'
+                      ? t('vmCreate.ciDnsHintDefault', {
+                          dns: vmDefaultsQuery.data.dns,
+                        })
+                      : t('vmCreate.ciDnsHint')
                   }
                 />
 
-                <div className="wizard-section-title">网络配置</div>
+                <div className="wizard-section-title">{t('vmCreate.secNetConfig')}</div>
                 {form.mode === 'new' ? (
-                  <Notice tone="info">
-                    全新创建的 IP 地址已在上一步「磁盘与网络」的网卡中配置，此处只需设置登录凭据与 DNS 即可。
-                  </Notice>
+                  <Notice tone="info">{t('vmCreate.ciNetworkNotice')}</Notice>
                 ) : (
                   <>
-                    <Notice tone="info" title="网络配置指引（如何选择 IP）">
-                      虚拟机通过<b>网桥</b>接入网络，<b>网桥本身不分配 IP</b>：网段内已有 DHCP 时填{' '}
-                      <code>dhcp</code>；否则请填写<b>静态 IP</b>（如 <code>192.168.1.10/24</code>
-                      ）与网关，或从「地址池」下拉里选一个<b>未被使用</b>的地址。
+                    <Notice tone="info" title={t('vmCreate.netGuideTitle')}>
+                      {t('vmCreate.netGuideBody')}
+                      <br />
+                      {t('vmCreate.netGuideDhcp')}
+                      <br />
+                      {t('vmCreate.netGuideStatic')}
                     </Notice>
                     <div className="dyn-list">
                       {form.ciIps.map((row, i) => (
@@ -2242,24 +2310,24 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       <div className="dyn-item-fields">
                         <div className="form-grid-2">
                           <Input
-                            label={`IP 地址 #${i + 1}`}
+                            label={t('vmCreate.nicIp', { index: i + 1 })}
                             value={row.ip}
                             onChange={(e) => patchIp(row.key, { ip: e.target.value })}
-                            placeholder="dhcp 或 192.168.1.10/24"
+                            placeholder={t('vmCreate.nicIpPlaceholder')}
                             error={errors[`ip-${i}`]}
                             mono
-                            hint="填 dhcp 表示自动获取"
+                            hint={t('vmCreate.ciIpHint')}
                           />
                           <Input
-                            label="网关"
+                            label={t('vmCreate.nicGateway')}
                             value={row.gateway}
                             onChange={(e) => patchIp(row.key, { gateway: e.target.value })}
-                            placeholder="如 192.168.1.1"
+                            placeholder={t('vmCreate.nicGatewayPlaceholder')}
                             mono
                             disabled={row.ip === 'dhcp'}
                           />
                           <Select
-                            label="从地址池选择（可选）"
+                            label={t('vmCreate.nicPool')}
                             value=""
                             onChange={(e) => {
                               const opt = poolIpOptions.find(
@@ -2270,15 +2338,17 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             }}
                             options={[
                               {
-                                label: poolIpOptions.length ? '手动输入 / 不选' : '暂无空闲地址',
+                                label: poolIpOptions.length
+                                  ? t('vmCreate.poolManual')
+                                  : t('vmCreate.poolEmpty'),
                                 value: '',
                               },
                               ...poolIpOptions.map((o) => ({ label: o.label, value: o.value })),
                             ]}
                             hint={
                               poolIpOptions.length
-                                ? '选中后自动填入 IP 与网关'
-                                : '可到「网络」页配置 IP 地址池'
+                                ? t('vmCreate.poolHint')
+                                : t('vmCreate.poolHintEmpty')
                             }
                           />
                         </div>
@@ -2286,7 +2356,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       {form.ciIps.length > 1 ? (
                         <div className="dyn-item-remove">
                           <IconButton
-                            label={`移除 IP 配置 #${i + 1}`}
+                            label={t('vmCreate.ciIpRemove', { index: i + 1 })}
                             variant="danger"
                             onClick={() => removeIp(row.key)}
                           >
@@ -2303,24 +2373,16 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       icon={<IconPlus size={14} />}
                       onClick={addIp}
                     >
-                      添加 IP 配置
+                      {t('vmCreate.ciIpAdd')}
                     </Button>
                   </>
                 )}
 
-                <Notice tone="warning" title="前置条件">
+                <Notice tone="warning" title={t('vmCreate.ciPrereqTitle')}>
                   {windowsGuest ? (
-                    <>
-                      Cloudbase-Init 需要你在 Windows 客户机内预先安装（官方 cloud-init
-                      装不到 Windows 原生系统上），面板只负责预置用户名 / 口令 / 网络元数据，
-                      不会替你安装。用 ISO 全新安装、且不打算自动初始化时，保持关闭即可。
-                    </>
+                    <>{t('vmCreate.ciPrereqWin')}</>
                   ) : (
-                    <>
-                      Cloud-Init 需要虚拟机使用支持 cloud-init 的镜像（如 Ubuntu Cloud
-                      Image、Debian Generic Cloud），并挂载 Cloud-Init 驱动。若使用普通
-                      ISO 安装，可跳过此步骤。
-                    </>
+                    <>{t('vmCreate.ciPrereqLinux')}</>
                   )}
                 </Notice>
               </>
@@ -2331,48 +2393,72 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         {/* ================= 第 6 步：确认 ================= */}
         {step === 5 ? (
           <div className="wizard-section">
-            <Notice tone="info" title="请确认以下配置">
-              点击「创建虚拟机」后，配置将提交到 Proxmox，创建过程会作为后台任务执行。
+            <Notice tone="info" title={t('vmCreate.confirmTitle')}>
+              {t('vmCreate.confirmBody')}
             </Notice>
 
             <div className="summary-list">
               <div className="summary-group">
-                <div className="summary-group-title">基本信息</div>
-                <SummaryRow label="名称" value={form.name || '—'} />
+                <div className="summary-group-title">{t('vmCreate.stepBasic')}</div>
+                <SummaryRow label={t('common.name')} value={form.name || '—'} />
                 <SummaryRow label="VMID" value={form.vmid || '—'} mono />
-                <SummaryRow label="目标 PVE" value={targetConnLabel} mono />
-                <SummaryRow label="节点" value={form.node || '—'} mono />
-                <SummaryRow label="标签" value={form.tags || '—'} />
-                <SummaryRow label="描述" value={form.description || '—'} />
+                <SummaryRow
+                  label={t('vmCreate.confirmTargetConn')}
+                  value={targetConnLabel}
+                  mono
+                />
+                <SummaryRow label={t('common.node')} value={form.node || '—'} mono />
+                <SummaryRow label={t('vmCreate.fieldTags')} value={form.tags || '—'} />
+                <SummaryRow
+                  label={t('common.description')}
+                  value={form.description || '—'}
+                />
               </div>
 
               <div className="summary-group">
-                <div className="summary-group-title">系统配置</div>
-                <SummaryRow label="操作系统" value={ostypeLabel(form.ostype)} />
-                <SummaryRow label="BIOS" value={form.bios} mono />
-                <SummaryRow label="机型" value={form.machine} mono />
-                <SummaryRow label="SCSI 控制器" value={form.scsihw} mono />
-                <SummaryRow label="CPU" value={`${form.cpuType} · ${form.cores} 核 × ${form.sockets} 插槽`} mono />
-                <SummaryRow label="内存" value={`${form.memory} MB (${formatBytes(form.memory * 1024 ** 2)})`} mono />
+                <div className="summary-group-title">{t('vmCreate.stepSystem')}</div>
                 <SummaryRow
-                  label="启动顺序"
-                  value={form.bootOrder || '自动（磁盘 → 光驱 → 网卡）'}
+                  label={t('vmCreate.confirmOstype')}
+                  value={ostypeLabel(form.ostype, t)}
+                />
+                <SummaryRow label="BIOS" value={form.bios} mono />
+                <SummaryRow label={t('vmDetail.hwMachine')} value={form.machine} mono />
+                <SummaryRow label={t('vmDetail.hwScsihw')} value={form.scsihw} mono />
+                <SummaryRow
+                  label="CPU"
+                  value={t('vmCreate.confirmCpuSummary', {
+                    cpu: form.cpuType,
+                    cores: form.cores,
+                    sockets: form.sockets,
+                  })}
                   mono
                 />
                 <SummaryRow
-                  label="开机自启"
-                  value={form.startOnBoot ? '是' : '否'}
+                  label={t('vmCreate.confirmMemory')}
+                  value={`${form.memory} MB (${formatBytes(form.memory * 1024 ** 2)})`}
+                  mono
+                />
+                <SummaryRow
+                  label={t('vmDetail.hwBoot')}
+                  value={form.bootOrder || t('vmCreate.bootAuto')}
+                  mono
+                />
+                <SummaryRow
+                  label={t('vmDetail.onboot')}
+                  value={form.startOnBoot ? t('common.yes') : t('common.no')}
                 />
               </div>
 
               <div className="summary-group">
                 <div className="summary-group-title">
-                  {form.mode === 'clone' ? '克隆来源' : '磁盘与网络'}
+                  {form.mode === 'clone'
+                    ? t('vmCreate.confirmCloneSource')
+                    : t('vmCreate.stepDisks')}
                 </div>
                 {form.mode === 'clone' ? (
                   <>
                     <SummaryRow
-                      label="克隆源"
+                      label={t('vmCreate.cloneSource')}
                       value={
                         selectedCloneSource
                           ? `${selectedCloneSource.name || selectedCloneSource.vmid} @ ${selectedCloneSource.node}`
@@ -2380,17 +2466,21 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       }
                     />
                     <SummaryRow
-                      label="克隆方式"
-                      value={form.cloneFull ? '完整克隆' : '链接克隆'}
+                      label={t('vmCreate.cloneMethod')}
+                      value={
+                        form.cloneFull
+                          ? t('vmCreate.cloneFull')
+                          : t('vmCreate.cloneLinked')
+                      }
                     />
                     <SummaryRow
-                      label="目标存储"
-                      value={form.cloneStorage || '继承源'}
+                      label={t('vmCreate.confirmCloneStorage')}
+                      value={form.cloneStorage || t('vmCreate.cloneStorageInherit')}
                       mono
                     />
                     <SummaryRow
-                      label="创建后开机"
-                      value={form.cloneStart ? '是' : '否'}
+                      label={t('vmCreate.confirmCloneStart')}
+                      value={form.cloneStart ? t('common.yes') : t('common.no')}
                     />
                   </>
                 ) : (
@@ -2398,7 +2488,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     {form.disks.map((d, i) => (
                       <SummaryRow
                         key={d.key}
-                        label={`磁盘 ${i + 1}`}
+                        label={t('vmCreate.confirmDisk', { index: i + 1 })}
                         value={`${d.storage || '?'} · ${d.size} GB · ${d.interface} · ${d.format}`}
                         mono
                       />
@@ -2406,18 +2496,29 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     {form.networks.map((n, i) => (
                       <SummaryRow
                         key={n.key}
-                        label={`网卡 ${i + 1}`}
+                        label={t('vmCreate.confirmNic', { index: i + 1 })}
                         value={`${n.bridge || '?'} · ${n.model}${
                           n.vlan_tag ? ` · VLAN ${n.vlan_tag}` : ''
-                        }${n.firewall ? ' · 防火墙' : ''}${
+                        }${
+                          n.firewall ? t('vmCreate.confirmNicFirewall') : ''
+                        }${
                           n.ip && n.ip.trim().toLowerCase() !== 'dhcp'
-                            ? ` · IP ${n.ip}${n.gateway ? ` (网关 ${n.gateway})` : ''}`
+                            ? t('vmCreate.confirmNicIp', { ip: n.ip }) +
+                              (n.gateway
+                                ? t('vmCreate.confirmNicGateway', {
+                                    gateway: n.gateway,
+                                  })
+                                : '')
                             : ' · DHCP'
                         }`}
                         mono
                       />
                     ))}
-                    <SummaryRow label="ISO" value={form.iso || '未挂载'} mono />
+                    <SummaryRow
+                      label="ISO"
+                      value={form.iso || t('vmCreate.isoNotMounted')}
+                      mono
+                    />
                   </>
                 )}
               </div>
@@ -2428,23 +2529,42 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 <div className="summary-group-title">{ciName}</div>
                 {ciActive ? (
                   <>
-                    <SummaryRow label="状态" value="已启用" />
-                    <SummaryRow label="用户" value={form.ciUser || '—'} mono />
                     <SummaryRow
-                      label="密码"
-                      value={form.ciPassword ? '已设置' : '未设置'}
+                      label={t('vmCreate.confirmCiStatus')}
+                      value={t('vmCreate.ciEnabled')}
                     />
                     <SummaryRow
-                      label="SSH 公钥"
+                      label={t('vmCreate.confirmCiUser')}
+                      value={form.ciUser || '—'}
+                      mono
+                    />
+                    <SummaryRow
+                      label={t('vmCreate.ciPassword')}
+                      value={
+                        form.ciPassword
+                          ? t('vmCreate.ciPasswordSet')
+                          : t('vmCreate.ciPasswordUnset')
+                      }
+                    />
+                    <SummaryRow
+                      label={t('vmCreate.ciSshKeys')}
                       value={
                         form.ciSshKeys
-                          ? `${form.ciSshKeys.split('\n').filter(Boolean).length} 个`
-                          : '未设置'
+                          ? t('vmCreate.ciSshKeysCount', {
+                              count: form.ciSshKeys
+                                .split('\n')
+                                .filter(Boolean).length,
+                            })
+                          : t('vmCreate.ciPasswordUnset')
                       }
                     />
                     <SummaryRow
                       label="DNS"
-                      value={form.ciDns || vmDefaultsQuery.data?.dns || '继承'}
+                      value={
+                        form.ciDns ||
+                        vmDefaultsQuery.data?.dns ||
+                        t('vmCreate.ciDnsInherit')
+                      }
                       mono
                     />
                     {(form.mode === 'new' ? form.networks : form.ciIps).map((r: any, i) => (
@@ -2452,7 +2572,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                         key={r.key}
                         label={`IP ${i + 1}`}
                         value={`${(r.ip || 'dhcp').trim() || 'dhcp'}${
-                          r.gateway ? ` / 网关 ${r.gateway}` : ''
+                          r.gateway
+                            ? t('vmCreate.ciRouteGateway', { gateway: r.gateway })
+                            : ''
                         }`}
                         mono
                       />
@@ -2460,11 +2582,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   </>
                 ) : (
                   <SummaryRow
-                    label="状态"
+                    label={t('vmCreate.confirmCiStatus')}
                     value={
                       windowsGuest && netHasStaticIp
-                        ? '未启用（Windows 不会自动下发 IP，需在系统内手动配置）'
-                        : '未启用'
+                        ? t('vmCreate.ciDisabledWin')
+                        : t('vmCreate.ciDisabled')
                     }
                   />
                 )}
@@ -2477,11 +2599,12 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       {/* 底部提示 */}
       <div className="mt-16 flex items-center gap-8">
         <Badge variant="neutral" size="sm">
-          步骤 {step + 1} / {STEPS.length}
+          {t('vmCreate.footerSteps', {
+            current: step + 1,
+            total: STEP_KEYS.length,
+          })}
         </Badge>
-        <span className="fs-sm text-muted">
-          带 <span className="text-danger">*</span> 的字段为必填项
-        </span>
+        <span className="fs-sm text-muted">{t('vmCreate.footerRequired')}</span>
       </div>
         </>
       )}

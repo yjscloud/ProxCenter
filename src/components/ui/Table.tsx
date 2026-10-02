@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { TableSkeleton } from './Spinner';
 import { EmptyState } from './EmptyState';
+import { useT } from '../../i18n';
 
 /** 拖拽列宽的下限，避免把列拖成看不见的一条缝 */
 const MIN_COLUMN_WIDTH = 64;
@@ -95,7 +96,7 @@ export function Table<T>({
   rowKey,
   loading = false,
   caption,
-  emptyTitle = '暂无数据',
+  emptyTitle,
   emptyDescription,
   emptyAction,
   onRowClick,
@@ -108,6 +109,7 @@ export function Table<T>({
   resizable = true,
   columnMenu,
 }: TableProps<T>) {
+  const t = useT();
   const tableRef = useRef<HTMLTableElement>(null);
 
   /* 用户拖拽后的列宽（像素）。null = 还没拖过，沿用各列自带的 width，
@@ -251,7 +253,7 @@ export function Table<T>({
         {columnBar}
         <div className={`table-container table-container-empty ${className ?? ''}`}>
           <EmptyState
-            title={emptyTitle}
+            title={emptyTitle ?? t('table.empty')}
             description={emptyDescription}
             action={emptyAction}
           />
@@ -358,8 +360,8 @@ export function Table<T>({
                       onDoubleClick={() => resetColumn(col.key)}
                       role="separator"
                       aria-orientation="vertical"
-                      aria-label="拖拽调整列宽，双击恢复默认"
-                      title="拖拽调整列宽（双击恢复默认）"
+                      aria-label={t('table.resizeColumnAria')}
+                      title={t('table.resizeColumnTitle')}
                     />
                   ) : null}
                 </th>
@@ -441,6 +443,7 @@ export function Pagination({
   onPageSizeChange,
   jump = false,
 }: PaginationProps) {
+  const t = useT();
   const [jumpValue, setJumpValue] = useState('');
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -462,11 +465,11 @@ export function Pagination({
   };
 
   return (
-    <nav className="pagination" aria-label="分页导航">
+    <nav className="pagination" aria-label={t('table.paginationAria')}>
       <div className="pagination-left">
         {pageSizeOptions?.length && onPageSizeChange ? (
           <label className="pagination-size">
-            每页
+            {t('table.pageSizePrefix')}
             <select
               className="pagination-size-select"
               value={String(pageSize)}
@@ -474,14 +477,14 @@ export function Pagination({
             >
               {pageSizeOptions.map((size) => (
                 <option key={size} value={String(size)}>
-                  {size} 条
+                  {t('table.pageSizeUnit', { size })}
                 </option>
               ))}
             </select>
           </label>
         ) : null}
         <span className="pagination-info">
-          第 {start}-{end} 条，共 {total} 条
+          {t('table.range', { start, end, total })}
         </span>
       </div>
 
@@ -492,7 +495,7 @@ export function Pagination({
           onClick={() => onChange(page - 1)}
           disabled={page <= 1}
         >
-          上一页
+          {t('table.prev')}
         </button>
         <span className="pagination-page mono">
           {page} / {totalPages}
@@ -503,12 +506,12 @@ export function Pagination({
           onClick={() => onChange(page + 1)}
           disabled={page >= totalPages}
         >
-          下一页
+          {t('table.next')}
         </button>
 
         {jump && totalPages > 1 ? (
           <span className="pagination-jump">
-            跳至
+            {t('table.jumpTo')}
             <input
               type="number"
               className="pagination-jump-input"
@@ -521,9 +524,9 @@ export function Pagination({
                 if (event.key === 'Enter') gotoJump();
               }}
               onBlur={gotoJump}
-              aria-label={`跳至页码，共 ${totalPages} 页`}
+              aria-label={t('table.jumpAria', { totalPages })}
             />
-            页
+            {t('table.pageUnit')}
           </span>
         ) : null}
       </div>

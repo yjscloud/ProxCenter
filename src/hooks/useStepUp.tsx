@@ -31,6 +31,7 @@ import { Field, Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { IconKey, IconShield } from '../components/Icons';
 import { useAuth } from './useAuth';
+import { useT } from '../i18n';
 
 interface StepUpContextValue {
   /** 主动请求一次二次确认；返回是否通过 */
@@ -40,6 +41,7 @@ interface StepUpContextValue {
 const StepUpContext = createContext<StepUpContextValue | null>(null);
 
 export function StepUpProvider({ children }: { children: ReactNode }) {
+  const t = useT();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState('');
@@ -84,12 +86,12 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
   const submit = async () => {
     if (busy) return;
     if (!password) {
-      setError('请输入登录密码');
+      setError(t('stepUp.errPassword'));
       return;
     }
     const needCode = Boolean(user?.totp_enabled);
     if (needCode && !code.trim()) {
-      setError('请输入两步验证动态码或一张恢复码');
+      setError(t('stepUp.errCode'));
       return;
     }
     setBusy(true);
@@ -110,10 +112,8 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
       <Modal
         open={open}
         onClose={() => settle(false)}
-        title="请确认身份"
-        description={
-          detail || '该操作影响较大，需要重新验证一次身份后才能继续。'
-        }
+        title={t('stepUp.title')}
+        description={detail || t('stepUp.detail')}
         size="sm"
         hideClose
       >
@@ -122,12 +122,12 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
             {error}
           </div>
         ) : null}
-        <Field label="登录密码" required>
+        <Field label={t('stepUp.fieldPassword')} required>
           <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="确认是你本人操作"
+            placeholder={t('stepUp.passwordPlaceholder')}
             autoComplete="current-password"
             autoFocus
             prefix={<IconKey size={15} />}
@@ -135,14 +135,14 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
         </Field>
         {user?.totp_enabled ? (
           <Field
-            label="两步验证动态码"
+            label={t('stepUp.fieldCode')}
             required
-            hint="也可以用一张一次性恢复码"
+            hint={t('stepUp.codeHint')}
           >
             <Input
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder="123456 或 ABCD-EFGH"
+              placeholder={t('stepUp.codePlaceholder')}
               autoComplete="one-time-code"
               maxLength={16}
               prefix={<IconShield size={15} />}
@@ -151,10 +151,10 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
         ) : null}
         <div className="form-row" style={{ justifyContent: 'flex-end' }}>
           <Button variant="ghost" onClick={() => settle(false)} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={() => void submit()} loading={busy}>
-            确认并继续
+            {t('stepUp.confirm')}
           </Button>
         </div>
       </Modal>

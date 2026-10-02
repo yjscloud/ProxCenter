@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import alerting, database, store
+from . import alerting, database, i18n, store
 from .formatters import short_hostname
 
 logger = logging.getLogger(__name__)
@@ -273,7 +273,9 @@ def log_source() -> Dict[str, Any]:
                 "label": os.path.basename(path),
                 "available": readable,
                 "host": host,
-                "detail": "" if readable else "日志文件存在但当前用户读不到（需要 root）",
+                "detail": ""
+                if readable
+                else i18n.t("ssh.logUnreadable"),
             }
     if shutil.which("journalctl"):
         return {
@@ -282,7 +284,7 @@ def log_source() -> Dict[str, Any]:
             "label": "journalctl (sshd)",
             "available": True,
             "host": host,
-            "detail": "未找到 auth.log / secure，改用 journald",
+            "detail": i18n.t("ssh.usingJournald"),
         }
     return {
         "kind": "none",
@@ -290,7 +292,7 @@ def log_source() -> Dict[str, Any]:
         "label": "无",
         "available": False,
         "host": host,
-        "detail": f"{host} 上既没有 /var/log/secure、/var/log/auth.log，也没有 journalctl",
+        "detail": i18n.t("ssh.noLogSource", host=host),
     }
 
 
@@ -750,12 +752,11 @@ async def fail2ban_status() -> Dict[str, Any]:
             "host": short_hostname(),
             "binary": "",
             "checked": list(FAIL2BAN_CANDIDATES),
-            "hint": "面板在 " + short_hostname() + "（本机）上没找到 fail2ban-client："
-            "查过 PATH 与 " + "、".join(FAIL2BAN_CANDIDATES) + "。"
-            "注意面板只看得到**自己所在主机**的 fail2ban —— 装在别的机器（比如 PVE 节点）上，"
-            "这里不会显示。本机安装：Debian/Ubuntu 用 apt install fail2ban；"
-            "RHEL/CentOS 用 yum install epel-release && yum install fail2ban；"
-            "装好后确认 [sshd] jail 是启用的（RHEL 默认关闭）并 systemctl enable --now fail2ban。",
+            "hint": i18n.t(
+                "ssh.f2bMissingLocal",
+                host=short_hostname(),
+                paths=i18n.t("isolation.separator").join(FAIL2BAN_CANDIDATES),
+            ),
         }
     ok, output = _client(["status"])
     if not ok:
@@ -770,8 +771,15 @@ async def fail2ban_status() -> Dict[str, Any]:
             "host": short_hostname(),
             "binary": binary,
             "checked": [],
-            "hint": "fail2ban 已安装（" + binary + "）但服务没在跑：systemctl enable --now fail2ban。"
-            + ("（" + output.strip()[:200] + "）" if output.strip() else ""),
+            "hint": i18n.t(
+                "ssh.f2bNotRunning",
+                binary=binary,
+                output=(
+                    i18n.t("ssh.f2bWrapOutput", output=output.strip()[:200])
+                    if output.strip()
+                    else ""
+                ),
+            ),
         }
     match = re.search(r"Jail list:\s*(.*)", output)
     jails = [name.strip() for name in (match.group(1).split(",") if match else []) if name.strip()]
@@ -803,9 +811,7 @@ async def fail2ban_status() -> Dict[str, Any]:
         "host": short_hostname(),
         "binary": binary,
         "checked": [],
-        "hint": "" if jails else
-        "fail2ban 在跑，但一个 jail 都没启用：在 /etc/fail2ban/jail.local 里加上"
-        " [sshd]\\nenabled = true\\n然后 systemctl reload fail2ban（RHEL 的 sshd jail 默认是关的）。",
+        "hint": "" if jails else i18n.t("ssh.f2bNoJail"),
     }
 
 
@@ -900,17 +906,31 @@ def build_fail_card(
 ) -> Dict[str, Any]:
     return alerting.build_card(
         "critical" if count >= threshold * 2 else "warning",
-        "🛡 ProxCenter SSH 爆破告警",
-        f"{ip} 在 {hours} 小时内失败 {count} 次",
+        i18n.tr("🛡 ProxCenter SSH 爆破告警"),
+        i18n.pick(
+            f"{ip} 在 {hours} 小时内失败 {count} 次",
+            f"{ip} failed {count} times within {hours} hour(s)",
+        ),
         [
-            ("来源 IP", ip),
-            ("失败次数", f"**{count}**（阈值 {threshold}）"),
-            ("统计窗口", f"最近 {hours} 小时"),
-            ("尝试的用户名", "、".join(users[:8]) or "-"),
-            ("发生时间", alerting._now_text(at)),
+            (i18n.tr("来源 IP"), ip),
+            (
+                i18n.tr("失败次数"),
+                f"**{count}**"
+                + i18n.pick("（阈值 ", " (threshold ")
+                + str(threshold)
+                + i18n.pick("）", ")"),
+            ),
+            (
+                i18n.tr("统计窗口"),
+                i18n.pick(f"最近 {hours} 小时", f"Last {hours} hour(s)"),
+            ),
+            (i18n.tr("尝试的用户名"), i18n.pick("、", ", ").join(users[:8]) or "-"),
+            (i18n.tr("发生时间"), alerting._now_text(at)),
         ],
-        "连续失败通常意味着暴力破解。可在「SSH 安全」页一键封禁该 IP，"
-        "或用 fail2ban 自动封禁。",
+        i18n.tr(
+            "连续失败通常意味着暴力破解。可在「SSH 安全」页一键封禁该 IP，"
+            "或用 fail2ban 自动封禁。"
+        ),
     )
 
 
@@ -919,16 +939,18 @@ def build_login_card(
 ) -> Dict[str, Any]:
     return alerting.build_card(
         "warning",
-        "🔑 ProxCenter 陌生 IP 登录成功",
-        f"{user} 从新地址登录",
+        i18n.tr("🔑 ProxCenter 陌生 IP 登录成功"),
+        i18n.pick(f"{user} 从新地址登录", f"{user} signed in from a new address"),
         [
-            ("登录用户", user or "-"),
-            ("来源 IP", ip),
-            ("认证方式", method or "-"),
-            ("登录时间", alerting._now_text(at)),
-            ("IP 是否见过", known_hint or "第一次出现"),
+            (i18n.tr("登录用户"), user or "-"),
+            (i18n.tr("来源 IP"), ip),
+            (i18n.tr("认证方式"), method or "-"),
+            (i18n.tr("登录时间"), alerting._now_text(at)),
+            (i18n.tr("IP 是否见过"), known_hint or i18n.tr("第一次出现")),
         ],
-        "如果不是你本人的操作，请立刻在「用户管理」里踢掉该账号的会话并改密码。",
+        i18n.tr(
+            "如果不是你本人的操作，请立刻在「用户管理」里踢掉该账号的会话并改密码。"
+        ),
     )
 
 
@@ -948,6 +970,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     logins = mark_new_logins(report["logins"], await known_ips())
 
     target_owner = policy.get("notify_user") or await store.first_admin_username() or ""
+    # 按收件人的语言渲染（巡检是后台跑的，没有请求上下文，见 alerting.resolve_language）
+    i18n.pin_language(await alerting.resolve_language(target_owner))
     feishu = await alerting.load_feishu(target_owner)
     email_cfg = await alerting.load_alert_email(target_owner)
     cooldown = int(policy["cooldown_minutes"]) * 60
@@ -978,15 +1002,18 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         card = build_fail_card(
             ip, row["count"], threshold, policy["window_hours"], row["users"], now
         )
-        text = (
+        text = i18n.pick(
             f"SSH 爆破告警：{ip} 在 {policy['window_hours']} 小时内失败 {row['count']} 次"
-            f"（阈值 {threshold}）\n尝试的用户名：{'、'.join(row['users'][:8])}"
+            f"（阈值 {threshold}）\n尝试的用户名：{'、'.join(row['users'][:8])}",
+            f"SSH brute-force alert: {ip} failed {row['count']} times within "
+            f"{policy['window_hours']} hour(s) (threshold {threshold})"
+            f"\nAttempted usernames: {', '.join(row['users'][:8])}",
         )
         ok, detail = await alerting.dispatch(
             target_owner,
             feishu,
             email_cfg,
-            "SSH 爆破告警：" + ip,
+            i18n.tr("SSH 爆破告警：") + ip,
             text,
             card,
             source=alerting.SOURCE_SSHGUARD,
@@ -994,7 +1021,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         state = {
             "username": target_owner,
             "rule_id": "ssh-fail",
-            "rule_name": "SSH 登录失败次数",
+            "rule_name": i18n.tr("SSH 登录失败次数"),
             "target_type": "ssh",
             "target": ip,
             "metric": "ssh_fail",
@@ -1025,15 +1052,18 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 continue
             user = str(item.get("username") or "")
             card = build_login_card(ip, user, str(item.get("method") or ""), item["ts"], "")
-            text = (
+            text = i18n.pick(
                 f"陌生 IP 登录成功：{user} 从 {ip} 登录（{item.get('method') or '-'}）"
-                f"\n时间：{alerting._now_text(item['ts'])}"
+                f"\n时间：{alerting._now_text(item['ts'])}",
+                f"Sign-in from an unknown IP: {user} signed in from {ip} "
+                f"({item.get('method') or '-'})"
+                f"\nTime: {alerting._now_text(item['ts'])}",
             )
             ok, detail = await alerting.dispatch(
                 target_owner,
                 feishu,
                 email_cfg,
-                "陌生 IP 登录：" + ip,
+                i18n.tr("陌生 IP 登录：") + ip,
                 text,
                 card,
                 source=alerting.SOURCE_SSHGUARD,
@@ -1041,7 +1071,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             state = {
                 "username": target_owner,
                 "rule_id": "ssh-login",
-                "rule_name": "陌生 IP 登录",
+                "rule_name": i18n.tr("陌生 IP 登录"),
                 "target_type": "ssh",
                 "target": ip,
                 "metric": "ssh_login",
@@ -1070,12 +1100,16 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         if not await alerting.recovery_confirmed(key, row):
             continue  # 本轮只是回落到阈值以下，还没到「连续 N 轮正常」的恢复门槛
         card = alerting.build_recovery_card(row, None, at=now)
-        text = f"{row.get('target')} 的 SSH 登录失败次数已回落到阈值以下，告警解除"
+        text = i18n.pick(
+            f"{row.get('target')} 的 SSH 登录失败次数已回落到阈值以下，告警解除",
+            f"Failed SSH sign-ins for {row.get('target')} dropped below the "
+            "threshold; the alert is cleared",
+        )
         ok, detail = await alerting.dispatch(
             target_owner,
             feishu,
             email_cfg,
-            "恢复通知：" + str(row.get("target")),
+            i18n.tr("恢复通知：") + str(row.get("target")),
             text,
             card,
             source=alerting.SOURCE_SSHGUARD,

@@ -9,12 +9,13 @@ import json
 import logging
 import re
 import time
+from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
 
-from . import crypto, database, mailer, notifications, site, store
+from . import crypto, database, i18n, mailer, notifications, prefs, site, store
 from .pve import get_client
 
 logger = logging.getLogger(__name__)
@@ -470,7 +471,7 @@ def normalise_rule(raw: Any, username: Optional[str] = None) -> Dict[str, Any]:
     metric = item.get("metric")
     return {
         "id": str(item.get("id") or str(int(time.time() * 1000))),
-        "name": str(item.get("name") or "告警规则").strip(),
+        "name": str(item.get("name") or i18n.tr("告警规则")).strip(),
         "target_type": "vm" if item.get("target_type") == "vm" else "node",
         "target": str(item.get("target") or "*").strip() or "*",
         "metric": metric if metric in METRIC_LABELS else "cpu",
@@ -623,7 +624,7 @@ async def save_feishu(raw: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
         secret = str(current.get("secret") or "")
 
     if not valid_webhook(webhook):
-        raise FeishuConfigError("Webhook 地址需要是完整的 http(s) 链接")
+        raise FeishuConfigError(i18n.tr("Webhook 地址需要是完整的 http(s) 链接"))
 
     cfg = {
         "webhook": webhook,
@@ -761,7 +762,7 @@ async def save_webhook(raw: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
         secret = str(current.get("secret") or "")
 
     if not valid_webhook(webhook):
-        raise WebhookConfigError("Webhook 地址需要是完整的 http(s) 链接")
+        raise WebhookConfigError(i18n.tr("Webhook 地址需要是完整的 http(s) 链接"))
 
     template = str(raw.get("template") or "").strip()
     if template:
@@ -785,9 +786,13 @@ async def save_webhook(raw: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
         try:
             parsed = json.loads(cfg["headers"])
         except (TypeError, ValueError) as exc:
-            raise WebhookConfigError("自定义请求头需要是合法的 JSON 对象") from exc
+            raise WebhookConfigError(
+                i18n.tr("自定义请求头需要是合法的 JSON 对象")
+            ) from exc
         if not isinstance(parsed, dict):
-            raise WebhookConfigError("自定义请求头需要是 JSON 对象（形如 {\"Key\":\"value\"}）")
+            raise WebhookConfigError(
+                i18n.tr('自定义请求头需要是 JSON 对象（形如 {"Key":"value"}）')
+            )
 
     await _persist_webhook(cfg, owner=owner)
     return cfg
@@ -803,7 +808,9 @@ def _validate_template(template: str) -> None:
         json.loads(probe)
     except (TypeError, ValueError) as exc:
         raise WebhookConfigError(
-            "请求体模板不是合法 JSON（占位符会替换成文本，其余部分需符合 JSON 语法）"
+            i18n.tr(
+                "请求体模板不是合法 JSON（占位符会替换成文本，其余部分需符合 JSON 语法）"
+            )
         ) from exc
 
 
@@ -863,13 +870,13 @@ async def send_webhook(
     """
     config = cfg if cfg is not None else await load_webhook(owner)
     if not config.get("enabled"):
-        return False, "未启用通用 Webhook"
+        return False, i18n.tr("未启用通用 Webhook")
 
     url = str(config.get("webhook") or "")
     if not url:
-        return False, "未配置通用 Webhook 地址"
+        return False, i18n.tr("未配置通用 Webhook 地址")
     if not valid_webhook(url):
-        return False, "Webhook 地址不是合法的 http(s) 链接"
+        return False, i18n.tr("Webhook 地址不是合法的 http(s) 链接")
 
     payload = dict(context or {})
     payload.setdefault("level", "alarm")
@@ -895,11 +902,14 @@ async def send_webhook(
                 url, content=body.encode("utf-8"), headers=headers
             )
     except httpx.HTTPError as exc:
-        return False, "发送失败：" + str(exc)
+        return False, i18n.tr("发送失败：") + str(exc)
 
     if resp.status_code >= 300:
-        return False, "HTTP " + str(resp.status_code) + "：" + resp.text[:160]
-    return True, "已发送"
+        return (
+            False,
+            "HTTP " + str(resp.status_code) + i18n.tr("：") + resp.text[:160],
+        )
+    return True, i18n.tr("已发送")
 
 
 # ------------------------------------------------------- 告警邮件通道（按用户）
@@ -933,7 +943,9 @@ async def save_alert_email(raw: Dict[str, Any], owner: str = "") -> Dict[str, An
     recipients = mailer.recipients_of(raw.get("recipients"))
     for item in recipients:
         if "@" not in item:
-            raise AlertEmailConfigError("收件地址格式不正确：" + item)
+            raise AlertEmailConfigError(
+                i18n.tr("收件地址格式不正确：") + item
+            )
 
     cfg = {
         "enabled": bool(raw.get("enabled")),
@@ -965,15 +977,68 @@ async def send_alert_email(
     """把一条告警 / 恢复通知发到该用户的收件箱。"""
     targets = await resolve_email_recipients(owner)
     if not targets:
-        return False, "未配置收件地址"
+        return False, i18n.tr("未配置收件地址")
 
     cfg = await mailer.load_mail()
     if not mailer.is_configured(cfg):
-        return False, "SMTP 未配置"
+        return False, i18n.tr("SMTP 未配置")
 
     lines = [line for line in text.splitlines() if line.strip()]
     subject, body, html = mailer.alert_mail(title, lines)
     return await mailer.send_mail(targets, subject, body, html=html, cfg=cfg)
+
+
+# ------------------------------------------------------------ 收件人语言
+#
+# 告警绝大多数由**后台巡检**发出（见 scheduler），那一刻没有 HTTP 请求，
+# ``current_language()`` 会回落到面板默认语言。于是「账号在公司看英文、在家
+# 看中文」就不成立了：不管谁收，告警都是同一种语言。
+#
+# 界面语言同时存在两处是有意的（见 prefs.PREF_LANGUAGE 的说明）：
+# localStorage 管「这台设备立刻显示什么」、服务端 user_prefs 管「发给这个人
+# 的通知用什么语言」。告警属于后者 —— 收件人是谁，就按谁的语言渲染。
+#
+# 一轮巡检里同一个用户会触发多条告警（CPU、内存、磁盘各一条），逐条查库
+# 没有意义，所以带一个短 TTL 的缓存；改了语言最迟 5 分钟生效是可以接受的。
+LANG_CACHE_TTL = 300
+_lang_cache: Dict[str, Tuple[str, float]] = {}
+
+
+async def resolve_language(owner: str) -> str:
+    """收件人的界面语言。没有偏好 / 读失败时退回当前语言。"""
+    owner = str(owner or "")
+    now = time.time()
+    cached = _lang_cache.get(owner)
+    if cached and now - cached[1] < LANG_CACHE_TTL:
+        return cached[0]
+
+    lang = i18n.current_language()
+    if owner:
+        try:
+            value = await prefs.get(owner, prefs.PREF_LANGUAGE)
+        except Exception:  # pragma: no cover - 偏好表坏了也不该让告警发不出去
+            logger.warning("读取 %s 的语言偏好失败，按当前语言发送告警", owner)
+            value = None
+        lang = i18n.normalize(str(value or "")) or lang
+    _lang_cache[owner] = (lang, now)
+    return lang
+
+
+@asynccontextmanager
+async def recipient_language(owner: str) -> AsyncIterator[None]:
+    """把后续的渲染与投递切到该收件人的语言。
+
+    ``dispatch`` 拿到的 title / text / card 都是**调用方先渲染好**的成品，语言
+    必须在渲染之前就位，所以渲染和投递要一起包进来::
+
+        async with alerting.recipient_language(owner):
+            card = build_alert_card(...)
+            await alerting.dispatch(owner, ..., card, ...)
+
+    退出时还原，不会让同一批任务里其它收件人的告警串语言。
+    """
+    with i18n.use_language(await resolve_language(owner)):
+        yield
 
 
 async def dispatch(
@@ -1009,23 +1074,23 @@ async def dispatch(
         or email_cfg.get("enabled")
         or webhook.get("enabled")
     ):
-        return False, "告警通知已停用，仅记录"
+        return False, i18n.tr("告警通知已停用，仅记录")
 
     channels: List[str] = []
     delivered = False
     if feishu.get("enabled"):
         ok, detail = await send_feishu(card, owner)
         delivered = delivered or ok
-        channels.append("飞书：" + detail)
+        channels.append(i18n.tr("飞书：") + detail)
     if email_cfg.get("enabled"):
         ok, detail = await send_alert_email(owner, title, text)
         delivered = delivered or ok
-        channels.append("邮件：" + detail)
+        channels.append(i18n.tr("邮件：") + detail)
     if webhook.get("enabled"):
         ok, detail = await send_webhook(title, text, context, owner, cfg=webhook)
         delivered = delivered or ok
-        channels.append("Webhook：" + detail)
-    return delivered, "；".join(channels)
+        channels.append(i18n.tr("Webhook：") + detail)
+    return delivered, i18n.pick("；", "; ").join(channels)
 
 
 def _sign(secret: str, ts: int) -> str:
@@ -1088,11 +1153,11 @@ def build_alert_card(
     分两类：使用率类展示「当前值 / 阈值」；状态类（离线、备份失败）展示
     「期望 / 实际状态」—— 给离线硬套一个百分比只会让人看不懂。
     """
-    metric_label = METRIC_LABELS.get(metric, str(metric))
+    metric_label = i18n.tr(METRIC_LABELS.get(metric, str(metric)))
     state_metric = metric in STATE_METRICS
     # 状态类本身就是严重级别，不存在「离阈值的远近」
     critical = state_metric or value >= 90 or value >= threshold + 10
-    title = ("🔴 " if critical else "🟠 ") + "ProxCenter " + (
+    title = ("🔴 " if critical else "🟠 ") + "ProxCenter " + i18n.tr(
         "状态告警" if state_metric else "资源告警"
     )
 
@@ -1101,32 +1166,35 @@ def build_alert_card(
         target += "（VMID " + str(vmid) + "）"
     fields: List[Tuple[str, str]] = [
         # 虚拟机显示 IP，宿主机显示面板接入该节点的地址
-        ("告警对象", target),
-        ("IP 地址" if vmid else "接入地址", ip or "未获取"),
+        (i18n.tr("告警对象"), target),
+        (i18n.tr("IP 地址") if vmid else i18n.tr("接入地址"), ip or i18n.tr("未获取")),
     ]
     if vmid:
-        fields.append(("所在节点", node or "-"))
-    fields.append(("监控指标", metric_label))
+        fields.append((i18n.tr("所在节点"), node or "-"))
+    fields.append((i18n.tr("监控指标"), metric_label))
     if state_metric:
         fields.append(
-            ("期望状态", EXPECTED_STATUS.get(target_type or "vm", "running"))
+            (
+                i18n.tr("期望状态"),
+                EXPECTED_STATUS.get(target_type or "vm", "running"),
+            )
         )
-        fields.append(("实际状态", "**" + (status or "-") + "**"))
+        fields.append((i18n.tr("实际状态"), "**" + (status or "-") + "**"))
     else:
-        fields.append(("当前值", "**" + format(value, ".1f") + "%**"))
-        fields.append(("触发阈值", format(threshold, ".0f") + "%"))
+        fields.append((i18n.tr("当前值"), "**" + format(value, ".1f") + "%**"))
+        fields.append((i18n.tr("触发阈值"), format(threshold, ".0f") + "%"))
         # 状态型指标上面已经给出「实际状态」，这里再来一行只会重复
-        fields.append(("运行状态", status or "-"))
+        fields.append((i18n.tr("运行状态"), status or "-"))
 
-    note = "触发时间 " + _now_text(at)
+    note = i18n.tr("触发时间 ") + _now_text(at)
     if state_metric:
-        note += " · 恢复后会自动发送通知"
+        note += i18n.tr(" · 恢复后会自动发送通知")
     if cooldown:
-        note += " · " + str(cooldown) + " 秒内同一对象不重复提醒"
+        note += " · " + str(cooldown) + i18n.tr(" 秒内同一对象不重复提醒")
     return build_card(
         "critical" if critical else "warning",
         title,
-        str(rule.get("name") or "告警规则"),
+        str(rule.get("name") or i18n.tr("告警规则")),
         fields,
         note,
     )
@@ -1138,40 +1206,45 @@ def build_recovery_card(
     at: Optional[float] = None,
 ) -> Dict[str, Any]:
     """告警恢复卡片：指标回落或被监控对象恢复可用时发送。"""
-    metric_label = METRIC_LABELS.get(row.get("metric"), str(row.get("metric") or "-"))
+    metric_label = i18n.tr(
+        METRIC_LABELS.get(row.get("metric"), str(row.get("metric") or "-"))
+    )
     vmid = row.get("vmid")
     is_vm = str(row.get("target_type")) == "vm"
-    kind = "虚拟机" if is_vm else "宿主机"
+    kind = i18n.pick("虚拟机", "VM") if is_vm else i18n.pick("宿主机", "Node")
 
     target = kind + " · " + str(row.get("target") or "-")
     if vmid:
         target += "（VMID " + str(vmid) + "）"
     fields: List[Tuple[str, str]] = [
-        ("告警对象", target),
-        ("IP 地址" if is_vm else "接入地址", str(row.get("ip") or "") or "未获取"),
+        (i18n.tr("告警对象"), target),
+        (
+            i18n.tr("IP 地址") if is_vm else i18n.tr("接入地址"),
+            str(row.get("ip") or "") or i18n.tr("未获取"),
+        ),
     ]
     if is_vm:
-        fields.append(("所在节点", str(row.get("node") or "-")))
-    fields.append(("监控指标", metric_label))
+        fields.append((i18n.tr("所在节点"), str(row.get("node") or "-")))
+    fields.append((i18n.tr("监控指标"), metric_label))
     if str(row.get("metric") or "") in STATE_METRICS:
         # 状态型指标没有百分比可回落，直接陈述「已恢复正常」
-        fields.append(("恢复状态", "**已恢复正常**"))
-        reason = "对象已回到期望状态，告警自动解除"
+        fields.append((i18n.tr("恢复状态"), "**" + i18n.tr("已恢复正常") + "**"))
+        reason = i18n.tr("对象已回到期望状态，告警自动解除")
     elif isinstance(value, (int, float)):
-        fields.append(("当前值", "**" + format(value, ".1f") + "%**"))
+        fields.append((i18n.tr("当前值"), "**" + format(value, ".1f") + "%**"))
         fields.append(
-            ("触发阈值", format(float(row.get("threshold") or 0), ".0f") + "%")
+            (i18n.tr("触发阈值"), format(float(row.get("threshold") or 0), ".0f") + "%")
         )
-        reason = "指标已回落至阈值以下，告警解除"
+        reason = i18n.tr("指标已回落至阈值以下，告警解除")
     else:
-        fields.append(("当前值", "已恢复"))
-        reason = "对象已恢复可用，告警自动解除"
+        fields.append((i18n.tr("当前值"), i18n.tr("已恢复")))
+        reason = i18n.tr("对象已恢复可用，告警自动解除")
     return build_card(
         "success",
-        "✅ ProxCenter 告警恢复",
-        str(row.get("rule_name") or "告警规则"),
+        i18n.tr("✅ ProxCenter 告警恢复"),
+        str(row.get("rule_name") or i18n.tr("告警规则")),
         fields,
-        "恢复时间 " + _now_text(at) + " · " + reason,
+        i18n.tr("恢复时间 ") + _now_text(at) + " · " + reason,
     )
 
 
@@ -1179,15 +1252,15 @@ def build_test_card() -> Dict[str, Any]:
     """连通性测试卡片。"""
     return build_card(
         "success",
-        "✅ ProxCenter 通知测试",
-        "告警通道连通性验证",
+        i18n.tr("✅ ProxCenter 通知测试"),
+        i18n.tr("告警通道连通性验证"),
         [
-            ("通知渠道", "飞书机器人"),
-            ("消息类型", "交互式卡片"),
-            ("发送时间", _now_text()),
-            ("通道状态", "✅ 正常"),
+            (i18n.tr("通知渠道"), i18n.tr("飞书机器人")),
+            (i18n.tr("消息类型"), i18n.tr("交互式卡片")),
+            (i18n.tr("发送时间"), _now_text()),
+            (i18n.tr("通道状态"), "✅ " + i18n.tr("正常")),
         ],
-        "收到这条消息，说明飞书机器人配置正确，可以正常接收 ProxCenter 告警。",
+        i18n.tr("收到这条消息，说明飞书机器人配置正确，可以正常接收 ProxCenter 告警。"),
     )
 
 
@@ -1196,9 +1269,9 @@ async def send_feishu(card: Dict[str, Any], owner: str = "") -> Tuple[bool, str]
     cfg = await load_feishu(owner)
     webhook = cfg.get("webhook") or ""
     if not webhook:
-        return False, "未配置飞书机器人 Webhook"
+        return False, i18n.tr("未配置飞书机器人 Webhook")
     if not valid_webhook(webhook):
-        return False, "Webhook 地址不是合法的 http(s) 链接"
+        return False, i18n.tr("Webhook 地址不是合法的 http(s) 链接")
     # 卡片标题里的产品名换成用户配置的名字 —— 所有飞书卡片都从这里出门，
     # 收口在这一处，五个拼卡片的模块不用各改一遍
     card = _apply_title_brand(card, await resolve_title_brand(cfg))
@@ -1212,16 +1285,22 @@ async def send_feishu(card: Dict[str, Any], owner: str = "") -> Tuple[bool, str]
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(webhook, json=payload)
     except httpx.HTTPError as exc:
-        return False, "发送失败：" + str(exc)
+        return False, i18n.tr("发送失败：") + str(exc)
     if resp.status_code != 200:
-        return False, "飞书返回 HTTP " + str(resp.status_code) + "：" + resp.text[:160]
+        return (
+            False,
+            i18n.tr("飞书返回 HTTP ")
+            + str(resp.status_code)
+            + i18n.tr("：")
+            + resp.text[:160],
+        )
     try:
         body = resp.json()
     except ValueError:
-        return True, "已发送"
+        return True, i18n.tr("已发送")
     if body.get("code") not in (0, None):
-        return False, "飞书返回错误：" + str(body.get("msg"))
-    return True, "已发送"
+        return False, i18n.tr("飞书返回错误：") + str(body.get("msg"))
+    return True, i18n.tr("已发送")
 
 
 async def record(
@@ -1629,6 +1708,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         return hook_channels[name]
 
     for rule_owner, owner_rules in groups.items():
+        # 按收件人的语言渲染：巡检是后台跑的，没有请求上下文，不钉住的话整轮
+        # 都会按面板默认语言发出去（见 recipient_language 的说明）。
+        i18n.pin_language(await resolve_language(rule_owner))
         feishu = await channel(rule_owner)
         email_cfg = await email_channel(rule_owner)
         webhook_cfg = await webhook_channel(rule_owner)
@@ -1680,8 +1762,14 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 last = float(prev.get("ts") or 0)
                 if now - last < cooldown:
                     continue
-                metric_label = METRIC_LABELS.get(rule.get("metric"), str(rule.get("metric")))
-                kind = "宿主机" if target_type == "node" else "虚拟机"
+                metric_label = i18n.tr(
+                    METRIC_LABELS.get(rule.get("metric"), str(rule.get("metric")))
+                )
+                kind = (
+                    i18n.pick("宿主机", "Node")
+                    if target_type == "node"
+                    else i18n.pick("虚拟机", "VM")
+                )
                 node = str(res.get("node") or "-")
                 status = str(res.get("status") or "-")
                 vmid = res.get("vmid") if target_type == "vm" else None
@@ -1693,21 +1781,29 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 # 纯文本摘要仅用于面板历史记录展示，推送走卡片
                 if metric in STATE_METRICS:
                     detail_text = (
-                        metric_label + "：异常（期望 "
+                        metric_label
+                        + i18n.tr("：异常（期望 ")
                         + EXPECTED_STATUS.get(target_type, "running")
-                        + "，实际 " + status + "）"
+                        + i18n.tr("，实际 ")
+                        + status
+                        + i18n.pick("）", ")")
                     )
                 else:
                     detail_text = (
-                        metric_label + "：" + format(value, ".1f")
-                        + "% (阈值 " + format(threshold, ".0f") + "%)"
+                        metric_label
+                        + i18n.tr("：")
+                        + format(value, ".1f")
+                        + "%"
+                        + i18n.tr(" (阈值 ")
+                        + format(threshold, ".0f")
+                        + "%)"
                     )
                 text = (
-                    kind + "：" + label + chr(10)
+                    kind + i18n.tr("：") + label + chr(10)
                     + detail_text + chr(10)
-                    + ("IP：" + ip + chr(10) if ip else "")
-                    + "节点：" + node + chr(10)
-                    + "状态：" + status
+                    + (i18n.tr("IP：") + ip + chr(10) if ip else "")
+                    + i18n.tr("节点：") + node + chr(10)
+                    + i18n.tr("状态：") + status
                 )
                 card = build_alert_card(
                     rule,
@@ -1727,7 +1823,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 # 各发各的：用规则归属者自己的通道（飞书 / 邮件 / 通用 Webhook）推送。
                 # context 供通用 Webhook 的请求体模板取用（飞书走卡片、邮件走正文，
                 # 只有自定义 Webhook 需要这些散字段）。
-                alert_title = kind + "：" + label
+                alert_title = kind + i18n.tr("：") + label
                 ok, detail = await dispatch(
                     rule_owner,
                     feishu,
@@ -1793,6 +1889,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         if key in alarming:
             continue
         row_owner = str(row.get("username") or "") or fallback
+        # 恢复通知同样按收件人语言，且每行可能属于不同用户，逐行钉
+        i18n.pin_language(await resolve_language(row_owner))
         if key != alarm_key(row_owner, row.get("rule_id"), row.get("target")):
             # 旧版（未按用户拆分）遗留的状态：静默清理，不误报恢复
             await clear_active(key)
@@ -1809,14 +1907,14 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         card = build_recovery_card(row, value, at=now)
         recovery_text = (
             str(row.get("target") or "-")
-            + " 的 "
-            + str(METRIC_LABELS.get(row.get("metric"), row.get("metric")))
-            + " 已恢复正常"
+            + i18n.pick(" 的 ", " · ")
+            + i18n.tr(str(METRIC_LABELS.get(row.get("metric"), row.get("metric"))))
+            + i18n.pick(" 已恢复正常", " recovered")
         )
         # 谁配置的规则，恢复通知就发给谁
         feishu = await channel(row_owner)
         email_cfg = await email_channel(row_owner)
-        recovery_title = "恢复通知：" + str(row.get("target") or "-")
+        recovery_title = i18n.tr("恢复通知：") + str(row.get("target") or "-")
         ok, detail = await dispatch(
             row_owner,
             feishu,

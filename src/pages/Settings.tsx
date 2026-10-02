@@ -36,6 +36,7 @@ import {
   isPathDisabled,
 } from '../components/Sidebar';
 import { DEFAULT_UI_PREFS } from '../hooks/useUiPrefs';
+import { useT } from '../i18n';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
@@ -95,25 +96,6 @@ import type {
 } from '../api/types';
 
 /* ---------------------------------------------------------------------------
-   刷新间隔选项
-   --------------------------------------------------------------------------- */
-
-const REFRESH_OPTIONS = [
-  { label: '5 秒（实时性优先）', value: '5000' },
-  { label: '10 秒（推荐）', value: '10000' },
-  { label: '30 秒（平衡）', value: '30000' },
-  { label: '60 秒（低负载）', value: '60000' },
-  { label: '不自动刷新', value: '0' },
-];
-
-const PAGE_SIZE_OPTIONS = [
-  { label: '10 条 / 页', value: '10' },
-  { label: '20 条 / 页', value: '20' },
-  { label: '50 条 / 页', value: '50' },
-  { label: '100 条 / 页', value: '100' },
-];
-
-/* ---------------------------------------------------------------------------
    页面
    --------------------------------------------------------------------------- */
 
@@ -137,8 +119,8 @@ const PAGE_SIZE_OPTIONS = [
 
 interface SettingsSection {
   id: string;
-  /** 所属分组：面板偏好 / 服务端配置 / 运行信息 */
-  group: string;
+  /** 所属分组（文案在组件内按 SettingsGroup 取词） */
+  group: SettingsGroup;
   /** 导航项与卡片标题共用的名字，两边必须一致，否则“点了没跳对地方” */
   label: string;
   /** 导航项的 title：一句话说明这一段改的是什么 */
@@ -149,17 +131,14 @@ interface SettingsSection {
   render: () => ReactNode;
 }
 
-/** 分组标题右侧的作用范围说明 —— 这一栏是「改的东西作用在哪」的唯一答案 */
-const GROUP_DESC: Record<string, string> = {
-  面板偏好: '只影响当前浏览器，与新建虚拟机时预填的默认值',
-  服务端配置: '写进服务端，对所有用户生效（需要 settings.manage 权限）',
-  运行信息: '只读，看面板自己跑得怎么样',
-};
+/** 分组键：面板偏好 / 服务端配置 / 运行信息 */
+type SettingsGroup = 'prefs' | 'server' | 'runtime';
 
 /** 分区卡片的 DOM id 前缀：吸顶导航的跳转与高亮都按 `前缀 + 分区 id` 找元素 */
 const SECTION_ID_PREFIX = 'section-';
 
 export function Settings() {
+  const t = useT();
   const queryClient = useQueryClient();
   const { user, hasPermission } = useAuth();
   const canManage = hasPermission('settings.manage');
@@ -181,95 +160,113 @@ export function Settings() {
     retry: 1,
   });
 
-  const sections: SettingsSection[] = [
+  const groupMeta: Record<SettingsGroup, { label: string; desc: string }> = useMemo(
+    () => ({
+      prefs: {
+        label: t('settings.groupPrefs'),
+        desc: t('settings.groupPrefsDesc'),
+      },
+      server: {
+        label: t('settings.groupServer'),
+        desc: t('settings.groupServerDesc'),
+      },
+      runtime: {
+        label: t('settings.groupRuntime'),
+        desc: t('settings.groupRuntimeDesc'),
+      },
+    }),
+    [t],
+  );
+
+  const allSections: SettingsSection[] = [
     {
       id: 'panel',
-      group: '面板偏好',
+      group: 'prefs',
       /* 名字取卡片标题本身：导航项与卡片标题不一致时，「点了导航却找不到
          对应卡片」是必然的事 */
-      label: '面板设置',
-      desc: '刷新频率、每页条数、时区 —— 只影响当前这台浏览器',
+      label: t('settings.secPanel'),
+      desc: t('settings.secPanelDesc'),
       icon: <IconMonitor size={16} />,
       render: () => <PanelSection />,
     },
     {
       id: 'vm-defaults',
-      group: '面板偏好',
-      label: '创建默认值',
-      desc: '新建虚拟机时表单里预填的那套参数，对所有用户生效',
+      group: 'prefs',
+      label: t('settings.secVmDefaults'),
+      desc: t('settings.secVmDefaultsDesc'),
       icon: <IconVm size={16} />,
       adminOnly: true,
       render: () => <VMCreateDefaultsSection />,
     },
     {
       id: 'specs',
-      group: '服务端配置',
-      label: '资源规格',
+      group: 'server',
+      label: t('settings.secSpecs'),
       /* 与卡片标题一致：导航项与卡片标题不一样时，用户点了会以为走错了地方 */
-      desc: '下单页可选套餐（几核 / 内存 / 磁盘），用户不必自己算资源',
+      desc: t('settings.secSpecsDesc'),
       icon: <IconBox size={16} />,
       adminOnly: true,
       render: () => <ResourceSpecsPanel />,
     },
     {
       id: 'sidebar',
-      group: '服务端配置',
-      label: '导航栏功能开关',
-      desc: '导航栏里每一个入口的开关，关掉的项直接输 URL 也进不去',
+      group: 'server',
+      label: t('settings.secSidebar'),
+      desc: t('settings.secSidebarDesc'),
       icon: <IconMenu size={16} />,
       adminOnly: true,
       render: () => <SidebarNavSection />,
     },
     {
       id: 'site',
-      group: '服务端配置',
-      label: '站点信息',
-      desc: '面板名称、副标题、版权、备案号、Logo 与登录页背景',
+      group: 'server',
+      label: t('settings.secSite'),
+      desc: t('settings.secSiteDesc'),
       icon: <IconLayers size={16} />,
       adminOnly: true,
       render: () => <SiteInfoSection />,
     },
     {
       id: 'captcha',
-      group: '服务端配置',
-      label: '登录验证',
-      desc: '登录时要不要过一道人机验证，以及用图形码还是拖动滑块',
+      group: 'server',
+      label: t('settings.secCaptcha'),
+      desc: t('settings.secCaptchaDesc'),
       icon: <IconShield size={16} />,
       adminOnly: true,
       render: () => <LoginCaptchaSection />,
     },
     {
       id: 'panel-url',
-      group: '服务端配置',
-      label: '面板全局地址',
-      desc: '邮件与飞书回调里拼链接用的外部域名',
+      group: 'server',
+      label: t('settings.secPanelUrl'),
+      desc: t('settings.secPanelUrlDesc'),
       icon: <IconLink size={16} />,
       adminOnly: true,
       render: () => <PanelUrlSection />,
     },
     {
       id: 'faq',
-      group: '服务端配置',
-      label: '常见问题',
-      desc: '产品官网「常见问题」区块的内容',
+      group: 'server',
+      label: t('settings.secFaq'),
+      desc: t('settings.secFaqDesc'),
       icon: <IconInfo size={16} />,
       adminOnly: true,
       render: () => <FaqSection />,
     },
     {
       id: 'mail',
-      group: '服务端配置',
-      label: '邮件通知',
-      desc: '告警与通知走哪个 SMTP，发件人是谁',
+      group: 'server',
+      label: t('settings.secMail'),
+      desc: t('settings.secMailDesc'),
       icon: <IconBell size={16} />,
       adminOnly: true,
       render: () => <EmailSection />,
     },
     {
       id: 'system',
-      group: '运行信息',
-      label: '系统信息',
-      desc: '面板自身与各套 PVE 的运行状态，只读',
+      group: 'runtime',
+      label: t('settings.secSystem'),
+      desc: t('settings.secSystemDesc'),
       icon: <IconActivity size={16} />,
       render: () => (
         <SystemSection
@@ -284,13 +281,14 @@ export function Settings() {
         />
       ),
     },
-  ].filter((item) => !item.adminOnly || canManage);
+  ];
+  const sections = allSections.filter((item) => !item.adminOnly || canManage);
 
   const firstId = sections[0]?.id ?? '';
   const wanted = searchParams.get('tab') ?? '';
 
   /* 导航按顺序分组：同一个 group 的项连续出现，分组标题只在第一项前画一次 */
-  const groups: Array<{ name: string; items: SettingsSection[] }> = [];
+  const groups: Array<{ name: SettingsGroup; items: SettingsSection[] }> = [];
   for (const item of sections) {
     const last = groups[groups.length - 1];
     if (last && last.name === item.group) last.items.push(item);
@@ -343,10 +341,10 @@ export function Settings() {
       title={
         <>
           <IconSettings size={20} />
-          设置
+          {t('settings.title')}
         </>
       }
-      subtitle="面板偏好与系统运行信息"
+      subtitle={t('settings.subtitle')}
       actions={
         <Button
           variant="secondary"
@@ -361,13 +359,13 @@ export function Settings() {
             (clusterQuery.isFetching && !clusterQuery.isLoading)
           }
         >
-          刷新
+          {t('common.refresh')}
         </Button>
       }
     >
       {/* Proxmox 连接已整体移到「节点 → 连接配置」子页面，这里不再出现任何入口：
           设置页管的是「面板自己的偏好」，连接管的是「有哪些 PVE 主机可管」。 */}
-      <nav className="page-index" aria-label="设置分区">
+      <nav className="page-index" aria-label={t('settings.pageAria')}>
         {sections.map((item, index) => (
           <Fragment key={item.id}>
             {/* 分组之间一道竖线：吸顶条只有一行高，再挂分组标题会把它撑成两行 */}
@@ -397,8 +395,8 @@ export function Settings() {
       {groups.map((group) => (
         <Fragment key={group.name}>
           <header className="page-section-head">
-            <h2 className="page-section-title">{group.name}</h2>
-            <p className="page-section-desc">{GROUP_DESC[group.name]}</p>
+            <h2 className="page-section-title">{groupMeta[group.name].label}</h2>
+            <p className="page-section-desc">{groupMeta[group.name].desc}</p>
           </header>
 
           {group.items.map((item) => (
@@ -421,7 +419,28 @@ export function Settings() {
    --------------------------------------------------------------------------- */
 
 function PanelSection() {
+  const t = useT();
   const toast = useToast();
+
+  const refreshOptions = useMemo(
+    () => [
+      { label: t('settings.refresh5s'), value: '5000' },
+      { label: t('settings.refresh10s'), value: '10000' },
+      { label: t('settings.refresh30s'), value: '30000' },
+      { label: t('settings.refresh60s'), value: '60000' },
+      { label: t('settings.refreshOff'), value: '0' },
+    ],
+    [t],
+  );
+  const pageSizeOptions = useMemo(
+    () => [
+      { label: t('settings.pageSize', { n: 10 }), value: '10' },
+      { label: t('settings.pageSize', { n: 20 }), value: '20' },
+      { label: t('settings.pageSize', { n: 50 }), value: '50' },
+      { label: t('settings.pageSize', { n: 100 }), value: '100' },
+    ],
+    [t],
+  );
   const [settings, setSettings] = useState<PanelSettings>(() => loadSettings());
   const [saved, setSaved] = useState<PanelSettings>(() => loadSettings());
 
@@ -442,7 +461,7 @@ function PanelSection() {
     const next: PanelSettings = { ...settings };
     saveSettings(next);
     setSaved(next);
-    toast.success('面板设置已保存', '刷新页面后依然生效');
+    toast.success(t('settings.panelSaved'), t('settings.panelSavedHint'));
     /* 通知其他页面重新读取刷新间隔 */
     window.dispatchEvent(new CustomEvent('ProxCenter:settings-changed'));
   };
@@ -451,7 +470,7 @@ function PanelSection() {
     setSettings(defaultSettings);
     saveSettings(defaultSettings);
     setSaved(defaultSettings);
-    toast.info('已恢复默认设置');
+    toast.info(t('settings.panelResetDone'));
     window.dispatchEvent(new CustomEvent('ProxCenter:settings-changed'));
   };
 
@@ -460,8 +479,8 @@ function PanelSection() {
   return (
     <Card>
       <CardHeader
-        title="面板设置"
-        subtitle="这些偏好仅保存在当前浏览器，不会同步到服务端"
+        title={t('settings.panelTitle')}
+        subtitle={t('settings.panelSubtitle')}
         icon={<IconSettings size={17} />}
       />
 
@@ -470,35 +489,38 @@ function PanelSection() {
           <span className="set-form-block-icon">
             <IconActivity size={15} />
           </span>
-          <span className="set-form-block-title">数据与展示</span>
-          <span className="set-form-block-hint">轮询频率与长列表分页</span>
+          <span className="set-form-block-title">{t('settings.blockData')}</span>
+          <span className="set-form-block-hint">{t('settings.blockDataHint')}</span>
         </div>
 
         {/* 三个字段并排。原先「数据与展示」占一行、时区又单起一行，末尾那行
             只有一只输入框，右半边整片空着 —— 时区本来就和刷新频率同级。 */}
         <div className="set-grid set-grid--3">
           <Field
-            label="数据刷新间隔"
-            hint="列表与监控图表的自动轮询频率。间隔越短对集群压力越大。"
+            label={t('settings.refreshLabel')}
+            hint={t('settings.refreshHint')}
           >
             <Select
               value={String(settings.refreshInterval)}
               onChange={(e) => patch('refreshInterval', Number(e.target.value))}
-              options={REFRESH_OPTIONS}
-            />
-          </Field>
-
-          <Field label="列表每页条数" hint="虚拟机、备份、审计日志等长列表的分页大小">
-            <Select
-              value={String(settings.pageSize)}
-              onChange={(e) => patch('pageSize', Number(e.target.value))}
-              options={PAGE_SIZE_OPTIONS}
+              options={refreshOptions}
             />
           </Field>
 
           <Field
-            label="时区"
-            hint={`浏览器检测到的时区：${timezoneGuess}。仅影响本地展示，不影响后端存储。`}
+            label={t('settings.pageSizeLabel')}
+            hint={t('settings.pageSizeHint')}
+          >
+            <Select
+              value={String(settings.pageSize)}
+              onChange={(e) => patch('pageSize', Number(e.target.value))}
+              options={pageSizeOptions}
+            />
+          </Field>
+
+          <Field
+            label={t('settings.timezoneLabel')}
+            hint={t('settings.timezoneHint', { tz: timezoneGuess })}
           >
             <Input
               value={settings.timezone}
@@ -511,9 +533,10 @@ function PanelSection() {
         </div>
       </div>
 
-      <Notice tone="info" title="关于浏览器本地设置的说明">
-        这些设置保存在 <span className="mono">localStorage.pve_panel_settings</span>，
-        换浏览器或清空站点数据后会恢复默认值。如需跨设备统一，需要后端提供用户偏好接口。
+      <Notice tone="info" title={t('settings.localNoticeTitle')}>
+        {t('settings.localNoticePre')}{' '}
+        <span className="mono">localStorage.pve_panel_settings</span>
+        {t('settings.localNoticePost')}
       </Notice>
 
       <div className="set-action-bar">
@@ -523,14 +546,14 @@ function PanelSection() {
           onClick={save}
           disabled={!dirty}
         >
-          保存设置
+          {t('settings.saveSettings')}
         </Button>
         <Button variant="secondary" onClick={reset}>
-          恢复默认
+          {t('settings.restoreDefault')}
         </Button>
         <span className="set-action-spacer" />
         {dirty ? (
-          <span className="fs-sm text-warning">有未保存的修改</span>
+          <span className="fs-sm text-warning">{t('settings.unsaved')}</span>
         ) : null}
       </div>
     </Card>
@@ -542,6 +565,7 @@ function PanelSection() {
    --------------------------------------------------------------------------- */
 
 function VMCreateDefaultsSection() {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -603,11 +627,11 @@ function VMCreateDefaultsSection() {
     const text = quotaText.trim();
     const lxcText = lxcQuotaText.trim();
     if (text && !/^\d+$/.test(text)) {
-      toast.error('虚拟机额度必须是非负整数', '留空表示不限制');
+      toast.error(t('settings.vmQuotaVmInt'), t('settings.vmQuotaEmptyHint'));
       return;
     }
     if (lxcText && !/^\d+$/.test(lxcText)) {
-      toast.error('容器额度必须是非负整数', '留空表示不限制');
+      toast.error(t('settings.vmQuotaLxcInt'), t('settings.vmQuotaEmptyHint'));
       return;
     }
     setBusy(true);
@@ -621,14 +645,16 @@ function VMCreateDefaultsSection() {
       );
       setLxcQuotaText(savedLxc.quota == null ? '' : String(savedLxc.quota));
       toast.success(
-        '已保存',
-        saved.dns ? `默认 DNS：${saved.dns}` : '默认 DNS：留空（不干预）',
+        t('profile.saved'),
+        saved.dns
+          ? t('settings.vmSavedDns', { dns: saved.dns })
+          : t('settings.vmSavedDnsEmpty'),
       );
       void queryClient.invalidateQueries({ queryKey: ['config', 'vm-defaults'] });
       void queryClient.invalidateQueries({ queryKey: ['config', 'vm-quota'] });
       void queryClient.invalidateQueries({ queryKey: ['config', 'lxc-quota'] });
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -643,8 +669,8 @@ function VMCreateDefaultsSection() {
   return (
     <Card>
       <CardHeader
-        title="创建默认值"
-        subtitle="保存到服务端，作用于所有用户的创建 / 克隆操作"
+        title={t('settings.vmTitle')}
+        subtitle={t('settings.vmSubtitle')}
         icon={<IconServer size={17} />}
         actions={
           <Button
@@ -655,7 +681,7 @@ function VMCreateDefaultsSection() {
             disabled={!canManage || query.isLoading}
             onClick={() => void save()}
           >
-            保存
+            {t('common.save')}
           </Button>
         }
       />
@@ -669,14 +695,11 @@ function VMCreateDefaultsSection() {
             <span className="set-form-block-icon">
               <IconActivity size={15} />
             </span>
-            <span className="set-form-block-title">Cloud-Init 默认 DNS</span>
-            <span className="set-form-block-hint">留空则不干预</span>
+            <span className="set-form-block-title">{t('settings.vmDnsBlock')}</span>
+            <span className="set-form-block-hint">{t('settings.vmNoInterfere')}</span>
           </div>
 
-          <Field
-            label="默认 DNS"
-            hint="创建 / 克隆虚拟机时，未单独填写 DNS 的一律写入这里配置的地址。模板机大多走 DHCP，客户机容易被路由器 RA 下发的 DNS 带跑；若那组 DNS 不可达（局域网“假 IPv6”很常见），虚拟机就会完全解析不了域名、表现为连不上外网 —— 填一个可用的 IPv4 DNS 即可避免。多个地址用空格分隔。"
-          >
+          <Field label={t('settings.vmDnsLabel')} hint={t('settings.vmDnsHint')}>
             <Input
               value={dns}
               onChange={(e) => setDns(e.target.value)}
@@ -693,18 +716,18 @@ function VMCreateDefaultsSection() {
             <span className="set-form-block-icon">
               <IconVm size={15} />
             </span>
-            <span className="set-form-block-title">可下发虚拟机数量</span>
-            <span className="set-form-block-hint">留空则不限制</span>
+            <span className="set-form-block-title">{t('settings.vmVmQuotaBlock')}</span>
+            <span className="set-form-block-hint">{t('settings.vmNoLimit')}</span>
           </div>
 
           <Field
-            label="虚拟机额度"
-            hint="这台面板最多允许多少台虚拟机（跨所有 PVE 连接统计，含模板）。填 0 时普通用户完全无法创建虚拟机；留空表示不限制。管理员不受此限制 —— 到达上限后需要有人能清理与扩容。"
+            label={t('settings.vmVmQuotaLabel')}
+            hint={t('settings.vmVmQuotaHint')}
           >
             <Input
               value={quotaText}
               onChange={(e) => setQuotaText(e.target.value)}
-              placeholder="留空 = 不限制"
+              placeholder={t('settings.vmPlaceholderNoLimit')}
               className="mono"
               inputMode="numeric"
               autoComplete="off"
@@ -714,18 +737,15 @@ function VMCreateDefaultsSection() {
 
           {quotaQuery.data ? (
             <div className="set-readout">
-              <span>
-                当前已用 <b>{quotaUsed}</b> 台
-              </span>
+              <span>{t('settings.vmUsedVm', { n: quotaUsed })}</span>
               {quotaRemaining != null ? (
-                <span>
-                  · 还可下发 <b>{quotaRemaining}</b> 台
-                </span>
+                <span>{t('settings.vmRemainingVm', { n: quotaRemaining })}</span>
               ) : null}
               {quotaQuery.data.count_error ? (
                 <span className="set-readout-warn">
-                  · 部分 PVE 连接读取失败，实际台数可能更多（
-                  {quotaQuery.data.count_error}）
+                  {t('settings.vmCountErrorVm', {
+                    err: quotaQuery.data.count_error,
+                  })}
                 </span>
               ) : null}
             </div>
@@ -740,18 +760,18 @@ function VMCreateDefaultsSection() {
             <span className="set-form-block-icon">
               <IconBox size={15} />
             </span>
-            <span className="set-form-block-title">可下发容器数量</span>
-            <span className="set-form-block-hint">留空则不限制</span>
+            <span className="set-form-block-title">{t('settings.vmLxcQuotaBlock')}</span>
+            <span className="set-form-block-hint">{t('settings.vmNoLimit')}</span>
           </div>
 
           <Field
-            label="容器额度"
-            hint="最多允许多少个容器（跨所有 PVE 连接统计，含容器模板）。与左边的虚拟机额度各记一份、互不占用：填 0 只挡容器，不影响建虚拟机。管理员同样不受限。"
+            label={t('settings.vmLxcQuotaLabel')}
+            hint={t('settings.vmLxcQuotaHint')}
           >
             <Input
               value={lxcQuotaText}
               onChange={(e) => setLxcQuotaText(e.target.value)}
-              placeholder="留空 = 不限制"
+              placeholder={t('settings.vmPlaceholderNoLimit')}
               className="mono"
               inputMode="numeric"
               autoComplete="off"
@@ -761,18 +781,15 @@ function VMCreateDefaultsSection() {
 
           {lxcQuotaQuery.data ? (
             <div className="set-readout">
-              <span>
-                当前已用 <b>{lxcUsed}</b> 个
-              </span>
+              <span>{t('settings.vmUsedLxc', { n: lxcUsed })}</span>
               {lxcRemaining != null ? (
-                <span>
-                  · 还可下发 <b>{lxcRemaining}</b> 个
-                </span>
+                <span>{t('settings.vmRemainingLxc', { n: lxcRemaining })}</span>
               ) : null}
               {lxcQuotaQuery.data.count_error ? (
                 <span className="set-readout-warn">
-                  · 部分 PVE 连接读取失败，实际数量可能更多（
-                  {lxcQuotaQuery.data.count_error}）
+                  {t('settings.vmCountErrorLxc', {
+                    err: lxcQuotaQuery.data.count_error,
+                  })}
                 </span>
               ) : null}
             </div>
@@ -782,8 +799,8 @@ function VMCreateDefaultsSection() {
 
       {!canManage ? (
         <div className="mt-16">
-          <Notice tone="info" title="只读">
-            当前账号对该设置只有查看权限，修改需要管理员（settings.manage 权限）。
+          <Notice tone="info" title={t('settings.readonlyTitle')}>
+            {t('settings.readonlyBody')}
           </Notice>
         </div>
       ) : null}
@@ -796,6 +813,7 @@ function VMCreateDefaultsSection() {
    --------------------------------------------------------------------------- */
 
 function SiteInfoSection() {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -848,10 +866,13 @@ function SiteInfoSection() {
     try {
       const saved = await siteApi.save(form);
       setForm(saved);
-      toast.success('站点信息已保存', `当前站点名称：${saved.name}`);
+      toast.success(
+        t('settings.siteSaved'),
+        t('settings.siteSavedName', { name: saved.name }),
+      );
       void queryClient.invalidateQueries({ queryKey: ['config', 'site'] });
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -863,10 +884,10 @@ function SiteInfoSection() {
     try {
       const saved = await siteApi.uploadLogo(file);
       setForm(saved);
-      toast.success('Logo 已更新', '侧边栏、登录页与产品官网已同步');
+      toast.success(t('settings.siteLogoUpdated'), t('settings.siteLogoUpdatedHint'));
       void queryClient.invalidateQueries({ queryKey: ['config', 'site'] });
     } catch (err) {
-      toast.error('上传失败', errorMessage(err));
+      toast.error(t('settings.siteUploadFailed'), errorMessage(err));
     } finally {
       setLogoBusy(false);
       // 清空 input，否则连续选同一个文件不会再触发 change
@@ -879,10 +900,10 @@ function SiteInfoSection() {
     try {
       const saved = await siteApi.removeLogo();
       setForm(saved);
-      toast.success('已移除自定义 Logo', '界面已恢复内置图标');
+      toast.success(t('settings.siteLogoRemoved'), t('settings.siteLogoRemovedHint'));
       void queryClient.invalidateQueries({ queryKey: ['config', 'site'] });
     } catch (err) {
-      toast.error('移除失败', errorMessage(err));
+      toast.error(t('settings.siteRemoveFailed'), errorMessage(err));
     } finally {
       setLogoBusy(false);
     }
@@ -894,10 +915,10 @@ function SiteInfoSection() {
     try {
       const saved = await siteApi.uploadLoginBg(file);
       setForm(saved);
-      toast.success('登录背景已更新', '登录 / 注册 / 找回密码页已同步');
+      toast.success(t('settings.siteBgUpdated'), t('settings.siteBgUpdatedHint'));
       void queryClient.invalidateQueries({ queryKey: ['config', 'site'] });
     } catch (err) {
-      toast.error('上传失败', errorMessage(err));
+      toast.error(t('settings.siteUploadFailed'), errorMessage(err));
     } finally {
       setBgBusy(false);
       // 清空 input，否则连续选同一个文件不会再触发 change
@@ -910,10 +931,10 @@ function SiteInfoSection() {
     try {
       const saved = await siteApi.removeLoginBg();
       setForm(saved);
-      toast.success('已移除自定义背景', '登录页已恢复内置插画');
+      toast.success(t('settings.siteBgRemoved'), t('settings.siteBgRemovedHint'));
       void queryClient.invalidateQueries({ queryKey: ['config', 'site'] });
     } catch (err) {
-      toast.error('移除失败', errorMessage(err));
+      toast.error(t('settings.siteRemoveFailed'), errorMessage(err));
     } finally {
       setBgBusy(false);
     }
@@ -922,8 +943,8 @@ function SiteInfoSection() {
   return (
     <Card>
       <CardHeader
-        title="站点信息"
-        subtitle="自定义面板名称与版权文案，保存到服务端，对所有用户生效"
+        title={t('settings.siteTitle')}
+        subtitle={t('settings.siteSubtitle')}
         icon={<IconInfo size={17} />}
         actions={
           <>
@@ -934,7 +955,7 @@ function SiteInfoSection() {
               disabled={!canManage || busy}
               onClick={() => setForm(DEFAULT_SITE_INFO)}
             >
-              恢复默认
+              {t('settings.restoreDefault')}
             </Button>
             <Button
               variant="primary"
@@ -944,7 +965,7 @@ function SiteInfoSection() {
               disabled={!canManage || query.isLoading}
               onClick={() => void save()}
             >
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
@@ -958,19 +979,19 @@ function SiteInfoSection() {
           <span className="set-form-block-icon">
             <IconSettings size={15} />
           </span>
-          <span className="set-form-block-title">品牌与文案</span>
-          <span className="set-form-block-hint">留空则使用默认值</span>
+          <span className="set-form-block-title">{t('settings.siteBrandBlock')}</span>
+          <span className="set-form-block-hint">{t('settings.siteBrandBlockHint')}</span>
         </div>
 
         <div className="dyn-row">
           <Field
-            label="站点 Logo"
-            hint="支持 PNG / JPG / WebP / GIF / SVG / ICO，建议使用方形图，512 KB 以内。显示在侧边栏、登录页与产品官网，并同时作为浏览器标签页图标；选好文件立即生效，无需点保存。"
+            label={t('settings.siteLogoLabel')}
+            hint={t('settings.siteLogoHint')}
           >
             <div className="brand-upload">
               <span className="brand-upload-preview">
                 {form.logo_url ? (
-                  <img src={form.logo_url} alt="当前 Logo 预览" />
+                  <img src={form.logo_url} alt={t('settings.siteLogoPreviewAlt')} />
                 ) : (
                   <BrandLogo size={40} />
                 )}
@@ -994,7 +1015,9 @@ function SiteInfoSection() {
                   disabled={!canManage}
                   onClick={() => fileRef.current?.click()}
                 >
-                  {form.logo_url ? '更换图片' : '上传图片'}
+                  {form.logo_url
+                    ? t('settings.siteChangeImage')
+                    : t('settings.siteUploadImage')}
                 </Button>
                 {form.logo_url ? (
                   <Button
@@ -1004,7 +1027,7 @@ function SiteInfoSection() {
                     disabled={!canManage || logoBusy}
                     onClick={() => void resetLogo()}
                   >
-                    恢复内置
+                    {t('settings.siteRestoreBuiltin')}
                   </Button>
                 ) : null}
               </div>
@@ -1014,15 +1037,17 @@ function SiteInfoSection() {
 
         <div className="dyn-row">
           <Field
-            label="登录页背景"
-            hint="显示在登录 / 注册 / 找回密码页的整屏背景上。支持 PNG / JPG / WebP / GIF，建议横图（如 1920×1080），4 MB 以内；选好文件立即生效，无需点保存。"
+            label={t('settings.siteBgLabel')}
+            hint={t('settings.siteBgHint')}
           >
             <div className="brand-upload">
               <span className="brand-upload-preview brand-upload-preview--wide">
                 {form.login_bg_url ? (
-                  <img src={form.login_bg_url} alt="当前登录页背景预览" />
+                  <img src={form.login_bg_url} alt={t('settings.siteBgPreviewAlt')} />
                 ) : (
-                  <span className="fs-xs text-muted">内置插画</span>
+                  <span className="fs-xs text-muted">
+                    {t('settings.siteBuiltinIllustration')}
+                  </span>
                 )}
               </span>
               <div className="brand-upload-actions">
@@ -1044,7 +1069,9 @@ function SiteInfoSection() {
                   disabled={!canManage}
                   onClick={() => bgFileRef.current?.click()}
                 >
-                  {form.login_bg_url ? '更换图片' : '上传图片'}
+                  {form.login_bg_url
+                    ? t('settings.siteChangeImage')
+                    : t('settings.siteUploadImage')}
                 </Button>
                 {form.login_bg_url ? (
                   <Button
@@ -1054,7 +1081,7 @@ function SiteInfoSection() {
                     disabled={!canManage || bgBusy}
                     onClick={() => void resetLoginBg()}
                   >
-                    恢复内置
+                    {t('settings.siteRestoreBuiltin')}
                   </Button>
                 ) : null}
               </div>
@@ -1064,8 +1091,8 @@ function SiteInfoSection() {
 
         <div className="dyn-row">
           <Field
-            label="站点名称"
-            hint="显示在侧边栏、登录页、产品官网，以及浏览器标签页标题上。留空则恢复内置的默认名称。"
+            label={t('settings.siteNameLabel')}
+            hint={t('settings.siteNameHint')}
           >
             <Input
               value={form.name}
@@ -1079,11 +1106,14 @@ function SiteInfoSection() {
         </div>
 
         <div className="dyn-row">
-          <Field label="副标题" hint="显示在侧边栏品牌名称下方。留空则恢复默认。">
+          <Field
+            label={t('settings.siteSubtitleLabel')}
+            hint={t('settings.siteSubtitleHint')}
+          >
             <Input
               value={form.subtitle}
               onChange={(e) => patch('subtitle', e.target.value)}
-              placeholder={DEFAULT_SITE_INFO.subtitle}
+              placeholder={t('site.defaultSubtitle')}
               maxLength={40}
               autoComplete="off"
               disabled={!canManage}
@@ -1092,7 +1122,10 @@ function SiteInfoSection() {
         </div>
 
         <div className="dyn-row">
-          <Field label="版权信息" hint="显示在产品官网页脚。留空则恢复默认。">
+          <Field
+            label={t('settings.siteCopyrightLabel')}
+            hint={t('settings.siteCopyrightHint')}
+          >
             <Input
               value={form.copyright}
               onChange={(e) => patch('copyright', e.target.value)}
@@ -1106,13 +1139,13 @@ function SiteInfoSection() {
 
         <div className="dyn-row">
           <Field
-            label="备案号"
-            hint="显示在产品官网页脚，例如「京ICP备2024000000号-1」。留空则不展示。"
+            label={t('settings.siteIcpLabel')}
+            hint={t('settings.siteIcpHint')}
           >
             <Input
               value={form.icp}
               onChange={(e) => patch('icp', e.target.value)}
-              placeholder="京ICP备2024000000号-1"
+              placeholder={t('settings.siteIcpPlaceholder')}
               maxLength={64}
               autoComplete="off"
               disabled={!canManage}
@@ -1122,24 +1155,24 @@ function SiteInfoSection() {
 
         <div className="dyn-row">
           <Field
-            label="友情链接"
+            label={t('settings.siteLinksLabel')}
             className="is-wide"
-            hint="显示在产品官网页脚。最多 12 条；地址需以 http:// 或 https:// 开头，也支持 / 开头的站内路径。"
+            hint={t('settings.siteLinksHint')}
           >
             <div className="link-editor">
               {form.links.length === 0 ? (
-                <p className="link-editor-empty">还没有添加友情链接</p>
+                <p className="link-editor-empty">{t('settings.siteLinksEmpty')}</p>
               ) : (
                 form.links.map((link, index) => (
                   <div className="link-editor-row" key={index}>
                     <Input
                       value={link.name}
                       onChange={(e) => patchLink(index, 'name', e.target.value)}
-                      placeholder="站点名称"
+                      placeholder={t('settings.siteLinkNamePlaceholder')}
                       maxLength={24}
                       autoComplete="off"
                       disabled={!canManage}
-                      aria-label={`第 ${index + 1} 条友链的名称`}
+                      aria-label={t('settings.siteLinkNameAria', { n: index + 1 })}
                     />
                     <Input
                       value={link.url}
@@ -1148,10 +1181,10 @@ function SiteInfoSection() {
                       maxLength={300}
                       autoComplete="off"
                       disabled={!canManage}
-                      aria-label={`第 ${index + 1} 条友链的地址`}
+                      aria-label={t('settings.siteLinkUrlAria', { n: index + 1 })}
                     />
                     <IconButton
-                      label={`删除第 ${index + 1} 条友情链接`}
+                      label={t('settings.siteLinkDeleteAria', { n: index + 1 })}
                       variant="danger"
                       disabled={!canManage}
                       onClick={() => removeLink(index)}
@@ -1170,10 +1203,10 @@ function SiteInfoSection() {
                   disabled={!canManage || form.links.length >= 12}
                   onClick={addLink}
                 >
-                  添加链接
+                  {t('settings.siteAddLink')}
                 </Button>
                 <span className="fs-xs text-muted">
-                  {form.links.length} / 12；名称或地址为空的条目在保存时会被丢弃
+                  {t('settings.siteLinksFootHint', { n: form.links.length })}
                 </span>
               </div>
             </div>
@@ -1181,8 +1214,8 @@ function SiteInfoSection() {
         </div>
 
         {!canManage ? (
-          <Notice tone="info" title="只读">
-            当前账号对该设置只有查看权限，修改需要管理员（settings.manage 权限）。
+          <Notice tone="info" title={t('settings.readonlyTitle')}>
+            {t('settings.readonlyBody')}
           </Notice>
         ) : null}
       </div>
@@ -1215,6 +1248,7 @@ const LOCKED_NAV_PATHS = new Set(ALWAYS_OPEN_PATHS);
 function SidebarNavSection() {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const t = useT();
   const { hasPermission } = useAuth();
   const canManage = hasPermission('settings.manage');
 
@@ -1251,7 +1285,7 @@ function SidebarNavSection() {
       toast.success(okTitle, okHint);
     } catch (err) {
       /* 失败时不动 prefs：Switch 是受控的，会自己弹回原值 */
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1265,20 +1299,20 @@ function SidebarNavSection() {
           ? prefs.nav_disabled.filter((path) => path !== to)
           : [...prefs.nav_disabled, to],
       },
-      next ? `已开启「${label}」` : `已关闭「${label}」`,
       next
-        ? '该入口在所有用户的控制台里恢复显示'
-        : '该入口从侧边栏、顶栏菜单与全局搜索里一起消失，直接输地址也会被弹回',
+        ? t('settings.navOnToast', { label })
+        : t('settings.navOffToast', { label }),
+      next ? t('settings.navOnHint') : t('settings.navOffHint'),
     );
 
   /* 分组与顺序直接取侧边栏那一份（末尾补上底部账号区的项）：设置页看到的
      分组必须和用户在侧边栏里看到的一致，另维护一份清单迟早会对不上。 */
   const groups = [
     ...NAV_SECTIONS.map((section) => ({
-      title: section.title,
+      titleKey: section.titleKey,
       items: section.items,
     })),
-    { title: '账号', items: FOOTER_NAV_ITEMS },
+    { titleKey: 'settings.nav.sectionAccount' as const, items: FOOTER_NAV_ITEMS },
   ];
 
   const closedCount = prefs.nav_disabled.length;
@@ -1286,13 +1320,13 @@ function SidebarNavSection() {
   return (
     <Card>
       <CardHeader
-        title="导航栏功能开关"
-        subtitle="导航栏里每一个入口的开关；关掉的项对所有用户立即生效"
+        title={t('settings.navTitle')}
+        subtitle={t('settings.navSubtitle')}
         icon={<IconMenu size={17} />}
         actions={
           busy ? (
             <Badge variant="info" size="sm">
-              保存中…
+              {t('settings.navSaving')}
             </Badge>
           ) : undefined
         }
@@ -1304,14 +1338,16 @@ function SidebarNavSection() {
           isPathDisabled(item.to, prefs.nav_disabled),
         ).length;
         return (
-          <div className="dyn-list mt-16" key={group.title}>
+          <div className="dyn-list mt-16" key={group.titleKey}>
             <div className="set-form-block-head">
               <span className="set-form-block-icon">
                 <IconMenu size={15} />
               </span>
-              <span className="set-form-block-title">{group.title}</span>
+              <span className="set-form-block-title">{t(group.titleKey)}</span>
               <span className="set-form-block-hint">
-                {closed > 0 ? `${closed} 项已关闭` : '全部开启'}
+                {closed > 0
+                  ? t('settings.navClosedCount', { n: closed })
+                  : t('settings.navAllOpen')}
               </span>
             </div>
 
@@ -1319,15 +1355,16 @@ function SidebarNavSection() {
               {group.items.map((item) => {
                 /* 恢复入口不能关：关掉之后界面上再没有地方能把这些开关打开 */
                 const locked = LOCKED_NAV_PATHS.has(item.to);
+                const label = t(item.labelKey);
                 return (
                   <Switch
                     key={item.to}
                     checked={!isPathDisabled(item.to, prefs.nav_disabled)}
-                    onChange={(next) => toggleItem(item.to, item.label, next)}
+                    onChange={(next) => toggleItem(item.to, label, next)}
                     disabled={!canManage || busy || locked}
-                    label={item.label}
-                    hint={locked ? '恢复入口，始终保留' : item.to}
-                    ariaLabel={`显示「${item.label}」入口`}
+                    label={label}
+                    hint={locked ? t('settings.navLockedHint') : item.to}
+                    ariaLabel={t('settings.navItemAria', { label })}
                   />
                 );
               })}
@@ -1336,9 +1373,8 @@ function SidebarNavSection() {
         );
       })}
 
-      <Notice tone="info" title="关掉的入口会被彻底隐藏">
-        从导航栏、顶栏头像菜单、Ctrl / ⌘ + K 全局搜索里一起消失，直接输地址也会被弹回
-        第一个还开着的页面。它关的是入口，不是授权 —— 对应接口的权限仍由角色决定。
+      <Notice tone="info" title={t('settings.navNoticeTitle')}>
+        {t('settings.navNoticeBody')}
       </Notice>
 
       {closedCount > 0 ? (
@@ -1348,25 +1384,25 @@ function SidebarNavSection() {
             onClick={() =>
               void save(
                 { ...prefs, nav_disabled: [] },
-                '已恢复全部入口',
-                '所有侧边栏入口在所有用户的控制台里重新显示',
+                t('settings.navRestoredAll'),
+                t('settings.navRestoredAllHint'),
               )
             }
             disabled={!canManage || busy}
           >
-            恢复全部入口
+            {t('settings.navRestoreAll')}
           </Button>
           <span className="set-action-spacer" />
           <span className="fs-sm text-warning">
-            {closedCount} 个入口已关闭
+            {t('settings.navClosedEntries', { n: closedCount })}
           </span>
         </div>
       ) : null}
 
       {!canManage ? (
         <div className="mt-16">
-          <Notice tone="info" title="只读">
-            当前账号对该设置只有查看权限，修改需要管理员（settings.manage 权限）。
+          <Notice tone="info" title={t('settings.readonlyTitle')}>
+            {t('settings.readonlyBody')}
           </Notice>
         </div>
       ) : null}
@@ -1389,20 +1425,27 @@ function SidebarNavSection() {
    --------------------------------------------------------------------------- */
 
 /* 顺序与默认值一致：没配过时后端给的就是「拖动滑块」（见 backend/app/captcha.py） */
-const CAPTCHA_OPTIONS: Array<{ label: string; value: LoginCaptchaMode }> = [
-  { label: '关闭', value: 'off' },
-  { label: '拖动滑块（默认）', value: 'slider' },
-  { label: '图形验证码', value: 'image' },
-];
-
-const CAPTCHA_HINT: Record<LoginCaptchaMode, string> = {
-  off: '登录页不再要求任何验证，仅适合内网或纯人用的环境',
-  image: '登录页显示四位图形验证码，点图片可更换（用系统字体绘制，未装字体时字体为内置）',
-  slider: '登录页显示拖动滑块拼图，拖到位再点「登录」；未配置过时的默认方式',
-};
 
 function LoginCaptchaSection() {
+  const t = useT();
   const toast = useToast();
+
+  const captchaOptions = useMemo(
+    () => [
+      { label: t('settings.captchaOptOff'), value: 'off' as LoginCaptchaMode },
+      { label: t('settings.captchaOptSlider'), value: 'slider' as LoginCaptchaMode },
+      { label: t('settings.captchaOptImage'), value: 'image' as LoginCaptchaMode },
+    ],
+    [t],
+  );
+  const captchaHint = useMemo<Record<LoginCaptchaMode, string>>(
+    () => ({
+      off: t('settings.captchaHintOff'),
+      image: t('settings.captchaHintImage'),
+      slider: t('settings.captchaHintSlider'),
+    }),
+    [t],
+  );
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
   const canManage = hasPermission('settings.manage');
@@ -1435,10 +1478,10 @@ function LoginCaptchaSection() {
          会拿着上一种方式的挑战去提交（图形码的 id 配滑块的 x）。 */
       queryClient.removeQueries({ queryKey: ['login-captcha'] });
       void queryClient.invalidateQueries({ queryKey: ['config', 'login-captcha'] });
-      toast.success('登录验证方式已更新', CAPTCHA_HINT[saved.mode]);
+      toast.success(t('settings.captchaUpdated'), captchaHint[saved.mode]);
     } catch (err) {
       // 失败时不动 mode：SegmentedControl 是受控的，会自己弹回原值
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1447,13 +1490,13 @@ function LoginCaptchaSection() {
   return (
     <Card>
       <CardHeader
-        title="登录验证"
-        subtitle="登录页用哪种验证方式，保存后立即对所有人生效"
+        title={t('settings.captchaTitle')}
+        subtitle={t('settings.captchaSubtitle')}
         icon={<IconShield size={17} />}
         actions={
           busy ? (
             <Badge variant="info" size="sm">
-              保存中…
+              {t('settings.navSaving')}
             </Badge>
           ) : undefined
         }
@@ -1467,26 +1510,27 @@ function LoginCaptchaSection() {
             <span className="set-form-block-icon">
               <IconShield size={15} />
             </span>
-            <span className="set-form-block-title">验证方式</span>
-            <span className="set-form-block-hint">点一下即保存，无需再按别的按钮</span>
+            <span className="set-form-block-title">{t('settings.captchaModeBlock')}</span>
+            <span className="set-form-block-hint">
+              {t('settings.captchaModeBlockHint')}
+            </span>
           </div>
 
           <Field
-            label="登录验证"
-            hint="图形验证码与滑块都要求用户先完成一次人机验证，再校验账号密码 —— 脚本因此摸不到「密码对不对」这个信号。关闭后只剩「连续失败锁定」，公网可达的面板不建议关闭。"
+            label={t('settings.captchaModeLabel')}
+            hint={t('settings.captchaModeHint')}
           >
             <SegmentedControl<LoginCaptchaMode>
               value={mode}
               onChange={(next) => void save(next)}
-              ariaLabel="登录验证方式"
-              options={CAPTCHA_OPTIONS}
+              ariaLabel={t('settings.captchaModeAria')}
+              options={captchaOptions}
             />
           </Field>
 
           {mode === 'off' ? (
-            <Notice tone="warning" title="验证码已关闭">
-              登录接口目前只靠「失败次数锁定」挡爆破。面板一旦能从公网访问，
-              建议改回图形验证码或滑块 —— 这一层正是让脚本猜不动的东西。
+            <Notice tone="warning" title={t('settings.captchaOffTitle')}>
+              {t('settings.captchaOffBody')}
             </Notice>
           ) : null}
         </div>
@@ -1496,12 +1540,16 @@ function LoginCaptchaSection() {
             <span className="set-form-block-icon">
               <IconInfo size={15} />
             </span>
-            <span className="set-form-block-title">三种方式的区别</span>
-            <span className="set-form-block-hint">高亮的是当前生效的一条</span>
+            <span className="set-form-block-title">
+              {t('settings.captchaCompareBlock')}
+            </span>
+            <span className="set-form-block-hint">
+              {t('settings.captchaCompareHint')}
+            </span>
           </div>
 
           <ul className="set-option-list">
-            {CAPTCHA_OPTIONS.map((option) => (
+            {captchaOptions.map((option) => (
               <li
                 key={option.value}
                 className={`set-option${option.value === mode ? ' is-active' : ''}`}
@@ -1511,7 +1559,7 @@ function LoginCaptchaSection() {
                 </span>
                 <span className="set-option-text">
                   <span className="set-option-name">{option.label}</span>
-                  <span>{CAPTCHA_HINT[option.value]}</span>
+                  <span>{captchaHint[option.value]}</span>
                 </span>
               </li>
             ))}
@@ -1521,8 +1569,8 @@ function LoginCaptchaSection() {
 
       {!canManage ? (
         <div className="mt-16">
-          <Notice tone="info" title="只读">
-            当前账号对该设置只有查看权限，修改需要管理员（settings.manage 权限）。
+          <Notice tone="info" title={t('settings.readonlyTitle')}>
+            {t('settings.readonlyBody')}
           </Notice>
         </div>
       ) : null}
@@ -1535,6 +1583,7 @@ function LoginCaptchaSection() {
    --------------------------------------------------------------------------- */
 
 function PanelUrlSection() {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -1563,14 +1612,14 @@ function PanelUrlSection() {
       const saved = await configApi.savePanelUrl(url.trim());
       setUrl(saved.url);
       toast.success(
-        '面板全局地址已保存',
+        t('settings.urlSaved'),
         saved.url
-          ? `邮件里的链接将统一使用 ${saved.url}`
-          : '已清除：邮件链接将回落到本次请求的 Host',
+          ? t('settings.urlSavedHint', { url: saved.url })
+          : t('settings.urlCleared'),
       );
       void queryClient.invalidateQueries({ queryKey: ['config', 'panel-url'] });
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1584,8 +1633,8 @@ function PanelUrlSection() {
   return (
     <Card>
       <CardHeader
-        title="面板全局地址"
-        subtitle="邮件与外部系统里指向本面板的链接统一使用这个对外域名"
+        title={t('settings.urlTitle')}
+        subtitle={t('settings.urlSubtitle')}
         icon={<IconLayers size={17} />}
         actions={
           <Button
@@ -1596,7 +1645,7 @@ function PanelUrlSection() {
             disabled={!canManage || query.isLoading}
             onClick={() => void save()}
           >
-            保存
+            {t('common.save')}
           </Button>
         }
       />
@@ -1607,16 +1656,11 @@ function PanelUrlSection() {
             <span className="set-form-block-icon">
               <IconLink size={15} />
             </span>
-            <span className="set-form-block-title">对外访问地址</span>
-            <span className="set-form-block-hint">
-              例如 https://prox.yjscloud.com（协议可省略，默认 https）
-            </span>
+            <span className="set-form-block-title">{t('settings.urlBlockTitle')}</span>
+            <span className="set-form-block-hint">{t('settings.urlBlockHint')}</span>
           </div>
 
-          <Field
-            label="面板地址"
-            hint="忘记密码的重置链接、注册审批结果、飞书机器人回调地址都用它拼接。面板挂在反向代理 / frp 后面时，请求里的 Host 常是 localhost:8080 —— 收件人打不开那样的链接，所以这里要填外部真正可达的域名。留空 = 回落到请求 Host（仅适合内网直连）。"
-          >
+          <Field label={t('settings.urlLabel')} hint={t('settings.urlHint')}>
             <Input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -1633,25 +1677,23 @@ function PanelUrlSection() {
             <span className="set-form-block-icon">
               <IconLink size={15} />
             </span>
-            <span className="set-form-block-title">生效后的链接</span>
+            <span className="set-form-block-title">{t('settings.urlPreviewBlock')}</span>
             <span className="set-form-block-hint">
-              {url.trim() ? '按上面填的地址拼接' : '未填写，回落到请求 Host'}
+              {url.trim() ? t('settings.urlPreviewFilled') : t('settings.urlPreviewFallback')}
             </span>
           </div>
 
           <div className="set-preview">
             <div className="set-preview-row">
-              <span className="set-preview-label">重置密码（邮件正文里的按钮）</span>
+              <span className="set-preview-label">{t('settings.urlPreviewReset')}</span>
               <span className="set-preview-url">{base}/reset-password?token=…</span>
             </div>
             <div className="set-preview-row">
-              <span className="set-preview-label">飞书机器人事件回调地址</span>
+              <span className="set-preview-label">{t('settings.urlPreviewFeishu')}</span>
               <span className="set-preview-url">{base}/api/feishu/event</span>
             </div>
             <div className="set-preview-row">
-              <span className="set-preview-label">
-                当前请求 Host（留空时就用它）
-              </span>
+              <span className="set-preview-label">{t('settings.urlPreviewHost')}</span>
               <span className="set-preview-url">{window.location.origin}</span>
             </div>
           </div>
@@ -1660,8 +1702,8 @@ function PanelUrlSection() {
 
       {!canManage ? (
         <div className="mt-16">
-          <Notice tone="info" title="只读">
-            当前账号对该设置只有查看权限，修改需要管理员（settings.manage 权限）。
+          <Notice tone="info" title={t('settings.readonlyTitle')}>
+            {t('settings.readonlyBody')}
           </Notice>
         </div>
       ) : null}
@@ -1674,6 +1716,7 @@ function PanelUrlSection() {
    --------------------------------------------------------------------------- */
 
 function FaqSection() {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -1721,10 +1764,13 @@ function FaqSection() {
     try {
       const saved = await faqApi.save(items);
       setItems(saved);
-      toast.success('常见问题已保存', `当前 ${saved.length} 条`);
+      toast.success(
+        t('settings.faqSaved'),
+        t('settings.faqSavedCount', { n: saved.length }),
+      );
       void queryClient.invalidateQueries({ queryKey: ['config', 'faq'] });
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1735,10 +1781,13 @@ function FaqSection() {
     try {
       const restored = await faqApi.reset();
       setItems(restored);
-      toast.success('已恢复默认问题', `当前 ${restored.length} 条`);
+      toast.success(
+        t('settings.faqResetDone'),
+        t('settings.faqSavedCount', { n: restored.length }),
+      );
       void queryClient.invalidateQueries({ queryKey: ['config', 'faq'] });
     } catch (err) {
-      toast.error('恢复失败', errorMessage(err));
+      toast.error(t('settings.faqResetFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1747,8 +1796,8 @@ function FaqSection() {
   return (
     <Card>
       <CardHeader
-        title="常见问题"
-        subtitle="产品官网「常见问题」区块的内容，保存到服务端，对所有访问者生效"
+        title={t('settings.faqTitle')}
+        subtitle={t('settings.faqSubtitle')}
         icon={<IconInfo size={17} />}
         actions={
           <>
@@ -1759,7 +1808,7 @@ function FaqSection() {
               disabled={!canManage || busy}
               onClick={() => void reset()}
             >
-              恢复默认
+              {t('settings.restoreDefault')}
             </Button>
             <Button
               variant="primary"
@@ -1769,7 +1818,7 @@ function FaqSection() {
               disabled={!canManage || query.isLoading}
               onClick={() => void save()}
             >
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
@@ -1780,16 +1829,12 @@ function FaqSection() {
           <span className="set-form-block-icon">
             <IconSettings size={15} />
           </span>
-          <span className="set-form-block-title">问题列表</span>
-          <span className="set-form-block-hint">
-            列表留空即关闭官网上的该区块
-          </span>
+          <span className="set-form-block-title">{t('settings.faqBlock')}</span>
+          <span className="set-form-block-hint">{t('settings.faqBlockHint')}</span>
         </div>
 
         {items.length === 0 ? (
-          <p className="link-editor-empty">
-            列表为空，产品官网将不再展示「常见问题」区块，导航入口也会一并隐藏。
-          </p>
+          <p className="link-editor-empty">{t('settings.faqEmpty')}</p>
         ) : (
           items.map((item, index) => (
             <div className="faq-editor-item" key={index}>
@@ -1797,21 +1842,21 @@ function FaqSection() {
                 <span className="faq-editor-index mono">#{index + 1}</span>
                 <div className="faq-editor-tools">
                   <IconButton
-                    label={`上移第 ${index + 1} 条`}
+                    label={t('settings.faqMoveUpAria', { n: index + 1 })}
                     disabled={!canManage || index === 0}
                     onClick={() => moveItem(index, -1)}
                   >
                     <IconChevronUp size={14} />
                   </IconButton>
                   <IconButton
-                    label={`下移第 ${index + 1} 条`}
+                    label={t('settings.faqMoveDownAria', { n: index + 1 })}
                     disabled={!canManage || index === items.length - 1}
                     onClick={() => moveItem(index, 1)}
                   >
                     <IconChevronDown size={14} />
                   </IconButton>
                   <IconButton
-                    label={`删除第 ${index + 1} 条`}
+                    label={t('settings.faqDeleteAria', { n: index + 1 })}
                     variant="danger"
                     disabled={!canManage}
                     onClick={() => removeItem(index)}
@@ -1824,20 +1869,20 @@ function FaqSection() {
               <Input
                 value={item.q}
                 onChange={(e) => patchItem(index, 'q', e.target.value)}
-                placeholder="问题，例如：需要把 Proxmox 暴露到公网吗？"
+                placeholder={t('settings.faqQPlaceholder')}
                 maxLength={200}
                 autoComplete="off"
                 disabled={!canManage}
-                aria-label={`第 ${index + 1} 条问题的标题`}
+                aria-label={t('settings.faqQAria', { n: index + 1 })}
               />
               <Textarea
                 value={item.a}
                 onChange={(e) => patchItem(index, 'a', e.target.value)}
-                placeholder="答案"
+                placeholder={t('settings.faqAPlaceholder')}
                 rows={3}
                 maxLength={2000}
                 disabled={!canManage}
-                aria-label={`第 ${index + 1} 条问题的答案`}
+                aria-label={t('settings.faqAAria', { n: index + 1 })}
               />
             </div>
           ))
@@ -1851,16 +1896,16 @@ function FaqSection() {
             disabled={!canManage || items.length >= 30}
             onClick={addItem}
           >
-            添加问题
+            {t('settings.faqAdd')}
           </Button>
           <span className="fs-xs text-muted">
-            {items.length} / 30；问题或答案为空的条目在保存时会被丢弃
+            {t('settings.faqFootHint', { n: items.length })}
           </span>
         </div>
 
         {!canManage ? (
-          <Notice tone="info" title="只读">
-            当前账号对该设置只有查看权限，修改需要管理员（settings.manage 权限）。
+          <Notice tone="info" title={t('settings.readonlyTitle')}>
+            {t('settings.readonlyBody')}
           </Notice>
         ) : null}
       </div>
@@ -1889,6 +1934,7 @@ const MAIL_FORM_DEFAULT: MailConfigInput = {
 };
 
 function EmailSection() {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -1942,14 +1988,14 @@ function EmailSection() {
       setPasswordClear(false);
       loadedRef.current = false;
       toast.success(
-        '邮件配置已保存',
+        t('settings.mailSaved'),
         saved.configured
-          ? 'SMTP 已就绪，可以点「测试发送」验证'
-          : '还差服务器地址或发件人，暂时发不出邮件',
+          ? t('settings.mailSavedReady')
+          : t('settings.mailSavedIncomplete'),
       );
       void queryClient.invalidateQueries({ queryKey: ['config', 'mail'] });
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1959,9 +2005,9 @@ function EmailSection() {
     setTesting(true);
     try {
       const res = await mailApi.test(testTo.trim());
-      toast.success('测试邮件已发出', res.detail);
+      toast.success(t('settings.mailTestSent'), res.detail);
     } catch (err) {
-      toast.error('测试发送失败', errorMessage(err));
+      toast.error(t('settings.mailTestFailed'), errorMessage(err));
     } finally {
       setTesting(false);
     }
@@ -1976,29 +2022,33 @@ function EmailSection() {
     const port = Number(form.port);
     const mode = form.tls ?? 'starttls';
     if (port === 465 && mode !== 'ssl') {
-      return '465 端口要用「SSL / TLS」，当前选的是其它方式，会连接超时';
+      return t('settings.mailTlsMismatch465');
     }
     if (port === 587 && mode === 'ssl') {
-      return '587 端口要用「STARTTLS」，选 SSL 会连接超时';
+      return t('settings.mailTlsMismatch587');
     }
     if (port === 25 && mode === 'ssl') {
-      return '25 端口是明文端口，选 SSL 会连接超时';
+      return t('settings.mailTlsMismatch25');
     }
     return '';
-  }, [form.port, form.tls]);
+  }, [form.port, form.tls, t]);
 
 
 
   return (
     <Card>
       <CardHeader
-        title="邮件通知"
-        subtitle="面板通过这一台 SMTP 服务器发信：注册审批通知、告警邮件都走它"
+        title={t('settings.mailTitle')}
+        subtitle={t('settings.mailSubtitle')}
         icon={<IconBell size={17} />}
         actions={
           <>
             <Badge variant={configured ? 'success' : 'neutral'} dot size="sm">
-              {query.isLoading ? '读取中…' : configured ? '已就绪' : '未配置'}
+              {query.isLoading
+                ? t('settings.mailStateLoading')
+                : configured
+                  ? t('settings.mailStateReady')
+                  : t('settings.mailStateUnset')}
             </Badge>
             <Button
               variant="primary"
@@ -2008,7 +2058,7 @@ function EmailSection() {
               disabled={!canManage || query.isLoading}
               onClick={() => void save()}
             >
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
@@ -2016,8 +2066,8 @@ function EmailSection() {
 
       {!canManage ? (
         <div className="mb-16">
-          <Notice tone="info" title="只读">
-            邮件服务器配置仅管理员可修改。以下内容为当前生效的设置。
+          <Notice tone="info" title={t('settings.readonlyTitle')}>
+            {t('settings.mailReadonlyBody')}
           </Notice>
         </div>
       ) : null}
@@ -2026,13 +2076,17 @@ function EmailSection() {
         <Switch
           checked={Boolean(form.enabled)}
           onChange={(v) => patch('enabled', v)}
-          label="启用邮件通知"
-          hint="关闭后注册审批与告警都不再发信（配置会保留）"
+          label={t('settings.mailEnableLabel')}
+          hint={t('settings.mailEnableHint')}
           disabled={!canManage}
         />
 
         <div className="form-grid-2">
-          <Field label="SMTP 服务器" required hint="主机名或 IP，例如 smtp.example.com">
+          <Field
+            label={t('settings.mailHostLabel')}
+            required
+            hint={t('settings.mailHostHint')}
+          >
             <Input
               value={form.host ?? ''}
               onChange={(e) => patch('host', e.target.value)}
@@ -2041,7 +2095,7 @@ function EmailSection() {
               disabled={!canManage}
             />
           </Field>
-          <Field label="端口" hint="587 用 STARTTLS，465 用 SSL">
+          <Field label={t('settings.mailPortLabel')} hint={t('settings.mailPortHint')}>
             <Input
               value={String(form.port ?? '')}
               onChange={(e) => patch('port', Number(e.target.value) || 0)}
@@ -2053,26 +2107,29 @@ function EmailSection() {
 
         <div className="form-grid-2">
           <Field
-            label="加密方式"
+            label={t('settings.mailTlsLabel')}
             error={tlsMismatch || undefined}
-            hint="587 配 STARTTLS、465 配 SSL，两者必须对应"
+            hint={t('settings.mailTlsHint')}
           >
             <Select
               value={form.tls ?? 'starttls'}
               onChange={(e) => patch('tls', e.target.value as MailTlsMode)}
               options={[
-                { label: 'STARTTLS（587，推荐）', value: 'starttls' },
-                { label: 'SSL / TLS（465）', value: 'ssl' },
-                { label: '不加密（内网中继）', value: 'none' },
+                { label: t('settings.mailTlsStarttls'), value: 'starttls' },
+                { label: t('settings.mailTlsSsl'), value: 'ssl' },
+                { label: t('settings.mailTlsNone'), value: 'none' },
               ]}
               disabled={!canManage}
             />
           </Field>
-          <Field label="SMTP 账号" hint="留空表示匿名投递（内网中继常见）">
+          <Field
+            label={t('settings.mailUsernameLabel')}
+            hint={t('settings.mailUsernameHint')}
+          >
             <Input
               value={form.username ?? ''}
               onChange={(e) => patch('username', e.target.value)}
-              placeholder="选填"
+              placeholder={t('settings.mailOptional')}
               autoComplete="off"
               disabled={!canManage}
             />
@@ -2080,18 +2137,22 @@ function EmailSection() {
         </div>
 
         <Field
-          label="SMTP 密码"
+          label={t('settings.mailPasswordLabel')}
           hint={
             passwordSet
-              ? '已保存密码，留空表示不修改'
-              : '未保存密码；匿名投递可以留空'
+              ? t('settings.mailPasswordSetHint')
+              : t('settings.mailPasswordUnsetHint')
           }
         >
           <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder={passwordSet ? '••••••••（留空不修改）' : '选填'}
+            placeholder={
+              passwordSet
+                ? t('settings.mailPasswordPlaceholderSet')
+                : t('settings.mailOptional')
+            }
             autoComplete="new-password"
             disabled={!canManage}
           />
@@ -2101,16 +2162,16 @@ function EmailSection() {
           <Switch
             checked={passwordClear}
             onChange={setPasswordClear}
-            label="清除已保存的密码"
-            hint="勾选后保存即清空密码，适用于改用匿名投递"
+            label={t('settings.mailClearPassword')}
+            hint={t('settings.mailClearPasswordHint')}
             disabled={!canManage}
           />
         ) : null}
 
         <div className="form-grid-2">
           <Field
-            label="发件人地址"
-            hint="留空则用 SMTP 账号作为发件人"
+            label={t('settings.mailSenderLabel')}
+            hint={t('settings.mailSenderHint')}
           >
             <Input
               value={form.sender ?? ''}
@@ -2120,7 +2181,10 @@ function EmailSection() {
               disabled={!canManage}
             />
           </Field>
-          <Field label="发件人名称" hint="收件人看到的显示名">
+          <Field
+            label={t('settings.mailSenderNameLabel')}
+            hint={t('settings.mailSenderNameHint')}
+          >
             <Input
               value={form.sender_name ?? ''}
               onChange={(e) => patch('sender_name', e.target.value)}
@@ -2133,14 +2197,14 @@ function EmailSection() {
         <Switch
           checked={form.verify_ssl !== false}
           onChange={(v) => patch('verify_ssl', v)}
-          label="校验服务器 SSL 证书"
-          hint="内网自签名证书的邮件服务器需要关掉，否则会连接失败"
+          label={t('settings.mailVerifySsl')}
+          hint={t('settings.mailVerifySslHint')}
           disabled={!canManage}
         />
 
         <Field
-          label="管理员收件人"
-          hint="注册与审批通知发给谁。留空则发给所有「启用了账号且填了邮箱」的管理员"
+          label={t('settings.mailAdminRecipientsLabel')}
+          hint={t('settings.mailAdminRecipientsHint')}
         >
           <Input
             value={form.admin_recipients ?? ''}
@@ -2151,28 +2215,31 @@ function EmailSection() {
           />
         </Field>
 
-        <Notice tone="info" title="告警邮件发给谁？">
-          告警邮件的收件人<b>按用户各自配置</b>，不在这里设置：每位用户在
-          「告警」页面填写自己的收件地址，留空则发到他的账号邮箱。
-          这里只配置发信用的服务器，以及注册 / 审批通知发给哪个管理员邮箱。
+        <Notice tone="info" title={t('settings.mailWhoTitle')}>
+          {t('settings.mailWhoPre')}
+          <b>{t('settings.mailWhoStrong')}</b>
+          {t('settings.mailWhoPost')}
         </Notice>
 
         <div className="set-form-block">
           <div className="set-form-block-head">
-            <span className="set-form-block-title">测试发送</span>
+            <span className="set-form-block-title">{t('settings.mailTestBlock')}</span>
             <span className="set-form-block-hint">
-              保存之后点一下，确认服务器真的能发出去
+              {t('settings.mailTestBlockHint')}
             </span>
           </div>
           {/* 按钮紧贴收件人输入框右侧。
               标签 / 说明交给 Field，按钮与输入框一起放进行容器 —— 两者都是
               34px 高，居中对齐天然成立，不用像早先那样塞一个空 label 撑位置。 */}
-          <Field label="收件人" hint="留空则发给上面的「管理员收件人」">
+          <Field
+            label={t('settings.mailTestToLabel')}
+            hint={t('settings.mailTestToHint')}
+          >
             <div className="set-input-action">
               <Input
                 value={testTo}
                 onChange={(e) => setTestTo(e.target.value)}
-                placeholder="留空测试管理员收件人"
+                placeholder={t('settings.mailTestToPlaceholder')}
                 mono
                 disabled={!canManage}
               />
@@ -2183,7 +2250,7 @@ function EmailSection() {
                 disabled={!canManage}
                 onClick={() => void sendTest()}
               >
-                发送测试邮件
+                {t('settings.mailSendTest')}
               </Button>
             </div>
           </Field>
@@ -2212,6 +2279,7 @@ function SystemSection({
   currentUsername?: string;
   currentRole?: string;
 }) {
+  const t = useT();
   const { isAdmin } = useAuth();
   const [lastChecked, setLastChecked] = useState<Date>(() => new Date());
 
@@ -2256,8 +2324,8 @@ function SystemSection({
       await connectionsApi.activate(id);
       const picked = conns.find((item) => item.id === id);
       toast.success(
-        '已切换默认读取的 PVE',
-        `「集群节点状态」与健康探活改读 ${picked?.name || id}，其余连接不受影响`,
+        t('settings.systemSwitched'),
+        t('settings.systemSwitchedHint', { name: picked?.name || id }),
       );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['connections'] }),
@@ -2267,7 +2335,7 @@ function SystemSection({
       ]);
       onRetryHealth();
     } catch (err) {
-      toast.error('切换失败', errorMessage(err));
+      toast.error(t('settings.systemSwitchFailed'), errorMessage(err));
     } finally {
       setSwitching(false);
     }
@@ -2283,14 +2351,14 @@ function SystemSection({
     return (
       <Card>
         <CardHeader
-          title="系统信息"
-          subtitle="后端健康检查"
+          title={t('settings.systemTitle')}
+          subtitle={t('settings.systemSubtitleHealth')}
           icon={<IconActivity size={17} />}
         />
         <ErrorState
           notImplemented
-          title="健康检查接口尚未实现"
-          message="后端 /health 返回未实现。该接口应无需认证即可访问，用于探活与前端启动检测。"
+          title={t('settings.systemNotImplTitle')}
+          message={t('settings.systemNotImplMsg')}
           onRetry={onRetryHealth}
         />
       </Card>
@@ -2300,8 +2368,10 @@ function SystemSection({
   return (
     <Card>
       <CardHeader
-        title="系统信息"
-        subtitle={`最近检查：${formatDateTime(lastChecked)}`}
+        title={t('settings.systemTitle')}
+        subtitle={t('settings.systemLastChecked', {
+          time: formatDateTime(lastChecked),
+        })}
         icon={<IconActivity size={17} />}
         actions={
           <>
@@ -2312,10 +2382,10 @@ function SystemSection({
               size="sm"
             >
               {healthLoading
-                ? '检测中'
+                ? t('settings.systemChecking')
                 : connected
-                  ? '集群已连接'
-                  : '集群不可达'}
+                  ? t('settings.systemConnected')
+                  : t('settings.systemUnreachable')}
             </Badge>
             <Button
               variant="ghost"
@@ -2324,7 +2394,7 @@ function SystemSection({
               onClick={onRetryHealth}
               loading={healthLoading}
             >
-              重新检测
+              {t('settings.systemRecheck')}
             </Button>
           </>
         }
@@ -2332,7 +2402,7 @@ function SystemSection({
 
       <div className="set-kpi-grid mt-16">
         <KpiCard
-          label="面板状态"
+          label={t('settings.systemKpiPanel')}
           value={health?.status ?? '—'}
           icon={<IconShield size={18} />}
           tone={
@@ -2343,25 +2413,34 @@ function SystemSection({
           loading={healthLoading}
         />
         <KpiCard
-          label="Proxmox 版本"
+          label={t('settings.systemKpiVersion')}
           value={health?.pve_version || cluster?.version || '—'}
-          hint={health?.pve_connected ? '当前已连接' : '未连接'}
+          hint={
+            health?.pve_connected
+              ? t('settings.systemConnectedHint')
+              : t('settings.systemNotConnectedHint')
+          }
           icon={<IconServer size={18} />}
           tone="accent"
           loading={healthLoading || clusterLoading}
         />
         <KpiCard
-          label={totals ? 'PVE 节点合计' : '集群节点'}
+          label={
+            totals ? t('settings.systemKpiNodesFleet') : t('settings.systemKpiNodes')
+          }
           value={totals ? totals.nodes : (cluster?.nodes.length ?? '—')}
           hint={
             totals
-              ? `${totals.online}/${totals.connections} 条连接在线`
+              ? t('settings.systemConnectionsOnline', {
+                  online: totals.online,
+                  total: totals.connections,
+                })
               : cluster
                 ? cluster.quorate === true
-                  ? '仲裁正常'
+                  ? t('settings.systemQuorate')
                   : cluster.quorate === false
-                    ? '仲裁丢失'
-                    : '单机节点'
+                    ? t('settings.systemNoQuorum')
+                    : t('settings.systemStandalone')
                 : undefined
           }
           icon={<IconLayers size={18} />}
@@ -2383,11 +2462,14 @@ function SystemSection({
           loading={clusterLoading || fleet.isLoading}
         />
         <KpiCard
-          label="PVE 连接"
+          label={t('settings.systemKpiConnections')}
           value={totals ? totals.connections : '—'}
           hint={
             totals
-              ? `${totals.clusters} 个集群 · ${totals.standalone} 台单机`
+              ? t('settings.systemConnSummary', {
+                  clusters: totals.clusters,
+                  standalone: totals.standalone,
+                })
               : undefined
           }
           icon={<IconServer size={18} />}
@@ -2398,9 +2480,9 @@ function SystemSection({
 
       <div className="set-info-grid mt-16">
         <div className="set-info-tile">
-          <span className="set-info-label">当前用户</span>
+          <span className="set-info-label">{t('settings.systemInfoUser')}</span>
           <span className="set-info-value">
-            {currentUsername ?? '未知'}
+            {currentUsername ?? t('settings.systemUnknown')}
             {currentRole ? (
               <span className="fs-xs text-muted mono"> · {currentRole}</span>
             ) : null}
@@ -2408,45 +2490,48 @@ function SystemSection({
         </div>
 
         <div className="set-info-tile">
-          <span className="set-info-label">面板地址</span>
+          <span className="set-info-label">{t('settings.systemInfoPanelUrl')}</span>
           <span className="set-info-value mono fs-sm">{window.location.origin}</span>
         </div>
 
         <div className="set-info-tile">
-          <span className="set-info-label">API 基址</span>
+          <span className="set-info-label">{t('settings.systemInfoApiBase')}</span>
           <span className="set-info-value mono fs-sm">/api</span>
         </div>
 
         <div className="set-info-tile">
-          <span className="set-info-label">时区</span>
+          <span className="set-info-label">{t('settings.systemInfoTimezone')}</span>
           <span className="set-info-value mono fs-sm">
             {Intl.DateTimeFormat().resolvedOptions().timeZone}
           </span>
         </div>
 
         <div className="set-info-tile">
-          <span className="set-info-label">窗口尺寸</span>
+          <span className="set-info-label">{t('settings.systemInfoWindow')}</span>
           <span className="set-info-value mono fs-sm">
             {window.innerWidth} × {window.innerHeight}
           </span>
         </div>
 
         <div className="set-info-tile">
-          <span className="set-info-label">运行环境</span>
+          <span className="set-info-label">{t('settings.systemInfoEnv')}</span>
           <span className="set-info-value mono fs-sm">
-            {import.meta.env.MODE} · {import.meta.env.PROD ? '生产构建' : '开发模式'}
+            {import.meta.env.MODE} ·{' '}
+            {import.meta.env.PROD
+              ? t('settings.systemProdBuild')
+              : t('settings.systemDevMode')}
           </span>
         </div>
 
         <div className="set-info-tile">
-          <span className="set-info-label">当前时间</span>
+          <span className="set-info-label">{t('settings.systemInfoNow')}</span>
           <span className="set-info-value mono fs-sm">
             {formatDateTime(new Date())}
           </span>
         </div>
 
         <div className="set-info-tile is-wide">
-          <span className="set-info-label">浏览器</span>
+          <span className="set-info-label">{t('settings.systemInfoBrowser')}</span>
           <span className="set-info-value fs-sm" title={navigator.userAgent}>
             {navigator.userAgent}
           </span>
@@ -2461,18 +2546,25 @@ function SystemSection({
             <span className="set-form-block-icon">
               <IconLayers size={15} />
             </span>
-            <span className="set-form-block-title">PVE 连接明细</span>
+            <span className="set-form-block-title">
+              {t('settings.systemFleetDetail')}
+            </span>
             <span className="set-form-block-hint">
               {totals.ha_enabled > 0
-                ? `${totals.ha_enabled} 个集群启用 HA · ${totals.ha_resources} 个 HA 资源`
-                : '暂无集群启用 HA'}
+                ? t('settings.systemHaSummary', {
+                    clusters: totals.ha_enabled,
+                    resources: totals.ha_resources,
+                  })
+                : t('settings.systemHaNone')}
             </span>
           </div>
           <div className="set-conn-list">
             {(fleet.data?.connections ?? []).map((row) => (
               <div className="set-conn-row" key={row.id}>
                 <Badge variant={row.ok ? 'success' : 'danger'} dot size="sm">
-                  {row.ok ? '在线' : '不可达'}
+                  {row.ok
+                    ? t('settings.systemOnline')
+                    : t('settings.systemUnreachableShort')}
                 </Badge>
                 <span className="set-conn-name">{row.name}</span>
                 <span className="mono fs-xs text-muted">{row.host}</span>
@@ -2480,17 +2572,17 @@ function SystemSection({
                   {row.ok ? (
                     <>
                       {row.version ? `PVE ${row.version} · ` : ''}
-                      {row.node_count} 节点 ·
+                      {t('settings.systemNodeCount', { n: row.node_count })} ·
                       {row.cluster_mode === 'cluster'
                         ? row.quorate === false
-                          ? ' 仲裁丢失'
+                          ? ` ${t('settings.systemNoQuorumShort')}`
                           : row.ha_enabled
-                            ? ' HA 已启用'
-                            : ' HA 未启用'
-                        : ' 单机'}
+                            ? ` ${t('settings.systemHaOn')}`
+                            : ` ${t('settings.systemHaOff')}`
+                        : ` ${t('settings.systemStandaloneShort')}`}
                     </>
                   ) : (
-                    row.error || '连接失败'
+                    row.error || t('settings.systemConnFailed')
                   )}
                 </span>
               </div>
@@ -2506,11 +2598,13 @@ function SystemSection({
             <span className="set-form-block-icon">
               <IconServer size={15} />
             </span>
-            <span className="set-form-block-title">集群节点状态</span>
+            <span className="set-form-block-title">{t('settings.systemNodesTitle')}</span>
             <span className="set-form-block-hint">
-              共 {cluster.nodes.length} 个节点
+              {t('settings.systemNodesCount', { n: cluster.nodes.length })}
               {totals && totals.connections > 1
-                ? ` · 读的是「${defaultName || '默认连接'}」，其余见上方明细`
+                ? t('settings.systemReadingFrom', {
+                    name: defaultName || t('settings.systemDefaultConnLabel'),
+                  })
                 : ''}
             </span>
           </div>
@@ -2520,13 +2614,15 @@ function SystemSection({
           {isAdmin && conns.length > 1 ? (
             <div className="set-default-conn">
               <Select
-                label="默认读取的 PVE"
-                hint="只影响「集群节点状态」与健康探活这类一次只能读一台的接口；其余连接仍是同级的，页面照常各自读取"
+                label={t('settings.systemDefaultConnLabel')}
+                hint={t('settings.systemDefaultConnHint')}
                 value={defaultId}
                 disabled={switching}
                 onChange={(event) => void pickDefault(event.target.value)}
                 options={conns.map((item) => ({
-                  label: `${item.name || item.host}${item.id === defaultId ? '（当前）' : ''}`,
+                  label: `${item.name || item.host}${
+                    item.id === defaultId ? t('settings.systemCurrentSuffix') : ''
+                  }`,
                   value: item.id,
                 }))}
               />
@@ -2546,55 +2642,53 @@ function SystemSection({
           </div>
         </div>
       ) : clusterLoading ? (
-        <div className="fs-sm text-muted mt-16">正在读取集群节点信息…</div>
+        <div className="fs-sm text-muted mt-16">{t('settings.systemLoadingNodes')}</div>
       ) : null}
 
       {!connected && !healthLoading && health ? (
-        <Notice tone="danger" title="面板无法连接到 Proxmox 集群">
-          请检查「Proxmox 连接配置」中的主机、端口与 API Token 是否正确，
-          并确认面板服务器到集群管理端口（默认 8006）的网络可达。
-          未连接时所有依赖集群的页面都会显示为空或报错。
+        <Notice tone="danger" title={t('settings.systemPveDownTitle')}>
+          {t('settings.systemPveDownBody')}
         </Notice>
       ) : null}
 
-      <CollapsibleCard title="部署与排错提示" icon={<IconInfo size={15} />}>
+      <CollapsibleCard
+        title={t('settings.systemTipsTitle')}
+        icon={<IconInfo size={15} />}
+      >
         <div className="desc-list">
           <div className="desc-item">
-            <div className="desc-label">认证方式</div>
+            <div className="desc-label">{t('settings.systemTipAuth')}</div>
             <div className="desc-value">
-              面板自身用 JWT 保护：令牌放在{' '}
-              <span className="mono">HttpOnly + SameSite</span> Cookie 里
-              （JS 读不到，XSS 也偷不走），写操作另有 CSRF 双提交校验；
-              后端再用 API Token 访问 Proxmox。两层认证相互独立，
-              因此面板账号被盗不会直接泄露 Proxmox Token。
+              {t('settings.systemTipAuthPre')}
+              <span className="mono">HttpOnly + SameSite</span>
+              {t('settings.systemTipAuthPost')}
             </div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">自签名证书</div>
+            <div className="desc-label">{t('settings.systemTipCert')}</div>
             <div className="desc-value">
-              若 Proxmox 使用自签名证书且关闭了 verify_ssl，
-              后端需要在 httpx / requests 调用中显式传入{' '}
-              <span className="mono">verify=False</span>，否则会因证书校验失败而报 502。
+              {t('settings.systemTipCertPre')}
+              <span className="mono">verify=False</span>
+              {t('settings.systemTipCertPost')}
             </div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">WebSocket</div>
+            <div className="desc-label">{t('settings.systemTipWs')}</div>
             <div className="desc-value">
-              任务日志与 VNC 控制台依赖 WebSocket 代理。
-              若部署在 Nginx 之后，需要转发{' '}
-              <span className="mono">/api/ws/</span> 与{' '}
-              <span className="mono">/api/vms/*/console/*ws</span> 路径，
-              并设置 <span className="mono">Upgrade</span> 与{' '}
-              <span className="mono">Connection</span> 头。
+              {t('settings.systemTipWs1')}
+              <span className="mono">/api/ws/</span>
+              {t('settings.systemTipWs2')}
+              <span className="mono">/api/vms/*/console/*ws</span>
+              {t('settings.systemTipWs3')}
+              <span className="mono">Upgrade</span>
+              {t('settings.systemTipWs4')}
+              <span className="mono">Connection</span>
+              {t('settings.systemTipWs5')}
             </div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">超时设置</div>
-            <div className="desc-value">
-              备份、克隆、迁移等长任务会持续数十分钟。后端发起这类请求时应
-              使用较长的超时或改用异步任务模式，避免请求被网关截断。
-              前端已通过轮询任务状态的方式规避长连接问题。
-            </div>
+            <div className="desc-label">{t('settings.systemTipTimeout')}</div>
+            <div className="desc-value">{t('settings.systemTipTimeoutBody')}</div>
           </div>
         </div>
       </CollapsibleCard>
@@ -2617,6 +2711,7 @@ function ClusterNodeRow({
   type?: string;
   canEdit: boolean;
 }) {
+  const t = useT();
   const { version, address } = useNodeMeta(name, online);
   const bits = [version ? `PVE ${version}` : '', address, type]
     .filter(Boolean)
@@ -2633,7 +2728,7 @@ function ClusterNodeRow({
           <span className="fs-xs text-muted mono">{bits || '—'}</span>
         </div>
         <Badge variant={online ? 'success' : 'danger'} dot pulse={online} size="sm">
-          {online ? '在线' : '离线'}
+          {online ? t('settings.systemOnline') : t('settings.systemOffline')}
         </Badge>
       </div>
       <div className="set-node-note">

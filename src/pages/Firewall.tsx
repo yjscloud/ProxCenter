@@ -39,6 +39,7 @@ import {
 } from '../components/Icons';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { tStatic, useT } from '../i18n';
 import type {
   FirewallGroup,
   FirewallIpset,
@@ -49,12 +50,6 @@ import type {
 } from '../api/types';
 
 type Tab = 'rules' | 'groups' | 'ipsets' | 'templates';
-
-const SCOPES: Array<{ label: string; value: FirewallScope }> = [
-  { label: '虚拟机', value: 'vm' },
-  { label: '节点', value: 'node' },
-  { label: '集群', value: 'cluster' },
-];
 
 const ACTIONS = ['ACCEPT', 'DROP', 'REJECT'];
 
@@ -73,16 +68,26 @@ function toInput(rule: FirewallRule, override: Partial<FirewallRuleInput> = {}):
 
 /** 端口列的展示：宏 > 端口 > 任意 */
 function targetText(rule: FirewallRule): string {
-  if (rule.macro) return `宏 ${rule.macro}`;
+  if (rule.macro) return tStatic('firewall.macro', { name: rule.macro });
   const proto = rule.proto || 'any';
   const port = rule.dport || 'any';
   return `${proto}/${port}`;
 }
 
 export function Firewall() {
+  const t = useT();
   const { hasPermission } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
+
+  const scopes = useMemo<Array<{ label: string; value: FirewallScope }>>(
+    () => [
+      { label: t('firewall.scopeVm'), value: 'vm' },
+      { label: t('firewall.scopeNode'), value: 'node' },
+      { label: t('firewall.scopeCluster'), value: 'cluster' },
+    ],
+    [t],
+  );
 
   const canManage = hasPermission('firewall.manage');
   const canCluster = hasPermission('firewall.cluster');
@@ -149,11 +154,17 @@ export function Firewall() {
   }, [scope, node, vmid]);
 
   const scopeLabel = useMemo(() => {
-    if (scope === 'cluster') return '集群规则';
-    if (scope === 'node') return `${node || '节点'} 节点规则`;
+    if (scope === 'cluster') return t('firewall.scopeClusterLabel');
+    if (scope === 'node') {
+      return t('firewall.scopeNodeLabel', {
+        node: node || t('firewall.scopeNodeFallback'),
+      });
+    }
     const vm = vms.find((item) => item.vmid === vmid);
-    return vm ? `${vm.name}（${vm.vmid}）规则` : `虚拟机 ${vmid ?? ''} 规则`;
-  }, [scope, node, vmid, vms]);
+    return vm
+      ? t('firewall.scopeVmLabel', { name: vm.name, vmid: vm.vmid })
+      : t('firewall.scopeVmFallback', { vmid: vmid ?? '' });
+  }, [scope, node, vmid, vms, t]);
 
   const rulesQuery = useQuery({
     queryKey: ['firewall', 'rules', ...scopeParams],
@@ -228,12 +239,12 @@ export function Firewall() {
         await firewallApi.createRule(...scopeParams, rule);
         await invalidateRules();
       }
-      toast.success(editingRule ? '规则已更新' : '规则已添加');
+      toast.success(editingRule ? t('firewall.ruleUpdated') : t('firewall.ruleAdded'));
       setEditorOpen(false);
       setEditingRule(null);
       setEditingGroup('');
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('firewall.saveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -250,9 +261,9 @@ export function Firewall() {
         await firewallApi.updateRule(...scopeParams, rule.pos, payload);
         await invalidateRules();
       }
-      toast.success(payload.enable ? '规则已启用' : '规则已停用');
+      toast.success(payload.enable ? t('firewall.ruleEnabled') : t('firewall.ruleDisabled'));
     } catch (err) {
-      toast.error('操作失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -265,7 +276,7 @@ export function Firewall() {
       await firewallApi.moveRule(...scopeParams, rule.pos, to);
       await invalidateRules();
     } catch (err) {
-      toast.error('调整顺序失败', errorMessage(err));
+      toast.error(t('firewall.moveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -295,10 +306,10 @@ export function Firewall() {
         await firewallApi.deleteRule(...scopeParams, deleteTarget.pos ?? 0);
         await invalidateRules();
       }
-      toast.success('已删除');
+      toast.success(t('firewall.deleted'));
       setDeleteTarget(null);
     } catch (err) {
-      toast.error('删除失败', errorMessage(err));
+      toast.error(t('firewall.deleteFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -309,9 +320,9 @@ export function Firewall() {
     try {
       await firewallApi.saveOptions(...scopeParams, patch);
       await qc.invalidateQueries({ queryKey: ['firewall', 'options'] });
-      toast.success('防火墙设置已保存');
+      toast.success(t('firewall.optionsSaved'));
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('firewall.saveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -319,7 +330,7 @@ export function Firewall() {
 
   const createGroup = async () => {
     if (!groupDraft.name.trim()) {
-      toast.warning('请填写安全组名称');
+      toast.warning(t('firewall.groupNameRequired'));
       return;
     }
     setBusy(true);
@@ -328,9 +339,9 @@ export function Firewall() {
       setGroupDraft({ name: '', comment: '' });
       await groupsQuery.refetch();
       await refsQuery.refetch();
-      toast.success('安全组已创建');
+      toast.success(t('firewall.groupCreated'));
     } catch (err) {
-      toast.error('创建失败', errorMessage(err));
+      toast.error(t('firewall.createFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -338,7 +349,7 @@ export function Firewall() {
 
   const createIpset = async () => {
     if (!ipsetDraft.name.trim()) {
-      toast.warning('请填写集合名称');
+      toast.warning(t('firewall.ipsetNameRequired'));
       return;
     }
     setBusy(true);
@@ -347,9 +358,9 @@ export function Firewall() {
       setIpsetDraft({ name: '', comment: '' });
       await ipsetsQuery.refetch();
       await refsQuery.refetch();
-      toast.success('IP 集合已创建');
+      toast.success(t('firewall.ipsetCreated'));
     } catch (err) {
-      toast.error('创建失败', errorMessage(err));
+      toast.error(t('firewall.createFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -357,7 +368,7 @@ export function Firewall() {
 
   const addEntry = async () => {
     if (!currentIpset || !entryDraft.cidr.trim()) {
-      toast.warning('请填写 IP 或网段');
+      toast.warning(t('firewall.entryRequired'));
       return;
     }
     setBusy(true);
@@ -370,7 +381,7 @@ export function Firewall() {
       setEntryDraft({ cidr: '', comment: '', nomask: false });
       await ipsetsQuery.refetch();
     } catch (err) {
-      toast.error('添加失败', errorMessage(err));
+      toast.error(t('firewall.entryAddFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -390,32 +401,36 @@ export function Firewall() {
     },
     {
       key: 'state',
-      header: '状态',
+      header: t('firewall.colState'),
       width: 74,
       render: (rule) =>
         rule.enable ? (
           <Badge variant="success" size="sm">
-            生效
+            {t('firewall.active')}
           </Badge>
         ) : (
           <Badge variant="neutral" size="sm">
-            停用
+            {t('firewall.inactive')}
           </Badge>
         ),
     },
     {
       key: 'dir',
-      header: '方向',
+      header: t('firewall.colDir'),
       width: 84,
       render: (rule) => (
         <span className="fs-sm">
-          {rule.type === 'group' ? '安全组' : rule.type === 'out' ? '出站' : '入站'}
+          {rule.type === 'group'
+            ? t('firewall.dirGroup')
+            : rule.type === 'out'
+              ? t('firewall.dirOut')
+              : t('firewall.dirIn')}
         </span>
       ),
     },
     {
       key: 'action',
-      header: '动作',
+      header: t('firewall.colAction'),
       width: 90,
       render: (rule) => (
         <Badge variant={actionTone(rule.action)} size="sm">
@@ -425,7 +440,7 @@ export function Firewall() {
     },
     {
       key: 'match',
-      header: '匹配',
+      header: t('firewall.colMatch'),
       render: (rule) => (
         <span className="fs-sm mono">
           {rule.type === 'group' ? `+${rule.group}` : targetText(rule)}
@@ -434,7 +449,7 @@ export function Firewall() {
     },
     {
       key: 'source',
-      header: '来源 → 目标',
+      header: t('firewall.colSource'),
       render: (rule) => (
         <span className="fs-xs text-muted mono">
           {rule.source || 'any'} → {rule.dest || 'any'}
@@ -443,7 +458,7 @@ export function Firewall() {
     },
     {
       key: 'log',
-      header: '日志',
+      header: t('firewall.colLog'),
       width: 72,
       render: (rule) =>
         rule.log && rule.log !== 'nolog' ? (
@@ -456,14 +471,14 @@ export function Firewall() {
     },
     {
       key: 'comment',
-      header: '备注',
+      header: t('firewall.colComment'),
       render: (rule) => (
         <span className="fs-sm">{rule.comment || <span className="text-muted">—</span>}</span>
       ),
     },
     {
       key: 'ops',
-      header: '操作',
+      header: t('common.actions'),
       width: 224,
       align: 'right',
       render: (rule) => (
@@ -473,14 +488,14 @@ export function Firewall() {
               {group ? null : (
                 <>
                   <IconButton
-                    label="上移（优先级更高）"
+                    label={t('firewall.moveUp')}
                     disabled={busy || rule.pos === 0}
                     onClick={() => void moveRule(rule, rule.pos - 1)}
                   >
                     <IconChevronUp size={15} />
                   </IconButton>
                   <IconButton
-                    label="下移"
+                    label={t('firewall.moveDown')}
                     disabled={busy}
                     onClick={() => void moveRule(rule, rule.pos + 1)}
                   >
@@ -489,7 +504,7 @@ export function Firewall() {
                 </>
               )}
               <IconButton
-                label={rule.enable ? '停用该规则' : '启用该规则'}
+                label={rule.enable ? t('firewall.disableRule') : t('firewall.enableRule')}
                 variant={rule.enable ? 'ghost' : 'primary'}
                 disabled={busy}
                 onClick={() => void toggleRule(rule, group)}
@@ -505,10 +520,10 @@ export function Firewall() {
                   setEditorOpen(true);
                 }}
               >
-                编辑
+                {t('common.edit')}
               </Button>
               <IconButton
-                label="删除该规则"
+                label={t('firewall.deleteRule')}
                 variant="danger"
                 onClick={() =>
                   setDeleteTarget(
@@ -522,7 +537,7 @@ export function Firewall() {
               </IconButton>
             </>
           ) : (
-            <span className="fs-xs text-muted">只读</span>
+            <span className="fs-xs text-muted">{t('firewall.readonly')}</span>
           )}
         </span>
       ),
@@ -530,21 +545,21 @@ export function Firewall() {
   ];
 
   const ipsetEntryColumns: Array<Column<{ cidr: string; comment: string; nomatch: boolean }>> = [
-    { key: 'cidr', header: '地址 / 网段', mono: true, render: (e) => e.cidr },
+    { key: 'cidr', header: t('firewall.colAddress'), mono: true, render: (e) => e.cidr },
     {
       key: 'nomatch',
-      header: '取反',
+      header: t('firewall.colNomatch'),
       width: 80,
       render: (e) =>
         e.nomatch ? (
           <Badge variant="warning" size="sm">
-            是
+            {t('common.yes')}
           </Badge>
         ) : (
-          <span className="text-muted fs-xs">否</span>
+          <span className="text-muted fs-xs">{t('common.no')}</span>
         ),
     },
-    { key: 'comment', header: '备注', render: (e) => e.comment || '—' },
+    { key: 'comment', header: t('firewall.colComment'), render: (e) => e.comment || '—' },
     {
       key: 'ops',
       header: '',
@@ -554,7 +569,7 @@ export function Firewall() {
         <span className="row-actions">
           {canManage ? (
             <IconButton
-              label={`删除 ${e.cidr}`}
+              label={t('firewall.deleteEntry', { cidr: e.cidr })}
               variant="danger"
               onClick={() => setDeleteTarget({ kind: 'entry', name: e.cidr })}
             >
@@ -569,19 +584,19 @@ export function Firewall() {
   const groupColumns: Array<Column<FirewallGroup>> = [
     {
       key: 'group',
-      header: '安全组',
+      header: t('firewall.colGroup'),
       render: (g) => (
         <button
           type="button"
           className={`link-text mono ${activeGroup === g.group ? 'is-active' : ''}`}
-          title="查看并编辑该安全组的规则"
+          title={t('firewall.groupRulesHint')}
           onClick={() => setActiveGroup(g.group)}
         >
           {g.group}
         </button>
       ),
     },
-    { key: 'comment', header: '备注', render: (g) => g.comment || '—' },
+    { key: 'comment', header: t('firewall.colComment'), render: (g) => g.comment || '—' },
     {
       key: 'ops',
       header: '',
@@ -591,7 +606,7 @@ export function Firewall() {
         <span className="row-actions">
           {canCluster ? (
             <IconButton
-              label={`删除安全组 ${g.group}`}
+              label={t('firewall.deleteGroup', { name: g.group })}
               variant="danger"
               onClick={() => setDeleteTarget({ kind: 'group', name: g.group })}
             >
@@ -607,8 +622,8 @@ export function Firewall() {
 
   return (
     <PageShell
-      title="防火墙"
-      subtitle="Proxmox 原生防火墙：集群 / 节点 / 虚拟机规则、安全组、IP 集合与批量下发"
+      title={t('firewall.title')}
+      subtitle={t('firewall.subtitle')}
       actions={
         <div className="form-row">
           <Button
@@ -620,18 +635,18 @@ export function Firewall() {
             }}
             loading={rulesQuery.isFetching}
           >
-            <IconRefresh size={14} /> 刷新
+            <IconRefresh size={14} /> {t('common.refresh')}
           </Button>
         </div>
       }
     >
-      <div className="tabs" role="tablist" aria-label="防火墙视图切换">
+      <div className="tabs" role="tablist" aria-label={t('firewall.viewAria')}>
         {(
           [
-            { key: 'rules', label: '安全策略', icon: <IconShield size={15} /> },
-            { key: 'groups', label: '安全组', icon: <IconLayers size={15} /> },
-            { key: 'ipsets', label: 'IP 集合', icon: <IconLock size={15} /> },
-            { key: 'templates', label: '规则模板', icon: <IconPlus size={15} /> },
+            { key: 'rules', label: t('firewall.tabRules'), icon: <IconShield size={15} /> },
+            { key: 'groups', label: t('firewall.tabGroups'), icon: <IconLayers size={15} /> },
+            { key: 'ipsets', label: t('firewall.tabIpsets'), icon: <IconLock size={15} /> },
+            { key: 'templates', label: t('firewall.tabTemplates'), icon: <IconPlus size={15} /> },
           ] as Array<{ key: Tab; label: string; icon: React.ReactNode }>
         ).map((item) => (
           <button
@@ -655,15 +670,15 @@ export function Firewall() {
           <>
             <Card collapsible={false}>
               <CardHeader
-                title="防护配置"
-                subtitle="先选规则作用的对象，再决定开关与默认策略"
+                title={t('firewall.configTitle')}
+                subtitle={t('firewall.configSubtitle')}
                 icon={<IconShield size={16} />}
                 actions={
                   <SegmentedControl<FirewallScope>
                     value={scope}
                     onChange={(value) => setScope(value)}
-                    options={SCOPES}
-                    ariaLabel="选择防火墙作用域"
+                    options={scopes}
+                    ariaLabel={t('firewall.scopeAria')}
                   />
                 }
               />
@@ -675,7 +690,7 @@ export function Firewall() {
               */}
               <div className="fw-config">
                 <div className="fw-config-row">
-                  <span className="fw-config-key">作用对象</span>
+                  <span className="fw-config-key">{t('firewall.scopeObject')}</span>
                   <div className="fw-config-val">
                     {scope === 'node' ? (
                       <div className="fw-target">
@@ -686,8 +701,8 @@ export function Firewall() {
                             label: `${n.node}（${n.status}）`,
                             value: n.node,
                           }))}
-                          placeholder="请选择节点"
-                          aria-label="选择节点"
+                          placeholder={t('firewall.selectNodePlaceholder')}
+                          aria-label={t('firewall.selectNodeAria')}
                         />
                       </div>
                     ) : null}
@@ -707,94 +722,88 @@ export function Firewall() {
                               label: `${vm.name}（${vm.node}/${vm.vmid}）`,
                               value: String(vm.vmid),
                             }))}
-                            placeholder="请选择虚拟机"
-                            aria-label="选择虚拟机 / 容器"
+                            placeholder={t('firewall.selectVmPlaceholder')}
+                            aria-label={t('firewall.selectVmAria')}
                           />
                         </div>
-                        <span className="fw-config-note">
-                          普通用户只能看到自己名下的机器
-                        </span>
+                        <span className="fw-config-note">{t('firewall.ownerOnlyNote')}</span>
                       </>
                     ) : null}
 
                     {scope === 'cluster' ? (
-                      <span className="fw-config-note">
-                        集群级：规则对所有宿主机生效
-                      </span>
+                      <span className="fw-config-note">{t('firewall.clusterNote')}</span>
                     ) : null}
                   </div>
                 </div>
 
                 {scope === 'cluster' && !canCluster ? (
-                  <Notice tone="info">
-                    集群级规则影响所有主机，需要 firewall.cluster 权限：你可以查看，但不能修改。
-                  </Notice>
+                  <Notice tone="info">{t('firewall.clusterReadonly')}</Notice>
                 ) : null}
 
                 {optionsQuery.isError ? (
-                  <Notice tone="warning" title="读不到防火墙设置">
+                  <Notice tone="warning" title={t('firewall.optionsError')}>
                     {errorMessage(optionsQuery.error)}
                   </Notice>
                 ) : (
                   <>
                     <div className="fw-config-row">
-                      <span className="fw-config-key">防火墙</span>
+                      <span className="fw-config-key">{t('firewall.enableLabel')}</span>
                       <div className="fw-config-val">
                         <Switch
                           checked={Boolean(options.enable)}
                           disabled={!writable || busy}
                           onChange={(v) => void saveOptions({ enable: v })}
-                          ariaLabel="启用防火墙"
+                          ariaLabel={t('firewall.enableAria')}
                         />
                         <span className="fw-config-note">
                           {options.enable
-                            ? '已启用，下面的规则正在生效'
-                            : '未启用时下面的规则都不会生效'}
+                            ? t('firewall.enabledNote')
+                            : t('firewall.disabledNote')}
                         </span>
                       </div>
                     </div>
 
                     <div className="fw-config-row">
-                      <span className="fw-config-key">默认策略</span>
+                      <span className="fw-config-key">{t('firewall.policyLabel')}</span>
                       <div className="fw-config-val">
-                        <span className="fw-config-note">入站</span>
+                        <span className="fw-config-note">{t('firewall.policyIn')}</span>
                         <Select
                           value={options.policy_in ?? 'DROP'}
                           disabled={!writable || busy}
                           onChange={(e) => void saveOptions({ policy_in: e.target.value })}
                           options={ACTIONS.map((a) => ({ label: a, value: a }))}
-                          aria-label="入站默认策略"
+                          aria-label={t('firewall.policyInAria')}
                         />
-                        <span className="fw-config-note">出站</span>
+                        <span className="fw-config-note">{t('firewall.policyOut')}</span>
                         <Select
                           value={options.policy_out ?? 'ACCEPT'}
                           disabled={!writable || busy}
                           onChange={(e) => void saveOptions({ policy_out: e.target.value })}
                           options={ACTIONS.map((a) => ({ label: a, value: a }))}
-                          aria-label="出站默认策略"
+                          aria-label={t('firewall.policyOutAria')}
                         />
-                        <span className="fw-config-note">没有命中任何规则时的动作</span>
+                        <span className="fw-config-note">{t('firewall.policyHint')}</span>
                       </div>
                     </div>
 
                     {scope === 'vm' ? (
                       <div className="fw-config-row">
-                        <span className="fw-config-key">地址过滤</span>
+                        <span className="fw-config-key">{t('firewall.addrFilter')}</span>
                         <div className="fw-config-val">
                           <Switch
                             checked={Boolean(options.ipfilter)}
                             disabled={!writable || busy}
                             onChange={(v) => void saveOptions({ ipfilter: v })}
-                            ariaLabel="按规则过滤虚拟机的源 IP，防地址伪造"
+                            ariaLabel={t('firewall.ipfilterAria')}
                           />
-                          <span className="fw-config-note">IP 过滤</span>
+                          <span className="fw-config-note">{t('firewall.ipfilter')}</span>
                           <Switch
                             checked={Boolean(options.macfilter)}
                             disabled={!writable || busy}
                             onChange={(v) => void saveOptions({ macfilter: v })}
-                            ariaLabel="按规则过滤虚拟机的源 MAC，防地址伪造"
+                            ariaLabel={t('firewall.macfilterAria')}
                           />
-                          <span className="fw-config-note">MAC 过滤</span>
+                          <span className="fw-config-note">{t('firewall.macfilter')}</span>
                         </div>
                       </div>
                     ) : null}
@@ -805,11 +814,15 @@ export function Firewall() {
 
             <Card collapsible={false}>
               <CardHeader
-                title={`规则（${rules.length}）`}
+                title={t('firewall.rulesTitle', { n: rules.length })}
                 subtitle={
                   rulesQuery.isLoading
                     ? scopeLabel
-                    : `${scopeLabel} · 生效 ${enabledCount} / ${rules.length}`
+                    : t('firewall.rulesSubtitleActive', {
+                        scope: scopeLabel,
+                        enabled: enabledCount,
+                        total: rules.length,
+                      })
                 }
                 icon={<IconShield size={16} />}
                 actions={
@@ -823,25 +836,25 @@ export function Firewall() {
                         setEditorOpen(true);
                       }}
                     >
-                      <IconPlus size={14} /> 新增规则
+                      <IconPlus size={14} /> {t('firewall.addRule')}
                     </Button>
                   ) : null
                 }
               />
 
               {rulesQuery.isError ? (
-                <Notice tone="warning" title="规则加载失败">
+                <Notice tone="warning" title={t('firewall.rulesLoadFailed')}>
                   {errorMessage(rulesQuery.error)}
                 </Notice>
               ) : (
                 <Table
-                  caption="防火墙规则"
+                  caption={t('firewall.rulesCaption')}
                   rows={rules}
                   columns={ruleColumns('')}
                   rowKey={(rule) => String(rule.pos)}
                   loading={rulesQuery.isLoading}
-                  emptyTitle="还没有规则"
-                  emptyDescription="默认策略已经生效，需要放行特定端口时再加规则"
+                  emptyTitle={t('firewall.rulesEmptyTitle')}
+                  emptyDescription={t('firewall.rulesEmptyDesc')}
                 />
               )}
             </Card>
@@ -852,36 +865,40 @@ export function Firewall() {
           <>
             <Card collapsible={false}>
               <CardHeader
-                title="安全组"
-                subtitle="集群级规则集合，可被任意虚拟机 / 节点引用"
+                title={t('firewall.groupsTitle')}
+                subtitle={t('firewall.groupsSubtitle')}
                 icon={<IconLayers size={16} />}
               />
               <Table
-                caption="安全组列表"
+                caption={t('firewall.groupsCaption')}
                 rows={groups}
                 columns={groupColumns}
                 rowKey={(g) => g.group}
                 loading={groupsQuery.isLoading}
-                emptyTitle="还没有安全组"
+                emptyTitle={t('firewall.groupsEmpty')}
               />
               {canCluster ? (
                 <div className="create-bar">
                   <div className="field-row">
-                    <Field label="新建安全组" required hint="字母开头，最长 18 位">
+                    <Field
+                      label={t('firewall.newGroup')}
+                      required
+                      hint={t('firewall.nameHint')}
+                    >
                       <Input
                         value={groupDraft.name}
                         onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
-                        placeholder="web"
+                        placeholder={t('firewall.groupNamePlaceholder')}
                         mono
                       />
                     </Field>
-                    <Field label="备注">
+                    <Field label={t('firewall.colComment')}>
                       <Input
                         value={groupDraft.comment}
                         onChange={(e) =>
                           setGroupDraft({ ...groupDraft, comment: e.target.value })
                         }
-                        placeholder="Web 前段通用规则"
+                        placeholder={t('firewall.groupCommentPlaceholder')}
                       />
                     </Field>
                     <Button
@@ -889,7 +906,7 @@ export function Firewall() {
                       loading={busy}
                       onClick={() => void createGroup()}
                     >
-                      <IconPlus size={14} /> 创建
+                      <IconPlus size={14} /> {t('common.create')}
                     </Button>
                   </div>
                 </div>
@@ -898,8 +915,16 @@ export function Firewall() {
 
             <Card collapsible={false}>
               <CardHeader
-                title={activeGroup ? `组内规则：${activeGroup}` : '组内规则'}
-                subtitle={activeGroup ? '在别处被引用后即生效' : '先在上面点一个安全组'}
+                title={
+                  activeGroup
+                    ? t('firewall.groupRulesTitle', { name: activeGroup })
+                    : t('firewall.groupRulesNoSel')
+                }
+                subtitle={
+                  activeGroup
+                    ? t('firewall.groupRulesSubtitle')
+                    : t('firewall.groupRulesSubtitleNoSel')
+                }
                 icon={<IconShield size={16} />}
                 actions={
                   canManage && activeGroup ? (
@@ -912,24 +937,22 @@ export function Firewall() {
                         setEditorOpen(true);
                       }}
                     >
-                      <IconPlus size={14} /> 新增规则
+                      <IconPlus size={14} /> {t('firewall.addRule')}
                     </Button>
                   ) : null
                 }
               />
               {activeGroup ? (
                 <Table
-                  caption="安全组规则"
+                  caption={t('firewall.groupRulesCaption')}
                   rows={groupRules}
                   columns={ruleColumns(activeGroup)}
                   rowKey={(rule) => String(rule.pos)}
                   loading={groupRulesQuery.isLoading}
-                  emptyTitle="这个安全组还没有规则"
+                  emptyTitle={t('firewall.groupRulesEmpty')}
                 />
               ) : (
-                <div className="fw-placeholder">
-                  在上面的列表里点一个安全组名，即可查看并编辑它的规则。
-                </div>
+                <div className="fw-placeholder">{t('firewall.groupPickHint')}</div>
               )}
             </Card>
           </>
@@ -939,24 +962,24 @@ export function Firewall() {
           <>
             <Card collapsible={false}>
               <CardHeader
-                title="IP 集合"
-                subtitle="一组可复用的地址段，规则里用 +集合名 引用"
+                title={t('firewall.ipsetsTitle')}
+                subtitle={t('firewall.ipsetsSubtitle')}
                 icon={<IconLock size={16} />}
               />
               <Table
-                caption="IP 集合列表"
+                caption={t('firewall.ipsetsCaption')}
                 rows={ipsets}
                 columns={[
                   {
                     key: 'name',
-                    header: '名称',
+                    header: t('common.name'),
                     render: (item: FirewallIpset) => (
                       <button
                         type="button"
                         className={`link-text mono ${
                           activeIpset === item.name ? 'is-active' : ''
                         }`}
-                        title="查看并编辑该集合的条目"
+                        title={t('firewall.ipsetViewHint')}
                         onClick={() => setActiveIpset(item.name)}
                       >
                         {item.name}
@@ -965,7 +988,7 @@ export function Firewall() {
                   },
                   {
                     key: 'count',
-                    header: '条目',
+                    header: t('firewall.colEntries'),
                     width: 80,
                     align: 'center',
                     render: (item: FirewallIpset) => (
@@ -976,7 +999,7 @@ export function Firewall() {
                   },
                   {
                     key: 'comment',
-                    header: '备注',
+                    header: t('firewall.colComment'),
                     render: (item: FirewallIpset) => item.comment || '—',
                   },
                   {
@@ -988,7 +1011,7 @@ export function Firewall() {
                       <span className="row-actions">
                         {canCluster ? (
                           <IconButton
-                            label={`删除 IP 集合 ${item.name}`}
+                            label={t('firewall.deleteIpset', { name: item.name })}
                             variant="danger"
                             onClick={() =>
                               setDeleteTarget({ kind: 'ipset', name: item.name })
@@ -1003,27 +1026,31 @@ export function Firewall() {
                 ]}
                 rowKey={(item) => item.name}
                 loading={ipsetsQuery.isLoading}
-                emptyTitle="还没有 IP 集合"
+                emptyTitle={t('firewall.ipsetsEmpty')}
               />
 
               {canCluster ? (
                 <div className="create-bar">
                   <div className="field-row">
-                    <Field label="新建集合" required hint="字母开头，最长 18 位">
+                    <Field
+                      label={t('firewall.newIpset')}
+                      required
+                      hint={t('firewall.nameHint')}
+                    >
                       <Input
                         value={ipsetDraft.name}
                         onChange={(e) => setIpsetDraft({ ...ipsetDraft, name: e.target.value })}
-                        placeholder="office"
+                        placeholder={t('firewall.ipsetNamePlaceholder')}
                         mono
                       />
                     </Field>
-                    <Field label="备注">
+                    <Field label={t('firewall.colComment')}>
                       <Input
                         value={ipsetDraft.comment}
                         onChange={(e) =>
                           setIpsetDraft({ ...ipsetDraft, comment: e.target.value })
                         }
-                        placeholder="办公网段"
+                        placeholder={t('firewall.ipsetCommentPlaceholder')}
                       />
                     </Field>
                     <Button
@@ -1031,7 +1058,7 @@ export function Firewall() {
                       loading={busy}
                       onClick={() => void createIpset()}
                     >
-                      <IconPlus size={14} /> 创建
+                      <IconPlus size={14} /> {t('common.create')}
                     </Button>
                   </div>
                 </div>
@@ -1041,21 +1068,21 @@ export function Firewall() {
             {currentIpset ? (
               <Card collapsible={false}>
                 <CardHeader
-                  title={`集合条目：${currentIpset.name}`}
-                  subtitle="支持单个 IP、CIDR 网段，备注可写用途"
+                  title={t('firewall.ipsetEntriesTitle', { name: currentIpset.name })}
+                  subtitle={t('firewall.ipsetEntriesSubtitle')}
                   icon={<IconLock size={16} />}
                 />
                 <Table
-                  caption="IP 集合条目"
+                  caption={t('firewall.ipsetEntriesCaption')}
                   rows={currentIpset.entries}
                   columns={ipsetEntryColumns}
                   rowKey={(entry) => entry.cidr}
-                  emptyTitle="还没有条目"
+                  emptyTitle={t('firewall.ipsetEntriesEmpty')}
                 />
                 {canManage ? (
                   <div className="create-bar">
                     <div className="field-row">
-                      <Field label="地址 / 网段" required>
+                      <Field label={t('firewall.colAddress')} required>
                         <Input
                           value={entryDraft.cidr}
                           onChange={(e) =>
@@ -1065,13 +1092,13 @@ export function Firewall() {
                           mono
                         />
                       </Field>
-                      <Field label="备注">
+                      <Field label={t('firewall.colComment')}>
                         <Input
                           value={entryDraft.comment}
                           onChange={(e) =>
                             setEntryDraft({ ...entryDraft, comment: e.target.value })
                           }
-                          placeholder="总部"
+                          placeholder={t('firewall.entryCommentPlaceholder')}
                         />
                       </Field>
                       <Button
@@ -1079,7 +1106,7 @@ export function Firewall() {
                         loading={busy}
                         onClick={() => void addEntry()}
                       >
-                        <IconPlus size={14} /> 添加
+                        <IconPlus size={14} /> {t('firewall.add')}
                       </Button>
                     </div>
                   </div>
@@ -1114,11 +1141,11 @@ export function Firewall() {
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
-        title="确认删除"
+        title={t('firewall.confirmDeleteTitle')}
         message={
           deleteTarget?.kind === 'rule' || deleteTarget?.kind === 'group-rule'
-            ? `确定删除规则 #${deleteTarget?.pos}？`
-            : `确定删除「${deleteTarget?.name ?? ''}」？引用了它的规则会失效。`
+            ? t('firewall.confirmDeleteRule', { pos: deleteTarget?.pos ?? '' })
+            : t('firewall.confirmDeleteNamed', { name: deleteTarget?.name ?? '' })
         }
         danger
         loading={busy}

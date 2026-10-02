@@ -744,12 +744,26 @@ urllib.request.urlopen('http://127.0.0.1:${PORT_NOW}/api/health', timeout=2)
     rm -f /tmp/pc_health.$$
   else
     echo
-    warn "健康检查未通过（服务可能在反复重启）。排查命令："
-    echo "      systemctl status ${SERVICE}"
-    echo "      journalctl -u ${SERVICE} -n 50"
-    echo "      tail -n 50 ${ROOT}/logs/panel.log"
-    echo "    最常见的三个原因：数据库口令不对 / SECRET_KEY 仍是占位值 / PVE 地址填错。"
-    echo "    （数据库默认会自动装/自动建库；若用了 --no-install-db 或指向远程库，请先确认库可用）"
+    warn "健康检查未通过（服务没起来，或在反复重启）。先把最近的日志抓出来："
+    echo
+    echo "---- systemctl status ${SERVICE} ----"
+    systemctl status "$SERVICE" --no-pager -l 2>&1 | tail -n 14 || true
+    echo
+    echo "---- journalctl -u ${SERVICE}（最近 40 行）----"
+    journalctl -u "$SERVICE" -n 40 --no-pager 2>&1 || true
+    if [ -f "$ROOT/logs/panel.log" ]; then
+      echo
+      echo "---- ${ROOT}/logs/panel.log（最近 40 行）----"
+      tail -n 40 "$ROOT/logs/panel.log" || true
+    fi
+    echo
+    warn "怎么读这几段："
+    echo "    ·「面板启动被拒绝」→ .env 配置问题，后面那句已写明改哪个键"
+    echo "    · Access denied for user      → 数据库账号/授权不对（带 --db-* 重跑可改写 .env）"
+    echo "    · Can't connect to MySQL      → 数据库没起（本机：systemctl status mariadb）"
+    echo "    · Address already in use      → ${PORT_NOW} 被占用，用 --port 换一个"
+    echo "    · ModuleNotFoundError / 找不到 app → 依赖没装好，去掉 --skip-deps 重跑"
+    echo "    持续跟踪： journalctl -u ${SERVICE} -f"
     exit 1
   fi
 fi

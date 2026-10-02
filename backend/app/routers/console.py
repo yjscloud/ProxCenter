@@ -26,7 +26,7 @@ from typing import Any, Dict
 import websockets
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from .. import security, store
+from .. import i18n, security, store
 from ..pve import ProxmoxError, ProxmoxClient, get_client, set_request_connection
 from ..vm_scope import bind_vm_connection, resolve_vm_connection
 
@@ -40,7 +40,7 @@ def _require_console_account() -> None:
     if not (conn.console_user and conn.console_password):
         raise HTTPException(
             status_code=428,
-            detail=(
+            detail=i18n.tr(
                 "未配置控制台账号，无法打开控制台：PVE 的 VNC WebSocket 不接受 "
                 "API Token。请在「设置 → 连接配置」中填写 Proxmox 控制台账号与密码"
                 "（例如 root@pam）。"
@@ -97,7 +97,7 @@ def _raise(exc: ProxmoxError) -> None:
     if status in (401, 403):
         raise HTTPException(
             status_code=428,
-            detail=f"PVE 控制台凭据无效或权限不足：{exc.message}",
+            detail=i18n.tr("PVE 控制台凭据无效或权限不足：") + exc.message,
         )
     raise HTTPException(status_code=status, detail=exc.message)
 
@@ -271,7 +271,7 @@ async def _authenticate_ws(token: str) -> Dict[str, Any]:
     不该还能打开控制台。
     """
     if not token:
-        raise PermissionError("未提供认证凭据")
+        raise PermissionError(i18n.t("error.no_credentials"))
     try:
         payload = security.decode_token(token)
         await security.ensure_session_active(payload)
@@ -281,7 +281,7 @@ async def _authenticate_ws(token: str) -> Dict[str, Any]:
     username = payload.get("sub")
     role = payload.get("role", "viewer")
     if not username:
-        raise PermissionError("无效的认证凭据")
+        raise PermissionError(i18n.tr("无效的认证凭据"))
     return {"username": username, "role": role}
 
 
@@ -369,7 +369,7 @@ async def _proxy_console(
     """Bidirectional byte pump between the browser and Proxmox."""
     # --- 1. authenticate the panel user -------------------------------
     if not security.ws_origin_allowed(websocket):
-        await _reject(websocket, 4403, "来源校验失败")
+        await _reject(websocket, 4403, i18n.tr("来源校验失败"))
         return
     try:
         # 浏览器不带查询参数（令牌在 HttpOnly cookie 里），脚本仍可 ?token=
@@ -380,7 +380,7 @@ async def _proxy_console(
 
     permission = "vm.console"
     if not security.has_permission(identity["role"], permission):
-        await _reject(websocket, 4403, "权限不足：需要控制台访问权限")
+        await _reject(websocket, 4403, i18n.tr("权限不足：需要控制台访问权限"))
         return
 
     # WebSocket 走不到 HTTP 中间件，这里按节点/VMID 自行定位主机，
@@ -391,7 +391,9 @@ async def _proxy_console(
 
     client = get_client()
     if not client.conn.configured:
-        await websocket.close(code=1011, reason="Proxmox 连接未配置")
+        await websocket.close(
+            code=1011, reason=i18n.tr("Proxmox 连接未配置")
+        )
         return
 
     # --- 2. build the upstream URL and headers -------------------------
@@ -425,7 +427,7 @@ async def _proxy_console(
         )
         await websocket.close(
             code=1011,
-            reason=f"无法连接到 Proxmox 控制台：{exc}",
+            reason=i18n.tr("无法连接到 Proxmox 控制台：") + str(exc),
         )
         return
 

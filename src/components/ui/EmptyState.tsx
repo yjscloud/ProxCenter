@@ -4,6 +4,7 @@
 
 import type { ReactNode } from 'react';
 import { IconAlert, IconInfo } from '../Icons';
+import { useT } from '../../i18n';
 
 export interface EmptyStateProps {
   title: string;
@@ -52,6 +53,7 @@ export function ErrorState({
   onRetry,
   notImplemented = false,
 }: ErrorStateProps) {
+  const t = useT();
   return (
     <div className={`error-state ${notImplemented ? 'is-info' : ''}`} role="alert">
       <div className="error-icon" aria-hidden="true">
@@ -59,13 +61,13 @@ export function ErrorState({
       </div>
       <div className="error-body">
         <div className="error-title">
-          {title ?? (notImplemented ? '功能暂不可用' : '加载失败')}
+          {title ?? (notImplemented ? t('state.notImplemented') : t('state.loadFailed'))}
         </div>
         {message ? <div className="error-message">{message}</div> : null}
       </div>
       {onRetry ? (
         <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>
-          重试
+          {t('common.retry')}
         </button>
       ) : null}
     </div>

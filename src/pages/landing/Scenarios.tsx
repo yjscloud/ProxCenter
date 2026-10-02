@@ -10,28 +10,34 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { IconCheck } from '../../components/Icons';
-import { SCENARIOS } from './content';
+import { useT } from '../../i18n';
+import { useLandingContent } from './hooks';
 import { SectionHead } from './Common';
 
 export function Scenarios() {
-  const [active, setActive] = useState(SCENARIOS[0].id);
+  const t = useT();
+  const { scenarios } = useLandingContent();
+  const [active, setActive] = useState(scenarios[0].id);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const activeIndex = Math.max(
     0,
-    SCENARIOS.findIndex((item) => item.id === active),
+    scenarios.findIndex((item) => item.id === active),
   );
-  const current = SCENARIOS[activeIndex];
+  const current = scenarios[activeIndex];
 
-  const focusTab = useCallback((index: number) => {
-    const next = SCENARIOS[index];
-    if (!next) return;
-    setActive(next.id);
-    tabRefs.current[next.id]?.focus();
-  }, []);
+  const focusTab = useCallback(
+    (index: number) => {
+      const next = scenarios[index];
+      if (!next) return;
+      setActive(next.id);
+      tabRefs.current[next.id]?.focus();
+    },
+    [scenarios],
+  );
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const last = SCENARIOS.length - 1;
+    const last = scenarios.length - 1;
     switch (event.key) {
       case 'ArrowDown':
       case 'ArrowRight':
@@ -62,8 +68,8 @@ export function Scenarios() {
         <SectionHead
           index="06"
           eyebrow="Scenarios"
-          title="你可能会这样用它"
-          desc="同一套能力，在不同规模的集群里有不同的重点。下面是四种最常见的用法。"
+          title={t('landing.scenarios.title')}
+          desc={t('landing.scenarios.desc')}
         />
 
         <div className="lp-scenarios lp-reveal">
@@ -71,10 +77,10 @@ export function Scenarios() {
             className="lp-scenario-tabs"
             role="tablist"
             aria-orientation="vertical"
-            aria-label="适用场景"
+            aria-label={t('landing.scenarios.aria')}
             onKeyDown={onKeyDown}
           >
-            {SCENARIOS.map((scenario, index) => {
+            {scenarios.map((scenario, index) => {
               const selected = scenario.id === current.id;
               return (
                 <button

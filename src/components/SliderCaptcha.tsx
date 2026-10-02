@@ -36,6 +36,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { IconCheck, IconChevronRight } from './Icons';
+import { useT } from '../i18n';
 import type { CaptchaChallenge } from '../api/types';
 
 export interface SliderCaptchaProps {
@@ -58,6 +59,7 @@ export function SliderCaptcha({
   disabled = false,
   error,
 }: SliderCaptchaProps) {
+  const t = useT();
   const width = challenge.width ?? 320;
   const handleSize = challenge.handle_size ?? 56;
   const tolerance = challenge.tolerance ?? 6;
@@ -148,7 +150,7 @@ export function SliderCaptcha({
         {/* 提示只在「还没拖」的时候显示：拖过之后手柄会停在轨道中间，
             正中央的文字会被它压成两截。 */}
         <span className="slider-track-hint" aria-hidden="true">
-          {offset > 0 ? '' : '请拖动滑块完成验证'}
+          {offset > 0 ? '' : t('captcha.dragHint')}
         </span>
 
         <span
@@ -185,8 +187,14 @@ export function SliderCaptcha({
           step={1}
           value={offset}
           disabled={!interactive}
-          aria-label="拖动滑块完成验证"
-          aria-valuetext={reached ? '已拖到底' : offset > 0 ? `已拖动到 ${offset}` : '尚未拖动'}
+          aria-label={t('captcha.dragAria')}
+          aria-valuetext={
+            reached
+              ? t('captcha.reached')
+              : offset > 0
+                ? t('captcha.movedTo', { n: offset })
+                : t('captcha.notMoved')
+          }
           onChange={(event) => set(Number(event.target.value))}
         />
       </div>
@@ -196,11 +204,11 @@ export function SliderCaptcha({
         <div className="slider-captcha-error" role="alert">
           {error}
           <button type="button" className="slider-captcha-retry" onClick={onRefresh}>
-            换一道
+            {t('captcha.retry')}
           </button>
         </div>
       ) : reached ? (
-        <div className="slider-captcha-ok">已拖到底，点击「登录」完成验证</div>
+        <div className="slider-captcha-ok">{t('captcha.ok')}</div>
       ) : null}
     </div>
   );

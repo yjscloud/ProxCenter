@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-from . import crypto, database, formatters, store
+from . import crypto, database, formatters, i18n, store
 from .pve import ProxmoxError, get_client
 from .tencent_ssl import (
     STATUS_FAILED,
@@ -175,7 +175,7 @@ def normalise_domain(raw: Any) -> str:
     if text.startswith("*."):
         raise CertError("腾讯云免费证书不支持泛域名（*.example.com），请填写具体域名")
     if not DOMAIN_RE.match(text):
-        raise CertError("域名格式不正确：" + text)
+        raise CertError(i18n.tr("域名格式不正确：") + text)
     if len(text) > 64:
         raise CertError("域名长度不能超过 64 个字符")
     if re.match(r"^\d+\.\d+\.\d+\.\d+$", text):
@@ -186,7 +186,9 @@ def normalise_domain(raw: Any) -> str:
 def _safe_filename(raw: Any, default: str) -> str:
     text = str(raw or "").strip() or default
     if not FILENAME_RE.match(text):
-        raise CertError("文件名只能包含字母、数字、点、下划线和短横线：" + text)
+        raise CertError(
+            i18n.tr("文件名只能包含字母、数字、点、下划线和短横线：") + text
+        )
     return text
 
 
@@ -524,7 +526,7 @@ def deploy_target_text(site: Dict[str, Any]) -> str:
             "VM " + str(site.get("agent_vmid") or "") + "@" + str(site.get("agent_node") or "")
             + directory
         )
-    return "本机 " + directory
+    return i18n.tr("本机 ") + directory
 
 
 def _site_files(site: Dict[str, Any], bundle: Dict[str, Any]) -> List[Tuple[str, str, int]]:
@@ -560,7 +562,7 @@ async def _run_reload(command: str) -> str:
             stderr=asyncio.subprocess.STDOUT,
         )
     except OSError as exc:
-        raise ReloadError("无法执行重载命令：" + str(exc)) from exc
+        raise ReloadError(i18n.tr("无法执行重载命令：") + str(exc)) from exc
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=RELOAD_TIMEOUT)
     except asyncio.TimeoutError as exc:
@@ -569,12 +571,18 @@ async def _run_reload(command: str) -> str:
         except ProcessLookupError:
             pass
         raise ReloadError(
-            "重载命令执行超时（" + str(RELOAD_TIMEOUT) + " 秒）：" + command
+            i18n.pick("重载命令执行超时（", "Reload command timed out (")
+            + str(RELOAD_TIMEOUT)
+            + i18n.pick(" 秒）：", "s): ")
+            + command
         ) from exc
     text = (out or b"").decode("utf-8", "replace").strip()
     if proc.returncode != 0:
         raise ReloadError(
-            "重载命令返回 " + str(proc.returncode) + "：" + (text[-300:] or command)
+            i18n.tr("重载命令返回 ")
+            + str(proc.returncode)
+            + i18n.tr("：")
+            + (text[-300:] or command)
         )
     return text[-300:]
 
@@ -585,7 +593,7 @@ async def _push_local(site: Dict[str, Any], bundle: Dict[str, Any]) -> Tuple[str
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise CertError("创建部署目录失败：" + str(exc)) from exc
+        raise CertError(i18n.tr("创建部署目录失败：") + str(exc)) from exc
 
     names: List[str] = []
     for name, content, mode in _site_files(site, bundle):
@@ -593,17 +601,22 @@ async def _push_local(site: Dict[str, Any], bundle: Dict[str, Any]) -> Tuple[str
         try:
             _atomic_write(path, content, mode)
         except OSError as exc:
-            raise CertError("写入证书文件失败：" + str(exc)) from exc
+            raise CertError(i18n.tr("写入证书文件失败：") + str(exc)) from exc
         names.append(path.name)
 
-    detail = (
-        "已写入本机 " + str(target_dir) + "（" + " / ".join(names)
-        + "，来源 " + bundle["chain_file"] + "）"
+    detail = i18n.pick("已写入本机 ", "Written to local ")
+    detail += (
+        str(target_dir)
+        + i18n.pick("（", " (")
+        + " / ".join(names)
+        + i18n.pick("，来源 ", ", from ")
+        + str(bundle["chain_file"])
+        + i18n.pick("）", ")")
     )
     command = str(site.get("reload_command") or "").strip()
     if command:
         output = await _run_reload(command)
-        detail += "，重载命令已执行" + ("：" + output if output else "")
+        detail += i18n.tr("，重载命令已执行") + (i18n.tr("：") + output if output else "")
     return detail, ""
 
 
@@ -625,7 +638,9 @@ def _parse_private_key(paramiko: Any, text: str) -> Any:
             return cls.from_private_key(io.StringIO(text))
         except Exception:  # noqa: BLE001 - 逐类型尝试，全部失败才算错误
             continue
-    raise CertError("无法解析 SSH 私钥，支持 RSA / ECDSA / Ed25519 且不能带密码")
+    raise CertError(
+        i18n.tr("无法解析 SSH 私钥，支持 RSA / ECDSA / Ed25519 且不能带密码")
+    )
 
 
 def _sftp_makedirs(sftp: Any, path: str) -> None:
@@ -646,7 +661,7 @@ def _ssh_deploy_sync(
     try:
         import paramiko
     except ImportError as exc:  # pragma: no cover - 依赖缺失时的兜底
-        raise CertError("缺少 paramiko 依赖，无法使用 SSH 部署") from exc
+        raise CertError(i18n.tr("缺少 paramiko 依赖，无法使用 SSH 部署")) from exc
 
     host = str(site.get("ssh_host") or "")
     port = int(site.get("ssh_port") or 22)
@@ -659,8 +674,18 @@ def _ssh_deploy_sync(
             captured["fp"] = fingerprint
             if recorded and recorded != fingerprint:
                 raise CertError(
-                    "目标主机指纹与记录不一致（记录 " + recorded + "，实际 " + fingerprint
-                    + "），可能存在中间人风险，已中止部署"
+                    i18n.pick(
+                        "目标主机指纹与记录不一致（记录 ",
+                        "The target host key fingerprint does not match the "
+                        "recorded one (recorded ",
+                    )
+                    + recorded
+                    + i18n.pick("，实际 ", ", got ")
+                    + fingerprint
+                    + i18n.pick(
+                        "），可能存在中间人风险，已中止部署",
+                        "); possible man-in-the-middle, deployment aborted",
+                    )
                 )
 
     client = paramiko.SSHClient()
@@ -684,12 +709,20 @@ def _ssh_deploy_sync(
     except CertError:
         raise
     except paramiko.AuthenticationException as exc:
-        raise CertError("SSH 认证失败，请检查用户名与密码/私钥") from exc
+        raise CertError(
+            i18n.tr("SSH 认证失败，请检查用户名与密码/私钥")
+        ) from exc
     except paramiko.SSHException as exc:
-        raise CertError("SSH 连接失败：" + str(exc)) from exc
+        raise CertError(i18n.tr("SSH 连接失败：") + str(exc)) from exc
     except OSError as exc:
         raise CertError(
-            "无法连接 " + host + ":" + str(port) + "（" + str(exc) + "）"
+            i18n.tr("无法连接 ")
+            + host
+            + ":"
+            + str(port)
+            + i18n.pick("（", " (")
+            + str(exc)
+            + i18n.pick("）", ")")
         ) from exc
 
     directory = str(site.get("deploy_dir") or "")
@@ -719,11 +752,23 @@ def _ssh_deploy_sync(
     except CertError:
         raise
     except (IOError, OSError) as exc:
-        raise CertError("上传证书文件到 " + host + " 失败：" + str(exc)) from exc
+        raise CertError(
+            i18n.tr("上传证书文件到 ") + host + i18n.tr(" 失败：") + str(exc)
+        ) from exc
 
-    detail = (
-        "已部署到 " + user + "@" + host + ":" + str(port) + directory
-        + "（" + " / ".join(names) + "，来源 " + bundle["chain_file"] + "）"
+    detail = i18n.pick("已部署到 ", "Deployed to ")
+    detail += (
+        user
+        + "@"
+        + host
+        + ":"
+        + str(port)
+        + directory
+        + i18n.pick("（", " (")
+        + " / ".join(names)
+        + i18n.pick("，来源 ", ", from ")
+        + str(bundle["chain_file"])
+        + i18n.pick("）", ")")
     )
     command = str(site.get("reload_command") or "").strip()
     try:
@@ -735,9 +780,14 @@ def _ssh_deploy_sync(
             output = (out or err).strip()
             if code != 0:
                 raise ReloadError(
-                    "远程重载命令返回 " + str(code) + "：" + (output[-300:] or command)
+                    i18n.tr("远程重载命令返回 ")
+                    + str(code)
+                    + i18n.tr("：")
+                    + (output[-300:] or command)
                 )
-            detail += "，远程重载命令已执行" + ("：" + output[-200:] if output else "")
+            detail += i18n.tr("，远程重载命令已执行") + (
+                i18n.tr("：") + output[-200:] if output else ""
+            )
     finally:
         client.close()
     return detail
@@ -765,8 +815,9 @@ async def _agent_exec(
         result = await client.qemu_agent_exec(node, vmid, argv)
     except ProxmoxError as exc:
         raise CertError(
-            "Guest Agent 调用失败：" + str(exc.message)
-            + "（请确认虚拟机内已安装并运行 qemu-guest-agent）"
+            i18n.tr("Guest Agent 调用失败：")
+            + str(exc.message)
+            + i18n.tr("（请确认虚拟机内已安装并运行 qemu-guest-agent）")
         ) from exc
     pid = (result or {}).get("pid")
     deadline = time.time() + timeout
@@ -774,7 +825,7 @@ async def _agent_exec(
         try:
             status = await client.qemu_agent_exec_status(node, vmid, pid)
         except ProxmoxError as exc:
-            raise CertError("读取命令执行结果失败：" + str(exc.message)) from exc
+            raise CertError(i18n.tr("读取命令执行结果失败：") + str(exc.message)) from exc
         if status.get("exited"):
             # PVE 文档说 out-data 是 base64，实测 8.4 返回明文，
             # 用 formatters.decode_agent_output 两种都兼容
@@ -783,12 +834,20 @@ async def _agent_exec(
             code = int(status.get("exitcode") or 0)
             if code != 0:
                 raise CertError(
-                    "虚拟机内命令执行失败（" + " ".join(argv) + "）："
-                    + ((err or out).strip()[-300:] or "退出码 " + str(code))
+                    i18n.pick("虚拟机内命令执行失败（", "Command failed in the VM (")
+                    + " ".join(argv)
+                    + i18n.pick("）：", "): ")
+                    + (
+                        (err or out).strip()[-300:]
+                        or i18n.pick("退出码 ", "exit code ") + str(code)
+                    )
                 )
             return (out or err).strip()
         await asyncio.sleep(0.4)
-    raise CertError("虚拟机内命令执行超时：" + " ".join(argv))
+    raise CertError(
+        i18n.pick("虚拟机内命令执行超时：", "Command timed out in the VM: ")
+        + " ".join(argv)
+    )
 
 
 async def _push_guest_agent(
@@ -807,15 +866,21 @@ async def _push_guest_agent(
         try:
             handle = await client.qemu_agent_file_open(node, vmid, tmp, "wb")
         except ProxmoxError as exc:
-            raise CertError("打开虚拟机内文件失败：" + str(exc.message)) from exc
+            raise CertError(
+                i18n.tr("打开虚拟机内文件失败：") + str(exc.message)
+            ) from exc
         if handle is None:
-            raise CertError("Guest Agent 未返回文件句柄，可能是磁盘路径不可写")
+            raise CertError(
+                i18n.tr("Guest Agent 未返回文件句柄，可能是磁盘路径不可写")
+            )
         try:
             await client.qemu_agent_file_write(
                 node, vmid, handle, base64.b64encode(content.encode("utf-8")).decode("ascii")
             )
         except ProxmoxError as exc:
-            raise CertError("写入虚拟机内文件失败：" + str(exc.message)) from exc
+            raise CertError(
+                i18n.tr("写入虚拟机内文件失败：") + str(exc.message)
+            ) from exc
         finally:
             try:
                 await client.qemu_agent_file_close(node, vmid, handle)
@@ -825,14 +890,24 @@ async def _push_guest_agent(
         await _agent_exec(client, node, vmid, ["mv", "-f", tmp, remote])
         names.append(name)
 
-    detail = (
-        "已写入虚拟机 " + str(vmid) + "@" + node + directory
-        + "（" + " / ".join(names) + "，来源 " + bundle["chain_file"] + "）"
+    detail = i18n.pick("已写入虚拟机 ", "Written to VM ")
+    detail += (
+        str(vmid)
+        + "@"
+        + node
+        + directory
+        + i18n.pick("（", " (")
+        + " / ".join(names)
+        + i18n.pick("，来源 ", ", from ")
+        + str(bundle["chain_file"])
+        + i18n.pick("）", ")")
     )
     command = str(site.get("reload_command") or "").strip()
     if command:
         output = await _agent_exec(client, node, vmid, ["/bin/sh", "-c", command])
-        detail += "，虚拟机内重载命令已执行" + ("：" + output[-200:] if output else "")
+        detail += i18n.tr("，虚拟机内重载命令已执行") + (
+            i18n.tr("：") + output[-200:] if output else ""
+        )
     return detail, ""
 
 
@@ -856,7 +931,10 @@ async def sync_site_cert(client: TencentSslClient, site: Dict[str, Any]) -> Dict
         return site
     cert = await client.describe_certificate(cert_id)
     if not cert:
-        site["last_error"] = "证书 " + cert_id + " 在腾讯云账号下不存在"
+        site["last_error"] = i18n.pick(
+            "证书 " + cert_id + " 在腾讯云账号下不存在",
+            f"Certificate {cert_id} does not exist in this Tencent Cloud account",
+        )
         return site
     _apply_cert_meta(site, cert)
     if not site.get("pending_cert_id"):
@@ -875,7 +953,7 @@ async def deploy_site(
     client = tencent_client(cfg)
     cert_id = str(site.get("pending_cert_id") or site.get("cert_id") or "")
     if not cert_id:
-        raise CertError("该站点还没有证书，请先申请或绑定证书")
+        raise CertError(i18n.tr("该站点还没有证书，请先申请或绑定证书"))
 
     data = await client.download_certificate(cert_id)
     bundle = parse_certificate_bundle(data)
@@ -895,7 +973,11 @@ async def deploy_site(
         site["last_error"] = str(exc)
         await record_log(
             site, action, "failed",
-            deploy_target_text(site) + " 证书已写入，但重载失败：" + str(exc),
+            i18n.pick(
+                deploy_target_text(site) + " 证书已写入，但重载失败：" + str(exc),
+                f"{deploy_target_text(site)}: certificate written, but the reload "
+                f"failed: {exc}",
+            ),
         )
         await update_site(site)
         return {"ok": False, "detail": str(exc), "deployed": True, "files": bundle["files"]}
@@ -905,7 +987,7 @@ async def deploy_site(
     site["last_deploy_at"] = now_ts()
     site["last_error"] = ""
 
-    detail = detail + "，证书 ID " + cert_id
+    detail = detail + i18n.tr("，证书 ID ") + cert_id
     await record_log(site, action, "success", detail)
     await update_site(site)
     return {
@@ -945,24 +1027,38 @@ async def apply_certificate(
         site,
         action,
         "pending",
-        "证书申请已提交（ID " + cert_id + "，验证方式 "
-        + str(cfg.get("dv_auth_method") or "DNS_AUTO")
-        + "），等待 CA 签发后自动部署",
+        i18n.pick(
+            "证书申请已提交（ID " + cert_id + "，验证方式 "
+            + str(cfg.get("dv_auth_method") or "DNS_AUTO")
+            + "），等待 CA 签发后自动部署",
+            f"Certificate request submitted (ID {cert_id}, validation "
+            f"{cfg.get('dv_auth_method') or 'DNS_AUTO'}); it will be deployed "
+            "automatically once the CA issues it",
+        ),
     )
     await update_site(site)
-    return {"cert_id": cert_id, "domain": domain, "detail": "证书申请已提交，等待签发"}
+    return {
+        "cert_id": cert_id,
+        "domain": domain,
+        "detail": i18n.pick("证书申请已提交，等待签发", "Request submitted; waiting for the CA to issue"),
+    }
 
 
 async def bind_certificate(site: Dict[str, Any], cert_id: str) -> Dict[str, Any]:
     """绑定腾讯云上已有的证书。"""
     cert_id = str(cert_id or "").strip()
     if not cert_id:
-        raise CertError("请填写证书 ID")
+        raise CertError(i18n.tr("请填写证书 ID"))
     cfg = await cfg_for(site)
     client = tencent_client(cfg)
     cert = await client.describe_certificate(cert_id)
     if not cert:
-        raise CertError("证书 " + cert_id + " 不存在或不属于当前账号")
+        raise CertError(
+            i18n.pick(
+                "证书 " + cert_id + " 不存在或不属于当前账号",
+                f"Certificate {cert_id} does not exist or belongs to another account",
+            )
+        )
     site["cert_id"] = cert_id
     site["pending_cert_id"] = ""
     _apply_cert_meta(site, cert)
@@ -971,11 +1067,15 @@ async def bind_certificate(site: Dict[str, Any], cert_id: str) -> Dict[str, Any]
         site,
         "bind",
         "success",
-        "已绑定证书 " + cert_id + "（" + str(cert.get("Domain") or "") + "，"
-        + status_text(cert.get("Status")) + "）",
+        i18n.pick(
+            "已绑定证书 " + cert_id + "（" + str(cert.get("Domain") or "") + "，"
+            + status_text(cert.get("Status")) + "）",
+            f"Bound certificate {cert_id} ({cert.get('Domain') or ''}, "
+            f"{i18n.tr(status_text(cert.get('Status')))})",
+        ),
     )
     await update_site(site)
-    return {"cert_id": cert_id, "detail": "证书已绑定", "cert_status_text": site["cert_status_text"]}
+    return {"cert_id": cert_id, "detail": i18n.tr("证书已绑定"), "cert_status_text": site["cert_status_text"]}
 
 
 # ---------------------------------------------------------------- 定时续期
@@ -1011,7 +1111,10 @@ async def renew_tick() -> List[Dict[str, Any]]:
             result = await _renew_one(client, cfg, site)
         except TencentCloudError as exc:
             site["last_error"] = str(exc)
-            await record_log(site, "sync", "failed", "腾讯云接口调用失败：" + str(exc))
+            await record_log(
+                site, "sync", "failed",
+                i18n.tr("腾讯云接口调用失败：") + str(exc),
+            )
             await update_site(site)
             result = None
         if result:
@@ -1034,12 +1137,18 @@ async def _renew_one(
                 site,
                 "renew",
                 "success" if outcome.get("ok") else "failed",
-                "续期证书 " + pending + " 已签发并部署",
+                i18n.pick(
+                    "续期证书 " + pending + " 已签发并部署",
+                    f"Renewal certificate {pending} was issued and deployed",
+                ),
             )
             return {"site": site.get("name"), "action": "deploy", "detail": outcome.get("detail")}
         if status in STATUS_FAILED:
             site["pending_cert_id"] = ""
-            site["last_error"] = "续期证书申请失败：" + status_text(status)
+            site["last_error"] = i18n.pick(
+                "续期证书申请失败：" + status_text(status),
+                f"Renewal request failed: {i18n.tr(status_text(status))}",
+            )
             await record_log(site, "renew", "failed", site["last_error"])
             await update_site(site)
             return {"site": site.get("name"), "action": "renew", "detail": site["last_error"]}
@@ -1066,7 +1175,10 @@ async def _renew_one(
         return None
 
     if not site.get("auto_renew"):
-        site["last_error"] = "证书剩余 " + str(left) + " 天，未开启自动续期"
+        site["last_error"] = i18n.pick(
+            "证书剩余 " + str(left) + " 天，未开启自动续期",
+            f"Certificate expires in {left} days; auto-renew is off",
+        )
         await update_site(site)
         return {"site": site.get("name"), "action": "notice", "detail": site["last_error"]}
 
@@ -1075,7 +1187,10 @@ async def _renew_one(
     return {
         "site": site.get("name"),
         "action": "renew",
-        "detail": "证书剩余 " + str(left) + " 天，已提交续期申请",
+        "detail": i18n.pick(
+            "证书剩余 " + str(left) + " 天，已提交续期申请",
+            f"Certificate expires in {left} days; renewal request submitted",
+        ),
     }
 
 
@@ -1090,7 +1205,7 @@ async def sync_all(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         cfg = await load_tencent(owner_name)
         client = tencent_client(cfg)
         if not client.configured:
-            raise CertError("请先配置腾讯云 API 密钥")
+            raise CertError(i18n.tr("请先配置腾讯云 API 密钥"))
         for site in owner_sites:
             await sync_site_cert(client, site)
             await update_site(site)
@@ -1103,7 +1218,7 @@ async def list_remote_certificates(search: str = "", limit: int = 100) -> List[D
     cfg = await load_tencent()
     client = tencent_client(cfg)
     if not client.configured:
-        raise CertError("请先配置腾讯云 API 密钥")
+        raise CertError(i18n.tr("请先配置腾讯云 API 密钥"))
     body = await client.describe_certificates(search_key=search, limit=limit)
     items: List[Dict[str, Any]] = []
     for cert in body.get("Certificates") or []:
@@ -1114,7 +1229,7 @@ async def list_remote_certificates(search: str = "", limit: int = 100) -> List[D
                 "domain": str(cert.get("Domain") or ""),
                 "alias": str(cert.get("Alias") or ""),
                 "status": status,
-                "status_text": status_text(status),
+                "status_text": i18n.tr(status_text(status)),
                 "expire_at": parse_cn_time(cert.get("CertEndTime")),
                 "encrypt_algo": str(cert.get("EncryptAlgorithm") or ""),
                 "wildcard": bool(cert.get("IsWildcard")),
@@ -1130,9 +1245,13 @@ async def test_connection(owner: str = "") -> Dict[str, Any]:
     cfg = await load_tencent(owner)
     client = tencent_client(cfg)
     if not client.configured:
-        raise CertError("请先填写 SecretId 与 SecretKey")
+        raise CertError(i18n.tr("请先填写 SecretId 与 SecretKey"))
     body = await client.describe_certificates(limit=1)
+    total = int(body.get("TotalCount") or 0)
     return {
-        "total": int(body.get("TotalCount") or 0),
-        "detail": "连接成功，账号下共有 " + str(body.get("TotalCount") or 0) + " 张证书",
+        "total": total,
+        "detail": i18n.pick(
+            "连接成功，账号下共有 " + str(total) + " 张证书",
+            f"Connected; this account has {total} certificate(s)",
+        ),
     }

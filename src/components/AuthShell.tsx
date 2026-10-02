@@ -11,12 +11,15 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { BrandLogo } from './BrandLogo';
 import { useSiteInfo } from '../hooks/useSiteInfo';
+import { useI18n } from '../i18n';
+import { LanguageSelect } from './LanguageSelect';
 
 export interface AuthShellProps {
   children: ReactNode;
 }
 
 export function AuthShell({ children }: AuthShellProps) {
+  const { t } = useI18n();
   const site = useSiteInfo();
 
   /*
@@ -36,22 +39,26 @@ export function AuthShell({ children }: AuthShellProps) {
           <BrandLogo size={26} />
           <span className="login-topbar-name">{site.name}</span>
         </div>
-        <Link to="/" className="login-topbar-link">
-          <svg
-            viewBox="0 0 16 16"
-            width="15"
-            height="15"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M10 3 5 8l5 5" />
-          </svg>
-          返回官网
-        </Link>
+        {/* 未登录时顶栏用户菜单还够不着，语言切换在这里给一个入口 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <LanguageSelect variant="pill" />
+          <Link to="/" className="login-topbar-link">
+            <svg
+              viewBox="0 0 16 16"
+              width="15"
+              height="15"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M10 3 5 8l5 5" />
+            </svg>
+            {t('auth.backToSite')}
+          </Link>
+        </div>
       </header>
 
       {/* ---- 居中卡片 ---- */}

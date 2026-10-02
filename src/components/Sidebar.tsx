@@ -37,10 +37,12 @@ import {
 import { useSiteInfo } from '../hooks/useSiteInfo';
 import { useUiPrefs } from '../hooks/useUiPrefs';
 import { BrandLogo } from './BrandLogo';
+import { useT, type MessageKey } from '../i18n';
 
 export interface NavItem {
   to: string;
-  label: string;
+  /** 词条键：渲染时用 t() 取文案（词条表见 i18n/locales/zh-CN.ts） */
+  labelKey: MessageKey;
   icon: React.ReactNode;
   /** 需要的权限（admin 自动通过）*/
   permission?: string;
@@ -49,7 +51,12 @@ export interface NavItem {
 }
 
 export interface NavSection {
-  title: string;
+  /**
+   * 稳定标识，**不随语言变化**：折叠偏好按它记。用标题当键的话，
+   * 用户切一次语言，折叠状态就会「丢」在另一种语言的标题上。
+   */
+  id: string;
+  titleKey: MessageKey;
   items: NavItem[];
   /**
    * 低频分组：默认折叠，点标题展开，展开状态按浏览器记在 localStorage。
@@ -66,7 +73,13 @@ export interface NavSection {
 const COLLAPSED_SECTIONS_KEY = 'pve_nav_collapsed_sections';
 
 /** 首次进来时默认折叠的分组：低频、且正好在首屏之外 */
-const DEFAULT_COLLAPSED_SECTIONS = ['系统管理'];
+const DEFAULT_COLLAPSED_SECTIONS = ['system'];
+
+/**
+ * 早期版本拿分组标题（中文）当折叠键，改成分组 id 后要迁移一次 ——
+ * 否则老用户升级回来会发现「系统管理」又被展开了。
+ */
+const LEGACY_SECTION_KEYS: Record<string, string> = { '系统管理': 'system' };
 
 function readCollapsedSections(): string[] {
   try {
@@ -75,7 +88,9 @@ function readCollapsedSections(): string[] {
     if (raw === null) return DEFAULT_COLLAPSED_SECTIONS;
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed)
-      ? parsed.filter((x): x is string => typeof x === 'string')
+      ? parsed
+          .filter((x): x is string => typeof x === 'string')
+          .map((x) => LEGACY_SECTION_KEYS[x] ?? x)
       : DEFAULT_COLLAPSED_SECTIONS;
   } catch {
     return DEFAULT_COLLAPSED_SECTIONS;
@@ -97,30 +112,33 @@ function readCollapsedSections(): string[] {
  */
 export const NAV_SECTIONS: NavSection[] = [
   {
-    title: '总览',
+    id: 'overview',
+    titleKey: 'nav.section.overview',
     items: [
-      { to: '/dashboard', label: '仪表盘', icon: <IconDashboard size={18} /> },
+      { to: '/dashboard', labelKey: 'nav.dashboard', icon: <IconDashboard size={18} /> },
     ],
   },
   {
-    title: '计算',
+    id: 'compute',
+    titleKey: 'nav.section.compute',
     items: [
       /* 没有单独的「快速部署」页：快速 / 自定义是创建弹窗里的一个开关，
          入口只有列表页的「创建虚拟机」与「创建容器」。 */
       /* 容器与虚拟机是两套独立页面（PVE 上也是两套端点），各自带创建入口。
          虚拟机排在容器前面：绝大多数运维场景以虚拟机为主，容器是次要的那一类。 */
-      { to: '/vms', label: '虚拟机', icon: <IconVm size={18} /> },
-      { to: '/lxc', label: '容器', icon: <IconBox size={18} /> },
-      { to: '/templates', label: '模板', icon: <IconTemplate size={18} /> },
-      { to: '/nodes', label: '节点', icon: <IconServer size={18} /> },
+      { to: '/vms', labelKey: 'nav.vms', icon: <IconVm size={18} /> },
+      { to: '/lxc', labelKey: 'nav.lxc', icon: <IconBox size={18} /> },
+      { to: '/templates', labelKey: 'nav.templates', icon: <IconTemplate size={18} /> },
+      { to: '/nodes', labelKey: 'nav.nodes', icon: <IconServer size={18} /> },
     ],
   },
   {
-    title: '存储与网络',
+    id: 'storage-network',
+    titleKey: 'nav.section.storageNetwork',
     items: [
-      { to: '/storages', label: '存储', icon: <IconStorage size={18} /> },
-      { to: '/networks', label: '网络', icon: <IconNetwork size={18} /> },
-      { to: '/frp', label: '内网穿透', icon: <IconPlug size={18} /> },
+      { to: '/storages', labelKey: 'nav.storages', icon: <IconStorage size={18} /> },
+      { to: '/networks', labelKey: 'nav.networks', icon: <IconNetwork size={18} /> },
+      { to: '/frp', labelKey: 'nav.frp', icon: <IconPlug size={18} /> },
     ],
   },
   {
@@ -128,13 +146,14 @@ export const NAV_SECTIONS: NavSection[] = [
        排在「安全」后面会让人跨两组往下找。
        应急响应也在这里 —— 它的内容是「隔离可疑虚拟机 + 备份防删核对」，
        属于「机器出事了怎么办」，和快照 / 备份是同一件事的两端。 */
-    title: '数据保护',
+    id: 'data-protection',
+    titleKey: 'nav.section.dataProtection',
     items: [
-      { to: '/snapshots', label: '快照', icon: <IconSnapshot size={18} /> },
-      { to: '/backups', label: '备份', icon: <IconBackup size={18} /> },
+      { to: '/snapshots', labelKey: 'nav.snapshots', icon: <IconSnapshot size={18} /> },
+      { to: '/backups', labelKey: 'nav.backups', icon: <IconBackup size={18} /> },
       {
         to: '/incident',
-        label: '应急响应',
+        labelKey: 'nav.incident',
         icon: <IconAlert size={18} />,
         permission: 'vm.backup',
       },
@@ -149,11 +168,12 @@ export const NAV_SECTIONS: NavSection[] = [
        进程清单），默认只有管理员有对应权限 —— 普通用户看到的这一组只剩
        「防火墙」。这不是漏配，而是因为 ssh_hosts 里没有「主机归谁」这个维度，
        发给普通用户等于公开宿主机信息；管理员可在自定义角色里单独授予。 */
-    title: '安全',
+    id: 'security',
+    titleKey: 'nav.section.security',
     items: [
       {
         to: '/firewall',
-        label: '防火墙',
+        labelKey: 'nav.firewall',
         icon: <IconLock size={18} />,
         permission: 'firewall.view',
       },
@@ -162,25 +182,25 @@ export const NAV_SECTIONS: NavSection[] = [
            面板真正要人去配的东西，监测数据配好了就只是看。两个页面顶部都有一组
            subnav 可以互相跳，所以监测数据并没有变成不可达 —— 只是深了一层。 */
         to: '/ssh-security/config',
-        label: 'SSH 安全',
+        labelKey: 'nav.sshSecurity',
         icon: <IconTerminal size={18} />,
         permission: 'ssh.view',
       },
       {
         to: '/host-audit',
-        label: '登录审计',
+        labelKey: 'nav.hostAudit',
         icon: <IconClock size={18} />,
         permission: 'ssh.view',
       },
       {
         to: '/ports',
-        label: '端口与进程',
+        labelKey: 'nav.ports',
         icon: <IconActivity size={18} />,
         permission: 'ports.view',
       },
       {
         to: '/security-baseline',
-        label: '安全基线',
+        labelKey: 'nav.securityBaseline',
         icon: <IconCheck size={18} />,
         permission: 'baseline.view',
       },
@@ -189,18 +209,19 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     /* 「看」与「接」：告警是观测，证书与机器人是外部通道。
        证书不算监控，但它和告警一样是「系统在替你盯着外面的事」。 */
-    title: '观测与集成',
+    id: 'observability',
+    titleKey: 'nav.section.observability',
     items: [
-      { to: '/alerts', label: '监控告警', icon: <IconBell size={18} /> },
+      { to: '/alerts', labelKey: 'nav.alerts', icon: <IconBell size={18} /> },
       {
         to: '/certificates',
-        label: '网站证书',
+        labelKey: 'nav.certificates',
         icon: <IconShield size={18} />,
         permission: 'cert.view',
       },
       {
         to: '/bot',
-        label: '飞书机器人',
+        labelKey: 'nav.feishuBot',
         icon: <IconChat size={18} />,
         adminOnly: true,
       },
@@ -209,16 +230,17 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     // 整个分组仅管理员可见：普通用户（operator / viewer）侧边栏不会出现该分组。
     // 折叠起来是因为它全是低频入口，平铺会把下面所有内容顶出首屏。
-    title: '系统管理',
+    id: 'system',
+    titleKey: 'nav.section.system',
     collapsible: true,
     items: [
-      { to: '/tasks', label: '任务队列', icon: <IconTasks size={18} />, adminOnly: true },
-      { to: '/users', label: '用户管理', icon: <IconUsers size={18} />, adminOnly: true },
-      { to: '/audit', label: '审计日志', icon: <IconAudit size={18} />, adminOnly: true },
-      { to: '/settings', label: '系统设置', icon: <IconSettings size={18} />, adminOnly: true },
+      { to: '/tasks', labelKey: 'nav.tasks', icon: <IconTasks size={18} />, adminOnly: true },
+      { to: '/users', labelKey: 'nav.users', icon: <IconUsers size={18} />, adminOnly: true },
+      { to: '/audit', labelKey: 'nav.audit', icon: <IconAudit size={18} />, adminOnly: true },
+      { to: '/settings', labelKey: 'nav.settings', icon: <IconSettings size={18} />, adminOnly: true },
       /* 后台作业：巡检什么时候跑、跑成什么样、间隔能不能调。
          用循环箭头而不是时钟 —— 时钟已给「登录审计」，这里要保持图标唯一。 */
-      { to: '/scheduler', label: '后台任务', icon: <IconRestart size={18} />, adminOnly: true },
+      { to: '/scheduler', labelKey: 'nav.scheduler', icon: <IconRestart size={18} />, adminOnly: true },
     ],
   },
 ];
@@ -291,7 +313,7 @@ export function isPathDisabled(
  * 注意：它必须与下面 footer 里真实渲染的链接保持一致（加一项就补一项）。
  */
 export const FOOTER_NAV_ITEMS: NavItem[] = [
-  { to: '/profile', label: '个人中心', icon: null },
+  { to: '/profile', labelKey: 'nav.profile', icon: null },
 ];
 
 /** 侧边栏里所有入口（按显示顺序），供「逐项开关」与兜底跳转共用。 */
@@ -336,6 +358,7 @@ export function Sidebar({
   canAccess,
 }: SidebarProps) {
   const site = useSiteInfo();
+  const t = useT();
   const { pathname } = useLocation();
   /* 被管理员关闭的入口：与权限过滤一样，属于「这一项该不该出现」的判断 */
   const disabledPaths = useUiPrefs().nav_disabled;
@@ -379,7 +402,7 @@ export function Sidebar({
         />
       ) : null}
 
-      <aside className={classes} aria-label="主导航">
+      <aside className={classes} aria-label={t('sidebar.aria')}>
         {/* 品牌区 */}
         <div className="sidebar-brand">
           <NavLink to="/dashboard" className="brand-link" onClick={onCloseMobile}>
@@ -408,59 +431,63 @@ export function Sidebar({
             const folded =
               !collapsed &&
               Boolean(section.collapsible) &&
-              collapsedSections.includes(section.title) &&
+              collapsedSections.includes(section.id) &&
               // 当前页在这一组里时自动展开，免得「我在哪」都看不见；
               // 但用户手动点过就以用户的为准
               !(
-                !userToggled.current.has(section.title) &&
+                !userToggled.current.has(section.id) &&
                 isPathInSection(section, pathname)
               );
             const expanded = !folded;
 
             return (
-              <div className="nav-section" key={section.title}>
+              <div className="nav-section" key={section.id}>
                 {!collapsed ? (
                   section.collapsible ? (
                     <button
                       type="button"
                       className="nav-section-title is-toggle"
                       aria-expanded={expanded}
-                      onClick={() => toggleSection(section.title)}
+                      onClick={() => toggleSection(section.id)}
                     >
-                      <span>{section.title}</span>
+                      <span>{t(section.titleKey)}</span>
                       <span className={`nav-section-caret ${expanded ? 'is-open' : ''}`}>
                         <IconChevronDown size={13} />
                       </span>
                     </button>
                   ) : (
-                    <div className="nav-section-title">{section.title}</div>
+                    <div className="nav-section-title">{t(section.titleKey)}</div>
                   )
                 ) : (
                   <div className="nav-section-divider" aria-hidden="true" />
                 )}
 
                 {expanded
-                  ? items.map((item) => (
-                      <NavLink
-                        key={item.to}
-                        to={item.to}
-                        end={item.to === '/'}
-                        className={({ isActive }) =>
-                          `nav-item ${isActive ? 'is-active' : ''}`
-                        }
-                        onClick={onCloseMobile}
-                        title={collapsed ? item.label : undefined}
-                      >
-                        <span className="nav-icon" aria-hidden="true">
-                          {item.icon}
-                        </span>
-                        {!collapsed ? (
-                          <span className="nav-label">{item.label}</span>
-                        ) : (
-                          <span className="sr-only">{item.label}</span>
-                        )}
-                      </NavLink>
-                    ))
+                  ? items.map((item) => {
+                      /* 折叠态下拉菜单只显示图标，label 同时用于 tooltip 与读屏 */
+                      const label = t(item.labelKey);
+                      return (
+                        <NavLink
+                          key={item.to}
+                          to={item.to}
+                          end={item.to === '/'}
+                          className={({ isActive }) =>
+                            `nav-item ${isActive ? 'is-active' : ''}`
+                          }
+                          onClick={onCloseMobile}
+                          title={collapsed ? label : undefined}
+                        >
+                          <span className="nav-icon" aria-hidden="true">
+                            {item.icon}
+                          </span>
+                          {!collapsed ? (
+                            <span className="nav-label">{label}</span>
+                          ) : (
+                            <span className="sr-only">{label}</span>
+                          )}
+                        </NavLink>
+                      );
+                    })
                   : null}
               </div>
             );
@@ -479,15 +506,15 @@ export function Sidebar({
               to={FOOTER_NAV_ITEMS[0].to}
               className={({ isActive }) => `nav-item ${isActive ? 'is-active' : ''}`}
               onClick={onCloseMobile}
-              title={collapsed ? FOOTER_NAV_ITEMS[0].label : undefined}
+              title={collapsed ? t(FOOTER_NAV_ITEMS[0].labelKey) : undefined}
             >
               <span className="nav-icon" aria-hidden="true">
                 <IconUser size={18} />
               </span>
               {!collapsed ? (
-                <span className="nav-label">{FOOTER_NAV_ITEMS[0].label}</span>
+                <span className="nav-label">{t(FOOTER_NAV_ITEMS[0].labelKey)}</span>
               ) : (
-                <span className="sr-only">{FOOTER_NAV_ITEMS[0].label}</span>
+                <span className="sr-only">{t(FOOTER_NAV_ITEMS[0].labelKey)}</span>
               )}
             </NavLink>
           )}
@@ -496,13 +523,13 @@ export function Sidebar({
             type="button"
             className="collapse-btn"
             onClick={onToggleCollapse}
-            aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
-            title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+            aria-label={collapsed ? t('sidebar.expand') : t('sidebar.collapse')}
+            title={collapsed ? t('sidebar.expand') : t('sidebar.collapse')}
           >
             <span className="collapse-icon" aria-hidden="true">
               <IconChevronLeft size={16} />
             </span>
-            {!collapsed ? <span>收起侧边栏</span> : null}
+            {!collapsed ? <span>{t('sidebar.collapse')}</span> : null}
           </button>
         </div>
       </aside>

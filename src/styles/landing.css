@@ -580,6 +580,9 @@
   align-items: center;
   gap: 18px;
   height: 62px;
+  /* 英文导航文案比中文宽一倍多（Security vs 安全合规），必须允许中间那一格
+     收缩，否则 .lp-nav-links 会顶出去压住右侧的「语言 / 接口文档 / 控制台」 */
+  min-width: 0;
 }
 
 .lp-brand {
@@ -614,6 +617,9 @@
   gap: 2px;
   flex: 1;
   min-width: 0;
+  /* 刻意**不加** overflow: hidden 兜底：「全部能力」面板 .lp-mega 是这一格的
+     子元素，一旦这里形成裁剪上下文，面板弹出时就会被拦腰截断。
+     空间不足靠缩短词条（英文导航取短名）+ 窄屏收进抽屉来兜，不靠裁剪。 */
 }
 
 .lp-nav-link {
@@ -668,6 +674,7 @@
   position: absolute;
   top: calc(100% + 12px);
   left: -12px;
+  z-index: 5;
   width: min(920px, calc(100vw - 56px));
   padding: 18px;
   background: var(--lp-card);
@@ -822,15 +829,86 @@
   flex: none;
 }
 
-.lp-nav-docs {
+/* --- 顶栏的语言切换 ---
+   刻意不用原生 select：官网顶栏是自绘视觉，系统控件在深浅底上都会露出一截
+   系统配色（边框、箭头、下拉列表底色），怎么调都不像同一个界面。这里用
+   「按钮 + 浮层」自绘，样式与 .lp-nav-docs 完全一致，宽度也只有 60px 左右，
+   不会把右侧的「接口文档 / 控制台」挤出可视区。 */
+.lp-lang {
+  position: relative;
+  flex: none;
+}
+
+.lp-lang-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  /* 固定宽度：「中文」是两个汉字、「EN」是两个字母，宽度差不少，
+     不固定的话每次切换整条顶栏都会跟着抖一下 */
+  min-width: 62px;
+  padding: 0 8px;
+  font-family: inherit;
   font-size: 13.5px;
   font-weight: 550;
   color: var(--lp-muted);
-  padding: 0 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color .15s ease;
 }
 
-.lp-nav-docs:hover {
+.lp-lang-btn:hover {
   color: var(--lp-blue);
+}
+
+.lp-lang-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  min-width: 132px;
+  padding: 5px;
+  background: var(--lp-card);
+  border: 1px solid var(--lp-line-2);
+  border-radius: var(--lp-r-sm);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, .16);
+  z-index: 60;
+}
+
+.lp-lang-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  color: var(--lp-text);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+
+.lp-lang-item:hover {
+  background: rgba(127, 127, 127, .12);
+}
+
+.lp-lang-item.is-active {
+  color: var(--lp-blue);
+  font-weight: 600;
+}
+
+/* 窄屏优先保住导航按钮与主 CTA：语言只留图标 */
+@media (max-width: 640px) {
+  .lp-lang-btn {
+    padding: 0 4px;
+  }
+
+  .lp-lang-btn span {
+    display: none;
+  }
 }
 
 .lp-nav-toggle {

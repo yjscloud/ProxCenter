@@ -44,28 +44,30 @@ import {
 } from '../components/Icons';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { useT, type MessageKey } from '../i18n';
 import { formatBytes, formatDateTime } from '../utils/format';
 import type { ProtectedBackup, ProtectedBackupState, QuarantineResult } from '../api/types';
 
 const STATE_META: Record<
   ProtectedBackupState,
-  { label: string; variant: 'success' | 'danger' | 'warning' | 'neutral' }
+  { label: MessageKey; variant: 'success' | 'danger' | 'warning' | 'neutral' }
 > = {
-  ok: { label: '正常', variant: 'success' },
-  missing: { label: '已丢失', variant: 'danger' },
-  changed: { label: '被改动', variant: 'warning' },
-  unknown: { label: '无法确认', variant: 'neutral' },
+  ok: { label: 'incident.state.ok', variant: 'success' },
+  missing: { label: 'incident.state.missing', variant: 'danger' },
+  changed: { label: 'incident.state.changed', variant: 'warning' },
+  unknown: { label: 'incident.state.unknown', variant: 'neutral' },
 };
 
-/** 处置步骤的中文名 */
-const STEP_LABEL: Record<string, string> = {
-  snapshot: '取证快照',
-  network: '切断网络',
-  power: '电源动作',
-  protect: '开启保护',
+/** 处置步骤的文案键 */
+const STEP_LABEL: Record<string, MessageKey> = {
+  snapshot: 'incident.step.snapshot',
+  network: 'incident.step.network',
+  power: 'incident.step.power',
+  protect: 'incident.step.protect',
 };
 
 function StepList({ result }: { result: QuarantineResult }) {
+  const t = useT();
   return (
     <div className="baseline-todo">
       {result.steps.map((step) => (
@@ -79,10 +81,10 @@ function StepList({ result }: { result: QuarantineResult }) {
           <div className="baseline-item-body">
             <div className="baseline-item-head">
               <span className="baseline-item-title">
-                {STEP_LABEL[step.step] ?? step.step}
+                {STEP_LABEL[step.step] ? t(STEP_LABEL[step.step]) : step.step}
               </span>
               <Badge variant={step.ok ? 'success' : 'danger'} size="sm">
-                {step.ok ? '成功' : '失败'}
+                {step.ok ? t('status.audit.success') : t('status.audit.failed')}
               </Badge>
             </div>
             <div className="fs-xs text-muted">{step.detail}</div>
@@ -94,6 +96,7 @@ function StepList({ result }: { result: QuarantineResult }) {
 }
 
 export function IncidentResponse() {
+  const t = useT();
   const { hasPermission } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -158,7 +161,7 @@ export function IncidentResponse() {
 
   const runQuarantine = async () => {
     if (!parsed) {
-      toast.error('请先选择一台虚拟机');
+      toast.error(t('incident.selectVmFirst'));
       return;
     }
     const body: QuarantineInput = {
@@ -174,14 +177,14 @@ export function IncidentResponse() {
       setLastResult(result);
       if (result.ok) {
         /* 隔离会断网并关机，属于不可撤销的处置动作：成功也要让人一眼看到 */
-        toast.destructive('隔离处置完成', result.summary);
+        toast.destructive(t('incident.quarantineDone'), result.summary);
       } else {
-        toast.warning('隔离处置部分失败', result.summary);
+        toast.warning(t('incident.quarantinePartial'), result.summary);
       }
       await queryClient.invalidateQueries({ queryKey: ['incident'] });
       await queryClient.invalidateQueries({ queryKey: ['vms'] });
     } catch (err) {
-      toast.error('隔离失败', errorMessage(err));
+      toast.error(t('incident.quarantineFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -198,11 +201,11 @@ export function IncidentResponse() {
         note: '',
       });
       setLastResult(result);
-      toast.success('已解除隔离', result.summary);
+      toast.success(t('incident.released'), result.summary);
       await queryClient.invalidateQueries({ queryKey: ['incident'] });
       await queryClient.invalidateQueries({ queryKey: ['vms'] });
     } catch (err) {
-      toast.error('解除隔离失败', errorMessage(err));
+      toast.error(t('incident.releaseFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -210,7 +213,7 @@ export function IncidentResponse() {
 
   const protectBackup = async () => {
     if (!volid.trim() || !bNode.trim() || !bStorage.trim()) {
-      toast.error('请填写节点、存储与备份卷 ID');
+      toast.error(t('incident.fillFields'));
       return;
     }
     setBusy(true);
@@ -221,12 +224,12 @@ export function IncidentResponse() {
         volid: volid.trim(),
         note: bNote.trim(),
       });
-      toast.success('已登记为受保护备份', result.detail);
+      toast.success(t('incident.protectDone'), result.detail);
       setVolid('');
       setBNote('');
       await refreshProtected();
     } catch (err) {
-      toast.error('登记失败', errorMessage(err));
+      toast.error(t('incident.protectFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -238,22 +241,25 @@ export function IncidentResponse() {
       const result = await protectedBackupsApi.verify(true);
       /* 普通用户拿到的是「只统计自己那份」的结果，也不会给他推告警 ——
          文案要说清，否则「已推送告警」会让人以为全站都收到了通知 */
-      const scopeHint = result.scoped ? '（仅统计你自己登记的备份，未推送告警）' : '';
+      const scopeHint = result.scoped ? t('incident.scopeHint') : '';
       if (result.missing || result.changed) {
         toast.error(
-          '核对发现异常',
-          `丢失 ${result.missing} 个，被改动 ${result.changed} 个` +
-            (result.scoped ? scopeHint : '，已推送告警'),
+          t('incident.verifyProblem'),
+          t('incident.verifyProblemDetail', {
+            missing: result.missing,
+            changed: result.changed,
+            tail: result.scoped ? scopeHint : t('incident.verifyAlertsPushed'),
+          }),
         );
       } else {
         toast.success(
-          '核对完成',
-          `${result.checked} 个受保护备份均与登记信息一致${scopeHint}`,
+          t('incident.verifyDone'),
+          t('incident.verifyDoneDetail', { n: result.checked, scopeHint }),
         );
       }
       await refreshProtected();
     } catch (err) {
-      toast.error('核对失败', errorMessage(err));
+      toast.error(t('incident.verifyFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -263,10 +269,10 @@ export function IncidentResponse() {
     if (!unprotectTarget) return;
     try {
       await protectedBackupsApi.unprotect(unprotectTarget);
-      toast.success('已从受保护清单移除', '现在可以在「备份」页删除它了');
+      toast.success(t('incident.unprotectDone'), t('incident.unprotectDoneDetail'));
       await refreshProtected();
     } catch (err) {
-      toast.error('移除失败', errorMessage(err));
+      toast.error(t('incident.unprotectFailed'), errorMessage(err));
     } finally {
       setUnprotectTarget(null);
     }
@@ -285,28 +291,27 @@ export function IncidentResponse() {
 
   /* 按当前勾选实时排出的动作清单：让「立即隔离」按下去之前就能看清会发生什么，
      而不是点完再从结果里读。 */
-  const plannedSteps = [
-    { on: snapshot, text: '取证快照 —— 唯一的磁盘现场，关掉就没了' },
-    { on: cutNetwork, text: '切断虚拟网卡 —— 逐张 net* 置 link_down=1' },
+  const plannedSteps: Array<{ on: boolean; key: MessageKey; offKey: MessageKey }> = [
+    { on: snapshot, key: 'incident.plan.snapshot', offKey: 'incident.planOff.snapshot' },
+    { on: cutNetwork, key: 'incident.plan.network', offKey: 'incident.planOff.network' },
     {
       on: powerAction !== 'none',
-      text:
-        powerAction === 'stop'
-          ? '强制关机 —— 可能丢数据，仅在必须立刻止血时用'
-          : '优雅关机 —— 等 guest 自己关机',
+      key: powerAction === 'stop' ? 'incident.plan.stop' : 'incident.plan.shutdown',
+      offKey:
+        powerAction === 'stop' ? 'incident.planOff.stop' : 'incident.planOff.shutdown',
     },
-    { on: protect, text: '开启 VM 保护 —— 防止慌乱中误删证据机' },
+    { on: protect, key: 'incident.plan.protect', offKey: 'incident.planOff.protect' },
   ];
 
   const columns: Array<Column<ProtectedBackup>> = [
     {
       key: 'volid',
-      header: '备份卷',
+      header: t('incident.colVolid'),
       render: (row) => <span className="mono fs-xs">{row.volid}</span>,
     },
     {
       key: 'where',
-      header: '存储',
+      header: t('incident.colStorage'),
       width: 180,
       render: (row) => (
         <span className="fs-xs">
@@ -317,22 +322,22 @@ export function IncidentResponse() {
     },
     {
       key: 'size',
-      header: '大小',
+      header: t('incident.colSize'),
       width: 100,
       render: (row) => <span className="fs-xs">{formatBytes(row.size)}</span>,
     },
     {
       key: 'state',
-      header: '核对状态',
+      header: t('incident.colState'),
       width: 200,
       render: (row) => (
         <span className="form-row" style={{ gap: 4 }}>
           <Badge variant={STATE_META[row.state].variant} size="sm">
-            {STATE_META[row.state].label}
+            {t(STATE_META[row.state].label)}
           </Badge>
           {row.pve_protected ? (
-            <Badge variant="accent" size="sm" title="PVE 侧已打上 protected 旗标">
-              PVE 保护
+            <Badge variant="accent" size="sm" title={t('incident.pveProtectedTitle')}>
+              {t('incident.pveProtectedBadge')}
             </Badge>
           ) : null}
         </span>
@@ -340,19 +345,19 @@ export function IncidentResponse() {
     },
     {
       key: 'detail',
-      header: '说明',
+      header: t('incident.colDetail'),
       render: (row) => (
         <span className="fs-xs text-muted">{row.state_detail || row.note || '—'}</span>
       ),
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       width: 90,
       render: (row) =>
         canBackup ? (
           <Button size="sm" variant="ghost" onClick={() => setUnprotectTarget(row.volid)}>
-            移除
+            {t('incident.remove')}
           </Button>
         ) : null,
     },
@@ -360,8 +365,8 @@ export function IncidentResponse() {
 
   return (
     <PageShell
-      title="应急响应"
-      subtitle="可疑虚拟机一键隔离（取证快照 + 断网 + 关机）与备份防删核对"
+      title={t('incident.title')}
+      subtitle={t('incident.subtitle')}
       actions={
         <Button
           size="sm"
@@ -370,7 +375,7 @@ export function IncidentResponse() {
           loading={protectedQuery.isFetching}
           onClick={() => void protectedQuery.refetch()}
         >
-          刷新
+          {t('common.refresh')}
         </Button>
       }
     >
@@ -378,27 +383,28 @@ export function IncidentResponse() {
       <div className="section-block">
         <div className="section-title">
           <IconLock size={15} />
-          <span className="section-name">虚拟机隔离处置</span>
-          <span className="section-hint">先取证、再断网、最后关机 —— 顺序反了现场就没了</span>
+          <span className="section-name">{t('incident.isoSection')}</span>
+          <span className="section-hint">{t('incident.isoSectionHint')}</span>
         </div>
 
         <Card collapsible={false}>
           <CardHeader
-            title="处置目标与动作"
-            subtitle="隔离是不可逆的现场保全动作，先看状态，再动手"
+            title={t('incident.targetTitle')}
+            subtitle={t('incident.targetSubtitle')}
             icon={<IconAlert size={16} />}
           />
 
           {!canIsolate ? (
-            <Notice tone="info" title="需要「应急隔离」权限">
-              你的账号没有 <span className="mono">vm.isolate</span> 权限，只能查看隔离状态。
-              请联系管理员在「用户管理 → 角色」里授予。
+            <Notice tone="info" title={t('incident.needPermTitle')}>
+              {t('incident.needPermPre')}
+              <span className="mono">vm.isolate</span>
+              {t('incident.needPermMid')}
             </Notice>
           ) : (
             <>
               {/* 状态横幅：一进页面就知道这台机器现在是死是活 */}
               {statusQuery.isError ? (
-                <Notice tone="warning" title="读不到隔离状态">
+                <Notice tone="warning" title={t('incident.statusReadError')}>
                   {errorMessage(statusQuery.error)}
                 </Notice>
               ) : null}
@@ -408,21 +414,29 @@ export function IncidentResponse() {
                   tone={statusQuery.data.isolated ? 'warning' : 'success'}
                   title={
                     statusQuery.data.isolated
-                      ? `当前处于隔离状态：已断 ${statusQuery.data.cut_interfaces.length} 张网卡${
-                          statusQuery.data.protected ? '，并已开启 VM 保护' : ''
-                        }`
-                      : '当前未隔离'
+                      ? t('incident.isolatedTitle', {
+                          n: statusQuery.data.cut_interfaces.length,
+                          protectSuffix: statusQuery.data.protected
+                            ? t('incident.isolatedProtectSuffix')
+                            : '',
+                        })
+                      : t('incident.notIsolated')
                   }
                 >
                   {statusQuery.data.evidence_snapshots.length ? (
                     <>
-                      取证快照：
+                      {t('incident.evidenceLabel')}
                       {statusQuery.data.evidence_snapshots
-                        .map((item) => `${item.name}（${formatDateTime(item.snaptime ?? 0)}）`)
-                        .join('、')}
+                        .map((item) =>
+                          t('incident.evidenceItem', {
+                            name: item.name,
+                            time: formatDateTime(item.snaptime ?? 0),
+                          }),
+                        )
+                        .join(t('incident.evidenceSeparator'))}
                     </>
                   ) : (
-                    '没有这台机器的取证快照。'
+                    t('incident.noEvidence')
                   )}
                 </Notice>
               ) : null}
@@ -432,22 +446,22 @@ export function IncidentResponse() {
                 <div className="inc-col">
                   <div className="dyn-row">
                     <Select
-                      label="选择虚拟机"
-                      placeholder="选择一台虚拟机"
+                      label={t('incident.selectVmLabel')}
+                      placeholder={t('incident.selectVmPlaceholder')}
                       value={target}
                       onChange={(event) => setTarget(event.target.value)}
                       options={vmOptions}
                     />
                     <Select
-                      label="电源动作"
+                      label={t('incident.step.power')}
                       value={powerAction}
                       onChange={(event) =>
                         setPowerAction(event.target.value as 'none' | 'shutdown' | 'stop')
                       }
                       options={[
-                        { label: '优雅关机（推荐）', value: 'shutdown' },
-                        { label: '只断网，不关机', value: 'none' },
-                        { label: '强制关机（可能丢数据）', value: 'stop' },
+                        { label: t('incident.powerShutdown'), value: 'shutdown' },
+                        { label: t('incident.powerNone'), value: 'none' },
+                        { label: t('incident.powerStop'), value: 'stop' },
                       ]}
                     />
                   </div>
@@ -456,26 +470,26 @@ export function IncidentResponse() {
                     <Switch
                       checked={snapshot}
                       onChange={setSnapshot}
-                      label="先创建取证快照"
-                      hint="强烈建议保留：这是唯一的磁盘现场"
+                      label={t('incident.snapSwitch')}
+                      hint={t('incident.snapSwitchHint')}
                     />
                     <Switch
                       checked={cutNetwork}
                       onChange={setCutNetwork}
-                      label="切断虚拟网卡"
-                      hint="逐张 net* 置 link_down=1"
+                      label={t('incident.netSwitch')}
+                      hint={t('incident.netSwitchHint')}
                     />
                     <Switch
                       checked={protect}
                       onChange={setProtect}
-                      label="开启 VM 保护"
-                      hint="防止慌乱中把证据机误删"
+                      label={t('incident.protectSwitch')}
+                      hint={t('incident.protectSwitchHint')}
                     />
                   </div>
 
                   <Textarea
-                    label="处置备注"
-                    hint="会写进取证快照的描述与审计日志，例如「疑似挖矿，源头工单 #123」"
+                    label={t('incident.noteLabel')}
+                    hint={t('incident.noteHint')}
                     rows={2}
                     value={note}
                     onChange={(event) => setNote(event.target.value)}
@@ -489,7 +503,7 @@ export function IncidentResponse() {
                       disabled={!parsed}
                       onClick={() => void runQuarantine()}
                     >
-                      立即隔离
+                      {t('incident.isolateNow')}
                     </Button>
                     <Button
                       variant="secondary"
@@ -497,7 +511,7 @@ export function IncidentResponse() {
                       disabled={!parsed || !statusQuery.data?.isolated}
                       onClick={() => void runRelease(false)}
                     >
-                      解除隔离
+                      {t('incident.release')}
                     </Button>
                     <Button
                       variant="secondary"
@@ -505,18 +519,18 @@ export function IncidentResponse() {
                       disabled={!parsed || !statusQuery.data?.isolated}
                       onClick={() => setPowerOnConfirm(true)}
                     >
-                      解除隔离并开机
+                      {t('incident.releasePowerOn')}
                     </Button>
                   </div>
                   <div className="inc-hint">
-                    未选虚拟机时无法执行；「解除隔离」在机器未隔离时不可用。
+                    {t('incident.actionsHint')}
                   </div>
                 </div>
 
                 {/* 右：动作预览 / 上次结果 —— 让危险操作在按下之前就能看清 */}
                 <div className="inc-col">
                   <div className="inc-side-title">
-                    {lastResult ? '上次处置结果' : '按下「立即隔离」会发生什么'}
+                    {lastResult ? t('incident.lastResult') : t('incident.previewTitle')}
                   </div>
 
                   {lastResult ? (
@@ -524,7 +538,7 @@ export function IncidentResponse() {
                       <div className="fs-sm">{lastResult.summary}</div>
                       <StepList result={lastResult} />
                       {lastResult.caveats?.length ? (
-                        <Notice tone="info" title="这次处置的能力边界">
+                        <Notice tone="info" title={t('incident.caveatsTitle')}>
                           <ul style={{ paddingLeft: 18, margin: 0 }}>
                             {lastResult.caveats.map((text) => (
                               <li key={text} className="fs-xs">
@@ -539,19 +553,17 @@ export function IncidentResponse() {
                     <div className="inc-explain">
                       {plannedSteps.map((step, index) => (
                         <div
-                          key={step.text}
+                          key={step.key}
                           className={`inc-explain-item ${step.on ? '' : 'is-off'}`}
                         >
                           <span className="inc-explain-index" aria-hidden="true">
                             {index + 1}
                           </span>
-                          <span>
-                            {step.on ? step.text : `${step.text.split(' —— ')[0]}（已关闭）`}
-                          </span>
+                          <span>{step.on ? t(step.key) : t(step.offKey)}</span>
                         </div>
                       ))}
                       {!parsed ? (
-                        <div className="inc-hint">先在左边选一台虚拟机。</div>
+                        <div className="inc-hint">{t('incident.pickVmHint')}</div>
                       ) : null}
                     </div>
                   )}
@@ -566,68 +578,64 @@ export function IncidentResponse() {
       <div className="section-block">
         <div className="section-title">
           <IconShield size={15} />
-          <span className="section-name">备份防删与核对</span>
-          <span className="section-hint">面板层禁删 + 定期核对，异常即告警</span>
+          <span className="section-name">{t('incident.backupSection')}</span>
+          <span className="section-hint">{t('incident.backupSectionHint')}</span>
         </div>
 
         <div className="grid grid-4">
         <KpiCard
-          label="受保护备份"
+          label={t('incident.kpi.total')}
           value={stats.total}
           icon={<IconStorage size={16} />}
           tone="accent"
-          hint="面板拒绝删除这些备份"
+          hint={t('incident.kpi.totalHint')}
         />
         <KpiCard
-          label="已丢失"
+          label={t('incident.state.missing')}
           value={stats.missing}
           icon={<IconAlert size={16} />}
           tone={stats.missing ? 'danger' : 'success'}
-          hint={stats.missing ? '备份被删了，先查存储侧' : '没有丢失'}
+          hint={stats.missing ? t('incident.kpi.missingHint') : t('incident.kpi.noneMissing')}
         />
         <KpiCard
-          label="被改动"
+          label={t('incident.state.changed')}
           value={stats.changed}
           icon={<IconInfo size={16} />}
           tone={stats.changed ? 'warning' : 'success'}
-          hint={stats.changed ? '元数据与登记时不一致' : '元数据一致'}
+          hint={stats.changed ? t('incident.kpi.changedHint') : t('incident.kpi.metaOk')}
         />
         <KpiCard
-          label="PVE 侧已加保护"
+          label={t('incident.kpi.pveProtected')}
           value={stats.pveProtected}
           icon={<IconShield size={16} />}
           tone="neutral"
-          hint="能拦住 PVE 的 prune，但不是 WORM"
+          hint={t('incident.kpi.pveProtectedHint')}
         />
       </div>
 
         <CollapsibleCard
-          title="关于「不可变备份」的实话 —— 能力边界在这里说清"
+          title={t('incident.immutableTitle')}
           icon={<IconInfo size={15} />}
         >
           <div className="inc-note">
             <p>
-              真正的不可变（WORM）必须由<b>存储侧</b>保证：PBS 的 retention/immutability、
-              S3 Object Lock，或只读挂载的文件系统。只靠 PVE API 做不到，这里也没有假装做到。
+              {t('incident.worm1a')}<b>{t('incident.worm1b')}</b>{t('incident.worm1c')}
             </p>
             <p>
-              这一页提供的是<b>检测型</b>防护：① 面板层禁止删除受保护备份（勒索软件即使拿到
-              管理员会话，也得先在界面上解除保护）；② 尽力给 PVE 卷打上
-              <span className="mono"> protected</span> 旗标（拦住 PVE 的 prune 与常规删除，
-              root 仍可清除）；③ 定期核对备份是否还在、元数据是否被改动，异常即告警。
+              {t('incident.worm2a')}<b>{t('incident.worm2b')}</b>{t('incident.worm2c')}
+              <span className="mono"> protected</span>{t('incident.worm2d')}
             </p>
             <p>
-              另外：PVE 不提供 vzdump 归档的内容校验和，所以「核对」比的是
-              <b>大小与创建时间</b>，能发现<b>删除 / 替换 / 元数据变化</b>，但发现不了存储层的
-              静默位翻转。需要后者请接入 PBS。
+              {t('incident.worm3a')}<b>{t('incident.worm3b')}</b>{t('incident.worm3c')}
+              <b>{t('incident.worm3d')}</b>{t('incident.worm3e')}
             </p>
           </div>
         </CollapsibleCard>
 
       <Card collapsible={false}>
         <CardHeader
-          title={`受保护备份（${items.length}）`}
-          subtitle="登记后面板拒绝删除，并参与定期核对"
+          title={t('incident.protectedTitle', { n: items.length })}
+          subtitle={t('incident.protectedSubtitle')}
           icon={<IconShield size={16} />}
           actions={
             canBackup ? (
@@ -638,7 +646,7 @@ export function IncidentResponse() {
                 loading={busy}
                 onClick={() => void verifyNow()}
               >
-                立即核对
+                {t('incident.verifyNow')}
               </Button>
             ) : null
           }
@@ -647,14 +655,14 @@ export function IncidentResponse() {
         {canBackup ? (
           <div className="create-bar">
             <div className="field-row">
-              <Field label="节点" required className="field-narrow">
+              <Field label={t('common.node')} required className="field-narrow">
                 <Input
                   placeholder="pve1"
                   value={bNode}
                   onChange={(event) => setBNode(event.target.value)}
                 />
               </Field>
-              <Field label="存储" required className="field-narrow">
+              <Field label={t('incident.fieldStorage')} required className="field-narrow">
                 <Input
                   placeholder="backup"
                   value={bStorage}
@@ -662,9 +670,9 @@ export function IncidentResponse() {
                 />
               </Field>
               <Field
-                label="备份卷 ID"
+                label={t('incident.colVolid')}
                 required
-                hint="可在「备份」页的归档列表里复制"
+                hint={t('incident.volidHint')}
                 className="field-wide"
               >
                 <Input
@@ -674,9 +682,9 @@ export function IncidentResponse() {
                   onChange={(event) => setVolid(event.target.value)}
                 />
               </Field>
-              <Field label="备注">
+              <Field label={t('incident.fieldNote')}>
                 <Input
-                  placeholder="例如：上线前基线备份，保留 30 天"
+                  placeholder={t('incident.notePlaceholder')}
                   value={bNote}
                   onChange={(event) => setBNote(event.target.value)}
                 />
@@ -687,7 +695,7 @@ export function IncidentResponse() {
                 loading={busy}
                 onClick={() => void protectBackup()}
               >
-                登记为受保护
+                {t('incident.protectBtn')}
               </Button>
             </div>
           </div>
@@ -695,7 +703,7 @@ export function IncidentResponse() {
 
         {protectedQuery.isError ? (
           <ErrorState
-            title="读取受保护清单失败"
+            title={t('incident.listLoadFailed')}
             message={errorMessage(protectedQuery.error)}
             onRetry={() => void protectedQuery.refetch()}
           />
@@ -704,14 +712,14 @@ export function IncidentResponse() {
             columns={columns}
             rows={items}
             rowKey={(row) => row.volid}
-            caption="受保护备份清单"
+            caption={t('incident.caption')}
             dense
-            emptyTitle="还没有受保护的备份"
+            emptyTitle={t('incident.emptyTitle')}
           />
         ) : (
           <EmptyState
-            title="还没有受保护的备份"
-            description="把关键备份登记进来：面板会拒绝删除它，并定期核对是否被删除或改动。"
+            title={t('incident.emptyTitle')}
+            description={t('incident.emptyDesc')}
             icon={<IconShield size={26} />}
           />
         )}
@@ -726,9 +734,9 @@ export function IncidentResponse() {
 
       <ConfirmDialog
         open={Boolean(unprotectTarget)}
-        title="移除受保护标记"
-        message={`移除后「${unprotectTarget ?? ''}」将重新可以在「备份」页被删除，并停止核对告警。确定吗？`}
-        confirmText="移除保护"
+        title={t('incident.unprotectTitle')}
+        message={t('incident.unprotectMessage', { volid: unprotectTarget ?? '' })}
+        confirmText={t('incident.unprotectConfirm')}
         danger
         onCancel={() => setUnprotectTarget(null)}
         onConfirm={() => void doUnprotect()}
@@ -736,10 +744,10 @@ export function IncidentResponse() {
 
       <ConfirmDialog
         open={powerOnConfirm}
-        title="解除隔离并开机"
-        message="将恢复网卡、解除 VM 保护并启动这台虚拟机。如果还没取证完成，开机可能产生新的写入，覆盖磁盘现场。"
-        confirmText="确认开机"
-        requireText="开机"
+        title={t('incident.releasePowerOn')}
+        message={t('incident.powerOnMessage')}
+        confirmText={t('incident.powerOnConfirm')}
+        requireText={t('incident.powerOnRequire')}
         danger
         onCancel={() => setPowerOnConfirm(false)}
         onConfirm={() => {

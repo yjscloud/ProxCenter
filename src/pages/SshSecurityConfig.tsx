@@ -38,24 +38,26 @@ import {
 import { formatRelative } from '../utils/format';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { useT, type MessageKey } from '../i18n';
 import type { SshHost, SshPolicy } from '../api/types';
 
-const LOG_SOURCES = [
-  { label: '自动（journalctl 优先）', value: 'auto' },
-  { label: 'journalctl', value: 'journalctl' },
-  { label: '/var/log/secure', value: 'secure' },
-  { label: '/var/log/auth.log', value: 'auth.log' },
+const LOG_SOURCES: Array<{ label: MessageKey; value: string }> = [
+  { label: 'sshConfig.logSourceAuto', value: 'auto' },
+  { label: 'sshConfig.logSourceJournalctl', value: 'journalctl' },
+  { label: 'sshConfig.logSourceSecure', value: 'secure' },
+  { label: 'sshConfig.logSourceAuthlog', value: 'auth.log' },
 ];
 
 /** 受管主机列表里的短标签（下拉用的完整文案在上面） */
-const LOG_SOURCE_LABEL: Record<string, string> = {
-  auto: '自动',
-  journalctl: 'journalctl',
-  secure: '/var/log/secure',
-  'auth.log': '/var/log/auth.log',
+const LOG_SOURCE_LABEL: Record<string, MessageKey> = {
+  auto: 'sshConfig.logSourceAutoShort',
+  journalctl: 'sshConfig.logSourceJournalctl',
+  secure: 'sshConfig.logSourceSecure',
+  'auth.log': 'sshConfig.logSourceAuthlog',
 };
 
 export function SshSecurityConfig() {
+  const t = useT();
   const { hasPermission, isAdmin } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
@@ -98,14 +100,16 @@ export function SshSecurityConfig() {
     try {
       const res = await sshFleetApi.assignOwner(target.id, ownerValue.trim());
       toast.success(
-        res.owner ? '归属已更新' : '已收回归属',
-        res.owner ? `${target.name} → ${res.owner}` : '这台主机现在只有管理员可见',
+        res.owner ? t('sshConfig.ownerUpdated') : t('sshConfig.ownerCleared'),
+        res.owner
+          ? `${target.name} → ${res.owner}`
+          : t('sshConfig.ownerClearedDetail'),
       );
       setOwnerTarget(null);
       /* 主机列表（归属）与多机汇总都跟着变：归属影响普通用户能看到什么 */
       await qc.invalidateQueries({ queryKey: ['ssh'] });
     } catch (err) {
-      toast.error('指派失败', errorMessage(err));
+      toast.error(t('sshConfig.assignFailed'), errorMessage(err));
     } finally {
       setOwnerBusy(false);
     }
@@ -135,12 +139,14 @@ export function SshSecurityConfig() {
       } else {
         await sshFleetApi.createHost(hostDraft);
       }
-      toast.success(editingHost ? '主机已更新' : '主机已添加');
+      toast.success(
+        editingHost ? t('sshConfig.hostUpdated') : t('sshConfig.hostAdded'),
+      );
       setEditingHost(null);
       setHostDraft(null);
       await refreshFleet();
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('sshConfig.saveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -151,11 +157,11 @@ export function SshSecurityConfig() {
     setBusy(true);
     try {
       await sshFleetApi.deleteHost(deleteHost.id);
-      toast.success(`已移除 ${deleteHost.name}`);
+      toast.success(t('sshConfig.hostRemoved', { name: deleteHost.name }));
       setDeleteHost(null);
       await refreshFleet();
     } catch (err) {
-      toast.error('删除失败', errorMessage(err));
+      toast.error(t('sshConfig.deleteFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -166,18 +172,30 @@ export function SshSecurityConfig() {
     try {
       const res = await sshFleetApi.testHost(host.id);
       const r = res.result;
+      const logSource = r.journal
+        ? 'journalctl'
+        : r.secure
+          ? '/var/log/secure'
+          : r.authlog
+            ? '/var/log/auth.log'
+            : t('sshConfig.notFound');
       setTestResult({
         name: host.name,
         text: r.ok
-          ? `已连上 ${r.hostname || host.host}（登录为 ${r.user || '-'}）`
-            + (r.fail2ban ? ` · fail2ban ${r.fail2ban.split('\n')[0]}` : ' · 该主机没有 fail2ban-client')
-            + ` · 日志源 ${r.journal ? 'journalctl' : r.secure ? '/var/log/secure' : r.authlog ? '/var/log/auth.log' : '未找到'}`
-            + (r.fingerprint ? ` · 指纹 ${r.fingerprint}` : '')
+          ? t('sshConfig.testOk', {
+              host: r.hostname || host.host,
+              user: r.user || '-',
+            })
+            + (r.fail2ban
+              ? t('sshConfig.testFail2ban', { version: r.fail2ban.split('\n')[0] })
+              : t('sshConfig.testNoFail2ban'))
+            + t('sshConfig.testLogSource', { source: logSource })
+            + (r.fingerprint ? t('sshConfig.testFingerprint', { fp: r.fingerprint }) : '')
           : r.detail,
       });
       await hostsQuery.refetch();
     } catch (err) {
-      toast.error('测试失败', errorMessage(err));
+      toast.error(t('sshConfig.testFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -187,10 +205,10 @@ export function SshSecurityConfig() {
     setBusy(true);
     try {
       const res = await sshFleetApi.trustHost(host.id);
-      toast.success(`已记住 ${host.name} 的指纹`, res.fingerprint);
+      toast.success(t('sshConfig.trustDone', { name: host.name }), res.fingerprint);
       await refreshFleet();
     } catch (err) {
-      toast.error('确认指纹失败', errorMessage(err));
+      toast.error(t('sshConfig.trustFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -199,7 +217,7 @@ export function SshSecurityConfig() {
   const hostColumns: Array<Column<SshHost>> = [
     {
       key: 'name',
-      header: '主机',
+      header: t('sshConfig.colHost'),
       render: (row) => (
         <div>
           <div className="fw-600 fs-sm">{row.name}</div>
@@ -211,13 +229,13 @@ export function SshSecurityConfig() {
     },
     {
       key: 'auth',
-      header: '凭据',
+      header: t('sshConfig.colAuth'),
       width: 150,
       render: (row) => (
         <span className="ssh-ip-cell">
           <Badge variant={row.secret_set ? 'success' : 'warning'} size="sm">
-            {row.auth_type === 'password' ? '口令' : '私钥'}
-            {row.secret_set ? '' : '（未设置）'}
+            {row.auth_type === 'password' ? t('sshConfig.authPassword') : t('sshConfig.authKey')}
+            {row.secret_set ? '' : t('sshConfig.authUnset')}
           </Badge>
           {row.use_sudo ? (
             <Badge variant="neutral" size="sm">
@@ -232,7 +250,7 @@ export function SshSecurityConfig() {
       ? [
           {
             key: 'owner',
-            header: '归属',
+            header: t('sshConfig.colOwner'),
             width: 130,
             render: (row: SshHost) =>
               row.owner ? (
@@ -241,9 +259,9 @@ export function SshSecurityConfig() {
                 <Badge
                   variant="neutral"
                   size="sm"
-                  title="存量主机没有归属记录，普通用户看不到它"
+                  title={t('sshConfig.adminOnlyTitle')}
                 >
-                  仅管理员
+                  {t('sshConfig.adminOnly')}
                 </Badge>
               ),
           } as Column<SshHost>,
@@ -251,30 +269,32 @@ export function SshSecurityConfig() {
       : []),
     {
       key: 'fingerprint',
-      header: '主机指纹',
+      header: t('sshConfig.colFingerprint'),
       width: 160,
       render: (row) =>
         row.known_host ? (
           <span className="fs-xs text-muted mono">{row.known_host.slice(0, 16)}…</span>
         ) : (
           <Badge variant="warning" size="sm">
-            未确认
+            {t('sshConfig.unconfirmed')}
           </Badge>
         ),
     },
     {
       key: 'log_source',
-      header: '日志来源',
+      header: t('sshConfig.colLogSource'),
       width: 150,
       render: (row) => (
         <span className="fs-xs text-secondary">
-          {LOG_SOURCE_LABEL[row.log_source] ?? row.log_source ?? '—'}
+          {LOG_SOURCE_LABEL[row.log_source]
+            ? t(LOG_SOURCE_LABEL[row.log_source])
+            : row.log_source ?? '—'}
         </span>
       ),
     },
     {
       key: 'updated',
-      header: '更新于',
+      header: t('sshConfig.colUpdated'),
       width: 110,
       render: (row) => (
         <span className="fs-xs text-muted">
@@ -284,17 +304,17 @@ export function SshSecurityConfig() {
     },
     {
       key: 'enabled',
-      header: '状态',
+      header: t('common.status'),
       width: 84,
       render: (row) => (
         <Badge variant={row.enabled ? 'success' : 'neutral'} size="sm">
-          {row.enabled ? '启用' : '停用'}
+          {row.enabled ? t('common.enable') : t('sshConfig.disabled')}
         </Badge>
       ),
     },
     {
       key: 'ops',
-      header: '操作',
+      header: t('common.actions'),
       width: 284,
       align: 'right',
       render: (row) =>
@@ -306,7 +326,7 @@ export function SshSecurityConfig() {
               disabled={busy}
               onClick={() => void testHost(row)}
             >
-              测试
+              {t('sshConfig.test')}
             </Button>
             {row.known_host ? null : (
               <Button
@@ -315,20 +335,20 @@ export function SshSecurityConfig() {
                 disabled={busy}
                 onClick={() => void trustHost(row)}
               >
-                信任指纹
+                {t('sshConfig.trust')}
               </Button>
             )}
             {isAdmin ? (
               <Button
                 size="sm"
                 variant="ghost"
-                title="把这台主机指派给某个用户（留空 = 收回，之后仅管理员可见）"
+                title={t('sshConfig.ownerBtnTitle')}
                 onClick={() => {
                   setOwnerValue(row.owner ?? '');
                   setOwnerTarget(row);
                 }}
               >
-                归属
+                {t('sshConfig.owner')}
               </Button>
             ) : null}
             <Button
@@ -339,27 +359,27 @@ export function SshSecurityConfig() {
                 setHostDraft({ ...row, secret: '' });
               }}
             >
-              编辑
+              {t('common.edit')}
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              title="移除该主机"
+              title={t('sshConfig.removeHostBtnTitle')}
               onClick={() => setDeleteHost(row)}
             >
               <IconTrash size={14} />
             </Button>
           </span>
         ) : (
-          <span className="fs-xs text-muted">只读</span>
+          <span className="fs-xs text-muted">{t('sshConfig.readOnly')}</span>
         ),
     },
   ];
 
   return (
     <PageShell
-      title="主机与告警配置"
-      subtitle="受管主机（SSH 凭据）与异常登录告警策略；监测数据在「SSH 安全」主页面"
+      title={t('sshConfig.title')}
+      subtitle={t('sshConfig.subtitle')}
       actions={
         <Button
           size="sm"
@@ -367,37 +387,37 @@ export function SshSecurityConfig() {
           onClick={() => void overviewQuery.refetch()}
           loading={overviewQuery.isFetching}
         >
-          刷新
+          {t('common.refresh')}
         </Button>
       }
     >
       <div className="subnav">
         <span className="subnav-item is-active" aria-current="page">
-          <IconServer size={14} /> 主机与告警配置
+          <IconServer size={14} /> {t('sshConfig.title')}
         </span>
         <Link className="subnav-item" to="/ssh-security">
-          <IconTerminal size={14} /> 监测数据
+          <IconTerminal size={14} /> {t('sshConfig.subnavData')}
         </Link>
       </div>
 
       <div className="section-block">
         <div className="section-title">
           <IconServer size={15} />
-          <span className="section-name">受管主机</span>
+          <span className="section-name">{t('sshConfig.hostsSection')}</span>
           <span className="section-hint">
-            面板用这些凭据连上去读日志、管 fail2ban
+            {t('sshConfig.hostsSectionHint')}
           </span>
         </div>
 
         <Card collapsible={false}>
           <CardHeader
-            title={`受管主机（${hosts.length}）`}
-            subtitle="凭据加密存储，接口永不回传明文"
+            title={t('sshConfig.hostsTitle', { n: hosts.length })}
+            subtitle={t('sshConfig.hostsSubtitle')}
             icon={<IconServer size={16} />}
             actions={
               canManage && hosts.length ? (
                 <Button size="sm" variant="primary" onClick={startCreateHost}>
-                  <IconPlus size={14} /> 添加主机
+                  <IconPlus size={14} /> {t('sshConfig.addHost')}
                 </Button>
               ) : null
             }
@@ -405,10 +425,10 @@ export function SshSecurityConfig() {
           {testResult ? (
             <Notice
               tone="info"
-              title={`${testResult.name} 连接测试`}
+              title={t('sshConfig.testTitle', { name: testResult.name })}
               action={
                 <Button size="sm" variant="ghost" onClick={() => setTestResult(null)}>
-                  关闭
+                  {t('common.close')}
                 </Button>
               }
             >
@@ -418,7 +438,7 @@ export function SshSecurityConfig() {
           {hosts.length ? (
             <>
               <Table
-                caption="受管主机"
+                caption={t('sshConfig.hostsSection')}
                 rows={hostPage.rows}
                 columns={hostColumns}
                 rowKey={(row) => row.id}
@@ -429,12 +449,11 @@ export function SshSecurityConfig() {
           ) : (
             <div className="ssh-empty">
               <div className="ssh-empty-text">
-                还没有受管主机。添加后（需要目标机的 SSH 私钥或口令），面板就能把它的
-                SSH 日志与 fail2ban 一起纳入统计与告警。
+                {t('sshConfig.emptyText')}
               </div>
               {canManage ? (
                 <Button size="sm" variant="primary" onClick={startCreateHost}>
-                  <IconPlus size={14} /> 添加第一台主机
+                  <IconPlus size={14} /> {t('sshConfig.addFirstHost')}
                 </Button>
               ) : null}
             </div>
@@ -445,8 +464,15 @@ export function SshSecurityConfig() {
       <Modal
         open={Boolean(ownerTarget)}
         onClose={() => setOwnerTarget(null)}
-        title="指派主机归属"
-        description={ownerTarget ? `${ownerTarget.name}（${ownerTarget.host}）` : undefined}
+        title={t('sshConfig.ownerModalTitle')}
+        description={
+          ownerTarget
+            ? t('sshConfig.ownerModalDesc', {
+                name: ownerTarget.name,
+                host: ownerTarget.host,
+              })
+            : undefined
+        }
         size="sm"
         footer={
           <>
@@ -455,26 +481,26 @@ export function SshSecurityConfig() {
               onClick={() => setOwnerTarget(null)}
               disabled={ownerBusy}
             >
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="primary"
               loading={ownerBusy}
               onClick={() => void saveOwner()}
             >
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
       >
         <Field
-          label="归属用户"
-          hint="留空 = 收回归属，之后这台主机只有管理员可见。用户名的拼写要与管理页里的账号完全一致。"
+          label={t('sshConfig.ownerField')}
+          hint={t('sshConfig.ownerHint')}
         >
           <Input
             value={ownerValue}
             onChange={(e) => setOwnerValue(e.target.value)}
-            placeholder="例如 zhangsan"
+            placeholder={t('sshConfig.ownerPlaceholder')}
             autoComplete="off"
           />
         </Field>
@@ -484,8 +510,8 @@ export function SshSecurityConfig() {
         <div className="section-block">
           <div className="section-title">
             <IconAlert size={15} />
-            <span className="section-name">异常登录告警策略</span>
-            <span className="section-hint">对当前可见的主机生效</span>
+            <span className="section-name">{t('sshConfig.policySection')}</span>
+            <span className="section-hint">{t('sshConfig.policySectionHint')}</span>
           </div>
           <PolicyCard
             policy={policy}
@@ -493,10 +519,10 @@ export function SshSecurityConfig() {
             onSave={async (next) => {
               try {
                 await sshApi.savePolicy(next);
-                toast.success('策略已保存');
+                toast.success(t('sshConfig.policySaved'));
                 await overviewQuery.refetch();
               } catch (err) {
-                toast.error('保存失败', errorMessage(err));
+                toast.error(t('sshConfig.saveFailed'), errorMessage(err));
                 throw err;
               }
             }}
@@ -511,8 +537,12 @@ export function SshSecurityConfig() {
             setHostDraft(null);
             setEditingHost(null);
           }}
-          title={editingHost ? `编辑主机：${editingHost.name}` : '添加受管主机'}
-          description="口令与私钥都会用 SECRET_KEY 加密后落库，接口永不回传明文"
+          title={
+            editingHost
+              ? t('sshConfig.editHostTitle', { name: editingHost.name })
+              : t('sshConfig.addHostTitle')
+          }
+          description={t('sshConfig.hostModalDesc')}
           footer={
             <>
               <Button
@@ -523,24 +553,24 @@ export function SshSecurityConfig() {
                 }}
                 disabled={busy}
               >
-                取消
+                {t('common.cancel')}
               </Button>
               <Button variant="primary" loading={busy} onClick={() => void saveHost()}>
-                保存
+                {t('common.save')}
               </Button>
             </>
           }
         >
           <div className="dyn-list">
             <div className="field-row">
-              <Field label="名称" hint="显示用，例如 pve-1">
+              <Field label={t('common.name')} hint={t('sshConfig.nameHint')}>
                 <Input
                   value={String(hostDraft.name ?? '')}
                   onChange={(e) => setHostDraft({ ...hostDraft, name: e.target.value })}
                   placeholder="pve-1"
                 />
               </Field>
-              <Field label="地址" required>
+              <Field label={t('sshConfig.fieldHost')} required>
                 <Input
                   value={String(hostDraft.host ?? '')}
                   onChange={(e) => setHostDraft({ ...hostDraft, host: e.target.value })}
@@ -548,7 +578,7 @@ export function SshSecurityConfig() {
                   mono
                 />
               </Field>
-              <Field label="端口">
+              <Field label={t('sshConfig.fieldPort')}>
                 <Input
                   type="number"
                   min={1}
@@ -560,7 +590,7 @@ export function SshSecurityConfig() {
             </div>
 
             <div className="field-row">
-              <Field label="登录用户" required>
+              <Field label={t('sshConfig.fieldUser')} required>
                 <Input
                   value={String(hostDraft.username ?? '')}
                   onChange={(e) => setHostDraft({ ...hostDraft, username: e.target.value })}
@@ -568,29 +598,36 @@ export function SshSecurityConfig() {
                   mono
                 />
               </Field>
-              <Field label="认证方式">
+              <Field label={t('sshConfig.fieldAuth')}>
                 <Select
                   value={String(hostDraft.auth_type ?? 'key')}
                   onChange={(e) => setHostDraft({ ...hostDraft, auth_type: e.target.value })}
                   options={[
-                    { label: '私钥', value: 'key' },
-                    { label: '口令', value: 'password' },
+                    { label: t('sshConfig.authKey'), value: 'key' },
+                    { label: t('sshConfig.authPassword'), value: 'password' },
                   ]}
                 />
               </Field>
-              <Field label="日志来源">
+              <Field label={t('sshConfig.colLogSource')}>
                 <Select
                   value={String(hostDraft.log_source ?? 'auto')}
                   onChange={(e) => setHostDraft({ ...hostDraft, log_source: e.target.value })}
-                  options={LOG_SOURCES}
+                  options={LOG_SOURCES.map((item) => ({
+                    label: t(item.label),
+                    value: item.value,
+                  }))}
                 />
               </Field>
             </div>
 
             <Field
-              label={hostDraft.auth_type === 'password' ? 'SSH 口令' : 'SSH 私钥（PEM）'}
+              label={
+                hostDraft.auth_type === 'password'
+                  ? t('sshConfig.fieldPassword')
+                  : t('sshConfig.fieldPrivateKey')
+              }
               required={!editingHost}
-              hint={editingHost ? '留空表示不修改现有凭据' : undefined}
+              hint={editingHost ? t('sshConfig.secretHint') : undefined}
             >
               <Input
                 type={hostDraft.auth_type === 'password' ? 'password' : undefined}
@@ -609,19 +646,18 @@ export function SshSecurityConfig() {
               <Switch
                 checked={Boolean(hostDraft.use_sudo)}
                 onChange={(v) => setHostDraft({ ...hostDraft, use_sudo: v })}
-                label="命令前加 sudo -n"
-                hint="登录用户不是 root 时需要（目标机要配 NOPASSWD）"
+                label={t('sshConfig.sudoSwitch')}
+                hint={t('sshConfig.sudoSwitchHint')}
               />
               <Switch
                 checked={Boolean(hostDraft.enabled ?? true)}
                 onChange={(v) => setHostDraft({ ...hostDraft, enabled: v })}
-                label="启用该主机"
+                label={t('sshConfig.enabledSwitch')}
               />
             </div>
 
             <Notice tone="info">
-              首次连接需要先「信任指纹」：面板会连一次拿到 fingerprint，你确认后再点「信任指纹」，
-              之后指纹变了会直接拒绝连接（防中间人）。
+              {t('sshConfig.firstConnectNotice')}
             </Notice>
           </div>
         </Modal>
@@ -629,8 +665,8 @@ export function SshSecurityConfig() {
 
       <ConfirmDialog
         open={Boolean(deleteHost)}
-        title="移除受管主机"
-        message={`确定移除「${deleteHost?.name ?? ''}」？只是不再采集它，目标机上的 fail2ban 配置不受影响。`}
+        title={t('sshConfig.removeHostTitle')}
+        message={t('sshConfig.removeHostMessage', { name: deleteHost?.name ?? '' })}
         danger
         loading={busy}
         onCancel={() => setDeleteHost(null)}
@@ -650,6 +686,7 @@ function PolicyCard({
   canManage: boolean;
   onSave: (next: SshPolicy) => Promise<void>;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState<SshPolicy | null>(null);
   const [busy, setBusy] = useState(false);
   const value = draft ?? policy;
@@ -658,20 +695,20 @@ function PolicyCard({
   return (
     <Card collapsible={false}>
       <CardHeader
-        title="阈值与通知"
-        subtitle="命中阈值即推送通知，冷却期内同一来源不重复提醒"
+        title={t('sshConfig.policyTitle')}
+        subtitle={t('sshConfig.policySubtitle')}
         icon={<IconShield size={16} />}
         actions={
           canManage ? (
             <>
               {dirty ? (
                 <Badge variant="warning" size="sm" dot>
-                  未保存
+                  {t('sshConfig.unsaved')}
                 </Badge>
               ) : null}
               {dirty ? (
                 <Button size="sm" variant="ghost" onClick={() => setDraft(null)} disabled={busy}>
-                  还原
+                  {t('sshConfig.revert')}
                 </Button>
               ) : null}
               <Button
@@ -679,7 +716,7 @@ function PolicyCard({
                 variant="primary"
                 loading={busy}
                 disabled={!dirty}
-                title={dirty ? '保存当前改动' : '改点什么再保存'}
+                title={dirty ? t('sshConfig.savePolicyTitle') : t('sshConfig.nothingToSave')}
                 onClick={async () => {
                   if (!draft) return;
                   setBusy(true);
@@ -693,7 +730,7 @@ function PolicyCard({
                   }
                 }}
               >
-                保存策略
+                {t('sshConfig.savePolicy')}
               </Button>
             </>
           ) : null
@@ -705,20 +742,20 @@ function PolicyCard({
             checked={value.enabled}
             disabled={!canManage}
             onChange={(v) => setDraft({ ...value, enabled: v })}
-            label="启用异常登录检查"
-            hint="每分钟跑一次（与资源告警同频）"
+            label={t('sshConfig.policyEnabled')}
+            hint={t('sshConfig.policyEnabledHint')}
           />
           <Switch
             checked={value.alert_unknown_ip}
             disabled={!canManage}
             onChange={(v) => setDraft({ ...value, alert_unknown_ip: v })}
-            label="陌生 IP 登录成功时告警"
-            hint="仅本机：远程主机只统计失败次数"
+            label={t('sshConfig.policyUnknownIp')}
+            hint={t('sshConfig.policyUnknownIpHint')}
           />
         </div>
 
         <div className="field-row">
-          <Field label="失败次数阈值" required>
+          <Field label={t('sshConfig.maxFailures')} required>
             <Input
               type="number"
               min={1}
@@ -728,7 +765,7 @@ function PolicyCard({
               onChange={(e) => setDraft({ ...value, max_failures: Number(e.target.value) })}
             />
           </Field>
-          <Field label="统计窗口（小时）" hint="1 - 168">
+          <Field label={t('sshConfig.windowHours')} hint={t('sshConfig.windowHint')}>
             <Input
               type="number"
               min={1}
@@ -738,7 +775,7 @@ function PolicyCard({
               onChange={(e) => setDraft({ ...value, window_hours: Number(e.target.value) })}
             />
           </Field>
-          <Field label="重复提醒冷却（分钟）">
+          <Field label={t('sshConfig.cooldown')}>
             <Input
               type="number"
               min={1}
@@ -751,15 +788,15 @@ function PolicyCard({
         </div>
 
         <div className="field-row">
-          <Field label="告警接收人" hint="留空 = 第一个管理员">
+          <Field label={t('sshConfig.notifyUser')} hint={t('sshConfig.notifyUserHint')}>
             <Input
               value={value.notify_user}
               disabled={!canManage}
               onChange={(e) => setDraft({ ...value, notify_user: e.target.value })}
-              placeholder="（第一个管理员）"
+              placeholder={t('sshConfig.notifyUserPlaceholder')}
             />
           </Field>
-          <Field label="忽略的来源" hint="逗号分隔：跳板机、监控探针不参与统计">
+          <Field label={t('sshConfig.ignoreIps')} hint={t('sshConfig.ignoreIpsHint')}>
             <Input
               value={value.ignore_ips}
               disabled={!canManage}
@@ -771,7 +808,7 @@ function PolicyCard({
         </div>
 
         <Notice tone="info">
-          远程告警按「主机 + IP」单独计数与冷却：某台机器被爆破时，通知里会写明是哪台主机。
+          {t('sshConfig.remoteNotice')}
         </Notice>
       </div>
     </Card>

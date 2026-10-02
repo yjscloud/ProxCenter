@@ -357,8 +357,7 @@ a.lp-footer-link:hover {
   }
 
   /* ---- 顶栏：导航收进抽屉 ---- */
-  .lp-nav-links,
-  .lp-nav-docs {
+  .lp-nav-links {
     display: none;
   }
 

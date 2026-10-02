@@ -7,6 +7,7 @@ import { Modal } from './Modal';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Notice } from './EmptyState';
+import { useT } from '../../i18n';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -34,12 +35,13 @@ export function ConfirmDialog({
   title,
   message,
   children,
-  confirmText = '确认',
-  cancelText = '取消',
+  confirmText,
+  cancelText,
   danger = false,
   requireText,
   loading = false,
 }: ConfirmDialogProps) {
+  const t = useT();
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -75,7 +77,7 @@ export function ConfirmDialog({
       footer={
         <>
           <Button variant="secondary" onClick={onCancel} disabled={isBusy}>
-            {cancelText}
+            {cancelText ?? t('common.cancel')}
           </Button>
           <Button
             variant={danger ? 'danger' : 'primary'}
@@ -83,15 +85,15 @@ export function ConfirmDialog({
             loading={isBusy}
             disabled={!textOk}
           >
-            {confirmText}
+            {confirmText ?? t('common.confirm')}
           </Button>
         </>
       }
     >
       <div className="confirm-body">
         {danger ? (
-          <Notice tone="danger" title="此操作不可撤销">
-            {message ?? '请确认你了解该操作的影响。'}
+          <Notice tone="danger" title={t('confirm.irreversible')}>
+            {message ?? t('confirm.understand')}
           </Notice>
         ) : message ? (
           <div className="confirm-message">{message}</div>
@@ -101,7 +103,7 @@ export function ConfirmDialog({
 
         {requireText ? (
           <Input
-            label={`请输入 "${requireText}" 以确认`}
+            label={t('confirm.typeToConfirm', { text: requireText })}
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             placeholder={requireText}

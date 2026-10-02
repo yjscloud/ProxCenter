@@ -7,7 +7,80 @@
      2. 尊重 prefers-reduced-motion —— 关掉动效偏好时直接给终态。
    ========================================================================== */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useI18n } from '../../i18n';
+import {
+  CAPABILITY_TOTAL,
+  localizeAuditSample,
+  localizeCapabilities,
+  localizeDeployLines,
+  localizeDomains,
+  localizeHighlights,
+  localizePillars,
+  localizeScenarios,
+  localizeStack,
+  localizeSteps,
+  localizeTopoClusters,
+  localizeTopoCore,
+  localizeTopoEntries,
+  type FlatCapability,
+  type ResolvedAuditRow,
+  type ResolvedDomain,
+  type ResolvedHighlight,
+  type ResolvedPillar,
+  type ResolvedScenario,
+  type ResolvedStackGroup,
+  type ResolvedStep,
+  type ResolvedTopoCluster,
+  type ResolvedTopoNode,
+} from './content';
+
+/* ---------------------------------------------------------------------------
+   官网正文的当前语言版本
+   --------------------------------------------------------------------------- */
+
+/**
+ * 官网内容型文案（能力域、条目、场景…）走 `content.tsx` 里的双语元组，界面文案
+ * 走 i18n 词条表 —— 两套并存是因为前者成结构、量大，塞进词条表会让表失去可读性。
+ *
+ * 这里是两者唯一的交汇点：组件从它取数据，**不要**再直接 import content 里的
+ * 常量，否则语言一切换就会出现「界面英文、正文中文」的半翻译状态。
+ */
+export function useLandingContent(): {
+  domains: ResolvedDomain[];
+  capabilities: FlatCapability[];
+  capabilityTotal: number;
+  highlights: ResolvedHighlight[];
+  pillars: ResolvedPillar[];
+  auditSample: ResolvedAuditRow[];
+  topoCore: ResolvedTopoNode[];
+  topoClusters: ResolvedTopoCluster[];
+  topoEntries: ResolvedTopoNode[];
+  scenarios: ResolvedScenario[];
+  steps: ResolvedStep[];
+  deployLines: string[];
+  stack: ResolvedStackGroup[];
+} {
+  const { lang } = useI18n();
+  return useMemo(
+    () => ({
+      domains: localizeDomains(lang),
+      capabilities: localizeCapabilities(lang),
+      capabilityTotal: CAPABILITY_TOTAL,
+      highlights: localizeHighlights(lang),
+      pillars: localizePillars(lang),
+      auditSample: localizeAuditSample(lang),
+      topoCore: localizeTopoCore(lang),
+      topoClusters: localizeTopoClusters(lang),
+      topoEntries: localizeTopoEntries(lang),
+      scenarios: localizeScenarios(lang),
+      steps: localizeSteps(lang),
+      deployLines: localizeDeployLines(lang),
+      stack: localizeStack(lang),
+    }),
+    [lang],
+  );
+}
 
 /* ---------------------------------------------------------------------------
    基础工具

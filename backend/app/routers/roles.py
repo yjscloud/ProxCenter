@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .. import security, store
+from .. import i18n, security, store
 from ..schemas import RoleIn
 
 router = APIRouter(prefix="/api", tags=["roles"])
@@ -25,8 +25,8 @@ router = APIRouter(prefix="/api", tags=["roles"])
 async def permission_catalog(
     user: Dict[str, Any] = Depends(security.require_permission("users.view")),
 ) -> List[Dict[str, Any]]:
-    """按域分组的权限清单，供勾选界面渲染。"""
-    return security.PERMISSION_CATALOG
+    """按域分组的权限清单，供勾选界面渲染（label / desc 按请求语言返回）。"""
+    return i18n.localize_permission_catalog(security.PERMISSION_CATALOG)
 
 
 @router.get("/roles")
@@ -36,6 +36,10 @@ async def list_roles(
     roles = await store.list_roles()
     for item in roles:
         item["user_count"] = await store.count_users_with_role(str(item["id"]))
+        # 内置角色名按请求语言返回；自定义角色名是用户输入的原文，
+        # 译表里查不到就原样透传（见 i18n.tr）
+        item["name"] = i18n.tr(item.get("name"))
+        item["description"] = i18n.tr(item.get("description"))
     return roles
 
 

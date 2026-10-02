@@ -11,22 +11,27 @@
    ========================================================================== */
 
 import { IconAlert, IconCheck, IconClock, IconShield } from '../../components/Icons';
-import { HIGHLIGHTS, type VisualKind } from './content';
+import { useT, type MessageKey } from '../../i18n';
+import type { VisualKind } from './content';
+import { useLandingContent } from './hooks';
 import { SectionHead } from './Common';
 
 export function Highlights() {
+  const t = useT();
+  const { highlights } = useLandingContent();
+
   return (
     <section className="lp-section lp-section-tint" id="highlights">
       <div className="lp-container">
         <SectionHead
           index="04"
           eyebrow="Highlights"
-          title="最值得单说的四件事"
-          desc="不是功能清单的复读，而是运维真正会因为它们决定用不用这个面板的地方。"
+          title={t('landing.highlights.title')}
+          desc={t('landing.highlights.desc')}
         />
 
         <div className="lp-rows">
-          {HIGHLIGHTS.map((item, index) => (
+          {highlights.map((item, index) => (
             <article
               className={`lp-row lp-reveal${index % 2 === 1 ? ' is-flip' : ''}`}
               key={item.id}
@@ -82,54 +87,64 @@ function HighlightVisual({ kind }: { kind: VisualKind }) {
 
 /* ---- 1. 模板流水线：五步顺序推进，末步还在跑 ---- */
 
-const PIPELINE_STEPS = [
-  { label: '创建空壳虚拟机', state: 'done' },
-  { label: 'importdisk 导入镜像', state: 'done' },
-  { label: '挂载 cloud-init 驱动', state: 'done' },
-  { label: '按需扩容系统盘', state: 'run' },
-  { label: '转换为模板', state: 'todo' },
-] as const;
+const PIPELINE_STEPS: { labelKey: MessageKey; state: string }[] = [
+  { labelKey: 'landing.highlights.pipeline.stepShell', state: 'done' },
+  { labelKey: 'landing.highlights.pipeline.stepImport', state: 'done' },
+  { labelKey: 'landing.highlights.pipeline.stepCloudInit', state: 'done' },
+  { labelKey: 'landing.highlights.pipeline.stepGrow', state: 'run' },
+  { labelKey: 'landing.highlights.pipeline.stepTemplate', state: 'todo' },
+];
 
 function VisualPipeline() {
+  const t = useT();
   return (
     <div className="lp-visual">
       <div className="lp-visual-head">
-        <span className="lp-visual-title">构建 debian-12 模板</span>
-        <span className="lp-visual-chip">每步等待 PVE 任务完成</span>
+        <span className="lp-visual-title">{t('landing.highlights.pipeline.title')}</span>
+        <span className="lp-visual-chip">{t('landing.highlights.pipeline.chip')}</span>
       </div>
       <ol className="lp-steps-v">
         {PIPELINE_STEPS.map((step) => (
-          <li className={`lp-step-v is-${step.state}`} key={step.label}>
+          <li className={`lp-step-v is-${step.state}`} key={step.labelKey}>
             <span className="lp-step-v-mark">
               {step.state === 'done' ? <IconCheck size={11} /> : null}
             </span>
-            <span className="lp-step-v-label">{step.label}</span>
-            {step.state === 'run' ? <span className="lp-step-v-tag">进行中</span> : null}
-            {step.state === 'todo' ? <span className="lp-step-v-tag is-muted">待执行</span> : null}
+            <span className="lp-step-v-label">{t(step.labelKey)}</span>
+            {step.state === 'run' ? (
+              <span className="lp-step-v-tag">{t('landing.highlights.stateRunning')}</span>
+            ) : null}
+            {step.state === 'todo' ? (
+              <span className="lp-step-v-tag is-muted">{t('landing.highlights.stateTodo')}</span>
+            ) : null}
           </li>
         ))}
       </ol>
-      <div className="lp-visual-note">
-        任一步失败 → 自动删除临时虚拟机，不留半成品
-      </div>
+      <div className="lp-visual-note">{t('landing.highlights.pipeline.note')}</div>
     </div>
   );
 }
 
 /* ---- 2. 应急隔离：处置顺序是内容本身 ---- */
 
+const CONTAIN_ORDER_KEYS: MessageKey[] = [
+  'landing.highlights.contain.orderSnapshot',
+  'landing.highlights.contain.orderNIC',
+  'landing.highlights.contain.orderPower',
+];
+
 function VisualContain() {
+  const t = useT();
   return (
     <div className="lp-visual">
       <div className="lp-visual-head">
-        <span className="lp-visual-title">可疑虚拟机隔离处置</span>
-        <span className="lp-visual-chip is-warn">顺序不可颠倒</span>
+        <span className="lp-visual-title">{t('landing.highlights.contain.title')}</span>
+        <span className="lp-visual-chip is-warn">{t('landing.highlights.contain.chip')}</span>
       </div>
 
       <div className="lp-order">
-        {['① 取证快照', '② 断开网卡', '③ 关机'].map((label, index) => (
-          <div className="lp-order-item" key={label}>
-            <span className="lp-order-text">{label}</span>
+        {CONTAIN_ORDER_KEYS.map((key, index) => (
+          <div className="lp-order-item" key={key}>
+            <span className="lp-order-text">{t(key)}</span>
             {index < 2 ? <span className="lp-order-arrow" aria-hidden="true" /> : null}
           </div>
         ))}
@@ -139,12 +154,13 @@ function VisualContain() {
         <div className="lp-contrast-row is-bad">
           <IconAlert size={13} />
           <span className="lp-contrast-text">
-            先关机再取证 —— <s>机器一关，内存里的现场就没了</s>
+            {t('landing.highlights.contain.badPre')}
+            <s>{t('landing.highlights.contain.badStrike')}</s>
           </span>
         </div>
         <div className="lp-contrast-row is-good">
           <IconShield size={13} />
-          <span className="lp-contrast-text">先快照、再断网、后关机，每一步单独回报成败</span>
+          <span className="lp-contrast-text">{t('landing.highlights.contain.good')}</span>
         </div>
       </div>
     </div>
@@ -153,14 +169,31 @@ function VisualContain() {
 
 /* ---- 3. 安全基线：评分环 + 检查项 ---- */
 
-const BASELINE_CHECKS = [
-  { name: 'SSH 禁止 root 直接登录', level: '高危', ok: false },
-  { name: '关闭 SSH 空口令登录', level: '高危', ok: true },
-  { name: '时间同步已启用', level: '低危', ok: true },
-  { name: '内核 ASLR 已开启', level: '中危', ok: true },
+const BASELINE_CHECKS: { nameKey: MessageKey; levelKey: MessageKey; ok: boolean }[] = [
+  {
+    nameKey: 'landing.highlights.baseline.checkRoot',
+    levelKey: 'landing.highlights.levelHigh',
+    ok: false,
+  },
+  {
+    nameKey: 'landing.highlights.baseline.checkEmptyPw',
+    levelKey: 'landing.highlights.levelHigh',
+    ok: true,
+  },
+  {
+    nameKey: 'landing.highlights.baseline.checkTime',
+    levelKey: 'landing.highlights.levelLow',
+    ok: true,
+  },
+  {
+    nameKey: 'landing.highlights.baseline.checkAslr',
+    levelKey: 'landing.highlights.levelMedium',
+    ok: true,
+  },
 ];
 
 function VisualBaseline() {
+  const t = useT();
   return (
     <div className="lp-visual">
       <div className="lp-score">
@@ -183,68 +216,81 @@ function VisualBaseline() {
           <span className="lp-ring-num">86</span>
         </div>
         <div className="lp-score-text">
-          <div className="lp-score-title">安全基线评分 A</div>
-          <div className="lp-score-sub">3 台服务器受检 · 1 项不合格 · 1 项待改进</div>
+          <div className="lp-score-title">{t('landing.highlights.baseline.score')}</div>
+          <div className="lp-score-sub">{t('landing.highlights.baseline.scoreSub')}</div>
           <div className="lp-score-tags">
-            <span className="lp-chip is-green">可一键加固 1 项</span>
-            <span className="lp-chip">需逐项确认 1 项</span>
+            <span className="lp-chip is-green">
+              {t('landing.highlights.baseline.chipFix')}
+            </span>
+            <span className="lp-chip">{t('landing.highlights.baseline.chipReview')}</span>
           </div>
         </div>
       </div>
 
       <div className="lp-check-list">
         {BASELINE_CHECKS.map((check) => (
-          <div className="lp-check" key={check.name}>
+          <div className="lp-check" key={check.nameKey}>
             <span className={`lp-check-icon${check.ok ? ' is-ok' : ' is-bad'}`}>
               {check.ok ? <IconCheck size={11} /> : <IconAlert size={11} />}
             </span>
-            <span className="lp-check-name">{check.name}</span>
-            <span className={`lp-check-level is-${check.ok ? 'ok' : 'bad'}`}>{check.level}</span>
+            <span className="lp-check-name">{t(check.nameKey)}</span>
+            <span className={`lp-check-level is-${check.ok ? 'ok' : 'bad'}`}>
+              {t(check.levelKey)}
+            </span>
           </div>
         ))}
       </div>
 
-      <div className="lp-visual-note">改完立即校验，校验不过自动回滚</div>
+      <div className="lp-visual-note">{t('landing.highlights.baseline.note')}</div>
     </div>
   );
 }
 
 /* ---- 4. 自动化：证书续期时间轴 + 飞书确认卡片 ---- */
 
-const CERT_STAGES = ['申请', '域名校验', 'CA 签发', '部署到目标', '到期前自动续期'];
+const CERT_STAGE_KEYS: MessageKey[] = [
+  'landing.highlights.auto.stageRequest',
+  'landing.highlights.auto.stageValidate',
+  'landing.highlights.auto.stageIssue',
+  'landing.highlights.auto.stageDeploy',
+  'landing.highlights.auto.stageRenew',
+];
 
 function VisualAuto() {
+  const t = useT();
   return (
     <div className="lp-visual">
       <div className="lp-visual-head">
-        <span className="lp-visual-title">免费 DV 证书全流程</span>
+        <span className="lp-visual-title">{t('landing.highlights.auto.title')}</span>
         <span className="lp-visual-chip">
           <IconClock size={11} />
-          剩余 74 天
+          {t('landing.highlights.auto.daysLeft')}
         </span>
       </div>
 
       <div className="lp-timeline">
-        {CERT_STAGES.map((stage, index) => (
-          <div className="lp-timeline-item" key={stage}>
+        {CERT_STAGE_KEYS.map((key, index) => (
+          <div className="lp-timeline-item" key={key}>
             <span className={`lp-timeline-dot${index < 3 ? ' is-done' : ''}`} />
-            <span className="lp-timeline-label">{stage}</span>
+            <span className="lp-timeline-label">{t(key)}</span>
           </div>
         ))}
       </div>
 
       <div className="lp-chat">
         <div className="lp-chat-row is-user">
-          <span className="lp-chat-avatar">飞书</span>
-          <span className="lp-chat-bubble">@机器人 重启 web-01</span>
+          <span className="lp-chat-avatar">{t('landing.highlights.auto.chatUser')}</span>
+          <span className="lp-chat-bubble">{t('landing.highlights.auto.chatCommand')}</span>
         </div>
         <div className="lp-chat-row is-bot">
-          <span className="lp-chat-avatar is-bot">面板</span>
+          <span className="lp-chat-avatar is-bot">{t('landing.highlights.auto.chatPanel')}</span>
           <span className="lp-chat-bubble">
-            危险操作确认卡片
+            {t('landing.highlights.auto.chatCard')}
             <span className="lp-chat-actions">
-              <span className="lp-chat-btn is-primary">确认重启</span>
-              <span className="lp-chat-btn">取消</span>
+              <span className="lp-chat-btn is-primary">
+                {t('landing.highlights.auto.chatConfirm')}
+              </span>
+              <span className="lp-chat-btn">{t('landing.highlights.auto.chatCancel')}</span>
             </span>
           </span>
         </div>

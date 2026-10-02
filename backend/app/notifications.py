@@ -24,7 +24,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import database
+from . import database, i18n
 
 logger = logging.getLogger(__name__)
 
@@ -232,11 +232,11 @@ def alert_message(entry: Dict[str, Any]) -> Dict[str, Any]:
     metric = str(entry.get("metric") or "")
 
     if recovered:
-        title = f"已恢复：{target}"
+        title = i18n.pick(f"已恢复：{target}", f"Recovered: {target}")
         level = "success"
         event = "recovery"
     else:
-        title = f"告警：{target}"
+        title = i18n.pick(f"告警：{target}", f"Alert: {target}")
         # 严重级别只表达「是告警还是恢复」；投递到没到外部渠道写在正文里，
         # 混进级别反而会让人以为「没发出去 = 不严重」
         level = "danger"
@@ -246,15 +246,20 @@ def alert_message(entry: Dict[str, Any]) -> Dict[str, Any]:
     threshold = entry.get("threshold")
     value = entry.get("value")
     if not recovered and threshold:
-        lines.append(f"{metric} 当前 {value}，阈值 {threshold}")
+        lines.append(
+            i18n.pick(
+                f"{metric} 当前 {value}，阈值 {threshold}",
+                f"{metric} is {value}, threshold {threshold}",
+            )
+        )
     if entry.get("node"):
-        lines.append(f"节点：{entry.get('node')}")
+        lines.append(i18n.tr("节点：") + str(entry.get("node")))
     # detail 是外部通道的投递结果（"飞书：已发送；Webhook：HTTP 500"）。只有确实
     # 没送达才单独列出来 —— 用户可能正是因为收不到飞书/邮件才打开铃铛的，
     # 这里必须能一眼看出「通知压根没发出去」。
     detail = str(entry.get("detail") or "")
     if detail and str(entry.get("result") or "") != "sent":
-        lines.append(f"外部通道未送达：{detail}")
+        lines.append(i18n.tr("外部通道未送达：") + detail)
 
     return {
         "kind": event,

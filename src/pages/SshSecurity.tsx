@@ -35,10 +35,11 @@ import {
   IconShield,
   IconTerminal,
 } from '../components/Icons';
-import { formatDateTime, formatRelative } from '../utils/format';
+import { formatDateTime, formatNumber, formatRelative } from '../utils/format';
 import { PagerBar, usePaged } from '../hooks/usePaged';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { useT, type TFunc } from '../i18n';
 import type {
   Fail2banJail,
   FleetHost,
@@ -53,26 +54,36 @@ import type {
  * 原来这些指标（失败 / 来源 IP / 成功登录 / fail2ban 状态）摊在一张「多机汇总」
  * 表格里，占了半屏却只是给人扫一眼。收进药丸的 title 后，页面短了，信息也没丢。
  */
-function hostTooltip(name: string, subtitle: string, state?: FleetHost): string {
+function hostTooltip(
+  t: TFunc,
+  name: string,
+  subtitle: string,
+  state?: FleetHost,
+): string {
   const parts = [name, subtitle];
-  if (!state) return [...parts, '暂无数据'].join(' · ');
+  if (!state) return [...parts, t('ssh.tipNoData')].join(' · ');
 
   const { summary, fail2ban } = state;
   parts.push(
-    `失败 ${summary.failures} · 来源 IP ${summary.distinct_ips} · 成功登录 ${summary.logins}`,
+    t('ssh.tipSummary', {
+      failures: summary.failures,
+      ips: summary.distinct_ips,
+      logins: summary.logins,
+    }),
   );
   parts.push(
     fail2ban?.installed
       ? fail2ban.running
-        ? `fail2ban ${fail2ban.jails.length} 个 jail`
-        : 'fail2ban 未运行'
-      : 'fail2ban 未安装',
+        ? t('ssh.tipJails', { n: fail2ban.jails.length })
+        : t('ssh.tipFail2banDown')
+      : t('ssh.tipFail2banMissing'),
   );
-  if (!state.ok) parts.push('连接失败，点「测试」看原因');
+  if (!state.ok) parts.push(t('ssh.tipConnectFailed'));
   return parts.join(' · ');
 }
 
 export function SshSecurity() {
+  const t = useT();
   const { hasPermission, isAdmin } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
@@ -135,7 +146,7 @@ export function SshSecurity() {
   const localHost: FleetHost | null = local
     ? {
         id: 'local',
-        name: local.report.source.host || '本机（面板）',
+        name: local.report.source.host || t('ssh.localPanelName'),
         host: local.report.source.host || 'localhost',
         ok: local.report.source.available,
         error: local.report.source.available ? '' : local.report.source.detail,
@@ -180,10 +191,11 @@ export function SshSecurity() {
       ? [
           {
             id: 'local',
-            name: '本机',
+            name: t('ssh.localName'),
             title: hostTooltip(
-              localHost?.name ?? '本机',
-              '面板所在主机',
+              t,
+              localHost?.name ?? t('ssh.localName'),
+              t('ssh.panelHost'),
               localHost ?? undefined,
             ),
             ok: localHost?.ok ?? null,
@@ -199,6 +211,7 @@ export function SshSecurity() {
           id: row.id,
           name: row.name || row.host,
           title: hostTooltip(
+            t,
             row.name || row.host,
             `${row.username}@${row.host}:${row.port}`,
             state,
@@ -230,12 +243,12 @@ export function SshSecurity() {
     try {
       const res = await sshApi.check();
       toast.success(
-        res.count ? `命中 ${res.count} 条异常` : '检查完成，没有新的异常',
-        res.count ? '已按策略推送通知（含受管主机）' : undefined,
+        res.count ? t('ssh.checkHits', { n: res.count }) : t('ssh.checkDone'),
+        res.count ? t('ssh.checkPushed') : undefined,
       );
       refreshAll();
     } catch (err) {
-      toast.error('检查失败', errorMessage(err));
+      toast.error(t('ssh.checkFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -243,16 +256,19 @@ export function SshSecurity() {
 
   const ban = async (ip: string) => {
     if (!jail) {
-      toast.warning('没有可用的 fail2ban jail', '该主机上先安装并启用 fail2ban');
+      toast.warning(t('ssh.noJailTitle'), t('ssh.noJailHint'));
       return;
     }
     setBusy(true);
     try {
       await sshFleetApi.ban(scopeId, jail, ip);
-      toast.success(`已封禁 ${ip}`, `${current?.name} · jail ${jail}`);
+      toast.success(
+        t('ssh.bannedDone', { ip }),
+        t('ssh.bannedDetail', { name: current?.name ?? '', jail }),
+      );
       await invalidateSsh();
     } catch (err) {
-      toast.error('封禁失败', errorMessage(err));
+      toast.error(t('ssh.banFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -262,10 +278,10 @@ export function SshSecurity() {
     setBusy(true);
     try {
       await sshFleetApi.unban(scopeId, jailName, ip);
-      toast.success(`已解封 ${ip}`, current?.name);
+      toast.success(t('ssh.unbannedDone', { ip }), current?.name);
       await invalidateSsh();
     } catch (err) {
-      toast.error('解封失败', errorMessage(err));
+      toast.error(t('ssh.unbanFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -275,10 +291,10 @@ export function SshSecurity() {
     setBusy(true);
     try {
       const res = await sshFleetApi.saveJail(scopeId, jailDraft);
-      toast.success('封禁策略已写入并重载', res.path);
+      toast.success(t('ssh.jailSaved'), res.path);
       await invalidateSsh();
     } catch (err) {
-      toast.error('写入失败', errorMessage(err));
+      toast.error(t('ssh.jailSaveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -287,11 +303,11 @@ export function SshSecurity() {
   const trust = async (ip: string) => {
     setBusy(true);
     try {
-      await sshApi.trustIp(ip, '面板标记为已知');
-      toast.success(`已把 ${ip} 标记为已知`);
+      await sshApi.trustIp(ip, t('ssh.trustNote'));
+      toast.success(t('ssh.trusted', { ip }));
       await invalidateSsh();
     } catch (err) {
-      toast.error('操作失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -301,10 +317,10 @@ export function SshSecurity() {
     setBusy(true);
     try {
       await sshApi.forgetIp(ip);
-      toast.success(`已取消 ${ip} 的已知标记`);
+      toast.success(t('ssh.untrusted', { ip }));
       await invalidateSsh();
     } catch (err) {
-      toast.error('操作失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -319,7 +335,7 @@ export function SshSecurity() {
   const failureColumns: Array<Column<SshFailureRow>> = [
     {
       key: 'ip',
-      header: '来源 IP',
+      header: t('ssh.colIp'),
       width: 186,
       render: (row) => {
         const inJail = bannedJail(row.ip);
@@ -327,8 +343,8 @@ export function SshSecurity() {
           <span className="ssh-ip-cell">
             <span className="mono fs-sm">{row.ip}</span>
             {inJail ? (
-              <Badge variant="danger" size="sm" title={`已在 jail ${inJail} 中被封禁`}>
-                已封禁
+              <Badge variant="danger" size="sm" title={t('ssh.bannedInJail', { jail: inJail })}>
+                {t('ssh.banned')}
               </Badge>
             ) : null}
           </span>
@@ -337,7 +353,7 @@ export function SshSecurity() {
     },
     {
       key: 'count',
-      header: '失败次数',
+      header: t('ssh.colCount'),
       width: 84,
       align: 'right',
       render: (row) => (
@@ -350,7 +366,7 @@ export function SshSecurity() {
                 : 'neutral'
           }
           size="sm"
-          title={`告警阈值 ${policy?.max_failures ?? '-'}`}
+          title={t('ssh.thresholdTitle', { n: policy?.max_failures ?? '-' })}
         >
           {row.count}
         </Badge>
@@ -358,7 +374,7 @@ export function SshSecurity() {
     },
     {
       key: 'users',
-      header: '尝试的用户名',
+      header: t('ssh.colUsers'),
       render: (row) => (
         <span className="mono">
           <TagList tags={row.users} max={2} />
@@ -367,7 +383,7 @@ export function SshSecurity() {
     },
     {
       key: 'last',
-      header: '最近一次',
+      header: t('ssh.colLast'),
       width: 96,
       render: (row) => (
         <span className="fs-sm" title={formatDateTime(row.last_ts)}>
@@ -377,11 +393,11 @@ export function SshSecurity() {
     },
     {
       key: 'ops',
-      header: '操作',
+      header: t('common.actions'),
       width: 168,
       align: 'right',
       render: (row) => {
-        if (!canManage) return <span className="fs-xs text-muted">只读</span>;
+        if (!canManage) return <span className="fs-xs text-muted">{t('sshConfig.readOnly')}</span>;
         const inJail = bannedJail(row.ip);
         return (
           <span className="row-actions">
@@ -392,10 +408,10 @@ export function SshSecurity() {
                 variant="ghost"
                 className="ssh-ban-btn"
                 disabled={busy}
-                title={`从 jail ${inJail} 解封 ${row.ip}`}
+                title={t('ssh.unbanTitle', { jail: inJail, ip: row.ip })}
                 onClick={() => void unban(row.ip, inJail)}
               >
-                解封
+                {t('ssh.unban')}
               </Button>
             ) : (
               <Button
@@ -403,20 +419,20 @@ export function SshSecurity() {
                 variant="ghost"
                 className="ssh-ban-btn"
                 disabled={busy || !jail}
-                title={jail ? `封禁 ${row.ip} 到 jail ${jail}` : '该主机没有可用的 jail'}
+                title={jail ? t('ssh.banTitle', { ip: row.ip, jail }) : t('ssh.noJail')}
                 onClick={() => void ban(row.ip)}
               >
-                <IconLock size={14} /> 封禁
+                <IconLock size={14} /> {t('ssh.ban')}
               </Button>
             )}
             <Button
               size="sm"
               variant="ghost"
               disabled={busy}
-              title={`把 ${row.ip} 标记为可信，之后不再算「陌生 IP」`}
+              title={t('ssh.trustTitle', { ip: row.ip })}
               onClick={() => void trust(row.ip)}
             >
-              标记可信
+              {t('ssh.trust')}
             </Button>
           </span>
         );
@@ -429,13 +445,13 @@ export function SshSecurity() {
     { key: 'ip', header: 'IP', width: 150, render: (row) => <span className="mono fs-sm">{row.ip}</span> },
     {
       key: 'hits',
-      header: '登录次数',
+      header: t('ssh.colHits'),
       width: 90,
       align: 'right',
-      render: (row) => (typeof row.hits === 'number' ? row.hits.toLocaleString('zh-CN') : '—'),
+      render: (row) => (typeof row.hits === 'number' ? formatNumber(row.hits) : '—'),
     },
-    { key: 'last_seen', header: '最近登录', width: 120, render: (row) => formatRelative(row.last_seen) },
-    { key: 'note', header: '备注', render: (row) => row.note || '—' },
+    { key: 'last_seen', header: t('ssh.colLastSeen'), width: 120, render: (row) => formatRelative(row.last_seen) },
+    { key: 'note', header: t('incident.fieldNote'), render: (row) => row.note || '—' },
     {
       key: 'ops',
       header: '',
@@ -450,7 +466,7 @@ export function SshSecurity() {
               disabled={busy}
               onClick={() => void forget(row.ip)}
             >
-              取消标记
+              {t('ssh.untrust')}
             </Button>
           ) : null}
         </span>
@@ -461,31 +477,31 @@ export function SshSecurity() {
   const loginColumns: Array<Column<SshLoginRow>> = [
     {
       key: 'ts',
-      header: '时间',
+      header: t('ssh.colTime'),
       width: 145,
       render: (row) => <span className="fs-sm">{formatDateTime(row.ts)}</span>,
     },
     {
       key: 'username',
-      header: '用户',
+      header: t('ssh.colUser'),
       render: (row) => <span className="mono fs-sm">{row.username}</span>,
     },
     {
       key: 'ip',
-      header: '来源 IP',
+      header: t('ssh.colIp'),
       width: 190,
       render: (row) => (
         <span className="ssh-ip-cell">
           <span className="mono fs-sm">{row.ip}</span>
           {row.new_ip ? (
-            <Badge variant="warning" size="sm" title="该地址第一次出现">
-              陌生
+            <Badge variant="warning" size="sm" title={t('ssh.newIpTitle')}>
+              {t('ssh.newIp')}
             </Badge>
           ) : null}
         </span>
       ),
     },
-    { key: 'method', header: '认证方式', width: 90, render: (row) => row.method || '—' },
+    { key: 'method', header: t('sshConfig.fieldAuth'), width: 90, render: (row) => row.method || '—' },
     {
       key: 'ops',
       header: '',
@@ -498,10 +514,10 @@ export function SshSecurity() {
               size="sm"
               variant="ghost"
               disabled={busy}
-              title={`把 ${row.ip} 标记为可信，之后不再算「陌生 IP」`}
+              title={t('ssh.trustTitle', { ip: row.ip })}
               onClick={() => void trust(row.ip)}
             >
-              标记可信
+              {t('ssh.trust')}
             </Button>
           ) : null}
         </span>
@@ -525,17 +541,17 @@ export function SshSecurity() {
 
   return (
     <PageShell
-      title="SSH 登录安全"
-      subtitle="本机日志统计 + 受管远程主机（SSH）统一采集、封禁与告警"
+      title={t('ssh.title')}
+      subtitle={t('ssh.subtitle')}
       actions={
         <div className="form-row">
           {canManage ? (
             <Button size="sm" variant="primary" loading={busy} onClick={() => void checkNow()}>
-              立即检测
+              {t('ssh.checkNow')}
             </Button>
           ) : null}
           <Button size="sm" variant="ghost" loading={fleetQuery.isFetching} onClick={refreshAll}>
-            <IconRefresh size={14} /> 刷新
+            <IconRefresh size={14} /> {t('common.refresh')}
           </Button>
         </div>
       }
@@ -544,10 +560,10 @@ export function SshSecurity() {
           滚动数据拖得很长，也容易被当成只读区块划过去。 */}
       <div className="subnav">
         <Link className="subnav-item" to="/ssh-security/config">
-          <IconServer size={14} /> 主机与告警配置
+          <IconServer size={14} /> {t('sshConfig.title')}
         </Link>
         <span className="subnav-item is-active" aria-current="page">
-          <IconTerminal size={14} /> 监测数据
+          <IconTerminal size={14} /> {t('sshConfig.subnavData')}
         </span>
       </div>
 
@@ -555,12 +571,12 @@ export function SshSecurity() {
       <div className="section-block">
         <div className="section-title">
           <IconTerminal size={15} />
-          <span className="section-name">当前主机监测</span>
-          <span className="section-hint">失败来源与 fail2ban 都跟随下面的作用域</span>
+          <span className="section-name">{t('ssh.scopeSection')}</span>
+          <span className="section-hint">{t('ssh.scopeSectionHint')}</span>
         </div>
 
         <div className="ssh-scope-bar">
-          <span className="ssh-scope-label">作用域</span>
+          <span className="ssh-scope-label">{t('ssh.scopeLabel')}</span>
           <div className="ssh-pills">
             {scopePills.map((item) => (
               <button
@@ -578,7 +594,7 @@ export function SshSecurity() {
                 <span className="ssh-pill-name">{item.name}</span>
                 {item.failures ? (
                   <span className="ssh-pill-count">
-                    {item.failures.toLocaleString('zh-CN')}
+                    {formatNumber(item.failures)}
                   </span>
                 ) : null}
               </button>
@@ -593,65 +609,70 @@ export function SshSecurity() {
                 size="sm"
                 dot
               >
-                {fleet.totals.reachable}/{fleet.totals.hosts} 台可达
+                {t('ssh.reachable', {
+                  reachable: fleet.totals.reachable,
+                  total: fleet.totals.hosts,
+                })}
               </Badge>
             ) : null}
             {local?.report.generated_at
-              ? `检查于 ${formatRelative(local.report.generated_at)}`
+              ? t('ssh.checkedAt', { time: formatRelative(local.report.generated_at) })
               : ''}
           </span>
         </div>
 
         <div className="grid grid-4">
           <KpiCard
-            label="失败尝试"
-            value={(current?.summary.failures ?? 0).toLocaleString('zh-CN')}
+            label={t('ssh.kpi.failures')}
+            value={formatNumber(current?.summary.failures ?? 0)}
             tone="danger"
             icon={<IconAlert size={15} />}
-            hint={`近 ${windowHours} 小时`}
+            hint={t('ssh.kpi.failuresHint', { hours: windowHours })}
             loading={scopeLoading}
           />
           <KpiCard
-            label="失败来源 IP"
-            value={(current?.summary.distinct_ips ?? 0).toLocaleString('zh-CN')}
+            label={t('ssh.kpi.ips')}
+            value={formatNumber(current?.summary.distinct_ips ?? 0)}
             icon={<IconFilter size={15} />}
-            hint={`${current?.summary.distinct_users ?? 0} 个用户名被尝试`}
+            hint={t('ssh.kpi.ipsHint', { n: current?.summary.distinct_users ?? 0 })}
             loading={scopeLoading}
           />
           <KpiCard
-            label="成功登录"
-            value={(current?.summary.logins ?? 0).toLocaleString('zh-CN')}
+            label={t('ssh.kpi.logins')}
+            value={formatNumber(current?.summary.logins ?? 0)}
             tone="success"
             icon={<IconKey size={15} />}
-            hint={scopeId === 'local' ? '明细见下方「本机数据」' : '远程主机只统计次数'}
+            hint={
+              scopeId === 'local'
+                ? t('ssh.kpi.loginsHintLocal')
+                : t('ssh.kpi.loginsHintRemote')
+            }
             loading={scopeLoading}
           />
           <KpiCard
-            label="封禁中"
-            value={bannedNow.toLocaleString('zh-CN')}
+            label={t('ssh.kpi.banned')}
+            value={formatNumber(bannedNow)}
             tone="warning"
             icon={<IconLock size={15} />}
-            hint={`累计封禁 ${bannedTotal.toLocaleString('zh-CN')}`}
+            hint={t('ssh.kpi.bannedHint', { n: formatNumber(bannedTotal) })}
             loading={scopeLoading}
           />
         </div>
 
         {current && !current.ok ? (
-          <Notice tone="warning" title={`${current.name} 读不到数据`}>
-            {current.error || '未知原因'}
+          <Notice tone="warning" title={t('ssh.readErrorTitle', { name: current.name })}>
+            {current.error || t('ssh.unknownReason')}
             {scopeId !== 'local' ? (
               <div className="fs-xs text-muted mt-8">
-                常见原因：SSH 没连上（指纹未确认 / 凭据错误 / 端口不通）、sudo 没配 NOPASSWD、
-                或者该主机上既没有 journalctl 也没有 auth.log / secure。
-                到「主机与告警配置」里点「测试」能看到具体报错。
+                {t('ssh.readErrorHint')}
               </div>
             ) : null}
           </Notice>
         ) : null}
 
         {!current && !scopeLoading ? (
-          <Notice tone="warning" title="这台主机的数据取不到">
-            它可能已被移除或停用。点上面其它主机，或到「主机与告警配置」里检查配置。
+          <Notice tone="warning" title={t('ssh.hostGoneTitle')}>
+            {t('ssh.hostGoneBody')}
           </Notice>
         ) : null}
 
@@ -659,20 +680,23 @@ export function SshSecurity() {
         <div className="split-panel is-balanced">
         <Card collapsible={false}>
           <CardHeader
-            title={`登录失败来源（${failures.length}）`}
-            subtitle={`${current?.name || '当前主机'} · 近 ${windowHours} 小时，按失败次数倒序`}
+            title={t('ssh.failuresTitle', { n: failures.length })}
+            subtitle={t('ssh.failuresSubtitle', {
+              name: current?.name || t('ssh.localName'),
+              hours: windowHours,
+            })}
             icon={<IconAlert size={16} />}
           />
           <Table
-            caption="SSH 登录失败来源"
+            caption={t('ssh.failuresCaption')}
             rows={failurePage.rows}
             columns={failureColumns}
             rowKey={(row) => row.ip}
             loading={scopeLoading}
             dense
-            emptyTitle="这段窗口内没有失败的登录尝试"
+            emptyTitle={t('ssh.failuresEmpty')}
             emptyDescription={
-              current?.ok === false ? '主机读不到数据，先解决上面的连接问题' : undefined
+              current?.ok === false ? t('ssh.failuresEmptyDesc') : undefined
             }
           />
           <PagerBar pager={failurePage} />
@@ -681,11 +705,16 @@ export function SshSecurity() {
         {/* ---------------- fail2ban ---------------- */}
         <Card collapsible={false}>
           <CardHeader
-            title="fail2ban 封禁管理"
+            title={t('ssh.f2bTitle')}
             subtitle={
               current?.fail2ban?.installed
-                ? `${current.name} · ${current.fail2ban.jails.length || 0} 个 jail`
-                : `${current?.name || '当前主机'}：未检测到 fail2ban`
+                ? t('ssh.f2bSubtitleInstalled', {
+                    name: current.name,
+                    n: current.fail2ban.jails.length || 0,
+                  })
+                : t('ssh.f2bSubtitleMissing', {
+                    name: current?.name || t('ssh.localName'),
+                  })
             }
             icon={<IconLock size={16} />}
             actions={
@@ -695,7 +724,7 @@ export function SshSecurity() {
                   variant="ghost"
                   onClick={() => setShowJailForm((v) => !v)}
                 >
-                  {showJailForm ? '收起封禁策略' : '自定义封禁策略'}
+                  {showJailForm ? t('ssh.jailFormHide') : t('ssh.jailFormShow')}
                 </Button>
               ) : null
             }
@@ -704,14 +733,16 @@ export function SshSecurity() {
           {current?.fail2ban && !current.fail2ban.installed ? (
             <Notice
               tone="info"
-              title={`未检测到 fail2ban（${current.fail2ban.host || current.name}）`}
+              title={t('ssh.f2bMissingTitle', {
+                host: current.fail2ban.host || current.name,
+              })}
             >
               {current.fail2ban.hint}
             </Notice>
           ) : null}
 
           {current?.fail2ban?.installed && !current.fail2ban.running ? (
-            <Notice tone="warning" title="fail2ban 没在运行">
+            <Notice tone="warning" title={t('ssh.f2bDownTitle')}>
               {current.fail2ban.hint}
             </Notice>
           ) : null}
@@ -727,26 +758,26 @@ export function SshSecurity() {
                     <span className="ssh-jail-name">{item.jail}</span>
                     {item.jail === current?.fail2ban?.preferred ? (
                       <Badge variant="accent" size="sm">
-                        默认操作对象
+                        {t('ssh.jailPreferred')}
                       </Badge>
                     ) : null}
                     {item.managed_config ? (
                       <Badge variant="neutral" size="sm" title={item.managed_config}>
-                        面板托管
+                        {t('ssh.jailManaged')}
                       </Badge>
                     ) : null}
                     <span className="ssh-jail-stats">
                       <span>
-                        当前封禁 <b>{item.currently_banned}</b>
+                        {t('ssh.jailCurrentlyBanned')} <b>{item.currently_banned}</b>
                       </span>
                       <span>
-                        累计封禁 <b>{item.total_banned}</b>
+                        {t('ssh.jailTotalBanned')} <b>{item.total_banned}</b>
                       </span>
                       <span>
-                        当前失败 <b>{item.currently_failed}</b>
+                        {t('ssh.jailCurrentlyFailed')} <b>{item.currently_failed}</b>
                       </span>
                       <span>
-                        累计失败 <b>{item.total_failed}</b>
+                        {t('ssh.jailTotalFailed')} <b>{item.total_failed}</b>
                       </span>
                     </span>
                   </div>
@@ -761,8 +792,8 @@ export function SshSecurity() {
                               type="button"
                               className="ssh-ip-chip-x"
                               disabled={busy}
-                              aria-label={`解封 ${ip}`}
-                              title={`解封 ${ip}`}
+                              aria-label={t('ssh.unbanIp', { ip })}
+                              title={t('ssh.unbanIp', { ip })}
                               onClick={() => void unban(ip, item.jail)}
                             >
                               <IconClose size={12} />
@@ -772,7 +803,7 @@ export function SshSecurity() {
                       ))}
                     </div>
                   ) : (
-                    <div className="ssh-jail-empty">当前没有封禁中的地址</div>
+                    <div className="ssh-jail-empty">{t('ssh.jailEmpty')}</div>
                   )}
                 </div>
               ))}
@@ -783,13 +814,13 @@ export function SshSecurity() {
             <>
               <div className="ssh-ban-bar">
                 <IconLock size={15} />
-                <span className="fw-500 fs-sm">手动封禁</span>
+                <span className="fw-500 fs-sm">{t('ssh.manualBan')}</span>
                 <Input
                   value={banIp}
                   onChange={(e) => setBanIp(e.target.value)}
                   placeholder="1.2.3.4"
                   mono
-                  aria-label="要封禁的 IP"
+                  aria-label={t('ssh.banIpAria')}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && banIp.trim() && jail) {
                       void ban(banIp.trim());
@@ -798,7 +829,7 @@ export function SshSecurity() {
                   }}
                 />
                 <span className="ssh-ban-bar-hint">
-                  {jail ? `加入 jail ${jail}` : '先启用一个 jail'}
+                  {jail ? t('ssh.joinJail', { jail }) : t('ssh.enableJailFirst')}
                 </span>
                 <Button
                   variant="danger"
@@ -810,21 +841,20 @@ export function SshSecurity() {
                     setBanIp('');
                   }}
                 >
-                  封禁
+                  {t('ssh.ban')}
                 </Button>
               </div>
 
               {showJailForm ? (
                 <div className="create-bar">
                   <div className="ssh-advanced-head">
-                    <strong>自定义封禁策略</strong>
+                    <strong>{t('ssh.jailFormShow')}</strong>
                     <span>
-                      写入 /etc/fail2ban/jail.d/panel-
-                      {jailDraft.jail || '<jail>'}.local 并重载 fail2ban
+                      {t('ssh.jailFormHint', { jail: jailDraft.jail || '<jail>' })}
                     </span>
                   </div>
                   <div className="field-row">
-                    <Field label="jail 名称" hint="要覆盖的 jail，通常为 sshd">
+                    <Field label={t('ssh.jailName')} hint={t('ssh.jailNameHint')}>
                       <Input
                         value={jailDraft.jail}
                         onChange={(e) => setJailDraft({ ...jailDraft, jail: e.target.value })}
@@ -832,7 +862,7 @@ export function SshSecurity() {
                         mono
                       />
                     </Field>
-                    <Field label="失败次数" hint="maxretry">
+                    <Field label={t('ssh.maxretry')} hint="maxretry">
                       <Input
                         type="number"
                         min={1}
@@ -842,7 +872,7 @@ export function SshSecurity() {
                         }
                       />
                     </Field>
-                    <Field label="统计窗口（秒）" hint="findtime">
+                    <Field label={t('ssh.findtime')} hint="findtime">
                       <Input
                         type="number"
                         min={60}
@@ -852,7 +882,7 @@ export function SshSecurity() {
                         }
                       />
                     </Field>
-                    <Field label="封禁时长（秒）" hint="bantime">
+                    <Field label={t('ssh.bantime')} hint="bantime">
                       <Input
                         type="number"
                         min={60}
@@ -863,7 +893,7 @@ export function SshSecurity() {
                       />
                     </Field>
                     <Button variant="primary" loading={busy} onClick={() => void saveJail()}>
-                      保存并重载
+                      {t('ssh.saveJail')}
                     </Button>
                   </div>
                 </div>
@@ -878,47 +908,47 @@ export function SshSecurity() {
       <div className="section-block">
         <div className="section-title">
           <IconTerminal size={15} />
-          <span className="section-name">本机数据</span>
+          <span className="section-name">{t('ssh.localSection')}</span>
           <span className="section-hint">
-            不随上面的作用域切换 —— 面板只能读自己所在主机
+            {t('ssh.localSectionHint')}
           </span>
         </div>
 
         <div className="split-panel is-even is-balanced">
         <Card collapsible={false}>
           <CardHeader
-            title={`成功登录记录（${logins.length}）`}
-            subtitle="远程主机只做统计告警，登录明细只记本机"
+            title={t('ssh.loginsTitle', { n: logins.length })}
+            subtitle={t('ssh.loginsSubtitle')}
             icon={<IconKey size={16} />}
           />
           <Table
-            caption="SSH 成功登录"
+            caption={t('ssh.loginsCaption')}
             rows={loginPage.rows}
             columns={loginColumns}
             rowKey={(row) => String(row.id ?? `${row.ip}-${row.ts}`)}
             loading={loginsQuery.isLoading}
             dense
-            emptyTitle="还没有记录"
-            emptyDescription="面板每次检查时会把本机的成功登录落库"
+            emptyTitle={t('ssh.loginsEmpty')}
+            emptyDescription={t('ssh.loginsEmptyDesc')}
           />
           <PagerBar pager={loginPage} />
         </Card>
 
         <Card collapsible={false}>
           <CardHeader
-            title={`已知 IP（${knownIps.length}）`}
-            subtitle="这些地址登录成功不再算「陌生 IP」"
+            title={t('ssh.knownTitle', { n: knownIps.length })}
+            subtitle={t('ssh.knownSubtitle')}
             icon={<IconShield size={16} />}
           />
           <Table
-            caption="已知 IP"
+            caption={t('ssh.knownCaption')}
             rows={knownPage.rows}
             columns={knownColumns}
             rowKey={(row) => row.ip}
             loading={knownQuery.isLoading}
             dense
-            emptyTitle="还没有已知 IP"
-            emptyDescription="在「登录失败来源」里点「标记可信」，或在上面的登录记录里点，就会加到这儿"
+            emptyTitle={t('ssh.knownEmpty')}
+            emptyDescription={t('ssh.knownEmptyDesc')}
           />
           <PagerBar pager={knownPage} />
         </Card>

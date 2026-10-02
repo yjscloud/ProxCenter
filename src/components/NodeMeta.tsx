@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { nodeNotesApi, nodesApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { useToast } from '../hooks/useToast';
+import { useT } from '../i18n';
 import type { NetworkInterface } from '../api/types';
 
 /** 从节点网卡列表中挑一个管理地址（优先带网关的） */
@@ -76,6 +77,7 @@ export function NodeNoteField({
   node: string;
   canEdit: boolean;
 }) {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const notesQuery = useNodeNotes();
@@ -94,9 +96,9 @@ export function NodeNoteField({
       const next = { ...(notesQuery.data?.notes ?? {}), [node]: draft };
       await nodeNotesApi.save(next);
       await qc.invalidateQueries({ queryKey: ['node-notes'] });
-      toast.success('备注已保存', `节点 ${node}`);
+      toast.success(t('nodeMeta.saved'), t('nodeMeta.savedDetail', { node }));
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('nodeMeta.saveFailed'), errorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -113,8 +115,12 @@ export function NodeNoteField({
         className="input"
         value={draft}
         disabled={!canEdit || saving}
-        placeholder={canEdit ? '添加备注（用途/机房/负责人…）' : '无备注'}
-        aria-label={`节点 ${node} 的备注`}
+        placeholder={
+          canEdit
+            ? t('nodeMeta.placeholderEdit')
+            : t('nodeMeta.placeholderEmpty')
+        }
+        aria-label={t('nodeMeta.aria', { node })}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => void save()}
         onKeyDown={(e) => {

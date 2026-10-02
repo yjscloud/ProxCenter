@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from .. import captcha, crypto, mailer, panel_url, password_reset, security, store, throttle, totp
+from .. import captcha, crypto, i18n, mailer, panel_url, password_reset, prefs, security, store, throttle, totp
 from ..config import settings
 from ..schemas import (
     ForgotPasswordIn,
@@ -511,7 +511,11 @@ async def forgot_password(
         return generic
 
     url = f"{await _panel_url(request)}/reset-password?token={token}"
-    subject, body, html = mailer.password_reset_mail(username, url)
+    # 重置邮件按**收件人**的语言渲染，而不是当前请求的语言 —— 两者可能不同：
+    # 用户可能在另一台设备上刚切换过语言，或由管理员代触发。
+    lang = await prefs.get(username, prefs.PREF_LANGUAGE, i18n.DEFAULT_LANG)
+    with i18n.use_language(lang):
+        subject, body, html = mailer.password_reset_mail(username, url)
     # 收件人是账号邮箱，不是用户名；用户名投给 SMTP 只会 501 Bad address syntax
     ok, detail = await mailer.send_mail(to_email, subject, body, html=html)
 
@@ -1010,7 +1014,7 @@ async def my_permissions(
     role = await store.get_role(role_id) or {}
 
     groups = []
-    for group in security.PERMISSION_CATALOG:
+    for group in i18n.localize_permission_catalog(security.PERMISSION_CATALOG):
         items = [
             {
                 "key": item["key"],
@@ -1025,8 +1029,8 @@ async def my_permissions(
 
     return {
         "role": role_id,
-        "role_name": role.get("name") or role_id,
-        "role_description": role.get("description") or "",
+        "role_name": i18n.tr(role.get("name") or role_id),
+        "role_description": i18n.tr(role.get("description") or ""),
         "is_admin": admin,
         "permissions": sorted(granted),
         "groups": groups,

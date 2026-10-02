@@ -7,6 +7,7 @@ import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { tasksApi } from '../api/endpoints';
 import { ApiError, errorMessage } from '../api/client';
 import { useToast } from './useToast';
+import { useT } from '../i18n';
 import type { TaskInfo } from '../api/types';
 
 export interface RunTaskOptions {
@@ -65,6 +66,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * ```
  */
 export function useTaskRunner(): TaskRunner {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -83,7 +85,7 @@ export function useTaskRunner(): TaskRunner {
 
       /* ---- 1. 发起请求 ---- */
       let upid: string | undefined;
-      const toastId = toast.loading(title, '正在提交请求…');
+      const toastId = toast.loading(title, t('task.submitting'));
 
       try {
         const result = await Promise.resolve(promiseOrResult);
@@ -93,15 +95,15 @@ export function useTaskRunner(): TaskRunner {
         }
       } catch (err) {
         toast.dismiss(toastId);
-        toast.error(`${title}失败`, errorMessage(err));
+        toast.error(t('task.failed', { title }), errorMessage(err));
         throw err;
       }
 
       /* ---- 2. 无 upid：视为同步操作，直接成功 ---- */
       if (!upid) {
         toast.dismiss(toastId);
-        if (destructive) toast.destructive(`${title}成功`);
-        else toast.success(`${title}成功`);
+        if (destructive) toast.destructive(t('task.succeeded', { title }));
+        else toast.success(t('task.succeeded', { title }));
         invalidate.forEach((key) =>
           queryClient.invalidateQueries({ queryKey: key }),
         );
@@ -112,7 +114,7 @@ export function useTaskRunner(): TaskRunner {
       toast.update(toastId, {
         type: 'info',
         title,
-        message: '任务执行中…',
+        message: t('task.running'),
         loading: true,
         persistent: true,
       });
@@ -132,7 +134,7 @@ export function useTaskRunner(): TaskRunner {
             toast.update(toastId, {
               type: 'warning',
               title,
-              message: '任务超时，请到「任务队列」查看详情',
+              message: t('task.timeout'),
               loading: false,
               persistent: false,
             });
@@ -145,7 +147,7 @@ export function useTaskRunner(): TaskRunner {
           } catch (err) {
             // 轮询期间的网络抖动：记录但不中断（除非认证失败）
             const msg = errorMessage(err);
-            if (msg.includes('登录') || msg.includes('认证')) {
+            if (/登录|认证|login|auth/i.test(msg)) {
               toast.update(toastId, {
                 type: 'error',
                 title,
@@ -164,9 +166,7 @@ export function useTaskRunner(): TaskRunner {
               toast.update(toastId, {
                 type: 'warning',
                 title,
-                message: missing
-                  ? '任务不存在或已被清理，请到「任务队列」确认执行结果'
-                  : '连续多次无法获取任务状态，操作可能仍在后台执行，请到「任务队列」查看',
+                message: missing ? t('task.missing') : t('task.unreachable'),
                 loading: false,
                 persistent: false,
               });
@@ -189,7 +189,7 @@ export function useTaskRunner(): TaskRunner {
             if (ok) {
               toast.update(toastId, {
                 type: destructive ? 'destructive' : 'success',
-                title: `${title}成功`,
+                title: t('task.succeeded', { title }),
                 message: undefined,
                 loading: false,
                 persistent: false,
@@ -201,7 +201,7 @@ export function useTaskRunner(): TaskRunner {
             } else if (warn) {
               toast.update(toastId, {
                 type: 'warning',
-                title: `${title}完成（有警告）`,
+                title: t('task.doneWarn', { title }),
                 message: exit,
                 loading: false,
                 persistent: false,
@@ -211,10 +211,10 @@ export function useTaskRunner(): TaskRunner {
               );
               onSuccess?.(task);
             } else {
-              const message = exit || '任务被中断';
+              const message = exit || t('task.interrupted');
               toast.update(toastId, {
                 type: 'error',
-                title: `${title}失败`,
+                title: t('task.failed', { title }),
                 message,
                 loading: false,
                 persistent: false,
@@ -236,7 +236,7 @@ export function useTaskRunner(): TaskRunner {
         }
       }
     },
-    [toast, queryClient],
+    [toast, queryClient, t],
   );
 
   return { run };

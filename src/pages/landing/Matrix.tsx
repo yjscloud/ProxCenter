@@ -14,7 +14,9 @@
 
 import { useMemo } from 'react';
 import { IconClose, IconLayout, IconSearch } from '../../components/Icons';
-import { ALL_CAPABILITIES, CAPABILITY_TOTAL, DOMAINS } from './content';
+import { useT } from '../../i18n';
+import type { ResolvedDomain } from './content';
+import { useLandingContent } from './hooks';
 import { SectionHead } from './Common';
 
 export interface MatrixProps {
@@ -26,11 +28,13 @@ export interface MatrixProps {
 }
 
 export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: MatrixProps) {
+  const t = useT();
+  const { domains, capabilities, capabilityTotal } = useLandingContent();
   const keyword = query.trim().toLowerCase();
 
   const results = useMemo(
     () =>
-      ALL_CAPABILITIES.filter((item) => {
+      capabilities.filter((item) => {
         if (activeDomain !== 'all' && item.domainId !== activeDomain) return false;
         if (!keyword) return true;
         return (
@@ -39,7 +43,7 @@ export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: M
           item.domainName.toLowerCase().includes(keyword)
         );
       }),
-    [keyword, activeDomain],
+    [capabilities, keyword, activeDomain],
   );
 
   const filtering = keyword !== '' || activeDomain !== 'all';
@@ -55,13 +59,13 @@ export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: M
         <SectionHead
           index="01"
           eyebrow="Capabilities"
-          title={`${CAPABILITY_TOTAL} 项能力，逐条对得上控制台里的页面`}
-          desc="按能力域分组铺开，也可以直接检索。这一页不写产品做不到的事 —— 每一条都能在登录后的侧边栏里找到对应入口。"
+          title={t('landing.matrix.title', { total: capabilityTotal })}
+          desc={t('landing.matrix.desc')}
         />
 
         <div className="lp-matrix-layout">
-          <nav className="lp-domain-rail" aria-label="能力域">
-            <div className="lp-domain-rail-label">能力域</div>
+          <nav className="lp-domain-rail" aria-label={t('landing.matrix.domainsAria')}>
+            <div className="lp-domain-rail-label">{t('landing.matrix.domains')}</div>
 
             <button
               type="button"
@@ -73,12 +77,12 @@ export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: M
                 <IconLayout size={16} />
               </span>
               <span className="lp-domain-btn-body">
-                <span className="lp-domain-btn-name">全部能力</span>
+                <span className="lp-domain-btn-name">{t('landing.allCapabilities')}</span>
               </span>
-              <span className="lp-domain-btn-count">{CAPABILITY_TOTAL}</span>
+              <span className="lp-domain-btn-count">{capabilityTotal}</span>
             </button>
 
-            {DOMAINS.map((domain) => (
+            {domains.map((domain) => (
               <button
                 key={domain.id}
                 type="button"
@@ -105,15 +109,15 @@ export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: M
                 <input
                   type="search"
                   value={query}
-                  aria-label="筛选能力条目"
-                  placeholder="筛选能力条目…"
+                  aria-label={t('landing.matrix.searchAria')}
+                  placeholder={t('landing.matrix.searchPlaceholder')}
                   onChange={(event) => onQueryChange(event.target.value)}
                 />
                 {query ? (
                   <button
                     type="button"
                     className="lp-matrix-search-clear"
-                    aria-label="清空关键词"
+                    aria-label={t('landing.matrix.clearKeyword')}
                     onClick={() => onQueryChange('')}
                   >
                     <IconClose size={14} />
@@ -124,15 +128,22 @@ export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: M
               <div className="lp-matrix-meta" aria-live="polite">
                 {filtering ? (
                   <>
-                    匹配到 <strong>{results.length}</strong> 项
-                    {keyword ? `（关键词「${query.trim()}」）` : ''}
+                    {t('landing.matrix.matchedPre')}
+                    <strong>{results.length}</strong>
+                    {t('landing.matrix.matchedPost')}
+                    {keyword
+                      ? t('landing.matrix.matchedKeyword', { keyword: query.trim() })
+                      : ''}
                     <button type="button" className="lp-matrix-reset" onClick={reset}>
-                      清除筛选
+                      {t('landing.matrix.reset')}
                     </button>
                   </>
                 ) : (
                   <>
-                    共 <strong>{CAPABILITY_TOTAL}</strong> 项 · {DOMAINS.length} 个能力域
+                    {t('landing.matrix.total', {
+                      total: capabilityTotal,
+                      domains: domains.length,
+                    })}
                   </>
                 )}
               </div>
@@ -158,14 +169,20 @@ export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: M
               </div>
             ) : (
               <div className="lp-matrix-empty">
-                <p className="lp-h3">没有匹配的能力条目</p>
+                <p className="lp-h3">{t('landing.matrix.emptyTitle')}</p>
                 <p className="lp-p">
-                  当前筛选是「
-                  {activeDomain === 'all' ? '全部能力域' : domainLabel(activeDomain)}」
-                  {keyword ? ` + 关键词「${query.trim()}」` : ''}，两者需要同时满足。
+                  {t('landing.matrix.emptyDesc', {
+                    domain:
+                      activeDomain === 'all'
+                        ? t('landing.matrix.allDomains')
+                        : domainLabel(activeDomain, domains),
+                    keyword: keyword
+                      ? t('landing.matrix.emptyKeyword', { keyword: query.trim() })
+                      : '',
+                  })}
                 </p>
                 <button type="button" className="lp-btn lp-btn-ghost" onClick={reset}>
-                  清除筛选
+                  {t('landing.matrix.reset')}
                 </button>
               </div>
             )}
@@ -176,6 +193,6 @@ export function Matrix({ query, onQueryChange, activeDomain, onDomainChange }: M
   );
 }
 
-function domainLabel(domainId: string): string {
-  return DOMAINS.find((d) => d.id === domainId)?.name ?? domainId;
+function domainLabel(domainId: string, domains: ResolvedDomain[]): string {
+  return domains.find((d) => d.id === domainId)?.name ?? domainId;
 }

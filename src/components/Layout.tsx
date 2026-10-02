@@ -16,12 +16,14 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { useAuth } from '../hooks/useAuth';
 import { useUiPrefs } from '../hooks/useUiPrefs';
 import { useTaskStream } from '../hooks/useWebSocket';
+import { useT } from '../i18n';
 
 const COLLAPSE_KEY = 'pve_sidebar_collapsed';
 const MOBILE_BREAKPOINT = 768;
 const TABLET_BREAKPOINT = 1280;
 
 export function Layout() {
+  const t = useT();
   const location = useLocation();
   const { canWrite, user } = useAuth();
 
@@ -130,10 +132,7 @@ export function Layout() {
               /* 一个还开着的页面都没有（管理员把所有入口都关了）：
                  不跳转，直接说明情况 —— 反复弹回会变成死循环。 */
               <div className="notfound">
-                <div className="text-secondary">
-                  所有页面入口都已被管理员关闭，请联系管理员在
-                  「系统设置 → 导航栏功能开关」中重新开启。
-                </div>
+                <div className="text-secondary">{t('shell.navAllClosed')}</div>
               </div>
             )
           ) : (
@@ -145,7 +144,7 @@ export function Layout() {
 
         {!canWrite ? (
           <div className="readonly-bar" role="status">
-            当前为只读模式（viewer 角色），修改类操作已禁用
+            {t('shell.readonly')}
           </div>
         ) : null}
       </div>

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from .. import metrics, ownership, security
+from .. import i18n, metrics, ownership, security
 
 router = APIRouter(prefix="/api", tags=["metrics"])
 
@@ -49,14 +49,20 @@ async def read_metrics_history(
     if not security.has_user_permission(user, required):
         raise HTTPException(
             status_code=403,
-            detail=f"权限不足：需要 {required} 权限（当前角色：{user.get('role')}）",
+            detail=i18n.t(
+                "error.permission_denied_role",
+                permission=required,
+                role=user.get("role"),
+            ),
         )
 
     now = int(time.time())
     end_ts = int(end) if end else now
     start_ts = int(start) if start else end_ts - hours * 3600
     if start_ts >= end_ts:
-        raise HTTPException(status_code=400, detail="起始时间必须早于结束时间")
+        raise HTTPException(
+            status_code=400, detail=i18n.tr("起始时间必须早于结束时间")
+        )
 
     owned_refs: Optional[List[str]] = None
     if scope == metrics.SCOPE_GUEST:

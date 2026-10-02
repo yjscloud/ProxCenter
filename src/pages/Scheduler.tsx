@@ -41,30 +41,34 @@ import {
 } from '../components/Icons';
 import { formatUptime, formatRelative, formatDateTime } from '../utils/format';
 import { useToast } from '../hooks/useToast';
+import { useT, type TFunc } from '../i18n';
 
 /* 自刷周期：比调度器的 tick（1 秒）慢得多，但足够让「下次执行」看起来是活的 */
 const REFRESH = 5_000;
 
 /* 间隔编辑里的一键预设。覆盖「巡检类」与「清理类」两个量级。 */
 const INTERVAL_PRESETS = [
-  { label: '1 分钟', seconds: 60 },
-  { label: '5 分钟', seconds: 300 },
-  { label: '15 分钟', seconds: 900 },
-  { label: '1 小时', seconds: 3_600 },
-  { label: '6 小时', seconds: 21_600 },
-  { label: '1 天', seconds: 86_400 },
-];
+  { key: 'scheduler.preset1m', seconds: 60 },
+  { key: 'scheduler.preset5m', seconds: 300 },
+  { key: 'scheduler.preset15m', seconds: 900 },
+  { key: 'scheduler.preset1h', seconds: 3_600 },
+  { key: 'scheduler.preset6h', seconds: 21_600 },
+  { key: 'scheduler.preset1d', seconds: 86_400 },
+] as const;
 
-function statusMeta(job: SchedulerJob): { label: string; variant: BadgeVariant } {
-  if (!job.enabled) return { label: '已停用', variant: 'neutral' };
-  if (job.running) return { label: '执行中', variant: 'info' };
+function statusMeta(
+  job: SchedulerJob,
+  t: TFunc,
+): { label: string; variant: BadgeVariant } {
+  if (!job.enabled) return { label: t('scheduler.status.disabled'), variant: 'neutral' };
+  if (job.running) return { label: t('scheduler.status.running'), variant: 'info' };
   switch (job.last_status) {
     case 'ok':
-      return { label: '正常', variant: 'success' };
+      return { label: t('scheduler.status.ok'), variant: 'success' };
     case 'error':
-      return { label: '失败', variant: 'danger' };
+      return { label: t('scheduler.status.error'), variant: 'danger' };
     default:
-      return { label: '待执行', variant: 'neutral' };
+      return { label: t('scheduler.status.pending'), variant: 'neutral' };
   }
 }
 
@@ -83,6 +87,7 @@ function isStale(job: SchedulerJob): boolean {
 }
 
 export function Scheduler() {
+  const t = useT();
   const toast = useToast();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editing, setEditing] = useState<SchedulerJob | null>(null);
@@ -125,18 +130,24 @@ export function Scheduler() {
       const result = await schedulerApi.runNow(job.id);
       if (result.last_status === 'ok') {
         toast.success(
-          `「${job.name}」执行完成`,
+          t('scheduler.runDone', { name: job.name }),
           result.last_summary
-            ? `${result.last_summary}（${result.last_duration_ms} ms）`
-            : `耗时 ${result.last_duration_ms} ms`,
+            ? t('scheduler.runDoneDetail', {
+                summary: result.last_summary,
+                ms: result.last_duration_ms,
+              })
+            : t('scheduler.duration', { ms: result.last_duration_ms }),
         );
       } else {
         // 失败也要把原因直接说出来：这个按钮的用途就是看错误
-        toast.error(`「${job.name}」执行失败`, result.last_error || '未知错误');
+        toast.error(
+          t('scheduler.runFailed', { name: job.name }),
+          result.last_error || t('scheduler.unknownError'),
+        );
       }
       await query.refetch();
     } catch (err) {
-      toast.error('无法执行', errorMessage(err));
+      toast.error(t('scheduler.cannotRun'), errorMessage(err));
     } finally {
       setBusyId(null);
     }
@@ -147,9 +158,13 @@ export function Scheduler() {
     try {
       await schedulerApi.configure(job.id, { enabled: !job.enabled });
       await query.refetch();
-      toast.success(job.enabled ? `已停用「${job.name}」` : `已启用「${job.name}」`);
+      toast.success(
+        job.enabled
+          ? t('scheduler.disabledJob', { name: job.name })
+          : t('scheduler.enabledJob', { name: job.name }),
+      );
     } catch (err) {
-      toast.error('操作失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusyId(null);
     }
@@ -159,7 +174,7 @@ export function Scheduler() {
     if (!editing) return;
     const interval = Number(intervalDraft);
     if (!Number.isFinite(interval) || interval <= 0) {
-      toast.error('间隔不合法', '请输入一个大于 0 的秒数');
+      toast.error(t('scheduler.invalidInterval'), t('scheduler.invalidIntervalHint'));
       return;
     }
     setSaving(true);
@@ -167,9 +182,12 @@ export function Scheduler() {
       await schedulerApi.configure(editing.id, { interval });
       await query.refetch();
       setEditing(null);
-      toast.success(`「${editing.name}」间隔已更新`, `下次执行按新间隔计算`);
+      toast.success(
+        t('scheduler.intervalUpdated', { name: editing.name }),
+        t('scheduler.intervalUpdatedHint'),
+      );
     } catch (err) {
-      toast.error('保存失败', errorMessage(err));
+      toast.error(t('scheduler.saveFailed'), errorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -181,9 +199,9 @@ export function Scheduler() {
       await schedulerApi.reset(job.id);
       await query.refetch();
       setEditing(null);
-      toast.success(`已恢复「${job.name}」的默认设置`);
+      toast.success(t('scheduler.resetDone', { name: job.name }));
     } catch (err) {
-      toast.error('操作失败', errorMessage(err));
+      toast.error(t('common.opFailed'), errorMessage(err));
     } finally {
       setBusyId(null);
     }
@@ -192,19 +210,19 @@ export function Scheduler() {
   const columns: Array<Column<SchedulerJob>> = [
     {
       key: 'job',
-      header: '作业',
+      header: t('scheduler.colJob'),
       render: (job) => (
         <div>
           <div className="flex items-center gap-6">
             <span className="fw-600">{job.name}</span>
             {job.modified ? (
               <Badge variant="warning" size="sm">
-                已调整
+                {t('scheduler.adjusted')}
               </Badge>
             ) : null}
             {job.last_manual ? (
               <Badge variant="info" size="sm">
-                手动
+                {t('scheduler.manual')}
               </Badge>
             ) : null}
           </div>
@@ -214,14 +232,14 @@ export function Scheduler() {
     },
     {
       key: 'interval',
-      header: '间隔',
+      header: t('scheduler.colInterval'),
       width: 120,
       render: (job) => (
         <div>
           <div className="fs-sm">{formatUptime(job.interval)}</div>
           {job.modified ? (
             <div className="fs-xs text-muted">
-              默认 {formatUptime(job.default_interval)}
+              {t('scheduler.defaultValue', { value: formatUptime(job.default_interval) })}
             </div>
           ) : null}
         </div>
@@ -229,18 +247,18 @@ export function Scheduler() {
     },
     {
       key: 'status',
-      header: '状态',
+      header: t('common.status'),
       width: 150,
       render: (job) => {
-        const meta = statusMeta(job);
-        const stale = isStale(job);
+        const meta = statusMeta(job, t);
+        const stalled = isStale(job);
         return (
           <div>
             <Badge variant={meta.variant} size="sm" dot pulse={job.running}>
               {meta.label}
             </Badge>
-            {stale ? (
-              <div className="fs-xs text-warning">疑似停摆，已很久没执行</div>
+            {stalled ? (
+              <div className="fs-xs text-warning">{t('scheduler.staleHint')}</div>
             ) : null}
             {job.last_summary ? (
               <div className="fs-xs text-muted">{job.last_summary}</div>
@@ -251,34 +269,36 @@ export function Scheduler() {
     },
     {
       key: 'last',
-      header: '上次执行',
+      header: t('scheduler.colLastRun'),
       width: 170,
       render: (job) => (
         <div>
           <div className="fs-sm">{formatRelative(job.last_start)}</div>
           <div className="fs-xs text-muted">
             {job.last_duration_ms
-              ? `耗时 ${job.last_duration_ms} ms`
+              ? t('scheduler.duration', { ms: job.last_duration_ms })
               : job.last_end
                 ? '—'
-                : '尚未执行'}
+                : t('scheduler.neverRun')}
           </div>
         </div>
       ),
     },
     {
       key: 'next',
-      header: '下次执行',
+      header: t('scheduler.colNextRun'),
       width: 140,
       render: (job) =>
         !job.enabled ? (
-          <span className="text-muted fs-sm">已停用</span>
+          <span className="text-muted fs-sm">{t('scheduler.status.disabled')}</span>
         ) : job.running ? (
-          <span className="text-muted fs-sm">执行中</span>
+          <span className="text-muted fs-sm">{t('scheduler.status.running')}</span>
         ) : (
           <div>
             <div className="fs-sm">
-              {job.next_in < 1 ? '即将执行' : `${Math.round(job.next_in)} 秒后`}
+              {job.next_in < 1
+                ? t('scheduler.imminent')
+                : t('scheduler.afterSeconds', { n: Math.round(job.next_in) })}
             </div>
             <div className="fs-xs text-muted">{formatDateTime(job.next_at)}</div>
           </div>
@@ -286,17 +306,17 @@ export function Scheduler() {
     },
     {
       key: 'counters',
-      header: '累计',
+      header: t('scheduler.colTotals'),
       width: 130,
       render: (job) => (
         <div className="fs-xs">
-          <div className="text-muted">执行 {job.runs} 次</div>
+          <div className="text-muted">{t('scheduler.runsCount', { n: job.runs })}</div>
           {job.failures ? (
-            <div className="text-danger">失败 {job.failures} 次</div>
+            <div className="text-danger">{t('scheduler.failCount', { n: job.failures })}</div>
           ) : null}
           {job.skipped ? (
-            <div className="text-warning" title="上一次还没跑完就到了下次时间，说明间隔短于实际耗时">
-              跳过 {job.skipped} 次
+            <div className="text-warning" title={t('scheduler.skippedTitle')}>
+              {t('scheduler.skippedCount', { n: job.skipped })}
             </div>
           ) : null}
         </div>
@@ -304,7 +324,7 @@ export function Scheduler() {
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       width: 210,
       render: (job) => (
         <div className="form-row">
@@ -315,7 +335,7 @@ export function Scheduler() {
             loading={busyId === job.id}
             onClick={() => void runNow(job)}
           >
-            立即执行
+            {t('scheduler.runNow')}
           </Button>
           <Button
             variant="ghost"
@@ -323,7 +343,7 @@ export function Scheduler() {
             icon={<IconSettings size={14} />}
             onClick={() => setEditing(job)}
           >
-            配置
+            {t('scheduler.configure')}
           </Button>
           <Button
             variant="ghost"
@@ -331,7 +351,7 @@ export function Scheduler() {
             icon={job.enabled ? <IconPause size={14} /> : <IconCheck size={14} />}
             onClick={() => void toggle(job)}
           >
-            {job.enabled ? '停用' : '启用'}
+            {job.enabled ? t('scheduler.disable') : t('common.enable')}
           </Button>
         </div>
       ),
@@ -340,8 +360,8 @@ export function Scheduler() {
 
   return (
     <PageShell
-      title="后台任务"
-      subtitle="面板的后台巡检与清理作业：查看运行状态、调整执行间隔、立即执行一次"
+      title={t('scheduler.title')}
+      subtitle={t('scheduler.subtitle')}
       actions={
         <Button
           variant="ghost"
@@ -349,13 +369,13 @@ export function Scheduler() {
           loading={query.isFetching}
           onClick={() => void query.refetch()}
         >
-          刷新
+          {t('common.refresh')}
         </Button>
       }
     >
       {query.isError ? (
         <ErrorState
-          title="后台任务加载失败"
+          title={t('scheduler.loadFailed')}
           message={errorMessage(query.error)}
           onRetry={() => void query.refetch()}
         />
@@ -364,36 +384,36 @@ export function Scheduler() {
       {/* ---- KPI ---- */}
       <div className="grid grid-4">
         <KpiCard
-          label="作业总数"
+          label={t('scheduler.kpi.total')}
           value={query.data?.total ?? 0}
           icon={<IconTasks size={16} />}
           tone="accent"
           loading={query.isLoading}
-          hint={`已启用 ${query.data?.enabled ?? 0} 个`}
+          hint={t('scheduler.kpi.enabledHint', { n: query.data?.enabled ?? 0 })}
         />
         <KpiCard
-          label="正在执行"
+          label={t('scheduler.kpi.running')}
           value={query.data?.running ?? 0}
           icon={<IconActivity size={16} />}
           tone="accent"
           loading={query.isLoading}
-          hint="调度器每秒检查一次是否到点"
+          hint={t('scheduler.kpi.runningHint')}
         />
         <KpiCard
-          label="最近失败"
+          label={t('scheduler.kpi.failing')}
           value={failing.length}
           icon={<IconAlert size={16} />}
           tone={failing.length ? 'danger' : 'success'}
           loading={query.isLoading}
-          hint={failing.length ? '点「立即执行」可直接看到错误' : '全部作业最近一次都成功'}
+          hint={failing.length ? t('scheduler.kpi.failingHint') : t('scheduler.kpi.allOk')}
         />
         <KpiCard
-          label="疑似停摆"
+          label={t('scheduler.kpi.stale')}
           value={stale.length}
           icon={<IconClock size={16} />}
           tone={stale.length ? 'warning' : 'success'}
           loading={query.isLoading}
-          hint="距上次执行已远超自身间隔"
+          hint={t('scheduler.kpi.staleHint')}
         />
       </div>
 
@@ -401,8 +421,8 @@ export function Scheduler() {
       {failing.length > 0 ? (
         <Card collapsible={false}>
           <CardHeader
-            title="最近失败的作业"
-            subtitle="错误已记在作业状态里，修好后点「立即执行」可直接验证"
+            title={t('scheduler.failingTitle')}
+            subtitle={t('scheduler.failingSubtitle')}
             icon={<IconAlert size={16} />}
           />
           <div className="dyn-list">
@@ -413,7 +433,7 @@ export function Scheduler() {
                   <span className="fs-xs text-muted"> · {formatRelative(job.last_end)}</span>
                 </div>
                 <div className="fs-xs text-danger" style={{ wordBreak: 'break-all' }}>
-                  {job.last_error || '未记录错误信息'}
+                  {job.last_error || t('scheduler.noErrorRecord')}
                 </div>
               </div>
             ))}
@@ -426,37 +446,35 @@ export function Scheduler() {
         <Card key={group.name} collapsible={false}>
           <CardHeader
             title={group.name}
-            subtitle={`${group.jobs.length} 个作业`}
+            subtitle={t('scheduler.groupJobs', { n: group.jobs.length })}
             icon={<IconTasks size={16} />}
           />
           <Table
             columns={columns}
             rows={group.jobs}
             rowKey={(job) => job.id}
-            caption={`${group.name}后台作业`}
+            caption={t('scheduler.tableCaption', { group: group.name })}
             loading={query.isLoading}
-            emptyTitle="没有作业"
-            emptyDescription="该分组下暂无已注册的后台作业。"
+            emptyTitle={t('scheduler.emptyTitle')}
+            emptyDescription={t('scheduler.emptyDesc')}
           />
         </Card>
       ))}
 
-      <Notice tone="info" title="关于间隔调整">
-        间隔保存在服务端（每项只存与代码默认值的差异），改完下一个周期即生效，
-        不需要重启面板。调度器内部用单调时钟计算下次唤醒，系统时间被 NTP 校正
-        也不会让作业停摆。恢复默认可用配置弹框里的「恢复默认」。
+      <Notice tone="info" title={t('scheduler.noticeTitle')}>
+        {t('scheduler.noticeBody')}
       </Notice>
 
       {/* ---- 配置弹框 ---- */}
       <Modal
         open={editing !== null}
         onClose={() => setEditing(null)}
-        title={editing ? `配置：${editing.name}` : '配置作业'}
+        title={editing ? t('scheduler.configTitle', { name: editing.name }) : t('scheduler.configTitleFallback')}
         description={editing?.description}
         footer={
           <>
             <Button variant="ghost" onClick={() => setEditing(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="ghost"
@@ -464,14 +482,14 @@ export function Scheduler() {
               disabled={editing ? !editing.modified : true}
               title={
                 editing?.modified
-                  ? '恢复代码里的默认间隔与启用状态'
-                  : '当前就是默认值'
+                  ? t('scheduler.restoreDefaultTitle')
+                  : t('scheduler.alreadyDefaultTitle')
               }
             >
-              恢复默认
+              {t('scheduler.restoreDefault')}
             </Button>
             <Button variant="primary" onClick={() => void saveConfig()} loading={saving}>
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
@@ -479,9 +497,13 @@ export function Scheduler() {
         {editing ? (
           <>
             <Field
-              label="执行间隔（秒）"
+              label={t('scheduler.intervalLabel')}
               required
-              hint={`约等于 ${formatUptime(Number(intervalDraft) || 0)}；允许范围 ${editing.min_interval} ~ ${editing.max_interval} 秒，超出会被自动收拢到边界`}
+              hint={t('scheduler.intervalHint', {
+                human: formatUptime(Number(intervalDraft) || 0),
+                min: editing.min_interval,
+                max: editing.max_interval,
+              })}
             >
               <Input
                 type="number"
@@ -500,15 +522,19 @@ export function Scheduler() {
                   variant="ghost"
                   onClick={() => setIntervalDraft(String(preset.seconds))}
                 >
-                  {preset.label}
+                  {t(preset.key)}
                 </Button>
               ))}
             </div>
             <div className="fs-xs text-muted">
-              当前状态：{editing.enabled ? '已启用' : '已停用'} · 累计执行{' '}
-              {editing.runs} 次
-              {editing.failures ? `（失败 ${editing.failures} 次）` : ''} · 代码默认{' '}
-              {formatUptime(editing.default_interval)}
+              {t('scheduler.stateLine', {
+                state: editing.enabled ? t('scheduler.status.enabled') : t('scheduler.status.disabled'),
+                runs: editing.runs,
+                failures: editing.failures
+                  ? t('scheduler.stateFailures', { n: editing.failures })
+                  : '',
+                def: formatUptime(editing.default_interval),
+              })}
             </div>
           </>
         ) : null}

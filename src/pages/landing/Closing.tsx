@@ -7,9 +7,10 @@ import { Link } from 'react-router-dom';
 import { BrandLogo } from '../../components/BrandLogo';
 import { IconCheck, IconChevronUp, IconKey } from '../../components/Icons';
 import type { FaqItem, SiteInfo } from '../../api/types';
-import { DOMAINS } from './content';
+import { useT, type MessageKey } from '../../i18n';
+import { NAV_LINKS } from './content';
 import { SectionHead } from './Common';
-import { scrollToSection } from './hooks';
+import { scrollToSection, useLandingContent } from './hooks';
 
 /**
  * 常见问题。内容来自服务端（「设置 → 常见问题」），空数组表示管理员关掉了
@@ -19,6 +20,8 @@ import { scrollToSection } from './hooks';
  * 拆开才能让 DOM 层次正确。
  */
 export function Faq({ faqs }: { faqs: FaqItem[] }) {
+  /* hook 必须在早退之前调用：管理员关掉 FAQ 时组件仍会走一遍调用序 */
+  const t = useT();
   if (faqs.length === 0) return null;
 
   return (
@@ -27,8 +30,8 @@ export function Faq({ faqs }: { faqs: FaqItem[] }) {
         <SectionHead
           index="08"
           eyebrow="FAQ"
-          title="常见问题"
-          desc="部署、权限与几个最容易踩的坑 —— 都是真实环境里被问过的。"
+          title={t('landing.faq.title')}
+          desc={t('landing.faq.desc')}
         />
         <div className="lp-faq">
           {faqs.map((item, index) => (
@@ -55,13 +58,16 @@ export interface ClosingProps {
 }
 
 /** 收尾区右侧的三条要点：与首屏的信任条目呼应，但只留最硬的三条 */
-const FINALE_POINTS = [
-  '集群凭据只在后端使用，前端拿不到明文',
-  '危险操作二次确认，全部写操作进审计',
-  '前后端同源，一个端口对外即可上线',
+const FINALE_POINT_KEYS: MessageKey[] = [
+  'landing.finale.pointCredentials',
+  'landing.finale.pointConfirm',
+  'landing.finale.pointOrigin',
 ];
 
 export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingProps) {
+  const t = useT();
+  const { domains } = useLandingContent();
+
   return (
     <>
       <section className="lp-finale-wrap">
@@ -69,26 +75,24 @@ export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingPr
           <div className="lp-finale lp-reveal">
             <div className="lp-finale-inner">
               <span className="lp-eyebrow">Ready</span>
-              <h2 className="lp-h2">现在就用它管起你的集群</h2>
-              <p className="lp-p">
-                登录后填一条 Proxmox 连接即可开始使用，不需要改 Proxmox 的对外暴露。
-              </p>
+              <h2 className="lp-h2">{t('landing.finale.title')}</h2>
+              <p className="lp-p">{t('landing.finale.desc')}</p>
               <div className="lp-cta-row">
                 <Link className="lp-btn lp-btn-light" to={consoleHref}>
                   <IconKey size={15} />
                   {consoleLabel}
                 </Link>
                 <a className="lp-btn lp-btn-outline" href={docsPath}>
-                  查看接口文档
+                  {t('landing.docs')}
                 </a>
               </div>
             </div>
 
             <ul className="lp-finale-points">
-              {FINALE_POINTS.map((point) => (
-                <li className="lp-finale-point" key={point}>
+              {FINALE_POINT_KEYS.map((key) => (
+                <li className="lp-finale-point" key={key}>
                   <IconCheck size={13} />
-                  {point}
+                  {t(key)}
                 </li>
               ))}
             </ul>
@@ -106,39 +110,30 @@ export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingPr
                 </span>
                 <span className="lp-brand-name">{site.name}</span>
               </div>
-              <p className="lp-footer-desc">
-                面向 Proxmox VE 的自托管管理面板：计算、存储与网络、数据保护、
-                安全、观测与集成、系统管理，一个界面搞定。
-              </p>
+              <p className="lp-footer-desc">{t('landing.footer.desc')}</p>
             </div>
 
             <div>
-              <div className="lp-footer-title">产品能力</div>
+              <div className="lp-footer-title">{t('landing.footer.capabilities')}</div>
               <div className="lp-footer-links">
-                {[
-                  { id: 'matrix', label: '能力矩阵' },
-                  { id: 'console', label: '控制台实况' },
-                  { id: 'architecture', label: '架构' },
-                  { id: 'highlights', label: '重点能力' },
-                  { id: 'security', label: '安全合规' },
-                  { id: 'start', label: '上手流程' },
-                ].map((entry) => (
+                {/* 与顶栏是同一组锚点：复用 NAV_LINKS，省得两处各维护一份中英对照 */}
+                {NAV_LINKS.map((entry) => (
                   <button
                     type="button"
                     className="lp-footer-link lp-footer-link-btn"
                     key={entry.id}
                     onClick={() => scrollToSection(entry.id)}
                   >
-                    {entry.label}
+                    {t(entry.labelKey)}
                   </button>
                 ))}
               </div>
             </div>
 
             <div>
-              <div className="lp-footer-title">能力分组</div>
+              <div className="lp-footer-title">{t('landing.footer.domains')}</div>
               <div className="lp-footer-links">
-                {DOMAINS.map((domain) => (
+                {domains.map((domain) => (
                   <span className="lp-footer-link" key={domain.id}>
                     {domain.name}
                   </span>
@@ -147,24 +142,24 @@ export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingPr
             </div>
 
             <div>
-              <div className="lp-footer-title">快速入口</div>
+              <div className="lp-footer-title">{t('landing.footer.quickLinks')}</div>
               <div className="lp-footer-links">
                 <Link className="lp-footer-link" to={consoleHref}>
                   {consoleLabel}
                 </Link>
                 <a className="lp-footer-link" href={docsPath}>
-                  接口文档
+                  {t('landing.docs')}
                 </a>
                 <button
                   type="button"
                   className="lp-footer-link lp-footer-link-btn"
                   onClick={() => scrollToSection('faq')}
                 >
-                  常见问题
+                  {t('landing.faq.title')}
                 </button>
               </div>
 
-              <div className="lp-footer-title lp-footer-title-gap">技术栈</div>
+              <div className="lp-footer-title lp-footer-title-gap">{t('landing.footer.stack')}</div>
               <div className="lp-footer-links">
                 <span className="lp-footer-link">FastAPI + MySQL</span>
                 <span className="lp-footer-link">React 18 + TypeScript</span>
@@ -175,8 +170,8 @@ export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingPr
 
           {site.links.length > 0 ? (
             <div className="lp-footer-friendlinks">
-              <span className="lp-footer-title">友情链接</span>
-              <nav className="lp-friendlink-list" aria-label="友情链接">
+              <span className="lp-footer-title">{t('landing.footer.friendLinks')}</span>
+              <nav className="lp-friendlink-list" aria-label={t('landing.footer.friendLinks')}>
                 {site.links.map((link) => (
                   <a
                     key={`${link.url}-${link.name}`}
@@ -225,6 +220,7 @@ export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingPr
    --------------------------------------------------------------------------- */
 
 function BackToTop() {
+  const t = useT();
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -239,8 +235,8 @@ function BackToTop() {
       type="button"
       className={`lp-back-to-top${visible ? ' is-visible' : ''}`}
       onClick={() => scrollToSection('top', 0)}
-      title="返回顶部"
-      aria-label="返回顶部"
+      title={t('landing.footer.backToTop')}
+      aria-label={t('landing.footer.backToTop')}
       /* 隐藏时不参与键盘与读屏，避免焦点落到看不见的按钮上 */
       tabIndex={visible ? 0 : -1}
       aria-hidden={!visible}

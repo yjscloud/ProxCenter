@@ -3,9 +3,10 @@
    ========================================================================== */
 
 import type { BadgeVariant, TaskStatus, VmStatus } from '../api/types';
+import type { MessageKey, TFunc } from '../i18n';
 
 export interface StatusMeta {
-  /** 显示文案 */
+  /** 显示文案（由调用点传入的 t 现算，见下方表结构说明） */
   label: string;
   /** 徽章变体 */
   variant: BadgeVariant;
@@ -13,23 +14,54 @@ export interface StatusMeta {
   pulse?: boolean;
 }
 
+/**
+ * 状态表项：表里存**词条键**而不是文案。
+ *
+ * 这些函数在页面、卡片、表格里被调用几十次，而模块级常量拿不到当前语言 ——
+ * 所以每个 `xxMeta()` 都收一个 `t`，由调用点传入。调用形态只多了最后一个参数，
+ * 调用点 `.label` 的用法保持不变。
+ */
+interface StatusTableEntry {
+  /** null = 直接用状态码本身（不翻译） */
+  key: MessageKey | null;
+  variant: BadgeVariant;
+  pulse?: boolean;
+}
+
+/** 表里没有的状态（PVE 新加的、后端返回的怪值）原样显示状态码，不编造文案 */
+function resolveStatus(
+  table: Record<string, StatusTableEntry>,
+  status: string | null | undefined,
+  t: TFunc,
+): StatusMeta {
+  const entry = status ? table[status] : undefined;
+  if (!entry) return { label: status ?? t('status.unknown'), variant: 'neutral' };
+  return {
+    label: entry.key ? t(entry.key) : (status ?? ''),
+    variant: entry.variant,
+    pulse: entry.pulse,
+  };
+}
+
 /* ---------------------------------------------------------------------------
    VM 状态
    --------------------------------------------------------------------------- */
 
-const VM_STATUS_MAP: Record<string, StatusMeta> = {
-  running: { label: '运行中', variant: 'success', pulse: true },
-  stopped: { label: '已停止', variant: 'neutral' },
-  paused: { label: '已暂停', variant: 'warning' },
-  suspended: { label: '已挂起', variant: 'warning' },
-  stopping: { label: '正在停止', variant: 'warning', pulse: true },
-  starting: { label: '正在启动', variant: 'info', pulse: true },
-  unknown: { label: '未知', variant: 'neutral' },
+const VM_STATUS_KEYS: Record<string, StatusTableEntry> = {
+  running: { key: 'status.vm.running', variant: 'success', pulse: true },
+  stopped: { key: 'status.vm.stopped', variant: 'neutral' },
+  paused: { key: 'status.vm.paused', variant: 'warning' },
+  suspended: { key: 'status.vm.suspended', variant: 'warning' },
+  stopping: { key: 'status.vm.stopping', variant: 'warning', pulse: true },
+  starting: { key: 'status.vm.starting', variant: 'info', pulse: true },
+  unknown: { key: 'status.unknown', variant: 'neutral' },
 };
 
-export function vmStatusMeta(status?: VmStatus | null): StatusMeta {
-  if (!status) return { label: '未知', variant: 'neutral' };
-  return VM_STATUS_MAP[status] ?? { label: status, variant: 'neutral' };
+export function vmStatusMeta(
+  status: VmStatus | null | undefined,
+  t: TFunc,
+): StatusMeta {
+  return resolveStatus(VM_STATUS_KEYS, status, t);
 }
 
 /** 是否处于过渡态（不可操作）*/
@@ -51,47 +83,51 @@ export function isStopped(status?: VmStatus | null): boolean {
    节点状态
    --------------------------------------------------------------------------- */
 
-const NODE_STATUS_MAP: Record<string, StatusMeta> = {
-  online: { label: '在线', variant: 'success', pulse: true },
-  offline: { label: '离线', variant: 'danger' },
-  unknown: { label: '未知', variant: 'neutral' },
+const NODE_STATUS_KEYS: Record<string, StatusTableEntry> = {
+  online: { key: 'status.node.online', variant: 'success', pulse: true },
+  offline: { key: 'status.node.offline', variant: 'danger' },
+  unknown: { key: 'status.unknown', variant: 'neutral' },
 };
 
-export function nodeStatusMeta(status?: string | null): StatusMeta {
-  if (!status) return { label: '未知', variant: 'neutral' };
-  return NODE_STATUS_MAP[status] ?? { label: status, variant: 'neutral' };
+export function nodeStatusMeta(
+  status: string | null | undefined,
+  t: TFunc,
+): StatusMeta {
+  return resolveStatus(NODE_STATUS_KEYS, status, t);
 }
 
 /* ---------------------------------------------------------------------------
    任务状态
    --------------------------------------------------------------------------- */
 
-const TASK_STATUS_MAP: Record<string, StatusMeta> = {
-  running: { label: '执行中', variant: 'info', pulse: true },
-  stopped: { label: '已结束', variant: 'neutral' },
-  unknown: { label: '未知', variant: 'neutral' },
+const TASK_STATUS_KEYS: Record<string, StatusTableEntry> = {
+  running: { key: 'status.task.running', variant: 'info', pulse: true },
+  stopped: { key: 'status.task.stopped', variant: 'neutral' },
+  unknown: { key: 'status.unknown', variant: 'neutral' },
 };
 
 export function taskStatusMeta(
-  status?: TaskStatus | null,
-  exitstatus?: string | null,
+  status: TaskStatus | null | undefined,
+  exitstatus: string | null | undefined,
+  t: TFunc,
 ): StatusMeta {
   // 已结束的任务，用 exitstatus 判断成功/失败
   if (status === 'stopped') {
-    if (!exitstatus) return { label: '已结束', variant: 'neutral' };
-    return taskExitMeta(exitstatus);
+    if (!exitstatus) return { label: t('status.task.stopped'), variant: 'neutral' };
+    return taskExitMeta(exitstatus, t);
   }
-  if (!status) return { label: '未知', variant: 'neutral' };
-  return TASK_STATUS_MAP[status] ?? { label: status, variant: 'neutral' };
+  return resolveStatus(TASK_STATUS_KEYS, status, t);
 }
 
 /** exitstatus: "OK" 为成功，其余（含 "WARNINGS"）为失败/警告 */
-export function taskExitMeta(exitstatus: string): StatusMeta {
-  if (exitstatus === 'OK') return { label: '成功', variant: 'success' };
-  if (exitstatus.startsWith('WARNINGS')) {
-    return { label: '有警告', variant: 'warning' };
+export function taskExitMeta(exitstatus: string, t: TFunc): StatusMeta {
+  if (exitstatus === 'OK') {
+    return { label: t('status.exit.ok'), variant: 'success' };
   }
-  return { label: '失败', variant: 'danger' };
+  if (exitstatus.startsWith('WARNINGS')) {
+    return { label: t('status.exit.warnings'), variant: 'warning' };
+  }
+  return { label: t('status.exit.failed'), variant: 'danger' };
 }
 
 export function isTaskSuccess(task: {
@@ -109,62 +145,71 @@ export function isTaskRunning(status?: TaskStatus | null): boolean {
    存储状态
    --------------------------------------------------------------------------- */
 
-export function storageStatusMeta(active?: boolean | null): StatusMeta {
+export function storageStatusMeta(
+  active: boolean | null | undefined,
+  t: TFunc,
+): StatusMeta {
   if (active === undefined || active === null) {
-    return { label: '未知', variant: 'neutral' };
+    return { label: t('status.unknown'), variant: 'neutral' };
   }
   return active
-    ? { label: '已激活', variant: 'success' }
-    : { label: '未激活', variant: 'danger' };
+    ? { label: t('status.storage.active'), variant: 'success' }
+    : { label: t('status.storage.inactive'), variant: 'danger' };
 }
 
 /* ---------------------------------------------------------------------------
    审计结果
    --------------------------------------------------------------------------- */
 
-const AUDIT_RESULT_MAP: Record<string, StatusMeta> = {
-  success: { label: '成功', variant: 'success' },
-  ok: { label: '成功', variant: 'success' },
-  failure: { label: '失败', variant: 'danger' },
-  failed: { label: '失败', variant: 'danger' },
-  error: { label: '错误', variant: 'danger' },
-  denied: { label: '拒绝', variant: 'warning' },
+const AUDIT_RESULT_KEYS: Record<string, StatusTableEntry> = {
+  success: { key: 'status.audit.success', variant: 'success' },
+  ok: { key: 'status.audit.success', variant: 'success' },
+  failure: { key: 'status.audit.failed', variant: 'danger' },
+  failed: { key: 'status.audit.failed', variant: 'danger' },
+  error: { key: 'status.audit.error', variant: 'danger' },
+  denied: { key: 'status.audit.denied', variant: 'warning' },
 };
 
-export function auditResultMeta(result?: string | null): StatusMeta {
-  if (!result) return { label: '未知', variant: 'neutral' };
-  return (
-    AUDIT_RESULT_MAP[result.toLowerCase()] ?? {
-      label: result,
-      variant: 'neutral',
-    }
-  );
+export function auditResultMeta(
+  result: string | null | undefined,
+  t: TFunc,
+): StatusMeta {
+  if (!result) return { label: t('status.unknown'), variant: 'neutral' };
+  // 后端偶尔返回大写，查表用小写，显示仍用原值
+  const entry = AUDIT_RESULT_KEYS[result.toLowerCase()];
+  if (!entry) return { label: result, variant: 'neutral' };
+  return { label: entry.key ? t(entry.key) : result, variant: entry.variant };
 }
 
 /* ---------------------------------------------------------------------------
    面板用户状态
    --------------------------------------------------------------------------- */
 
-export function userEnabledMeta(enabled?: boolean | null): StatusMeta {
+export function userEnabledMeta(
+  enabled: boolean | null | undefined,
+  t: TFunc,
+): StatusMeta {
   if (enabled === undefined || enabled === null) {
-    return { label: '未知', variant: 'neutral' };
+    return { label: t('status.unknown'), variant: 'neutral' };
   }
   return enabled
-    ? { label: '已启用', variant: 'success' }
-    : { label: '已禁用', variant: 'danger' };
+    ? { label: t('status.user.enabled'), variant: 'success' }
+    : { label: t('status.user.disabled'), variant: 'danger' };
 }
 
 /* 账号审批状态：自助注册的账号要先过这一关才能登录 */
-const USER_STATUS_MAP: Record<string, StatusMeta> = {
-  active: { label: '正常', variant: 'success' },
-  pending: { label: '待审批', variant: 'warning', pulse: true },
-  rejected: { label: '已拒绝', variant: 'danger' },
+const USER_STATUS_KEYS: Record<string, StatusTableEntry> = {
+  active: { key: 'status.user.active', variant: 'success' },
+  pending: { key: 'status.user.pending', variant: 'warning', pulse: true },
+  rejected: { key: 'status.user.rejected', variant: 'danger' },
 };
 
-export function userStatusMeta(status?: string | null): StatusMeta {
+export function userStatusMeta(
+  status: string | null | undefined,
+  t: TFunc,
+): StatusMeta {
   // 老接口不返回 status，按「正常」处理，避免无端冒出一个待审批标记
-  if (!status) return USER_STATUS_MAP.active;
-  return USER_STATUS_MAP[status] ?? { label: status, variant: 'neutral' };
+  return resolveStatus(USER_STATUS_KEYS, status ?? 'active', t);
 }
 
 /** 是否属于「还没通过审批」的账号（列表里需要高亮提示） */
@@ -176,39 +221,40 @@ export function isPendingApproval(status?: string | null): boolean {
    角色
    --------------------------------------------------------------------------- */
 
-const ROLE_MAP: Record<string, StatusMeta> = {
-  admin: { label: '管理员', variant: 'accent' },
+const ROLE_KEYS: Record<string, StatusTableEntry> = {
+  admin: { key: 'status.role.admin', variant: 'accent' },
   // 与后端 BUILTIN_ROLE_NAMES 保持一致（后端就叫「普通用户」），
   // 否则同一个角色在徽标里叫一个名、在别处叫另一个名。
-  operator: { label: '普通用户', variant: 'info' },
-  viewer: { label: '只读', variant: 'neutral' },
+  operator: { key: 'status.role.operator', variant: 'info' },
+  viewer: { key: 'status.role.viewer', variant: 'neutral' },
 };
 
-export function roleMeta(role?: string | null): StatusMeta {
-  if (!role) return { label: '未知', variant: 'neutral' };
-  return ROLE_MAP[role] ?? { label: role, variant: 'neutral' };
+export function roleMeta(role: string | null | undefined, t: TFunc): StatusMeta {
+  // 自定义角色名原样显示（它是用户自己起的名字，不该被翻译）
+  return resolveStatus(ROLE_KEYS, role, t);
 }
 
 /* ---------------------------------------------------------------------------
    网卡类型
    --------------------------------------------------------------------------- */
 
-const NET_TYPE_LABEL: Record<string, string> = {
-  bridge: 'Linux 网桥',
-  OVSBridge: 'OVS 网桥',
-  bond: '网卡绑定',
-  OVSBond: 'OVS 绑定',
-  eth: '物理网卡',
-  vlan: 'VLAN',
-  alias: '别名',
-  OVSPort: 'OVS 端口',
-  OVSIntPort: 'OVS 内部端口',
-  unknown: '未知',
+const NET_TYPE_KEYS: Record<string, MessageKey> = {
+  bridge: 'status.net.bridge',
+  OVSBridge: 'status.net.ovsBridge',
+  bond: 'status.net.bond',
+  OVSBond: 'status.net.ovsBond',
+  eth: 'status.net.eth',
+  vlan: 'status.net.vlan',
+  alias: 'status.net.alias',
+  OVSPort: 'status.net.ovsPort',
+  OVSIntPort: 'status.net.ovsIntPort',
+  unknown: 'status.unknown',
 };
 
-export function netTypeLabel(type?: string | null): string {
-  if (!type) return '未知';
-  return NET_TYPE_LABEL[type] ?? type;
+export function netTypeLabel(type: string | null | undefined, t: TFunc): string {
+  if (!type) return t('status.unknown');
+  const key = NET_TYPE_KEYS[type];
+  return key ? t(key) : type;
 }
 
 /** 桥接类网卡（可作为 VM 网桥使用）*/
@@ -225,52 +271,63 @@ export function isPhysicalType(type?: string | null): boolean {
    内容类型（存储）
    --------------------------------------------------------------------------- */
 
-const CONTENT_LABEL: Record<string, string> = {
-  images: 'VM 磁盘',
-  rootdir: '容器磁盘',
-  iso: 'ISO 镜像',
-  backup: '备份',
-  vztmpl: '容器模板',
-  snippets: '代码片段',
-  vm: 'VM 磁盘',
+const CONTENT_KEYS: Record<string, MessageKey> = {
+  images: 'status.content.images',
+  rootdir: 'status.content.rootdir',
+  iso: 'status.content.iso',
+  backup: 'status.content.backup',
+  vztmpl: 'status.content.vztmpl',
+  snippets: 'status.content.snippets',
+  vm: 'status.content.images',
 };
 
-export function contentLabel(content?: string | null): string {
+export function contentLabel(
+  content: string | null | undefined,
+  t: TFunc,
+): string {
   if (!content) return '—';
   const items = content.split(/[,;]/).map((c) => c.trim()).filter(Boolean);
-  return items.map((c) => CONTENT_LABEL[c] ?? c).join(' / ');
+  return items.map((c) => (CONTENT_KEYS[c] ? t(CONTENT_KEYS[c]) : c)).join(' / ');
 }
 
 /* ---------------------------------------------------------------------------
    OS 类型
    --------------------------------------------------------------------------- */
 
-export const OSTYPE_OPTIONS = [
-  { label: 'Linux 6.x / 5.x 内核', value: 'l26' },
-  { label: 'Linux 2.4 内核（旧）', value: 'l24' },
-  { label: 'Windows 11 / Server 2022', value: 'win11' },
-  { label: 'Windows 10 / Server 2016-2019', value: 'win10' },
-  { label: 'Windows 8 / Server 2012', value: 'win8' },
-  { label: 'Windows 7 / Server 2008', value: 'win7' },
-  { label: '其他', value: 'other' },
-] as const;
+/* 下面这些选项组的 label 要随语言变，所以做成接收 t 的工厂函数：
+   模块级常量拿不到当前语言，得由调用点把 t 传进来。 */
+export function ostypeOptions(t: TFunc) {
+  return [
+    { label: t('opt.osL26'), value: 'l26' },
+    { label: t('opt.osL24'), value: 'l24' },
+    { label: t('opt.osWin11'), value: 'win11' },
+    { label: t('opt.osWin10'), value: 'win10' },
+    { label: t('opt.osWin8'), value: 'win8' },
+    { label: t('opt.osWin7'), value: 'win7' },
+    { label: t('opt.osOther'), value: 'other' },
+  ];
+}
 
-const OSTYPE_LABEL: Record<string, string> = {
-  l26: 'Linux 6.x',
-  l24: 'Linux 2.4',
-  win11: 'Windows 11',
-  win10: 'Windows 10',
-  win8: 'Windows 8',
-  win7: 'Windows 7',
-  other: '其他',
-  w2k8: 'Windows 2008',
-  wxp: 'Windows XP',
-  solaris: 'Solaris',
+const OSTYPE_KEYS: Record<string, MessageKey> = {
+  l26: 'status.ostype.l26',
+  l24: 'status.ostype.l24',
+  win11: 'status.ostype.win11',
+  win10: 'status.ostype.win10',
+  win8: 'status.ostype.win8',
+  win7: 'status.ostype.win7',
+  other: 'status.ostype.other',
+  w2k8: 'status.ostype.w2k8',
+  wxp: 'status.ostype.wxp',
+  solaris: 'status.ostype.solaris',
 };
 
-export function ostypeLabel(ostype?: string | null): string {
+export function ostypeLabel(
+  ostype: string | null | undefined,
+  t: TFunc,
+): string {
   if (!ostype) return '—';
-  return OSTYPE_LABEL[ostype] ?? ostype;
+  const key = OSTYPE_KEYS[ostype];
+  return key ? t(key) : ostype;
 }
 
 /** PVE 的 Windows 系 ostype（与后端 vmconfig.VALID_OSTYPES 中的那批对齐） */
@@ -329,69 +386,89 @@ export const SCSIHW_OPTIONS = [
   { label: 'VMware PVSCSI', value: 'pvscsi' },
 ] as const;
 
-export const NET_MODEL_OPTIONS = [
-  { label: 'VirtIO (半虚拟化，最快)', value: 'virtio' },
-  { label: 'Intel E1000', value: 'e1000' },
-  { label: 'VMware vmxnet3', value: 'vmxnet3' },
-  { label: 'Realtek RTL8139', value: 'rtl8139' },
-] as const;
+export function netModelOptions(t: TFunc) {
+  return [
+    { label: t('opt.netVirtio'), value: 'virtio' },
+    { label: 'Intel E1000', value: 'e1000' },
+    { label: 'VMware vmxnet3', value: 'vmxnet3' },
+    { label: 'Realtek RTL8139', value: 'rtl8139' },
+  ];
+}
 
-export const BIOS_OPTIONS = [
-  { label: 'SeaBIOS (默认)', value: 'seabios' },
-  { label: 'OVMF (UEFI)', value: 'ovmf' },
-] as const;
+export function biosOptions(t: TFunc) {
+  return [
+    { label: t('opt.biosSeabios'), value: 'seabios' },
+    { label: t('opt.biosOvmf'), value: 'ovmf' },
+  ];
+}
 
-export const MACHINE_OPTIONS = [
-  { label: 'i440fx (默认)', value: 'pc' },
-  { label: 'q35 (PCIe，推荐 Win11)', value: 'q35' },
-] as const;
+export function machineOptions(t: TFunc) {
+  return [
+    { label: t('opt.machinePc'), value: 'pc' },
+    { label: t('opt.machineQ35'), value: 'q35' },
+  ];
+}
 
 /* 高级硬件：NUMA 绑定与 EFI/TPM（Windows 11 必需）。仅在有 hostnodes 时生效。 */
-export const NUMA_POLICY_OPTIONS = [
-  { label: 'bind（只在指定宿主节点上分配）', value: 'bind' },
-  { label: 'interleave（在宿主节点间轮转）', value: 'interleave' },
-  { label: 'preferred（优先指定节点，不足时回落）', value: 'preferred' },
-] as const;
+export function numaPolicyOptions(t: TFunc) {
+  return [
+    { label: t('opt.numaBind'), value: 'bind' },
+    { label: t('opt.numaInterleave'), value: 'interleave' },
+    { label: t('opt.numaPreferred'), value: 'preferred' },
+  ];
+}
 
-export const EFI_TYPE_OPTIONS = [
-  { label: '4m（支持预置安全启动密钥，Win11 用）', value: '4m' },
-  { label: '2m（旧格式，不支持预置密钥）', value: '2m' },
-] as const;
+export function efiTypeOptions(t: TFunc) {
+  return [
+    { label: t('opt.efi4m'), value: '4m' },
+    { label: t('opt.efi2m'), value: '2m' },
+  ];
+}
 
-export const TPM_VERSION_OPTIONS = [
-  { label: 'v2.0（Windows 11 要求）', value: 'v2.0' },
-  { label: 'v1.2（旧系统）', value: 'v1.2' },
-] as const;
+export function tpmVersionOptions(t: TFunc) {
+  return [
+    { label: t('opt.tpm2'), value: 'v2.0' },
+    { label: t('opt.tpm12'), value: 'v1.2' },
+  ];
+}
 
-export const CPU_TYPE_OPTIONS = [
-  { label: 'host (透传，性能最佳)', value: 'host' },
-  { label: 'kvm64 (兼容性最好)', value: 'kvm64' },
-  { label: 'x86-64-v2-AES', value: 'x86-64-v2-AES' },
-  { label: 'x86-64-v3', value: 'x86-64-v3' },
-  { label: 'Nehalem', value: 'Nehalem' },
-  { label: 'Westmere', value: 'Westmere' },
-  { label: 'SandyBridge', value: 'SandyBridge' },
-  { label: 'Haswell', value: 'Haswell' },
-  { label: 'Skylake-Client', value: 'Skylake-Client' },
-  { label: 'EPYC', value: 'EPYC' },
-] as const;
+export function cpuTypeOptions(t: TFunc) {
+  return [
+    { label: t('opt.cpuHost'), value: 'host' },
+    { label: t('opt.cpuKvm64'), value: 'kvm64' },
+    { label: 'x86-64-v2-AES', value: 'x86-64-v2-AES' },
+    { label: 'x86-64-v3', value: 'x86-64-v3' },
+    { label: 'Nehalem', value: 'Nehalem' },
+    { label: 'Westmere', value: 'Westmere' },
+    { label: 'SandyBridge', value: 'SandyBridge' },
+    { label: 'Haswell', value: 'Haswell' },
+    { label: 'Skylake-Client', value: 'Skylake-Client' },
+    { label: 'EPYC', value: 'EPYC' },
+  ];
+}
 
-export const BACKUP_MODE_OPTIONS = [
-  { label: 'Snapshot（不中断）', value: 'snapshot' },
-  { label: 'Suspend（短暂挂起）', value: 'suspend' },
-  { label: 'Stop（停止后备份）', value: 'stop' },
-] as const;
+export function backupModeOptions(t: TFunc) {
+  return [
+    { label: t('opt.backupSnapshot'), value: 'snapshot' },
+    { label: t('opt.backupSuspend'), value: 'suspend' },
+    { label: t('opt.backupStop'), value: 'stop' },
+  ];
+}
 
-export const COMPRESS_OPTIONS = [
-  { label: 'ZSTD (推荐)', value: 'zstd' },
-  { label: 'LZO', value: 'lzo' },
-  { label: 'GZIP', value: 'gzip' },
-  { label: '不压缩', value: '0' },
-] as const;
+export function compressOptions(t: TFunc) {
+  return [
+    { label: t('opt.compressZstd'), value: 'zstd' },
+    { label: 'LZO', value: 'lzo' },
+    { label: 'GZIP', value: 'gzip' },
+    { label: t('opt.compressNone'), value: '0' },
+  ];
+}
 
-export const TIMEFRAME_OPTIONS = [
-  { label: '最近 1 小时', value: 'hour' },
-  { label: '最近 1 天', value: 'day' },
-  { label: '最近 1 周', value: 'week' },
-  { label: '最近 1 月', value: 'month' },
-] as const;
+export function timeframeOptions(t: TFunc) {
+  return [
+    { label: t('opt.tfHour'), value: 'hour' },
+    { label: t('opt.tfDay'), value: 'day' },
+    { label: t('opt.tfWeek'), value: 'week' },
+    { label: t('opt.tfMonth'), value: 'month' },
+  ];
+}

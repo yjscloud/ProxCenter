@@ -36,6 +36,8 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, Iterable, Optional, Set, Tuple
 
+from . import i18n
+
 logger = logging.getLogger(__name__)
 
 # 缓存有效期（秒）。比前端 staleTime 短，理由见模块说明第 2 条。
@@ -51,22 +53,28 @@ _tasks: Set[asyncio.Task] = set()
 def scope_key(
     namespace: str,
     host_ids: Optional[Iterable[str]],
-) -> Tuple[str, Optional[FrozenSet[str]]]:
-    """把「哪个功能 + 可见主机集合」归一成可哈希的缓存 key。
+) -> Tuple[str, Optional[FrozenSet[str]], str]:
+    """把「哪个功能 + 可见主机集合 + 请求语言」归一成可哈希的缓存 key。
 
-    两点都不能省：
+    三点都不能省：
 
     * ``namespace``（``"ports"`` / ``"baseline"``）—— 两个功能共用这一份缓存，
       键里不带功能名就会互相串号：端口的总览落进基线的键里，基线取
       ``totals['fail']`` 直接 KeyError，反过来则是把端口数据当体检结果显示出来。
     * ``None``（管理员不限）与空集合（一个都不可见）必须区分：混起来就是越权。
+    * 请求语言：报告里的检查项名称 / 结论 / 加固建议都是**在出口按当前语言**
+      渲染好的字符串（见 :func:`app.baseline._check`）。不分语言的话，第一个
+      用户渲染出的报告会原样发给下一个用另一种语言打开页面的人 —— 表现为
+      「框架切了英文，检查项还是中文」，而且刷新也修不好（要等 TTL 过期）。
+      分开只是让每份报告各存一份，TTL 只有 2 分钟，代价可以忽略。
     """
+    lang = i18n.current_language()
     if host_ids is None:
-        return (namespace, None)
-    return (namespace, frozenset(str(item) for item in host_ids))
+        return (namespace, None, lang)
+    return (namespace, frozenset(str(item) for item in host_ids), lang)
 
 
-ScopeKey = Tuple[str, Optional[FrozenSet[str]]]
+ScopeKey = Tuple[str, Optional[FrozenSet[str]], str]
 
 
 def peek(key: ScopeKey) -> Optional[Any]:

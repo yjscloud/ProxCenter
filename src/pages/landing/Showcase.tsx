@@ -22,16 +22,38 @@ import {
   IconStop,
   IconVm,
 } from '../../components/Icons';
+import { useT, type MessageKey } from '../../i18n';
 import { SectionHead } from './Common';
 
-const TABS: { id: string; label: string; hint: string; icon: ReactNode }[] = [
-  { id: 'dashboard', label: '集群仪表盘', hint: '态势与容量', icon: <IconDashboard size={15} /> },
-  { id: 'guest', label: '虚拟机详情', hint: '电源与配置', icon: <IconVm size={15} /> },
-  { id: 'firewall', label: '防火墙规则', hint: '三级作用域', icon: <IconShield size={15} /> },
-  { id: 'baseline', label: '安全基线', hint: '评分与加固', icon: <IconCheck size={15} /> },
+const TABS: { id: string; labelKey: MessageKey; hintKey: MessageKey; icon: ReactNode }[] = [
+  {
+    id: 'dashboard',
+    labelKey: 'landing.showcase.tabDashboard',
+    hintKey: 'landing.showcase.tabDashboardHint',
+    icon: <IconDashboard size={15} />,
+  },
+  {
+    id: 'guest',
+    labelKey: 'landing.showcase.tabGuest',
+    hintKey: 'landing.showcase.tabGuestHint',
+    icon: <IconVm size={15} />,
+  },
+  {
+    id: 'firewall',
+    labelKey: 'landing.showcase.tabFirewall',
+    hintKey: 'landing.showcase.tabFirewallHint',
+    icon: <IconShield size={15} />,
+  },
+  {
+    id: 'baseline',
+    labelKey: 'landing.showcase.tabBaseline',
+    hintKey: 'landing.showcase.tabBaselineHint',
+    icon: <IconCheck size={15} />,
+  },
 ];
 
 export function Showcase() {
+  const t = useT();
   const [active, setActive] = useState(TABS[0].id);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -87,15 +109,15 @@ export function Showcase() {
         <SectionHead
           index="02"
           eyebrow="Console"
-          title="界面长这样"
-          desc="四块最常用的界面 —— 切换看看它把哪些信息摆在明面上。以下均为示意，不包含任何真实集群数据。"
+          title={t('landing.showcase.title')}
+          desc={t('landing.showcase.desc')}
         />
 
         <div className="lp-showcase lp-reveal">
           <div
             className="lp-tabs"
             role="tablist"
-            aria-label="控制台界面预览"
+            aria-label={t('landing.showcase.aria')}
             onKeyDown={onKeyDown}
           >
             {TABS.map((tab) => {
@@ -117,8 +139,8 @@ export function Showcase() {
                 >
                   <span className="lp-tab-icon">{tab.icon}</span>
                   <span className="lp-tab-text">
-                    <span className="lp-tab-label">{tab.label}</span>
-                    <span className="lp-tab-hint">{tab.hint}</span>
+                    <span className="lp-tab-label">{t(tab.labelKey)}</span>
+                    <span className="lp-tab-hint">{t(tab.hintKey)}</span>
                   </span>
                 </button>
               );
@@ -161,27 +183,28 @@ const CAPACITY_BARS = [
 ];
 
 function PreviewDashboard() {
+  const t = useT();
   return (
     <div className="lp-pv">
       <div className="lp-pv-kpis">
         <div className="lp-pv-kpi">
-          <span className="lp-pv-kpi-label">集群节点</span>
-          <span className="lp-pv-kpi-value">3 / 3 在线</span>
+          <span className="lp-pv-kpi-label">{t('landing.showcase.nodesLabel')}</span>
+          <span className="lp-pv-kpi-value">{t('landing.showcase.nodesValue')}</span>
         </div>
         <div className="lp-pv-kpi">
-          <span className="lp-pv-kpi-label">CPU 使用率</span>
+          <span className="lp-pv-kpi-label">{t('landing.showcase.cpuLabel')}</span>
           <span className="lp-pv-kpi-value is-blue">42.6%</span>
         </div>
         <div className="lp-pv-kpi">
-          <span className="lp-pv-kpi-label">内存使用率</span>
+          <span className="lp-pv-kpi-label">{t('landing.showcase.memLabel')}</span>
           <span className="lp-pv-kpi-value is-cyan">61.2%</span>
         </div>
       </div>
 
       <div className="lp-pv-block">
         <div className="lp-pv-block-head">
-          <span>根分区写满预测</span>
-          <span className="lp-pv-chip">按日增长率 +0.9%</span>
+          <span>{t('landing.showcase.forecastTitle')}</span>
+          <span className="lp-pv-chip">{t('landing.showcase.forecastChip')}</span>
         </div>
         <div className="lp-pv-bars">
           {CAPACITY_BARS.map((bar) => (
@@ -191,13 +214,13 @@ function PreviewDashboard() {
             </div>
           ))}
         </div>
-        <div className="lp-pv-note">按当前趋势，约 38 天后写满 · 建议提前扩容</div>
+        <div className="lp-pv-note">{t('landing.showcase.forecastNote')}</div>
       </div>
 
       <div className="lp-pv-block">
         <div className="lp-pv-block-head">
-          <span>资源占用排行</span>
-          <span className="lp-pv-chip">内存 Top 3</span>
+          <span>{t('landing.showcase.topTitle')}</span>
+          <span className="lp-pv-chip">{t('landing.showcase.topChip')}</span>
         </div>
         <div className="lp-pv-rows">
           {[
@@ -225,31 +248,32 @@ function PreviewDashboard() {
    --------------------------------------------------------------------------- */
 
 function PreviewGuest() {
+  const t = useT();
   return (
     <div className="lp-pv">
       <div className="lp-pv-guest-head">
         <div>
           <div className="lp-pv-guest-title">
             web-01
-            <span className="lp-pv-tag is-on">运行中</span>
+            <span className="lp-pv-tag is-on">{t('landing.showcase.running')}</span>
           </div>
-          <div className="lp-pv-guest-sub">VM 100 · node-01 · Ubuntu 24.04 · 4 核 / 8 GB</div>
+          <div className="lp-pv-guest-sub">{t('landing.showcase.guestSub')}</div>
         </div>
         <div className="lp-pv-power">
           <span className="lp-pv-power-btn is-primary">
-            <IconPlay size={12} /> 开机
+            <IconPlay size={12} /> {t('landing.showcase.powerOn')}
           </span>
           <span className="lp-pv-power-btn">
-            <IconPower size={12} /> 关机
+            <IconPower size={12} /> {t('landing.showcase.powerOff')}
           </span>
           <span className="lp-pv-power-btn">
-            <IconRefresh size={12} /> 重启
+            <IconRefresh size={12} /> {t('landing.showcase.reboot')}
           </span>
           <span className="lp-pv-power-btn">
-            <IconStop size={12} /> 停止
+            <IconStop size={12} /> {t('landing.showcase.stop')}
           </span>
           <span className="lp-pv-power-btn">
-            <IconPause size={12} /> 挂起
+            <IconPause size={12} /> {t('landing.showcase.suspend')}
           </span>
         </div>
       </div>
@@ -257,8 +281,8 @@ function PreviewGuest() {
       <div className="lp-pv-gauges">
         {[
           { label: 'CPU', v: 34 },
-          { label: '内存', v: 58 },
-          { label: '磁盘', v: 47 },
+          { label: t('landing.showcase.gaugeMemory'), v: 58 },
+          { label: t('landing.showcase.gaugeDisk'), v: 47 },
         ].map((gauge) => (
           <div className="lp-pv-gauge" key={gauge.label}>
             <div className="lp-pv-gauge-top">
@@ -274,14 +298,14 @@ function PreviewGuest() {
 
       <div className="lp-pv-table">
         <div className="lp-pv-tr is-head">
-          <span>设备</span>
-          <span>存储 / 网桥</span>
-          <span>容量</span>
+          <span>{t('landing.showcase.colDevice')}</span>
+          <span>{t('landing.showcase.colTarget')}</span>
+          <span>{t('landing.showcase.colSize')}</span>
         </div>
         {[
           { dev: 'scsi0', target: 'local-lvm', size: '32 GiB' },
-          { dev: 'net0', target: 'vmbr0 · VLAN 20', size: '静态 IP' },
-          { dev: 'cloudinit', target: 'ide2', size: '已注入' },
+          { dev: 'net0', target: 'vmbr0 · VLAN 20', size: t('landing.showcase.sizeStaticIp') },
+          { dev: 'cloudinit', target: 'ide2', size: t('landing.showcase.sizeInjected') },
         ].map((row) => (
           <div className="lp-pv-tr" key={row.dev}>
             <span className="lp-pv-mono">{row.dev}</span>
@@ -298,45 +322,47 @@ function PreviewGuest() {
    预览 3：防火墙规则
    --------------------------------------------------------------------------- */
 
+/** `any` 只是哨兵值：真要显示的「所有」随语言变，判断在渲染处 */
 const FIREWALL_RULES = [
   { act: 'ACCEPT', proto: 'tcp', port: '22', from: '10.0.0.0/8', on: true },
-  { act: 'ACCEPT', proto: 'tcp', port: '80,443', from: '所有', on: true },
-  { act: 'DROP', proto: 'tcp', port: '3306', from: '所有', on: true },
+  { act: 'ACCEPT', proto: 'tcp', port: '80,443', from: 'any', on: true },
+  { act: 'DROP', proto: 'tcp', port: '3306', from: 'any', on: true },
   { act: 'REJECT', proto: 'udp', port: '137:139', from: '+legacy', on: false },
 ];
 
 function PreviewFirewall() {
+  const t = useT();
   return (
     <div className="lp-pv">
       <div className="lp-pv-scope">
-        <span className="lp-pv-scope-item">集群</span>
-        <span className="lp-pv-scope-item is-active">虚拟机 web-01</span>
-        <span className="lp-pv-scope-item">节点 node-01</span>
-        <span className="lp-pv-scope-hint">默认策略：入站 DROP · 出站 ACCEPT</span>
+        <span className="lp-pv-scope-item">{t('landing.showcase.scopeCluster')}</span>
+        <span className="lp-pv-scope-item is-active">{t('landing.showcase.scopeVm')}</span>
+        <span className="lp-pv-scope-item">{t('landing.showcase.scopeNode')}</span>
+        <span className="lp-pv-scope-hint">{t('landing.showcase.scopeHint')}</span>
       </div>
 
       <div className="lp-pv-table">
         <div className="lp-pv-tr is-head is-5">
-          <span>动作</span>
-          <span>协议</span>
-          <span>端口</span>
-          <span>来源</span>
-          <span>启用</span>
+          <span>{t('landing.showcase.colAction')}</span>
+          <span>{t('landing.showcase.colProto')}</span>
+          <span>{t('landing.showcase.colPort')}</span>
+          <span>{t('landing.showcase.colFrom')}</span>
+          <span>{t('landing.showcase.colEnabled')}</span>
         </div>
         {FIREWALL_RULES.map((rule) => (
           <div className="lp-pv-tr is-5" key={rule.port}>
             <span className={`lp-pv-act is-${rule.act.toLowerCase()}`}>{rule.act}</span>
             <span className="lp-pv-mono">{rule.proto}</span>
             <span className="lp-pv-mono">{rule.port}</span>
-            <span className="lp-pv-muted">{rule.from}</span>
+            <span className="lp-pv-muted">
+              {rule.from === 'any' ? t('landing.showcase.fromAny') : rule.from}
+            </span>
             <span className={`lp-pv-switch${rule.on ? ' is-on' : ''}`} />
           </div>
         ))}
       </div>
 
-      <div className="lp-pv-note">
-        规则顺序即优先级，改动先「待应用」，确认后统一下发到 Proxmox 原生防火墙
-      </div>
+      <div className="lp-pv-note">{t('landing.showcase.firewallNote')}</div>
     </div>
   );
 }
@@ -345,14 +371,32 @@ function PreviewFirewall() {
    预览 4：安全基线
    --------------------------------------------------------------------------- */
 
-const BASELINE_ROWS = [
-  { name: 'SSH 禁止 root 直接登录', level: '高危', ok: false },
-  { name: '关闭 SSH 空口令登录', level: '高危', ok: true },
-  { name: '时间同步已启用', level: '低危', ok: true },
-  { name: '内核 ASLR 已开启', level: '中危', ok: true },
+/** 与「重点能力」区的基线示意共用同一组词条：展示的是同一条检查项，没必要建两份 */
+const BASELINE_ROWS: { nameKey: MessageKey; levelKey: MessageKey; ok: boolean }[] = [
+  {
+    nameKey: 'landing.highlights.baseline.checkRoot',
+    levelKey: 'landing.highlights.levelHigh',
+    ok: false,
+  },
+  {
+    nameKey: 'landing.highlights.baseline.checkEmptyPw',
+    levelKey: 'landing.highlights.levelHigh',
+    ok: true,
+  },
+  {
+    nameKey: 'landing.highlights.baseline.checkTime',
+    levelKey: 'landing.highlights.levelLow',
+    ok: true,
+  },
+  {
+    nameKey: 'landing.highlights.baseline.checkAslr',
+    levelKey: 'landing.highlights.levelMedium',
+    ok: true,
+  },
 ];
 
 function PreviewBaseline() {
+  const t = useT();
   return (
     <div className="lp-pv">
       <div className="lp-pv-score">
@@ -375,30 +419,32 @@ function PreviewBaseline() {
           <span className="lp-ring-num">86</span>
         </div>
         <div className="lp-pv-score-text">
-          <div className="lp-pv-score-title">安全基线评分 A</div>
-          <div className="lp-pv-score-sub">3 台服务器受检 · 1 项不合格 · 1 项待改进</div>
+          <div className="lp-pv-score-title">{t('landing.highlights.baseline.score')}</div>
+          <div className="lp-pv-score-sub">{t('landing.highlights.baseline.scoreSub')}</div>
           <div className="lp-pv-score-tags">
-            <span className="lp-pv-chip is-green">可一键加固 1 项</span>
-            <span className="lp-pv-chip">需逐项确认 1 项</span>
+            <span className="lp-pv-chip is-green">
+              {t('landing.highlights.baseline.chipFix')}
+            </span>
+            <span className="lp-pv-chip">{t('landing.highlights.baseline.chipReview')}</span>
           </div>
         </div>
       </div>
 
       <div className="lp-pv-rows">
         {BASELINE_ROWS.map((row) => (
-          <div className="lp-pv-check" key={row.name}>
+          <div className="lp-pv-check" key={row.nameKey}>
             <span className={`lp-pv-check-icon${row.ok ? ' is-ok' : ' is-bad'}`}>
               {row.ok ? <IconCheck size={11} /> : <IconAlert size={11} />}
             </span>
-            <span className="lp-pv-check-name">{row.name}</span>
-            <span className={`lp-pv-level is-${row.ok ? 'ok' : 'bad'}`}>{row.level}</span>
+            <span className="lp-pv-check-name">{t(row.nameKey)}</span>
+            <span className={`lp-pv-level is-${row.ok ? 'ok' : 'bad'}`}>
+              {t(row.levelKey)}
+            </span>
           </div>
         ))}
       </div>
 
-      <div className="lp-pv-note">
-        改 SSH / sysctl 前先备份，改完立即校验，校验不过自动回滚
-      </div>
+      <div className="lp-pv-note">{t('landing.showcase.baselineNote')}</div>
     </div>
   );
 }

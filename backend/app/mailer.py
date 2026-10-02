@@ -27,7 +27,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import crypto, store
+from . import crypto, i18n, store
 
 logger = logging.getLogger(__name__)
 
@@ -484,31 +484,53 @@ def registration_mail(
 def approval_mail(
     username: str, role_label: str, panel_url: str
 ) -> Tuple[str, str, str]:
-    """审批通过后通知注册用户。"""
-    subject = "[已通过] 你的面板账号已开通"
+    """审批通过后通知注册用户。
+
+    语言：由调用方用 ``i18n.use_language(收件人语言)`` 设定 —— 收件人是被审批
+    的那个用户，其语言存在 user_prefs 里，与管理员当前界面语言无关。
+    """
+    subject = i18n.pick(
+        "[已通过] 你的面板账号已开通", "[Approved] Your panel account is ready"
+    )
     lines = [
-        f"账号 {username} 的注册申请已通过审批。",
-        f"分配角色：{role_label}",
+        i18n.pick(
+            f"账号 {username} 的注册申请已通过审批。",
+            f"The registration request for account {username} has been approved.",
+        ),
+        i18n.pick(f"分配角色：{role_label}", f"Assigned role: {role_label}"),
         "",
-        "现在可以用注册时设置的密码登录面板。",
+        i18n.pick(
+            "现在可以用注册时设置的密码登录面板。",
+            "You can now sign in to the panel with the password you set when registering.",
+        ),
         panel_url,
     ]
     return subject, "\n".join(lines), wrap_html(
-        "账号已开通", lines[:-1], panel_url
+        i18n.pick("账号已开通", "Account activated"), lines[:-1], panel_url
     )
 
 
 def rejection_mail(username: str, reason: str, panel_url: str) -> Tuple[str, str, str]:
-    """审批拒绝后通知注册用户。"""
-    subject = "[未通过] 你的面板账号申请未通过"
+    """审批拒绝后通知注册用户（语言由调用方设定，见 approval_mail）。"""
+    subject = i18n.pick(
+        "[未通过] 你的面板账号申请未通过",
+        "[Not approved] Your panel account request was declined",
+    )
     lines = [
-        f"账号 {username} 的注册申请未通过审批。",
+        i18n.pick(
+            f"账号 {username} 的注册申请未通过审批。",
+            f"The registration request for account {username} was not approved.",
+        ),
     ]
     if reason:
-        lines.append(f"说明：{reason}")
-    lines += ["", "如有疑问请联系管理员。", panel_url]
+        lines.append(i18n.pick(f"说明：{reason}", f"Reason: {reason}"))
+    lines += [
+        "",
+        i18n.pick("如有疑问请联系管理员。", "Contact an administrator if you have questions."),
+        panel_url,
+    ]
     return subject, "\n".join(lines), wrap_html(
-        "注册申请未通过", lines[:-1], panel_url
+        i18n.pick("注册申请未通过", "Registration declined"), lines[:-1], panel_url
     )
 
 
@@ -517,37 +539,56 @@ def password_reset_mail(username: str, reset_url: str) -> Tuple[str, str, str]:
 
     正文刻意不出现用户名以外的信息，并明确写清「不是本人操作就忽略」——
     密码重置邮件本身就是社工钓鱼的重灾区，收件人需要一眼判断是否是自己触发的。
+
+    语言：由调用方用 ``i18n.use_language(收件人语言)`` 设定。
     """
-    subject = "[密码重置] 你的面板账号重置链接"
+    subject = i18n.pick(
+        "[密码重置] 你的面板账号重置链接",
+        "[Password reset] Reset link for your panel account",
+    )
     lines = [
-        f"账号 {username} 收到了一次密码重置请求。",
+        i18n.pick(
+            f"账号 {username} 收到了一次密码重置请求。",
+            f"A password reset was requested for account {username}.",
+        ),
         "",
-        "请在 30 分钟内打开下面的链接设置新密码（链接只能用一次）：",
+        i18n.pick(
+            "请在 30 分钟内打开下面的链接设置新密码（链接只能用一次）：",
+            "Open the link below within 30 minutes to set a new password (the link can be used once):",
+        ),
         reset_url,
         "",
-        "如果不是你本人操作，忽略这封邮件即可 —— 密码不会被改动。",
+        i18n.pick(
+            "如果不是你本人操作，忽略这封邮件即可 —— 密码不会被改动。",
+            "If you did not request this, simply ignore this email — your password stays unchanged.",
+        ),
     ]
     html = (
         f"<div style='{_HTML_BASE_STYLE}'>"
         "<h2 style='margin:0 0 12px;font-size:18px;line-height:1.4'>"
-        "重置你的面板密码</h2>"
-        f"<p style='margin:6px 0'>账号 <b>{username}</b> 收到了一次密码重置请求。</p>"
-        "<p style='margin:6px 0'>请在 30 分钟内点击下面的按钮设置新密码"
-        "（链接只能用一次）：</p>"
+        f"{i18n.pick('重置你的面板密码', 'Reset your panel password')}</h2>"
+        f"<p style='margin:6px 0'>"
+        f"{i18n.pick(f'账号 <b>{username}</b> 收到了一次密码重置请求。', f'A password reset was requested for account <b>{username}</b>.')}"
+        "</p>"
+        f"<p style='margin:6px 0'>"
+        f"{i18n.pick('请在 30 分钟内点击下面的按钮设置新密码（链接只能用一次）：', 'Click the button below within 30 minutes to set a new password (the link can be used once):')}"
+        "</p>"
         # 纯文字链接在手机上只有十几像素高的点击区，很容易点不中；
         # 改成有底色的块级按钮，高度约 45px，拇指够得着。
         f"<p style='margin:18px 0'><a href='{reset_url}'"
         " style='display:inline-block;padding:12px 22px;background:#2563eb;"
         "color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;"
-        "border-radius:8px'>设置新密码</a></p>"
+        f"border-radius:8px'>{i18n.pick('设置新密码', 'Set new password')}</a></p>"
         # 按钮点不开时（被客户端拦掉、或在预览里点不了）还有一个可复制的
         # 地址，所以这行不是冗余 —— 重置链接是这条邮件的全部价值所在。
         "<p style='margin:0;color:#8a8f99;font-size:12px'>"
-        "按钮打不开时，把下面的地址复制到浏览器：</p>"
+        f"{i18n.pick('按钮打不开时，把下面的地址复制到浏览器：', 'If the button does not work, copy the address below into your browser:')}"
+        "</p>"
         "<p style='margin:4px 0 0;color:#8a8f99;font-size:12px;"
         f"overflow-wrap:anywhere'>{reset_url}</p>"
         "<p style='margin:18px 0 0;color:#8a8f99;font-size:12px'>"
-        "如果不是你本人操作，忽略这封邮件即可，密码不会被改动。</p>"
+        f"{i18n.pick('如果不是你本人操作，忽略这封邮件即可，密码不会被改动。', 'If you did not request this, ignore this email — your password stays unchanged.')}"
+        "</p>"
         "</div>"
     )
     return subject, "\n".join(lines), html

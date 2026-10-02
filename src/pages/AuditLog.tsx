@@ -28,7 +28,8 @@ import {
   IconDownload,
 } from '../components/Icons';
 import { formatDateTime, formatRelative } from '../utils/format';
-import { auditResultMeta } from '../utils/status';
+import { auditResultMeta } from '../utils/status'
+import { useT, type MessageKey, type TFunc } from '../i18n';
 import { useToast } from '../hooks/useToast';
 import type { AuditEntry } from '../api/types';
 
@@ -39,45 +40,46 @@ import type { AuditEntry } from '../api/types';
 /* 取值必须与后端落库的 result 一致（security.audit 的调用点写的是
    success / failed / partial / denied / accepted）。原先写的是 failure，
    后端既没有这个值、pattern 也不放行，一选「失败」直接 422。 */
-const RESULT_FILTERS = [
-  { label: '全部结果', value: '' },
-  { label: '成功', value: 'success' },
-  { label: '失败', value: 'failed' },
-  { label: '拒绝', value: 'denied' },
-  { label: '部分完成', value: 'partial' },
-] as const;
+const RESULT_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
+  { label: 'audit.resultAll', value: '' },
+  { label: 'status.audit.success', value: 'success' },
+  { label: 'status.audit.failed', value: 'failed' },
+  { label: 'status.audit.denied', value: 'denied' },
+  { label: 'audit.resultPartial', value: 'partial' },
+];
 
 const PAGE_SIZES = [20, 50, 100] as const;
 
 /** 常用动作前缀（后端 action 命名约定）*/
-const ACTION_FILTERS = [
-  { label: '全部动作', value: '' },
-  { label: '登录 / 登出', value: 'auth' },
-  { label: '电源操作', value: 'power' },
-  { label: '创建 / 克隆', value: 'create' },
-  { label: '修改配置', value: 'config' },
-  { label: '删除', value: 'delete' },
-  { label: '快照', value: 'snapshot' },
-  { label: '备份', value: 'backup' },
-  { label: '迁移', value: 'migrate' },
-  { label: '用户管理', value: 'user' },
-  { label: '网络配置', value: 'network' },
-] as const;
+const ACTION_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
+  { label: 'audit.actionAll', value: '' },
+  { label: 'audit.actionAuth', value: 'auth' },
+  { label: 'audit.actionPower', value: 'power' },
+  { label: 'audit.actionCreate', value: 'create' },
+  { label: 'audit.actionConfig', value: 'config' },
+  { label: 'audit.actionDelete', value: 'delete' },
+  { label: 'audit.actionSnapshot', value: 'snapshot' },
+  { label: 'audit.actionBackup', value: 'backup' },
+  { label: 'audit.actionMigrate', value: 'migrate' },
+  { label: 'audit.actionUser', value: 'user' },
+  { label: 'audit.actionNetwork', value: 'network' },
+];
 
 /** 时间范围快捷选项（小时）*/
-const RANGE_OPTIONS = [
-  { label: '全部时间', value: '' },
-  { label: '最近 1 小时', value: '1' },
-  { label: '最近 24 小时', value: '24' },
-  { label: '最近 7 天', value: '168' },
-  { label: '最近 30 天', value: '720' },
-] as const;
+const RANGE_OPTIONS: ReadonlyArray<{ label: MessageKey; value: string }> = [
+  { label: 'audit.rangeAll', value: '' },
+  { label: 'audit.range1h', value: '1' },
+  { label: 'audit.range24h', value: '24' },
+  { label: 'audit.range7d', value: '168' },
+  { label: 'audit.range30d', value: '720' },
+];
 
 /* ---------------------------------------------------------------------------
    页面
    --------------------------------------------------------------------------- */
 
 export function AuditLog() {
+  const t = useT();
   const toast = useToast();
 
   const [username, setUsername] = useState('');
@@ -178,10 +180,18 @@ export function AuditLog() {
   const exportCsv = () => {
     const list = auditQuery.data?.items ?? [];
     if (list.length === 0) {
-      toast.warning('没有可导出的记录');
+      toast.warning(t('audit.noRecordsToExport'));
       return;
     }
-    const header = ['时间', '用户', '动作', '目标', '结果', 'IP', '详情'];
+    const header = [
+      t('audit.csv.time'),
+      t('audit.csv.user'),
+      t('audit.csv.action'),
+      t('audit.csv.target'),
+      t('audit.csv.result'),
+      t('audit.csv.ip'),
+      t('audit.csv.detail'),
+    ];
     const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const rows = list.map((e) =>
       [
@@ -204,7 +214,7 @@ export function AuditLog() {
     a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success(`已导出当前页 ${list.length} 条记录`);
+    toast.success(t('audit.exported', { n: list.length }));
   };
 
   /* ---- 导出全部（服务端流式导出，覆盖全量、带上当前筛选条件） ----
@@ -246,7 +256,7 @@ export function AuditLog() {
     },
     {
       key: 'timestamp',
-      header: '时间',
+      header: t('audit.colTime'),
       width: 180,
       render: (e) => (
         <div className="vm-name-cell">
@@ -259,7 +269,7 @@ export function AuditLog() {
     },
     {
       key: 'username',
-      header: '操作者',
+      header: t('audit.colUser'),
       width: 140,
       render: (e) => (
         <div className="vm-name-cell">
@@ -272,11 +282,11 @@ export function AuditLog() {
     },
     {
       key: 'action',
-      header: '动作',
+      header: t('audit.colAction'),
       width: 160,
       render: (e) => (
         <Badge variant="neutral" size="sm">
-          {actionLabel(e.action)}
+          {actionLabel(e.action, t)}
         </Badge>
       ),
       sortable: true,
@@ -284,7 +294,7 @@ export function AuditLog() {
     },
     {
       key: 'target',
-      header: '操作对象',
+      header: t('audit.colTarget'),
       render: (e) => (
         <span className="mono fs-sm truncate" title={e.target}>
           {e.target || '—'}
@@ -293,11 +303,11 @@ export function AuditLog() {
     },
     {
       key: 'result',
-      header: '结果',
+      header: t('audit.colResult'),
       width: 100,
       align: 'center',
       render: (e) => {
-        const meta = auditResultMeta(e.result);
+        const meta = auditResultMeta(e.result, t);
         return (
           <Badge variant={meta.variant} dot size="sm">
             {meta.label}
@@ -314,10 +324,10 @@ export function AuditLog() {
       title={
         <>
           <IconAudit size={20} />
-          审计日志
+          {t('audit.title')}
         </>
       }
-      subtitle="记录所有经面板发起的操作，用于安全审计与故障回溯"
+      subtitle={t('audit.subtitle')}
       actions={
         <>
           <Button
@@ -326,16 +336,16 @@ export function AuditLog() {
             onClick={exportCsv}
             disabled={items.length === 0}
           >
-            导出当前页
+            {t('audit.exportPage')}
           </Button>
           <Button
             variant="secondary"
             icon={<IconDownload size={15} />}
             onClick={exportAll}
             disabled={total === 0}
-            title="按当前筛选条件导出全部记录（不受分页限制）"
+            title={t('audit.exportAllTitle')}
           >
-            导出全部
+            {t('audit.exportAll')}
           </Button>
           <Button
             variant="secondary"
@@ -343,7 +353,7 @@ export function AuditLog() {
             onClick={() => void auditQuery.refetch()}
             loading={auditQuery.isFetching && !auditQuery.isLoading}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
         </>
       }
@@ -351,28 +361,28 @@ export function AuditLog() {
       {/* 统计 */}
       <div className="grid grid-4">
         <KpiCard
-          label="记录总数"
+          label={t('audit.kpi.total')}
           value={total}
           icon={<IconAudit size={18} />}
           tone="accent"
           loading={auditQuery.isLoading}
         />
         <KpiCard
-          label="当前页成功"
+          label={t('audit.kpi.pageSuccess')}
           value={pageStats.success}
           icon={<IconCheck size={18} />}
           tone="success"
           loading={auditQuery.isLoading}
         />
         <KpiCard
-          label="当前页失败"
+          label={t('audit.kpi.pageFailed')}
           value={pageStats.failure}
           icon={<IconAlert size={18} />}
           tone={pageStats.failure > 0 ? 'danger' : 'neutral'}
           loading={auditQuery.isLoading}
         />
         <KpiCard
-          label="每页条数"
+          label={t('audit.kpi.pageSize')}
           value={pageSize}
           icon={<IconFilter size={18} />}
           tone="neutral"
@@ -382,56 +392,56 @@ export function AuditLog() {
       {/* 筛选区 */}
       <Card>
         <CardHeader
-          title="筛选条件"
-          subtitle="所有条件为「与」关系，修改后自动回到第一页"
+          title={t('audit.filtersTitle')}
+          subtitle={t('audit.filtersSubtitle')}
           icon={<IconFilter size={17} />}
           actions={
             hasFilters ? (
               <Button variant="ghost" size="sm" onClick={resetFilters}>
-                清除筛选
+                {t('audit.clearFilters')}
               </Button>
             ) : undefined
           }
         />
         <div className="dyn-list">
           <div className="dyn-row">
-            <Field label="操作者">
+            <Field label={t('audit.fieldUser')}>
               <Input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="用户名，例如 admin"
+                placeholder={t('audit.usernamePlaceholder')}
                 prefix={<IconUser size={15} />}
               />
             </Field>
 
-            <Field label="动作类型">
+            <Field label={t('audit.fieldAction')}>
               <Select
                 value={action}
                 onChange={(e) => setAction(e.target.value)}
                 options={ACTION_FILTERS.map((a) => ({
-                  label: a.label,
+                  label: t(a.label),
                   value: a.value,
                 }))}
               />
             </Field>
 
-            <Field label="执行结果">
+            <Field label={t('audit.fieldResult')}>
               <Select
                 value={result}
                 onChange={(e) => setResult(e.target.value)}
                 options={RESULT_FILTERS.map((r) => ({
-                  label: r.label,
+                  label: t(r.label),
                   value: r.value,
                 }))}
               />
             </Field>
 
-            <Field label="时间范围">
+            <Field label={t('audit.fieldRange')}>
               <Select
                 value={range}
                 onChange={(e) => setRange(e.target.value)}
                 options={RANGE_OPTIONS.map((r) => ({
-                  label: r.label,
+                  label: t(r.label),
                   value: r.value,
                 }))}
               />
@@ -440,13 +450,13 @@ export function AuditLog() {
 
           <div className="dyn-row">
             <Field
-              label="本页关键词过滤"
-              hint="仅在当前已加载的这一页内做文本匹配，不触发新请求"
+              label={t('audit.fieldKeyword')}
+              hint={t('audit.keywordHint')}
             >
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索动作、对象、详情…"
+                placeholder={t('audit.searchPlaceholder')}
                 prefix={<IconSearch size={15} />}
               />
             </Field>
@@ -455,7 +465,7 @@ export function AuditLog() {
 
         {timeWindow.start && timeWindow.end ? (
           <Notice tone="info">
-            查询区间：<span className="mono">{formatDateTime(timeWindow.start)}</span>
+            {t('audit.window')}<span className="mono">{formatDateTime(timeWindow.start)}</span>
             {' → '}
             <span className="mono">{formatDateTime(timeWindow.end)}</span>
           </Notice>
@@ -466,13 +476,13 @@ export function AuditLog() {
       {auditQuery.isError && isNotImplemented(auditQuery.error) ? (
         <ErrorState
           notImplemented
-          title="审计日志接口尚未实现"
-          message="后端 /audit 返回未实现。建议返回 { items, total } 结构，并支持 limit/offset/username/action/result/start/end 查询参数。"
+          title={t('audit.notImplTitle')}
+          message={t('audit.notImplMsg')}
           onRetry={() => void auditQuery.refetch()}
         />
       ) : auditQuery.isError ? (
         <ErrorState
-          title="无法加载审计日志"
+          title={t('audit.loadFailed')}
           message={errorMessage(auditQuery.error)}
           onRetry={() => void auditQuery.refetch()}
         />
@@ -484,15 +494,15 @@ export function AuditLog() {
             rowKey={(e) => e.id}
             loading={auditQuery.isLoading}
             dense
-            caption="操作审计日志列表"
-            emptyTitle={hasFilters ? '没有匹配的记录' : '暂无审计记录'}
+            caption={t('audit.caption')}
+            emptyTitle={hasFilters ? t('audit.emptyMatch') : t('audit.emptyNone')}
             emptyDescription={
               hasFilters
-                ? '尝试放宽筛选条件或清除筛选后重试。'
-                : '面板尚未产生任何操作记录。'
+                ? t('audit.emptyMatchDesc')
+                : t('audit.emptyNoneDesc')
             }
             onRowClick={(e) => toggleExpand(e.id)}
-            rowTitle={() => '点击展开详情'}
+            rowTitle={() => t('audit.rowTitle')}
           />
 
           {/* 展开详情 */}
@@ -501,8 +511,8 @@ export function AuditLog() {
             .map((e) => (
               <Card key={`detail-${e.id}`}>
                 <CardHeader
-                  title={`记录详情 #${e.id}`}
-                  subtitle={`${actionLabel(e.action)} · ${e.target || '无对象'}`}
+                  title={t('audit.detailTitle', { id: e.id })}
+                  subtitle={`${actionLabel(e.action, t)} · ${e.target || t('audit.noTarget')}`}
                   icon={<IconAudit size={17} />}
                   actions={
                     <Button
@@ -510,19 +520,19 @@ export function AuditLog() {
                       size="sm"
                       onClick={() => toggleExpand(e.id)}
                     >
-                      收起
+                      {t('audit.collapse')}
                     </Button>
                   }
                 />
                 <div className="desc-list">
                   <div className="desc-item">
-                    <div className="desc-label">时间</div>
+                    <div className="desc-label">{t('audit.dlTime')}</div>
                     <div className="desc-value mono">
                       {formatDateTime(e.timestamp)}（{formatRelative(e.timestamp)}）
                     </div>
                   </div>
                   <div className="desc-item">
-                    <div className="desc-label">操作者</div>
+                    <div className="desc-label">{t('audit.dlUser')}</div>
                     <div className="desc-value">
                       {e.username}
                       {e.ip ? (
@@ -531,33 +541,33 @@ export function AuditLog() {
                     </div>
                   </div>
                   <div className="desc-item">
-                    <div className="desc-label">动作</div>
+                    <div className="desc-label">{t('audit.dlAction')}</div>
                     <div className="desc-value mono">{e.action}</div>
                   </div>
                   <div className="desc-item">
-                    <div className="desc-label">操作对象</div>
+                    <div className="desc-label">{t('audit.dlTarget')}</div>
                     <div className="desc-value mono">{e.target || '—'}</div>
                   </div>
                   <div className="desc-item">
-                    <div className="desc-label">结果</div>
+                    <div className="desc-label">{t('audit.dlResult')}</div>
                     <div className="desc-value">
                       <Badge
-                        variant={auditResultMeta(e.result).variant}
+                        variant={auditResultMeta(e.result, t).variant}
                         dot
                         size="sm"
                       >
-                        {auditResultMeta(e.result).label}
+                        {auditResultMeta(e.result, t).label}
                       </Badge>
                       <span className="fs-xs text-muted mono"> {e.result}</span>
                     </div>
                   </div>
                   <div className="desc-item">
-                    <div className="desc-label">详情</div>
+                    <div className="desc-label">{t('audit.dlDetail')}</div>
                     <div className="desc-value">
                       {e.detail ? (
                         <pre className="log-viewer">{formatDetail(e.detail)}</pre>
                       ) : (
-                        <span className="text-muted">无附加详情</span>
+                        <span className="text-muted">{t('audit.noDetail')}</span>
                       )}
                     </div>
                   </div>
@@ -568,8 +578,8 @@ export function AuditLog() {
           {items.length === 0 && total > 0 && search ? (
             <EmptyState
               compact
-              title="本页没有匹配的记录"
-              description="关键词过滤只作用于当前页，试试翻页或清除关键词。"
+              title={t('audit.pageNoMatch')}
+              description={t('audit.pageNoMatchDesc')}
             />
           ) : null}
 
@@ -584,51 +594,49 @@ export function AuditLog() {
 
           {total > 0 ? (
             <div className="fs-sm text-muted">
-              第 {offset + 1} - {Math.min(offset + items.length, total)} 条，
-              共 {total} 条记录
-              {search ? `（本页过滤后显示 ${items.length} 条）` : ''}
+              {t('audit.rangeLine', {
+                start: offset + 1,
+                end: Math.min(offset + items.length, total),
+                total,
+              })}
+              {search ? t('audit.rangeLineFiltered', { n: items.length }) : ''}
             </div>
           ) : null}
         </>
       )}
 
-      <CollapsibleCard title="审计日志的设计约定" icon={<IconShield size={15} />}>
+      <CollapsibleCard title={t('audit.conventionsTitle')} icon={<IconShield size={15} />}>
         <div className="desc-list">
           <div className="desc-item">
-            <div className="desc-label">记录范围</div>
+            <div className="desc-label">{t('audit.cvScope')}</div>
             <div className="desc-value">
-              所有经面板发起、且会改变集群状态的操作（电源、创建、删除、配置修改、
-              快照、备份、迁移、用户变更、网络改造）都应写入审计表；
-              纯查询操作默认不记录，避免日志膨胀。
+              {t('audit.cvScopeDesc')}
             </div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">失败也要记</div>
+            <div className="desc-label">{t('audit.cvFailures')}</div>
             <div className="desc-value">
-              被拒绝或执行失败的请求同样要落库，并写入失败原因。
-              这是排查越权尝试的关键线索。
+              {t('audit.cvFailuresDesc')}
             </div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">记录 IP</div>
+            <div className="desc-label">{t('audit.cvIp')}</div>
             <div className="desc-value">
-              后端需从 <span className="mono">X-Forwarded-For</span> 或
-              <span className="mono"> request.client.host</span> 取真实来源 IP；
-              若面板部署在反向代理之后，务必正确配置代理头。
+              {t('audit.cvIpPre')}<span className="mono">X-Forwarded-For</span>
+              {t('audit.cvIpMid')}
+              <span className="mono">request.client.host</span>{t('audit.cvIpPost')}
             </div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">不可篡改</div>
+            <div className="desc-label">{t('audit.cvImmutable')}</div>
             <div className="desc-value">
-              审计表只允许追加，不提供任何删除接口。
-              如需归档，应导出到不可变存储而不是物理删除。
+              {t('audit.cvImmutableDesc')}
             </div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">前端分页</div>
+            <div className="desc-label">{t('audit.cvPagination')}</div>
             <div className="desc-value">
-              本页采用服务端分页（limit / offset），关闭了 react-query 的占位保留，
-              翻页时会显示骨架屏，保证 total 与 items 始终来自同一次查询。
+              {t('audit.cvPaginationDesc')}
             </div>
           </div>
         </div>
@@ -641,46 +649,46 @@ export function AuditLog() {
    工具
    --------------------------------------------------------------------------- */
 
-/** 动作标识 → 中文标签 */
-const ACTION_LABELS: Record<string, string> = {
-  login: '登录',
-  logout: '登出',
-  login_failed: '登录失败',
-  vm_start: '启动虚拟机',
-  vm_stop: '停止虚拟机',
-  vm_shutdown: '关闭虚拟机',
-  vm_reboot: '重启虚拟机',
-  vm_suspend: '挂起虚拟机',
-  vm_resume: '恢复虚拟机',
-  vm_create: '创建虚拟机',
-  vm_clone: '克隆虚拟机',
-  vm_delete: '删除虚拟机',
-  vm_config: '修改配置',
-  vm_resize: '调整磁盘',
-  vm_move: '移动磁盘',
-  vm_migrate: '迁移虚拟机',
-  vm_template: '转为模板',
-  snapshot_create: '创建快照',
-  snapshot_rollback: '回滚快照',
-  snapshot_delete: '删除快照',
-  backup_create: '创建备份',
-  backup_restore: '恢复备份',
-  backup_delete: '删除备份',
-  backup_job_create: '创建备份计划',
-  backup_job_delete: '删除备份计划',
-  storage_upload: '上传文件',
-  storage_delete: '删除存储内容',
-  network_create: '新增网络接口',
-  network_update: '修改网络接口',
-  network_delete: '删除网络接口',
-  network_reload: '应用网络配置',
-  user_create: '创建用户',
-  user_update: '修改用户',
-  user_delete: '删除用户',
-  user_password: '重置密码',
-  config_update: '修改连接配置',
-  task_stop: '停止任务',
-  task_remove: '清理任务记录',
+/** 动作标识 → 文案键 */
+const ACTION_LABELS: Record<string, MessageKey> = {
+  login: 'audit.act.login',
+  logout: 'audit.act.logout',
+  login_failed: 'audit.act.login_failed',
+  vm_start: 'audit.act.vm_start',
+  vm_stop: 'audit.act.vm_stop',
+  vm_shutdown: 'audit.act.vm_shutdown',
+  vm_reboot: 'audit.act.vm_reboot',
+  vm_suspend: 'audit.act.vm_suspend',
+  vm_resume: 'audit.act.vm_resume',
+  vm_create: 'audit.act.vm_create',
+  vm_clone: 'audit.act.vm_clone',
+  vm_delete: 'audit.act.vm_delete',
+  vm_config: 'audit.act.vm_config',
+  vm_resize: 'audit.act.vm_resize',
+  vm_move: 'audit.act.vm_move',
+  vm_migrate: 'audit.act.vm_migrate',
+  vm_template: 'audit.act.vm_template',
+  snapshot_create: 'audit.act.snapshot_create',
+  snapshot_rollback: 'audit.act.snapshot_rollback',
+  snapshot_delete: 'audit.act.snapshot_delete',
+  backup_create: 'audit.act.backup_create',
+  backup_restore: 'audit.act.backup_restore',
+  backup_delete: 'audit.act.backup_delete',
+  backup_job_create: 'audit.act.backup_job_create',
+  backup_job_delete: 'audit.act.backup_job_delete',
+  storage_upload: 'audit.act.storage_upload',
+  storage_delete: 'audit.act.storage_delete',
+  network_create: 'audit.act.network_create',
+  network_update: 'audit.act.network_update',
+  network_delete: 'audit.act.network_delete',
+  network_reload: 'audit.act.network_reload',
+  user_create: 'audit.act.user_create',
+  user_update: 'audit.act.user_update',
+  user_delete: 'audit.act.user_delete',
+  user_password: 'audit.act.user_password',
+  config_update: 'audit.act.config_update',
+  task_stop: 'audit.act.task_stop',
+  task_remove: 'audit.act.task_remove',
 };
 
 /** 动作标识可能带前缀（vm.power.start）或下划线（vm_start），统一归一化 */
@@ -688,16 +696,16 @@ function normalizeAction(action: string): string {
   return action.trim().toLowerCase().replace(/\./g, '_').replace(/-/g, '_');
 }
 
-function actionLabel(action?: string | null): string {
-  if (!action) return '未知动作';
+function actionLabel(action: string | null | undefined, t: TFunc): string {
+  if (!action) return t('audit.unknownAction');
   const key = normalizeAction(action);
-  if (ACTION_LABELS[key]) return ACTION_LABELS[key];
+  if (ACTION_LABELS[key]) return t(ACTION_LABELS[key]);
 
   /* 尝试只匹配动词部分：xxx_power_start → 看是否有后缀匹配 */
   const parts = key.split('_');
   for (let i = parts.length - 2; i >= 0; i -= 1) {
     const sub = parts.slice(i).join('_');
-    if (ACTION_LABELS[sub]) return ACTION_LABELS[sub];
+    if (ACTION_LABELS[sub]) return t(ACTION_LABELS[sub]);
   }
 
   /* 兜底：把下划线换成空格，首字母大写 */

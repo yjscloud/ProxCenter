@@ -27,13 +27,14 @@ import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
 import { IconEye, IconEyeOff, IconKey } from './Icons';
 import { useToast } from '../hooks/useToast';
+import { useT, type TFunc } from '../i18n';
 import type { GuestPasswordMethodId, VmSummary } from '../api/types';
 
 /** 面板账号与客户机账号共用一份口令强度口径（后端 security.password_policy_error） */
-function passwordProblem(password: string): string {
-  if (password.length < 8) return '口令至少 8 位';
+function passwordProblem(password: string, t: TFunc): string {
+  if (password.length < 8) return t('guestPw.errMinLength');
   if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
-    return '口令需同时包含字母与数字';
+    return t('guestPw.errAlnum');
   }
   return '';
 }
@@ -51,6 +52,7 @@ export function ResetGuestPasswordDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -106,22 +108,22 @@ export function ResetGuestPasswordDialog({
   const available = (data?.methods ?? []).filter((m) => m.available);
   const chosen = (data?.methods ?? []).find((m) => m.id === method);
   /* 边输边提示强度：等按了提交才说不合格，用户白输一遍 */
-  const policyProblem = password ? passwordProblem(password) : '';
+  const policyProblem = password ? passwordProblem(password, t) : '';
   const fieldError = error || policyProblem;
 
   const submit = async () => {
     if (!guest) return;
     if (!username.trim()) {
-      setError('请填写客户机内的用户名');
+      setError(t('guestPw.errUsernameRequired'));
       return;
     }
-    const weak = passwordProblem(password);
+    const weak = passwordProblem(password, t);
     if (weak) {
       setError(weak);
       return;
     }
     if (password !== confirm) {
-      setError('两次输入的口令不一致');
+      setError(t('guestPw.errMismatch'));
       return;
     }
     setError('');
@@ -133,13 +135,16 @@ export function ResetGuestPasswordDialog({
         method,
       });
       toast.success(
-        `已重置「${res.username}」的口令`,
-        res.detail || `${guest.name || guest.vmid} 已更新`,
+        t('guestPw.resetDone', { name: res.username }),
+        res.detail ||
+          t('guestPw.resetDoneDetail', {
+            name: guest.name || guest.vmid,
+          }),
       );
       onDone();
     } catch (err) {
       /* 二次确认（step-up）由 axios 拦截器弹框并自动重放，这里只报真正的失败 */
-      toast.error('重置口令失败', errorMessage(err));
+      toast.error(t('guestPw.resetFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -157,12 +162,15 @@ export function ResetGuestPasswordDialog({
     <Modal
       open={Boolean(guest)}
       onClose={onClose}
-      title={`重置${noun}内的用户口令 — ${guest?.name || guest?.vmid || ''}`}
-      description={`直接设置这台${noun}里某个账号的登录口令，改完即可用新口令登录`}
+      title={t('guestPw.title', {
+        noun,
+        name: guest?.name || guest?.vmid || '',
+      })}
+      description={t('guestPw.desc', { noun })}
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -171,7 +179,7 @@ export function ResetGuestPasswordDialog({
             loading={busy}
             disabled={!canSubmit}
           >
-            重置口令
+            {t('guestPw.confirm')}
           </Button>
         </>
       }
@@ -179,33 +187,29 @@ export function ResetGuestPasswordDialog({
       {probe.isLoading ? (
         <div className="flex items-center gap-8">
           <Spinner size={16} />
-          <span className="fs-sm text-muted">正在检查这台机器的可用方式…</span>
+          <span className="fs-sm text-muted">{t('guestPw.probeLoading')}</span>
         </div>
       ) : null}
 
       {probe.isError ? (
-        <Notice tone="danger" title="读不到可用的重置方式">
+        <Notice tone="danger" title={t('guestPw.probeFailed')}>
           {errorMessage(probe.error)}
         </Notice>
       ) : null}
 
       {data && !available.length ? (
-        <Notice tone="warning" title="这台机器现在改不了口令">
+        <Notice tone="warning" title={t('guestPw.noMethodTitle')}>
           <ul className="m-0 pl-16">
             {data.methods.map((m) => (
               <li key={m.id}>
-                <strong>{m.label}</strong>：{m.reason || '不可用'}
+                <strong>{m.label}</strong>：{m.reason || t('guestPw.unavailable')}
               </li>
             ))}
           </ul>
           {data.kind === 'lxc' ? (
-            <>
-              容器没有 Guest Agent，PVE 的 API 也不提供「在容器里执行命令」，所以只有
-              宿主机 SSH 这一条路：去「SSH → 受管主机」把该宿主机加进去（需要
-              root 或能免密 sudo 的账号），或者进容器控制台自己执行 passwd。
-            </>
+            <>{t('guestPw.lxcNoAgent')}</>
           ) : (
-            <>给客户机装上 qemu-guest-agent 后即可在这里改口令；也可以进控制台手动改。</>
+            <>{t('guestPw.vmNoAgent')}</>
           )}
         </Notice>
       ) : null}
@@ -214,7 +218,7 @@ export function ResetGuestPasswordDialog({
         <>
           <div className="dyn-list">
             <Input
-              label="客户机内的用户名"
+              label={t('guestPw.fieldUsername')}
               required
               value={username}
               onChange={(e) => {
@@ -222,21 +226,23 @@ export function ResetGuestPasswordDialog({
                 setUsername(e.target.value);
               }}
               placeholder="root"
-              hint="容器一般是 root；虚拟机按你机器里实际的账号填"
+              hint={t('guestPw.usernameHint')}
             />
             <Input
-              label="新口令"
+              label={t('guestPw.fieldPassword')}
               required
               type={show ? 'text' : 'password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="new-password"
-              placeholder="至少 8 位，含字母与数字"
+              placeholder={t('guestPw.passwordPlaceholder')}
               error={fieldError || undefined}
-              hint={fieldError ? undefined : '与面板账号同一套强度要求'}
+              hint={fieldError ? undefined : t('guestPw.passwordHint')}
               suffix={
                 <IconButton
-                  label={show ? '隐藏口令' : '显示口令'}
+                  label={
+                    show ? t('guestPw.hidePassword') : t('guestPw.showPassword')
+                  }
                   onClick={() => setShow((v) => !v)}
                 >
                   {show ? <IconEyeOff size={15} /> : <IconEye size={15} />}
@@ -244,7 +250,7 @@ export function ResetGuestPasswordDialog({
               }
             />
             <Input
-              label="确认新口令"
+              label={t('guestPw.fieldConfirm')}
               required
               type={show ? 'text' : 'password'}
               value={confirm}
@@ -259,7 +265,7 @@ export function ResetGuestPasswordDialog({
             {data.methods.length > 1 ? (
               <RadioGroup
                 name="guest-password-method"
-                label="重置方式"
+                label={t('guestPw.fieldMethod')}
                 vertical
                 value={method}
                 onChange={(v) => {
@@ -270,7 +276,11 @@ export function ResetGuestPasswordDialog({
                   value: m.id,
                   label: m.label,
                   // 不可选的那条也要把原因带上：用户看到「灰的」必须知道缺什么
-                  hint: m.available ? m.description : '不可用：' + (m.reason || '当前不可用'),
+                  hint: m.available
+                    ? m.description
+                    : t('guestPw.methodHintUnavailable', {
+                        reason: m.reason || t('guestPw.methodUnavailable'),
+                      }),
                   disabled: !m.available,
                 }))}
               />
@@ -282,15 +292,14 @@ export function ResetGuestPasswordDialog({
           </div>
 
           {chosen?.restarts ? (
-            <Notice tone="warning" title="这条方式会重启客户机">
-              口令会在开机时由 cloud-init 写入，所以提交后会立即重启
-              {guest?.name || guest?.vmid}（先尝试正常关机，最多等 5 分钟）。
-              正在跑业务的话，请挑个维护窗口再操作。
+            <Notice tone="warning" title={t('guestPw.restartsTitle')}>
+              {t('guestPw.restartsBody', {
+                name: guest?.name || guest?.vmid,
+              })}
             </Notice>
           ) : (
-            <Notice tone="info" title="不会重启客户机">
-              口令即时生效。改完请通过安全渠道告知使用这台机器的人，面板不会替他
-              们记住这个口令。
+            <Notice tone="info" title={t('guestPw.noRestartTitle')}>
+              {t('guestPw.noRestartBody')}
             </Notice>
           )}
         </>

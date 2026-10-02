@@ -36,7 +36,8 @@ import {
   formatRelative,
   formatUptime,
 } from '../utils/format';
-import { taskStatusMeta, isTaskSuccess } from '../utils/status';
+import { taskStatusMeta, isTaskSuccess } from '../utils/status'
+import { useT, type MessageKey, type TFunc } from '../i18n';
 import { useWebSocket, type WsStatus } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -46,18 +47,21 @@ import type { TaskInfo, TaskLogLine, TaskWsMessage } from '../api/types';
    常量
    --------------------------------------------------------------------------- */
 
-const STATUS_FILTERS = [
-  { label: '全部状态', value: '' },
-  { label: '执行中', value: 'running' },
-  { label: '成功', value: 'ok' },
-  { label: '失败', value: 'failed' },
-] as const;
+const STATUS_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
+  { label: 'tasks.statusAll', value: '' },
+  { label: 'status.task.running', value: 'running' },
+  { label: 'status.audit.success', value: 'ok' },
+  { label: 'status.audit.failed', value: 'failed' },
+];
 
-const WS_LABEL: Record<WsStatus, { text: string; variant: 'success' | 'warning' | 'danger' | 'neutral' }> = {
-  open: { text: '实时连接', variant: 'success' },
-  connecting: { text: '连接中', variant: 'warning' },
-  closed: { text: '已断开', variant: 'neutral' },
-  error: { text: '连接异常', variant: 'danger' },
+const WS_LABEL: Record<
+  WsStatus,
+  { text: MessageKey; variant: 'success' | 'warning' | 'danger' | 'neutral' }
+> = {
+  open: { text: 'tasks.wsOpen', variant: 'success' },
+  connecting: { text: 'tasks.wsConnecting', variant: 'warning' },
+  closed: { text: 'tasks.wsClosed', variant: 'neutral' },
+  error: { text: 'tasks.wsError', variant: 'danger' },
 };
 
 /* 任务列表默认每页行数。后端一次给 300 条，全量渲染会让滚动明显发涩，
@@ -69,6 +73,7 @@ const DEFAULT_PAGE_SIZE = 20;
    --------------------------------------------------------------------------- */
 
 export function Tasks() {
+  const t = useT();
   const queryClient = useQueryClient();
   const toast = useToast();
   const { canWrite } = useAuth();
@@ -94,8 +99,13 @@ export function Tasks() {
     staleTime: 2_000,
   });
 
-  const nodesQuery = useQuery({
-    queryKey: ['nodes'],
+  /* 集群状态（节点名来自它的 .nodes）。
+     键必须是 ['cluster','status']：Nodes / Settings / Dashboard 都用这个键，
+     写成 ['nodes'] 会和那 12 处 nodesApi.list 的**节点数组**撞在同一个缓存条目上 ——
+     谁先取到就把形状写进缓存，另一边按另一种形状去读就炸
+     （表现是 Guests 等页报「xxx.data.map is not a function」）。 */
+  const clusterQuery = useQuery({
+    queryKey: ['cluster', 'status'],
     queryFn: () => clusterApi.status(),
     staleTime: 30_000,
   });
@@ -118,12 +128,12 @@ export function Tasks() {
   });
 
   const nodeOptions = useMemo(() => {
-    const names = (nodesQuery.data?.nodes ?? []).map((n) => n.name);
+    const names = (clusterQuery.data?.nodes ?? []).map((n) => n.name);
     return [
-      { label: '全部节点', value: '' },
-      ...names.sort().map((n) => ({ label: n, value: n })),
+      { label: t('common.allNodes'), value: '' },
+      ...names.sort().map((name) => ({ label: name, value: name })),
     ];
-  }, [nodesQuery.data]);
+  }, [clusterQuery.data, t]);
 
   /* ---- 过滤 ---- */
   const tasks = useMemo(() => {
@@ -180,9 +190,9 @@ export function Tasks() {
   const copyUpid = async (upid: string) => {
     try {
       await navigator.clipboard.writeText(upid);
-      toast.success('已复制 UPID');
+      toast.success(t('tasks.copiedUpid'));
     } catch {
-      toast.error('复制失败', '浏览器拒绝了剪贴板访问');
+      toast.error(t('common.copyFailed'), t('common.clipboardDenied'));
     }
   };
 
@@ -190,39 +200,39 @@ export function Tasks() {
   const columns: Array<Column<TaskInfo>> = [
     {
       key: 'type',
-      header: '任务类型',
-      render: (t) => (
+      header: t('tasks.colType'),
+      render: (task) => (
         <div className="vm-name-cell">
-          <span className="fw-500">{taskTypeLabel(t.type)}</span>
-          <span className="fs-xs text-muted mono" title={t.upid}>
-            {t.upid.slice(0, 26)}…
+          <span className="fw-500">{taskTypeLabel(task.type, t)}</span>
+          <span className="fs-xs text-muted mono" title={task.upid}>
+            {task.upid.slice(0, 26)}…
           </span>
         </div>
       ),
     },
     {
       key: 'node',
-      header: '节点',
+      header: t('common.node'),
       width: 110,
-      render: (t) => (
+      render: (task) => (
         <div className="vm-name-cell">
-          <span className="fs-sm">{t.node}</span>
-          {t.id ? <span className="fs-xs text-muted">{t.id}</span> : null}
+          <span className="fs-sm">{task.node}</span>
+          {task.id ? <span className="fs-xs text-muted">{task.id}</span> : null}
         </div>
       ),
     },
     {
       key: 'user',
-      header: '发起者',
+      header: t('tasks.colUser'),
       width: 130,
-      render: (t) => <span className="fs-sm text-secondary">{t.user || '—'}</span>,
+      render: (task) => <span className="fs-sm text-secondary">{task.user || '—'}</span>,
     },
     {
       key: 'status',
-      header: '状态',
+      header: t('common.status'),
       width: 120,
-      render: (t) => {
-        const meta = taskStatusMeta(t.status, t.exitstatus);
+      render: (task) => {
+        const meta = taskStatusMeta(task.status, task.exitstatus, t);
         return (
           <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
             {meta.label}
@@ -230,85 +240,85 @@ export function Tasks() {
         );
       },
       sortable: true,
-      sortValue: (t) => t.status ?? '',
+      sortValue: (task) => task.status ?? '',
     },
     {
       key: 'starttime',
-      header: '开始时间',
+      header: t('tasks.colStart'),
       width: 180,
-      render: (t) => (
+      render: (task) => (
         <div className="vm-name-cell">
-          <span className="mono fs-sm">{formatDateTime(t.starttime)}</span>
-          <span className="fs-xs text-muted">{formatRelative(t.starttime)}</span>
+          <span className="mono fs-sm">{formatDateTime(task.starttime)}</span>
+          <span className="fs-xs text-muted">{formatRelative(task.starttime)}</span>
         </div>
       ),
       sortable: true,
-      sortValue: (t) => t.starttime ?? 0,
+      sortValue: (task) => task.starttime ?? 0,
     },
     {
       key: 'duration',
-      header: '耗时',
+      header: t('tasks.colDuration'),
       width: 100,
       align: 'right',
-      render: (t) => (
+      render: (task) => (
         <span className="mono fs-sm">
-          {t.status === 'running'
-            ? '进行中'
-            : t.starttime && t.endtime
-              ? formatUptime(t.endtime - t.starttime)
+          {task.status === 'running'
+            ? t('tasks.inProgress')
+            : task.starttime && task.endtime
+              ? formatUptime(task.endtime - task.starttime)
               : '—'}
         </span>
       ),
       sortable: true,
-      sortValue: (t) =>
-        t.starttime && t.endtime ? t.endtime - t.starttime : 0,
+      sortValue: (task) =>
+        task.starttime && task.endtime ? task.endtime - task.starttime : 0,
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       width: 130,
       align: 'right',
-      render: (t) => (
+      render: (task) => (
         <span className="row-actions">
           <IconButton
-            label={`查看日志 ${t.upid}`}
+            label={t('tasks.viewLog', { upid: task.upid })}
             variant="primary"
             onClick={(e) => {
               e.stopPropagation();
-              setDrawerTask(t);
+              setDrawerTask(task);
             }}
           >
             <IconEye size={15} />
           </IconButton>
           <IconButton
-            label={`复制 UPID`}
+            label={t('tasks.copyUpid')}
             onClick={(e) => {
               e.stopPropagation();
-              void copyUpid(t.upid);
+              void copyUpid(task.upid);
             }}
           >
             <IconCopy size={15} />
           </IconButton>
-          {t.status === 'running' ? (
+          {task.status === 'running' ? (
             <IconButton
-              label={`停止任务 ${t.upid}`}
+              label={t('tasks.stopTaskLabel', { upid: task.upid })}
               variant="danger"
               disabled={!canWrite}
               onClick={(e) => {
                 e.stopPropagation();
-                setStopTarget(t);
+                setStopTarget(task);
               }}
             >
               <IconStop size={15} />
             </IconButton>
           ) : (
             <IconButton
-              label={`清理任务记录`}
+              label={t('tasks.clearTaskLabel')}
               variant="danger"
               disabled={!canWrite}
               onClick={(e) => {
                 e.stopPropagation();
-                setDeleteTarget(t);
+                setDeleteTarget(task);
               }}
             >
               <IconTrash size={15} />
@@ -326,18 +336,18 @@ export function Tasks() {
       title={
         <>
           <IconTasks size={20} />
-          任务队列
+          {t('tasks.title')}
         </>
       }
-      subtitle="集群所有历史与进行中的任务，日志实时推送到当前页面"
+      subtitle={t('tasks.subtitle')}
       actions={
         <>
           <Badge variant={wsMeta.variant} dot pulse={wsStatus === 'open'} size="sm">
-            {wsMeta.text}
+            {t(wsMeta.text)}
           </Badge>
           {wsStatus !== 'open' ? (
             <Button variant="ghost" size="sm" onClick={reconnect}>
-              重连
+              {t('tasks.reconnect')}
             </Button>
           ) : null}
           {/* 导出走服务端流式 CSV：本页只加载最近 300 条，导出则按筛选条件取
@@ -346,9 +356,9 @@ export function Tasks() {
             variant="secondary"
             icon={<IconDownload size={15} />}
             onClick={() => window.open(exportUrl('tasks', { node: nodeFilter || undefined }), '_blank')}
-            title="导出任务队列（按当前节点筛选，不受本页 300 条限制）"
+            title={t('tasks.exportTitle')}
           >
-            导出
+            {t('tasks.export')}
           </Button>
           <Button
             variant="secondary"
@@ -356,7 +366,7 @@ export function Tasks() {
             onClick={() => invalidate()}
             loading={tasksQuery.isFetching && !tasksQuery.isLoading}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
         </>
       }
@@ -364,28 +374,28 @@ export function Tasks() {
       {/* 统计 */}
       <div className="grid grid-4">
         <KpiCard
-          label="任务总数"
+          label={t('tasks.kpi.total')}
           value={stats.total}
           icon={<IconActivity size={18} />}
           tone="accent"
           loading={tasksQuery.isLoading}
         />
         <KpiCard
-          label="执行中"
+          label={t('tasks.kpi.running')}
           value={stats.running}
           icon={<IconClock size={18} />}
           tone={stats.running > 0 ? 'warning' : 'neutral'}
           loading={tasksQuery.isLoading}
         />
         <KpiCard
-          label="成功"
+          label={t('tasks.kpi.success')}
           value={stats.success}
           icon={<IconCheck size={18} />}
           tone="success"
           loading={tasksQuery.isLoading}
         />
         <KpiCard
-          label="失败 / 中断"
+          label={t('tasks.kpi.failed')}
           value={stats.failed}
           icon={<IconAlert size={18} />}
           tone={stats.failed > 0 ? 'danger' : 'neutral'}
@@ -394,9 +404,9 @@ export function Tasks() {
       </div>
 
       {wsStatus === 'error' ? (
-        <Notice tone="warning" title="实时日志连接异常">
-          无法连接到 <span className="mono">/api/ws/tasks</span>，
-          日志将通过 HTTP 定时回填。任务本身不受影响。
+        <Notice tone="warning" title={t('tasks.wsNoticeTitle')}>
+          {t('tasks.wsNoticePre')}<span className="mono">/api/ws/tasks</span>
+          {t('tasks.wsNoticePost')}
         </Notice>
       ) : null}
 
@@ -406,44 +416,44 @@ export function Tasks() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索 UPID、任务类型、发起者…"
+            placeholder={t('tasks.searchPlaceholder')}
             prefix={<IconSearch size={15} />}
             block={false}
-            aria-label="搜索任务"
+            aria-label={t('tasks.searchAria')}
           />
           <Select
             value={nodeFilter}
             onChange={(e) => setNodeFilter(e.target.value)}
             options={nodeOptions}
-            aria-label="按节点筛选"
+            aria-label={t('tasks.filterNodeAria')}
           />
           <Select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            options={STATUS_FILTERS.map((s) => ({ label: s.label, value: s.value }))}
-            aria-label="按状态筛选"
+            options={STATUS_FILTERS.map((s) => ({ label: t(s.label), value: s.value }))}
+            aria-label={t('tasks.filterStatusAria')}
           />
         </div>
         <div className="toolbar-right">
           <Switch
             checked={autoRefresh}
             onChange={setAutoRefresh}
-            label="自动刷新（5 秒）"
+            label={t('tasks.autoRefresh')}
           />
-          <span className="fs-sm text-muted">显示 {tasks.length} 条</span>
+          <span className="fs-sm text-muted">{t('tasks.showing', { n: tasks.length })}</span>
         </div>
       </div>
 
       {tasksQuery.isError && isNotImplemented(tasksQuery.error) ? (
         <ErrorState
           notImplemented
-          title="任务列表接口尚未实现"
-          message="后端 /cluster/tasks 返回未实现，无法获取集群任务历史。"
+          title={t('tasks.notImplTitle')}
+          message={t('tasks.notImplMsg')}
           onRetry={() => void tasksQuery.refetch()}
         />
       ) : tasksQuery.isError ? (
         <ErrorState
-          title="无法加载任务列表"
+          title={t('tasks.loadFailed')}
           message={errorMessage(tasksQuery.error)}
           onRetry={() => void tasksQuery.refetch()}
         />
@@ -452,17 +462,19 @@ export function Tasks() {
           <Table<TaskInfo>
             columns={columns}
             rows={pageTasks}
-            rowKey={(t) => `${t.node}/${t.upid}`}
+            rowKey={(task) => `${task.node}/${task.upid}`}
             loading={tasksQuery.isLoading}
-            caption="集群任务历史列表"
-            emptyTitle={search || statusFilter ? '没有匹配的任务' : '暂无任务记录'}
+            caption={t('tasks.caption')}
+            emptyTitle={
+              search || statusFilter ? t('tasks.emptyMatch') : t('tasks.emptyNone')
+            }
             emptyDescription={
               search || statusFilter
-                ? '尝试调整搜索关键词或筛选条件。'
-                : '集群中还没有执行过任何任务。'
+                ? t('tasks.emptyMatchDesc')
+                : t('tasks.emptyNoneDesc')
             }
-            onRowClick={(t) => setDrawerTask(t)}
-            rowTitle={(t) => t.upid}
+            onRowClick={(task) => setDrawerTask(task)}
+            rowTitle={(task) => task.upid}
           />
 
           {/* 分页条：左侧是「每页 N 条」下拉与「第 X-Y 条，共 N 条」，
@@ -488,25 +500,24 @@ export function Tasks() {
           setBusy(true);
           try {
             await tasksApi.stop(stopTarget.upid, stopTarget.node);
-            toast.success('已请求停止任务', '该任务会尽快终止');
+            toast.success(t('tasks.stopRequested'), t('tasks.stopRequestedDetail'));
             setStopTarget(null);
             invalidate();
           } catch (err) {
-            toast.error('停止任务失败', errorMessage(err));
+            toast.error(t('tasks.stopFailed'), errorMessage(err));
           } finally {
             setBusy(false);
           }
         }}
-        title="停止任务"
+        title={t('tasks.stopTitle')}
         danger
-        confirmText="停止任务"
+        confirmText={t('tasks.stopTitle')}
         loading={busy}
         message={
           <>
-            即将向 Proxmox 发送停止信号，中断任务
-            <strong> {taskTypeLabel(stopTarget?.type)} </strong>
-            （{stopTarget?.node}）。任务可能不会立即结束，
-            部分操作被中断后可能留下不完整的中间状态。
+            {t('tasks.stopMessagePre')}
+            <strong> {taskTypeLabel(stopTarget?.type, t)} </strong>
+            {t('tasks.stopMessagePost', { node: stopTarget?.node ?? '' })}
           </>
         }
       />
@@ -520,23 +531,22 @@ export function Tasks() {
           setBusy(true);
           try {
             await tasksApi.remove(deleteTarget.upid, deleteTarget.node);
-            toast.success('任务记录已清理');
+            toast.success(t('tasks.cleared'));
             setDeleteTarget(null);
             invalidate();
           } catch (err) {
-            toast.error('清理任务记录失败', errorMessage(err));
+            toast.error(t('tasks.clearFailed'), errorMessage(err));
           } finally {
             setBusy(false);
           }
         }}
-        title="清理任务记录"
+        title={t('tasks.clearTitle')}
         danger
-        confirmText="清理"
+        confirmText={t('tasks.clearConfirm')}
         loading={busy}
         message={
           <>
-            即将从 Proxmox 任务历史中删除该条记录。
-            此操作只移除日志元数据，不影响任何虚拟机状态。
+            {t('tasks.clearMessage')}
           </>
         }
       />
@@ -559,6 +569,7 @@ function TaskLogDrawer({
   wsStatus: WsStatus;
   onClose: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState('');
@@ -621,24 +632,24 @@ function TaskLogDrawer({
       await navigator.clipboard.writeText(
         filtered.map((l) => l.t).join('\n'),
       );
-      toast.success('日志已复制到剪贴板');
+      toast.success(t('tasks.copiedLog'));
     } catch {
-      toast.error('复制失败', '浏览器拒绝了剪贴板访问');
+      toast.error(t('common.copyFailed'), t('common.clipboardDenied'));
     }
   };
 
-  const meta = task ? taskStatusMeta(task.status, task.exitstatus) : null;
+  const meta = task ? taskStatusMeta(task.status, task.exitstatus, t) : null;
 
   return (
     <Drawer
       open={Boolean(task)}
       onClose={onClose}
       width={760}
-      title="任务日志"
+      title={t('tasks.logTitle')}
       subtitle={
         task ? (
           <div className="flex items-center gap-8 flex-wrap">
-            <span className="fw-500">{taskTypeLabel(task.type)}</span>
+            <span className="fw-500">{taskTypeLabel(task.type, t)}</span>
             {meta ? (
               <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
                 {meta.label}
@@ -653,17 +664,17 @@ function TaskLogDrawer({
       footer={
         <div className="flex items-center justify-between gap-8 w-100">
           <span className="fs-xs text-muted">
-            共 {filtered.length} 行
+            {t('tasks.logRows', { n: filtered.length })}
             {wsStatus === 'open' && task?.status === 'running'
-              ? ' · 实时推送中'
+              ? t('tasks.liveStreaming')
               : ''}
           </span>
           <div className="flex items-center gap-8">
             <Button variant="ghost" size="sm" onClick={() => void copyLog()}>
-              复制日志
+              {t('tasks.copyLog')}
             </Button>
             <Button variant="secondary" size="sm" onClick={onClose}>
-              关闭
+              {t('common.close')}
             </Button>
           </div>
         </div>
@@ -674,39 +685,41 @@ function TaskLogDrawer({
           {/* 任务元信息 */}
           <div className="desc-list mb-16">
             <div className="desc-item">
-              <div className="desc-label">UPID</div>
+              <div className="desc-label">{t('tasks.metaUpid')}</div>
               <div className="desc-value mono fs-sm">{task.upid}</div>
             </div>
             <div className="desc-item">
-              <div className="desc-label">节点 / 对象</div>
+              <div className="desc-label">{t('tasks.metaNodeObject')}</div>
               <div className="desc-value">
                 {task.node}
                 {task.id ? ` · ${task.id}` : ''}
               </div>
             </div>
             <div className="desc-item">
-              <div className="desc-label">发起者</div>
+              <div className="desc-label">{t('tasks.metaUser')}</div>
               <div className="desc-value">{task.user || '—'}</div>
             </div>
             <div className="desc-item">
-              <div className="desc-label">开始 / 结束</div>
+              <div className="desc-label">{t('tasks.metaStartEnd')}</div>
               <div className="desc-value mono fs-sm">
                 {formatDateTime(task.starttime)}
-                {task.endtime ? ` → ${formatDateTime(task.endtime)}` : ' → 进行中'}
+                {task.endtime
+                  ? ` → ${formatDateTime(task.endtime)}`
+                  : t('tasks.inProgressSuffix')}
               </div>
             </div>
             {task.exitstatus ? (
               <div className="desc-item">
-                <div className="desc-label">退出状态</div>
+                <div className="desc-label">{t('tasks.metaExit')}</div>
                 <div className="desc-value mono fs-sm">{task.exitstatus}</div>
               </div>
             ) : null}
           </div>
 
           {logQuery.isError ? (
-            <Notice tone="warning" title="日志加载失败">
-              {errorMessage(logQuery.error)}。如果任务仍在运行，
-              下方会继续显示 WebSocket 推送的增量日志。
+            <Notice tone="warning" title={t('tasks.logLoadFailed')}>
+              {errorMessage(logQuery.error)}
+              {t('tasks.logLoadFailedTail')}
             </Notice>
           ) : null}
 
@@ -716,39 +729,39 @@ function TaskLogDrawer({
               <Input
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="过滤日志行…"
+                placeholder={t('tasks.filterLogPlaceholder')}
                 prefix={<IconSearch size={14} />}
                 block={false}
-                aria-label="过滤日志"
+                aria-label={t('tasks.filterLogAria')}
               />
             </div>
             <div className="toolbar-right">
               <Switch
                 checked={autoScroll}
                 onChange={setAutoScroll}
-                label="自动滚动"
+                label={t('tasks.autoScroll')}
               />
             </div>
           </div>
 
           {/* 日志内容 */}
           {logQuery.isLoading ? (
-            <div className="log-viewer text-muted">正在加载日志…</div>
+            <div className="log-viewer text-muted">{t('tasks.logLoading')}</div>
           ) : filtered.length === 0 ? (
             <EmptyState
               compact
-              title={filter ? '没有匹配的日志行' : '暂无日志输出'}
+              title={filter ? t('tasks.logNoMatch') : t('tasks.logEmpty')}
               description={
                 filter
-                  ? '尝试更换过滤关键词。'
-                  : '任务可能还未产生输出，或 Proxmox 已回收该日志。'
+                  ? t('tasks.logNoMatchDesc')
+                  : t('tasks.logEmptyDesc')
               }
             />
           ) : (
             <div
               className="log-viewer"
               role="log"
-              aria-label="任务日志"
+              aria-label={t('tasks.logAria')}
               ref={logRef}
               /* 用户手动往上翻看历史时停掉自动滚动：否则新日志一来就把视图拽回
                  底部，正在看的那几行被抢走。回到底部附近再自动恢复。 */
@@ -791,38 +804,39 @@ function logLineTone(text: string): string {
   return '';
 }
 
-/** Proxmox 任务类型 → 中文标签 */
-const TASK_TYPE_LABEL: Record<string, string> = {
-  qmstart: '启动虚拟机',
-  qmstop: '停止虚拟机',
-  qmshutdown: '关闭虚拟机',
-  qmreboot: '重启虚拟机',
-  qmsuspend: '挂起虚拟机',
-  qmresume: '恢复虚拟机',
-  qmcreate: '创建虚拟机',
-  qmclone: '克隆虚拟机',
-  qmdestroy: '删除虚拟机',
-  qmmigrate: '迁移虚拟机',
-  qmresize: '调整磁盘',
-  qmmove: '移动磁盘',
-  qmconfig: '修改配置',
-  qmtemplate: '转换为模板',
-  qmsnapshot: '创建快照',
-  qmrollback: '回滚快照',
-  qmdelsnapshot: '删除快照',
-  vzstart: '启动容器',
-  vzstop: '停止容器',
-  vzshutdown: '关闭容器',
-  vzdump: '备份虚拟机',
-  qmrestore: '恢复备份',
-  vzmigrate: '迁移容器',
-  aptupdate: '更新软件源',
-  startall: '批量启动',
-  stopall: '批量停止',
-  'cluster/backup': '备份计划',
+/** Proxmox 任务类型 → 文案键（非单词字符统一换成下划线） */
+const TASK_TYPE_LABEL: Record<string, MessageKey> = {
+  qmstart: 'tasks.type.qmstart',
+  qmstop: 'tasks.type.qmstop',
+  qmshutdown: 'tasks.type.qmshutdown',
+  qmreboot: 'tasks.type.qmreboot',
+  qmsuspend: 'tasks.type.qmsuspend',
+  qmresume: 'tasks.type.qmresume',
+  qmcreate: 'tasks.type.qmcreate',
+  qmclone: 'tasks.type.qmclone',
+  qmdestroy: 'tasks.type.qmdestroy',
+  qmmigrate: 'tasks.type.qmmigrate',
+  qmresize: 'tasks.type.qmresize',
+  qmmove: 'tasks.type.qmmove',
+  qmconfig: 'tasks.type.qmconfig',
+  qmtemplate: 'tasks.type.qmtemplate',
+  qmsnapshot: 'tasks.type.qmsnapshot',
+  qmrollback: 'tasks.type.qmrollback',
+  qmdelsnapshot: 'tasks.type.qmdelsnapshot',
+  vzstart: 'tasks.type.vzstart',
+  vzstop: 'tasks.type.vzstop',
+  vzshutdown: 'tasks.type.vzshutdown',
+  vzdump: 'tasks.type.vzdump',
+  qmrestore: 'tasks.type.qmrestore',
+  vzmigrate: 'tasks.type.vzmigrate',
+  aptupdate: 'tasks.type.aptupdate',
+  startall: 'tasks.type.startall',
+  stopall: 'tasks.type.stopall',
+  'cluster/backup': 'tasks.type.cluster_backup',
 };
 
-function taskTypeLabel(type?: string | null): string {
-  if (!type) return '未知任务';
-  return TASK_TYPE_LABEL[type] ?? type;
+function taskTypeLabel(type: string | null | undefined, t: TFunc): string {
+  if (!type) return t('tasks.unknownTask');
+  const key = TASK_TYPE_LABEL[type];
+  return key ? t(key) : type;
 }

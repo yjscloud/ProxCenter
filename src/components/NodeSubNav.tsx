@@ -12,16 +12,23 @@
 
 import { Link } from 'react-router-dom';
 import { IconPlug, IconServer } from './Icons';
+import { useT } from '../i18n';
 
 export type NodeSubPage = 'nodes' | 'connections';
 
 export function NodeSubNav({ active }: { active: NodeSubPage }) {
+  const t = useT();
   const items: Array<{ key: NodeSubPage; to: string; label: string; icon: React.ReactNode }> = [
-    { key: 'nodes', to: '/nodes', label: '节点', icon: <IconServer size={14} /> },
+    {
+      key: 'nodes',
+      to: '/nodes',
+      label: t('nodeNav.labelNodes'),
+      icon: <IconServer size={14} />,
+    },
     {
       key: 'connections',
       to: '/nodes/connections',
-      label: '连接配置',
+      label: t('nodeNav.labelConnections'),
       icon: <IconPlug size={14} />,
     },
   ];
@@ -30,7 +37,7 @@ export function NodeSubNav({ active }: { active: NodeSubPage }) {
     /* 与 SSH 安全那两个页面用同一套结构：这里不写 role="tablist" ——
        它们是两个真实页面（导航链接），不是同一个控件里的 tab；
        当前页用 aria-current="page" 表达即可。 */
-    <nav className="subnav" aria-label="节点子页面">
+    <nav className="subnav" aria-label={t('nodeNav.aria')}>
       {items.map((item) =>
         item.key === active ? (
           <span key={item.key} className="subnav-item is-active" aria-current="page">

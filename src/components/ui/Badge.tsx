@@ -4,6 +4,7 @@
 
 import type { ReactNode } from 'react';
 import type { BadgeVariant } from '../../api/types';
+import { useT } from '../../i18n';
 
 export interface BadgeProps {
   children: ReactNode;
@@ -62,6 +63,7 @@ export function Tag({
   onRemove?: () => void;
   className?: string;
 }) {
+  const t = useT();
   return (
     <span className={`tag ${className ?? ''}`}>
       {children}
@@ -73,7 +75,7 @@ export function Tag({
             e.stopPropagation();
             onRemove();
           }}
-          aria-label="移除标签"
+          aria-label={t('badge.removeTag')}
         >
           ×
         </button>

@@ -15,11 +15,13 @@ import { Input } from '../components/ui/Input';
 import { Notice } from '../components/ui/EmptyState';
 import { IconAlert, IconCheck, IconEye, IconEyeOff, IconKey } from '../components/Icons';
 import { AuthShell } from '../components/AuthShell';
+import { useT } from '../i18n';
 
 /* 三个状态：还没查到结果 / 链接可用 / 链接不可用 */
 type TokenState = 'checking' | 'valid' | 'invalid';
 
 export function ResetPassword() {
+  const t = useT();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = (searchParams.get('token') || '').trim();
@@ -57,16 +59,16 @@ export function ResetPassword() {
   const validate = (): boolean => {
     const next: Record<string, string> = {};
     if (!password) {
-      next.password = '请输入新密码';
+      next.password = t('reset.err.passwordRequired');
     } else if (password.length < 8) {
-      next.password = '密码至少 8 位';
+      next.password = t('reset.err.passwordTooShort');
     } else if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-      next.password = '密码需同时包含字母与数字';
+      next.password = t('reset.err.passwordWeak');
     }
     if (!confirm) {
-      next.confirm = '请再次输入新密码';
+      next.confirm = t('reset.err.confirmRequired');
     } else if (confirm !== password) {
-      next.confirm = '两次输入的密码不一致';
+      next.confirm = t('reset.err.confirmMismatch');
     }
     setErrors(next);
     return Object.keys(next).length === 0;
@@ -94,36 +96,35 @@ export function ResetPassword() {
     <AuthShell>
           {state === 'checking' ? (
             <>
-              <h1 className="login-title">正在校验链接…</h1>
-              <p className="login-subtitle">请稍候</p>
+              <h1 className="login-title">{t('reset.titleChecking')}</h1>
+              <p className="login-subtitle">{t('reset.subtitleChecking')}</p>
             </>
           ) : null}
 
           {state === 'invalid' ? (
             <>
-              <h1 className="login-title">链接已失效</h1>
-              <p className="login-subtitle">可能已过期或已被使用</p>
+              <h1 className="login-title">{t('reset.titleInvalid')}</h1>
+              <p className="login-subtitle">{t('reset.subtitleInvalid')}</p>
 
               <div className="mb-16">
-                <Notice tone="warning" title="无法使用这条链接">
-                  重置链接 30 分钟内有效，且只能用一次。请重新申请一条，
-                  或联系管理员手动重置密码。
+                <Notice tone="warning" title={t('reset.invalidNoticeTitle')}>
+                  {t('reset.invalidNoticeBody')}
                 </Notice>
               </div>
 
               <div className="login-form">
                 <Link to="/forgot-password" style={{ textDecoration: 'none' }}>
                   <Button variant="primary" size="lg" block>
-                    重新申请重置链接
+                    {t('reset.reapply')}
                   </Button>
                 </Link>
               </div>
 
               <div className="login-health">
                 <div className="login-health-row">
-                  <span className="login-health-label">想起密码了？</span>
+                  <span className="login-health-label">{t('forgot.remembered')}</span>
                   <Link to="/login" className="fs-sm">
-                    返回登录
+                    {t('auth.backToLogin')}
                   </Link>
                 </div>
               </div>
@@ -132,9 +133,10 @@ export function ResetPassword() {
 
           {state === 'valid' ? (
             <>
-              <h1 className="login-title">设置新密码</h1>
+              <h1 className="login-title">{t('reset.titleValid')}</h1>
               <p className="login-subtitle">
-                账号 <b className="mono">{account}</b>
+                {t('reset.accountPrefix')}
+                <b className="mono">{account}</b>
               </p>
 
               <form className="login-form" onSubmit={handleSubmit} noValidate>
@@ -146,11 +148,11 @@ export function ResetPassword() {
                 ) : null}
 
                 <Input
-                  label="新密码"
+                  label={t('reset.newPassword')}
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="至少 8 位，含字母与数字"
+                  placeholder={t('reset.newPasswordPlaceholder')}
                   autoComplete="new-password"
                   autoFocus
                   disabled={submitting}
@@ -161,8 +163,12 @@ export function ResetPassword() {
                     <button
                       type="button"
                       onClick={() => setShowPassword((v) => !v)}
-                      aria-label={showPassword ? '隐藏密码' : '显示密码'}
-                      title={showPassword ? '隐藏密码' : '显示密码'}
+                      aria-label={
+                        showPassword ? t('auth.login.hidePassword') : t('auth.login.showPassword')
+                      }
+                      title={
+                        showPassword ? t('auth.login.hidePassword') : t('auth.login.showPassword')
+                      }
                       style={{
                         background: 'none',
                         border: 'none',
@@ -178,11 +184,11 @@ export function ResetPassword() {
                 />
 
                 <Input
-                  label="确认新密码"
+                  label={t('reset.confirmPassword')}
                   type={showPassword ? 'text' : 'password'}
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
-                  placeholder="再次输入新密码"
+                  placeholder={t('reset.confirmPlaceholder')}
                   autoComplete="new-password"
                   disabled={submitting}
                   prefix={<IconCheck size={15} />}
@@ -197,7 +203,7 @@ export function ResetPassword() {
                   block
                   loading={submitting}
                 >
-                  {submitting ? '正在设置…' : '设置新密码'}
+                  {submitting ? t('reset.submitting') : t('reset.submit')}
                 </Button>
               </form>
             </>

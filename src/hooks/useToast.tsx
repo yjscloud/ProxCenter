@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { ToastItem, ToastType } from '../api/types';
+import { useT } from '../i18n';
 
 /* ---------------------------------------------------------------------------
    Context
@@ -290,23 +291,29 @@ function ToastViewport({
   toasts: ToastItem[];
   onDismiss: (id: string) => void;
 }) {
+  const t = useT();
   if (toasts.length === 0) return null;
 
   return (
-    <div className="toast-viewport" role="region" aria-live="polite" aria-label="通知">
-      {toasts.map((t) => (
+    <div
+      className="toast-viewport"
+      role="region"
+      aria-live="polite"
+      aria-label={t('toast.region')}
+    >
+      {toasts.map((item) => (
         <div
-          key={t.id}
-          className={`toast ${t.type === 'destructive' ? 'toast-destructive' : ''}`}
-          style={{ borderLeftColor: COLOR_VAR[t.type] }}
-          role={ALERT_TYPES.includes(t.type) ? 'alert' : 'status'}
+          key={item.id}
+          className={`toast ${item.type === 'destructive' ? 'toast-destructive' : ''}`}
+          style={{ borderLeftColor: COLOR_VAR[item.type] }}
+          role={ALERT_TYPES.includes(item.type) ? 'alert' : 'status'}
         >
           <span
             className="toast-icon"
-            style={{ color: COLOR_VAR[t.type] }}
+            style={{ color: COLOR_VAR[item.type] }}
             aria-hidden="true"
           >
-            {t.loading ? (
+            {item.loading ? (
               <svg viewBox="0 0 24 24" width="18" height="18" className="spin">
                 <circle
                   cx="12"
@@ -321,19 +328,21 @@ function ToastViewport({
               </svg>
             ) : (
               <svg viewBox="0 0 24 24" width="18" height="18">
-                {ICON_PATHS[t.type]}
+                {ICON_PATHS[item.type]}
               </svg>
             )}
           </span>
           <div className="toast-body">
-            <div className="toast-title">{t.title}</div>
-            {t.message ? <div className="toast-message">{t.message}</div> : null}
+            <div className="toast-title">{item.title}</div>
+            {item.message ? (
+              <div className="toast-message">{item.message}</div>
+            ) : null}
           </div>
           <button
             type="button"
             className="toast-close"
-            onClick={() => onDismiss(t.id)}
-            aria-label="关闭通知"
+            onClick={() => onDismiss(item.id)}
+            aria-label={t('toast.close')}
           >
             <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
               <path

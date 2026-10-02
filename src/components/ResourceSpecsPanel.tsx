@@ -20,6 +20,7 @@ import { configApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Card, CardHeader } from './ui/Card';
 import { Button, IconButton } from './ui/Button';
+import { useT, type TFunc } from '../i18n';
 import { Field, Input, Select } from './ui/Input';
 import { Badge } from './ui/Badge';
 import { Notice } from './ui/EmptyState';
@@ -39,11 +40,14 @@ interface SpecDraft {
   description: string;
 }
 
-const KIND_LABEL: Record<SpecDraft['kind'], string> = {
-  both: '通用',
-  vm: '仅虚拟机',
-  lxc: '仅容器',
-};
+/* 下面两组含中文，因此做成接收 t 的工厂（模块级常量会让文案停在首次加载时的语言） */
+function kindLabels(t: TFunc): Record<SpecDraft['kind'], string> {
+  return {
+    both: t('spec.kindBoth'),
+    vm: t('spec.kindVm'),
+    lxc: t('spec.kindLxc'),
+  };
+}
 
 function toDraft(spec: ResourceSpec): SpecDraft {
   /* MB → GB：512 这种整数 MB 用 0.5 表示，别显示成 0.5000001 */
@@ -73,13 +77,18 @@ function toPayload(draft: SpecDraft): ResourceSpec {
   };
 }
 
-const KINDS: Array<{ value: SpecDraft['kind']; label: string }> = [
-  { value: 'both', label: '通用（虚拟机 + 容器）' },
-  { value: 'vm', label: '仅虚拟机' },
-  { value: 'lxc', label: '仅容器' },
-];
+function kindOptions(
+  t: TFunc,
+): Array<{ value: SpecDraft['kind']; label: string }> {
+  return [
+    { value: 'both', label: t('spec.kindOptBoth') },
+    { value: 'vm', label: t('spec.kindVm') },
+    { value: 'lxc', label: t('spec.kindLxc') },
+  ];
+}
 
 export function ResourceSpecsPanel() {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
@@ -119,9 +128,12 @@ export function ResourceSpecsPanel() {
       setDrafts(result.specs.map(toDraft));
       queryClient.setQueryData(['config', 'specs'], result);
       queryClient.invalidateQueries({ queryKey: ['config', 'specs'] });
-      toast.success('已保存', `当前 ${result.specs.length} 个规格`);
+      toast.success(
+        t('spec.saved'),
+        t('spec.savedDetail', { n: result.specs.length }),
+      );
     },
-    onError: (err) => toast.error('保存失败', errorMessage(err)),
+    onError: (err) => toast.error(t('spec.saveFailed'), errorMessage(err)),
   });
 
   const update = (index: number, patch: Partial<SpecDraft>) =>
@@ -149,8 +161,8 @@ export function ResourceSpecsPanel() {
   return (
     <Card>
       <CardHeader
-        title="资源规格"
-        subtitle="用户下单时挑的套餐：几核、多少内存、多大磁盘"
+        title={t('spec.title')}
+        subtitle={t('spec.subtitle')}
         actions={
           canManage ? (
             <div className="flex items-center gap-8">
@@ -160,7 +172,7 @@ export function ResourceSpecsPanel() {
                 disabled={!dirty || save.isPending}
                 onClick={() => setDrafts(saved)}
               >
-                放弃修改
+                {t('spec.discard')}
               </Button>
               <Button
                 variant="primary"
@@ -168,7 +180,7 @@ export function ResourceSpecsPanel() {
                 disabled={!dirty || drafts.length === 0}
                 onClick={() => save.mutate(drafts.map(toPayload))}
               >
-                保存
+                {t('common.save')}
               </Button>
             </div>
           ) : undefined
@@ -176,20 +188,20 @@ export function ResourceSpecsPanel() {
       />
 
       {query.isError ? (
-        <Notice tone="warning" title="读取失败">
+        <Notice tone="warning" title={t('spec.loadFailed')}>
           {errorMessage(query.error)}
         </Notice>
       ) : null}
 
       {!canManage ? (
-        <Notice tone="info" title="只读">
-          修改资源规格需要管理员权限（settings.manage）。
+        <Notice tone="info" title={t('spec.readonly')}>
+          {t('spec.readonlyBody')}
         </Notice>
       ) : null}
 
       {drafts.length === 0 && !query.isLoading ? (
-        <Notice tone="info" title="还没有规格">
-          添加几个套餐后，用户就能在下单页直接选择。例如「2C4G · 100G」。
+        <Notice tone="info" title={t('spec.empty')}>
+          {t('spec.emptyBody')}
         </Notice>
       ) : null}
 
@@ -201,11 +213,15 @@ export function ResourceSpecsPanel() {
                 {Number(draft.cores) || 0}C · {Number(draft.memoryGb) || 0}G ·{' '}
                 {Number(draft.disk) || 0}G
               </Badge>
-              <span className="fs-xs text-muted">{KIND_LABEL[draft.kind]}</span>
+              <span className="fs-xs text-muted">
+                {kindLabels(t)[draft.kind]}
+              </span>
               <span className="spec-row-spacer" />
               {canManage ? (
                 <IconButton
-                  label={`删除规格 ${draft.name || index + 1}`}
+                  label={t('spec.deleteAria', {
+                    name: draft.name || index + 1,
+                  })}
                   variant="danger"
                   onClick={() => removeRow(index)}
                 >
@@ -215,25 +231,25 @@ export function ResourceSpecsPanel() {
             </div>
 
             <div className="spec-row-grid">
-              <Field label="名称">
+              <Field label={t('spec.fieldName')}>
                 <Input
                   value={draft.name}
                   disabled={!canManage}
-                  placeholder="如：标准型 2C4G"
+                  placeholder={t('spec.namePlaceholder')}
                   onChange={(e) => update(index, { name: e.target.value })}
                 />
               </Field>
-              <Field label="适用">
+              <Field label={t('spec.fieldKind')}>
                 <Select
                   value={draft.kind}
                   disabled={!canManage}
-                  options={KINDS}
+                  options={kindOptions(t)}
                   onChange={(e) =>
                     update(index, { kind: e.target.value as SpecDraft['kind'] })
                   }
                 />
               </Field>
-              <Field label="核数">
+              <Field label={t('spec.fieldCores')}>
                 <Input
                   value={draft.cores}
                   disabled={!canManage}
@@ -243,7 +259,7 @@ export function ResourceSpecsPanel() {
                   }
                 />
               </Field>
-              <Field label="内存（GB）">
+              <Field label={t('spec.fieldMemory')}>
                 <Input
                   value={draft.memoryGb}
                   disabled={!canManage}
@@ -255,7 +271,7 @@ export function ResourceSpecsPanel() {
                   }
                 />
               </Field>
-              <Field label="磁盘（GB）">
+              <Field label={t('spec.fieldDisk')}>
                 <Input
                   value={draft.disk}
                   disabled={!canManage}
@@ -265,11 +281,11 @@ export function ResourceSpecsPanel() {
                   }
                 />
               </Field>
-              <Field label="说明">
+              <Field label={t('spec.fieldDesc')}>
                 <Input
                   value={draft.description}
                   disabled={!canManage}
-                  placeholder="如：常规业务、小型数据库"
+                  placeholder={t('spec.descPlaceholder')}
                   onChange={(e) => update(index, { description: e.target.value })}
                 />
               </Field>

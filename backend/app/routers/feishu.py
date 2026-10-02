@@ -12,7 +12,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .. import feishu_bot, panel_url, security
+from .. import feishu_bot, i18n, panel_url, security
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,22 @@ router = APIRouter(prefix="/api/feishu", tags=["feishu"])
 # 仅管理员：飞书机器人页面与接口都不对普通用户开放
 BOT_VIEW = security.require_admin()
 BOT_MANAGE = security.require_admin()
+
+# 配置页「可用指令」表格的数据源。cmd 是机器人匹配用的中文原文（必须保持稳定），
+# desc 与 cmd 仅用于展示，出口再按当前语言本地化，所以这里写中文。
+_BOT_COMMANDS = [
+    ("列表", "查看虚拟机总览"),
+    ("状态 <名称/ID>", "查看单台虚拟机"),
+    ("开机 <名称/ID>", "开机"),
+    ("关机 <名称/ID>", "关机（卡片确认）"),
+    ("重启 <名称/ID>", "重启（卡片确认）"),
+    ("创建", "弹出表单，可指定名称 / CPU / 内存 / 磁盘"),
+    ("快照 <名称/ID> [快照名]", "创建快照，省略名称时自动按时间命名"),
+    ("快照列表 <名称/ID>", "查看已有快照"),
+    ("回滚 <名称/ID> <快照名>", "回滚到快照（卡片确认）"),
+    ("备份 <名称/ID> [存储]", "立即执行一次备份"),
+    ("帮助", "显示指令列表"),
+]
 
 
 async def _process_event(payload: Dict[str, Any], cfg: Dict[str, Any]) -> None:
@@ -98,17 +114,7 @@ async def get_config(
         "config": _masked(cfg),
         "event_url": base + "/api/feishu/event",
         "commands": [
-            {"cmd": "列表", "desc": "查看虚拟机总览"},
-            {"cmd": "状态 <名称/ID>", "desc": "查看单台虚拟机"},
-            {"cmd": "开机 <名称/ID>", "desc": "开机"},
-            {"cmd": "关机 <名称/ID>", "desc": "关机（卡片确认）"},
-            {"cmd": "重启 <名称/ID>", "desc": "重启（卡片确认）"},
-            {"cmd": "创建", "desc": "弹出表单，可指定名称 / CPU / 内存 / 磁盘"},
-            {"cmd": "快照 <名称/ID> [快照名]", "desc": "创建快照，省略名称时自动按时间命名"},
-            {"cmd": "快照列表 <名称/ID>", "desc": "查看已有快照"},
-            {"cmd": "回滚 <名称/ID> <快照名>", "desc": "回滚到快照（卡片确认）"},
-            {"cmd": "备份 <名称/ID> [存储]", "desc": "立即执行一次备份"},
-            {"cmd": "帮助", "desc": "显示指令列表"},
+            {"cmd": i18n.tr(cmd), "desc": i18n.tr(desc)} for cmd, desc in _BOT_COMMANDS
         ],
     }
 

@@ -15,8 +15,10 @@ import { Input } from '../components/ui/Input';
 import { Notice } from '../components/ui/EmptyState';
 import { IconAlert, IconUser } from '../components/Icons';
 import { AuthShell } from '../components/AuthShell';
+import { useT } from '../i18n';
 
 export function ForgotPassword() {
+  const t = useT();
   const [username, setUsername] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -26,7 +28,7 @@ export function ForgotPassword() {
     e.preventDefault();
     if (submitting) return;
     if (!username.trim()) {
-      setError('请输入用户名');
+      setError(t('forgot.err.usernameRequired'));
       return;
     }
     setError(null);
@@ -45,31 +47,29 @@ export function ForgotPassword() {
     <AuthShell>
           {sent ? (
             <>
-              <h1 className="login-title">邮件已发送</h1>
-              <p className="login-subtitle">请查收邮箱并点击链接</p>
+              <h1 className="login-title">{t('forgot.sentTitle')}</h1>
+              <p className="login-subtitle">{t('forgot.sentSubtitle')}</p>
 
               <div className="mb-16">
-                <Notice tone="success" title="请查收邮件">
-                  如果该账号存在且已填写邮箱，重置链接已发送到其注册邮箱，
-                  <b>30 分钟内有效，且只能使用一次</b>。
-                  没收到的话请检查垃圾邮件，或联系管理员手动重置。
+                <Notice tone="success" title={t('forgot.noticeTitle')}>
+                  {t('forgot.noticeBodyPre')}
+                  <b>{t('forgot.noticeBodyStrong')}</b>
+                  {t('forgot.noticeBodyPost')}
                 </Notice>
               </div>
 
               <div className="login-form">
                 <Link to="/login" style={{ textDecoration: 'none' }}>
                   <Button variant="primary" size="lg" block>
-                    返回登录
+                    {t('auth.backToLogin')}
                   </Button>
                 </Link>
               </div>
             </>
           ) : (
             <>
-              <h1 className="login-title">重置密码</h1>
-              <p className="login-subtitle">
-                输入用户名，重置链接会发到该账号的邮箱
-              </p>
+              <h1 className="login-title">{t('forgot.title')}</h1>
+              <p className="login-subtitle">{t('forgot.subtitle')}</p>
 
               <form className="login-form" onSubmit={handleSubmit} noValidate>
                 {error ? (
@@ -80,15 +80,15 @@ export function ForgotPassword() {
                 ) : null}
 
                 <Input
-                  label="用户名"
+                  label={t('auth.login.username')}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="例如 zhangsan"
+                  placeholder={t('register.usernamePlaceholder')}
                   autoComplete="username"
                   autoFocus
                   disabled={submitting}
                   prefix={<IconUser size={15} />}
-                  hint="重置链接会发到这个账号注册时填写的邮箱"
+                  hint={t('forgot.usernameHint')}
                   required
                 />
 
@@ -100,15 +100,15 @@ export function ForgotPassword() {
                   loading={submitting}
                   disabled={!username.trim()}
                 >
-                  {submitting ? '正在提交…' : '发送重置链接'}
+                  {submitting ? t('forgot.submitting') : t('forgot.submit')}
                 </Button>
               </form>
 
               <div className="login-health">
                 <div className="login-health-row">
-                  <span className="login-health-label">想起密码了？</span>
+                  <span className="login-health-label">{t('forgot.remembered')}</span>
                   <Link to="/login" className="fs-sm">
-                    返回登录
+                    {t('auth.backToLogin')}
                   </Link>
                 </div>
               </div>

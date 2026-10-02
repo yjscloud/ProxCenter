@@ -30,6 +30,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { Checkbox } from './Input';
 import { IconGrip, IconLock, IconRefresh, IconSettings } from '../Icons';
 import type { Column } from './Table';
+import { useT } from '../../i18n';
 
 /** localStorage 键前缀。按账号隔离：key = 前缀 + 用户名 + 表名 */
 const STORAGE_PREFIX = 'pve_table_columns:';
@@ -258,6 +259,7 @@ function ColumnSettingsMenu<T>({
   onMove,
   onReset,
 }: ColumnSettingsMenuProps<T>) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -308,23 +310,23 @@ function ColumnSettingsMenu<T>({
         className="btn btn-secondary btn-sm colset-trigger"
         aria-haspopup="dialog"
         aria-expanded={open}
-        title="设置显示的列与顺序"
+        title={t('columnSettings.triggerTitle')}
         onClick={() => setOpen((value) => !value)}
       >
         <span className="btn-icon">
           <IconSettings size={15} />
         </span>
-        <span className="btn-label">列</span>
+        <span className="btn-label">{t('columnSettings.label')}</span>
         {hiddenCount > 0 ? (
           <span className="colset-badge">{hiddenCount}</span>
         ) : null}
       </button>
 
       {open ? (
-        <div className="colset-panel" role="dialog" aria-label="列设置">
+        <div className="colset-panel" role="dialog" aria-label={t('columnSettings.panelAria')}>
           <div className="colset-head">
-            <span className="colset-title">显示列</span>
-            <span className="colset-hint">拖动调整顺序</span>
+            <span className="colset-title">{t('columnSettings.visibleColumns')}</span>
+            <span className="colset-hint">{t('columnSettings.dragHint')}</span>
           </div>
 
           <div className="colset-list">
@@ -372,7 +374,7 @@ function ColumnSettingsMenu<T>({
                     label={columnLabel(column)}
                   />
                   {column.locked ? (
-                    <span className="colset-fixed">固定</span>
+                    <span className="colset-fixed">{t('columnSettings.fixed')}</span>
                   ) : null}
                 </div>
               );
@@ -388,7 +390,7 @@ function ColumnSettingsMenu<T>({
               <span className="btn-icon">
                 <IconRefresh size={13} />
               </span>
-              <span className="btn-label">恢复默认</span>
+              <span className="btn-label">{t('columnSettings.reset')}</span>
             </button>
           </div>
         </div>

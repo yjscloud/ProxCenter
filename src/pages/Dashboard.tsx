@@ -56,6 +56,7 @@ import {
   useDashboardLayout,
   type WidgetMeta,
 } from '../hooks/useDashboardLayout';
+import { useT } from '../i18n';
 
 const REFRESH = 10_000;
 
@@ -76,12 +77,12 @@ const NODE_ROWS_IN_CARD = 6;
    「恢复默认布局」才看得见（也不需要动后端）。
    --------------------------------------------------------------------------- */
 const WIDGET_META: WidgetMeta[] = [
-  { id: 'kpi', name: '关键指标', span: 'full' },
-  { id: 'nodes', name: '集群节点', span: 'half' },
-  { id: 'distribution', name: '资源分布', span: 'half' },
-  { id: 'capacity', name: '磁盘容量预测', span: 'full' },
-  { id: 'top', name: '资源占用排行', span: 'full' },
-  { id: 'tasks', name: '最近任务', span: 'full' },
+  { id: 'kpi', nameKey: 'dashboard.widget.kpi', span: 'full' },
+  { id: 'nodes', nameKey: 'dashboard.widget.nodes', span: 'half' },
+  { id: 'distribution', nameKey: 'dashboard.widget.distribution', span: 'half' },
+  { id: 'capacity', nameKey: 'dashboard.widget.capacity', span: 'full' },
+  { id: 'top', nameKey: 'dashboard.widget.top', span: 'full' },
+  { id: 'tasks', nameKey: 'dashboard.widget.tasks', span: 'full' },
 ];
 
 interface WidgetShellProps {
@@ -114,6 +115,7 @@ function WidgetShell({
   onHide,
   children,
 }: WidgetShellProps) {
+  const t = useT();
   return (
     <section
       className={`widget${editing ? ' widget-editing' : ''}${
@@ -143,17 +145,21 @@ function WidgetShell({
     >
       {editing ? (
         <div className="widget-bar">
-          <span className="widget-grip" title="拖动调整顺序" aria-hidden="true">
+          <span
+            className="widget-grip"
+            title={t('dashboard.widget.drag')}
+            aria-hidden="true"
+          >
             <IconGrip size={15} />
           </span>
-          <span className="widget-bar-name">{meta.name}</span>
+          <span className="widget-bar-name">{t(meta.nameKey)}</span>
           <Button
             variant="ghost"
             size="sm"
             icon={<IconEyeOff size={14} />}
             onClick={onHide}
           >
-            隐藏
+            {t('dashboard.widget.hide')}
           </Button>
         </div>
       ) : null}
@@ -163,6 +169,7 @@ function WidgetShell({
 }
 
 export function Dashboard() {
+  const t = useT();
   const navigate = useNavigate();
   /* 任务队列页属于「系统管理」，仅管理员可进入 */
   const { isAdmin } = useAuth();
@@ -197,15 +204,15 @@ export function Dashboard() {
 
   const haHint = (() => {
     const ha = haQuery.data;
-    if (!ha) return 'HA 状态暂不可用';
+    if (!ha) return t('dashboard.ha.unavailable');
     /* 前缀带上连接名：多套 PVE 同级的部署里，这张卡只反映默认连接那一套 */
     const prefix = ha.connection_name ? `${ha.connection_name} · ` : '';
-    if (ha.cluster_mode === 'standalone') return `${prefix}单机模式 · 无 HA`;
-    if (ha.quorum.quorate === false) return `${prefix}集群失去仲裁`;
-    if (!ha.ha_enabled) return `${prefix}多节点集群 · 未启用 HA`;
+    if (ha.cluster_mode === 'standalone') return prefix + t('dashboard.ha.standalone');
+    if (ha.quorum.quorate === false) return prefix + t('dashboard.ha.lostQuorum');
+    if (!ha.ha_enabled) return prefix + t('dashboard.ha.notEnabled');
     return ha.ha_resources.length > 0
-      ? `${prefix}HA 托管 ${ha.ha_resources.length} 个资源`
-      : `${prefix}HA 已启用 · 暂无托管资源`;
+      ? prefix + t('dashboard.ha.managed', { n: ha.ha_resources.length })
+      : prefix + t('dashboard.ha.enabledEmpty');
   })();
 
   const storagesQuery = useQuery({
@@ -376,11 +383,23 @@ export function Dashboard() {
      （0 值切片会让甜甜圈的 paddingAngle 留下一道多余的缝）。 */
   const distribution = useMemo(
     () => [
-      { name: '运行中', value: stats.running, color: CHART_COLORS.success },
-      { name: '已停止', value: stats.stopped, color: CHART_COLORS.grey },
-      { name: '其他', value: stats.other, color: CHART_COLORS.warning },
+      {
+        name: t('dashboard.dist.running'),
+        value: stats.running,
+        color: CHART_COLORS.success,
+      },
+      {
+        name: t('dashboard.dist.stopped'),
+        value: stats.stopped,
+        color: CHART_COLORS.grey,
+      },
+      {
+        name: t('dashboard.dist.other'),
+        value: stats.other,
+        color: CHART_COLORS.warning,
+      },
     ],
-    [stats],
+    [stats, t],
   );
 
   const donutData = useMemo(
@@ -392,30 +411,30 @@ export function Dashboard() {
   const taskColumns: Array<Column<TaskInfo>> = [
     {
       key: 'type',
-      header: '任务类型',
-      render: (t) => <span className="mono fs-sm">{t.type}</span>,
+      header: t('dashboard.tasks.colType'),
+      render: (task) => <span className="mono fs-sm">{task.type}</span>,
       sortable: true,
-      sortValue: (t) => t.type,
+      sortValue: (task) => task.type,
     },
     {
       key: 'node',
-      header: '节点',
-      render: (t) => <span className="fs-sm">{t.node}</span>,
+      header: t('dashboard.tasks.colNode'),
+      render: (task) => <span className="fs-sm">{task.node}</span>,
       width: 110,
     },
     {
       key: 'id',
-      header: '对象',
-      render: (t) => (
-        <span className="fs-sm text-secondary mono">{t.id ?? '—'}</span>
+      header: t('dashboard.tasks.colId'),
+      render: (task) => (
+        <span className="fs-sm text-secondary mono">{task.id ?? '—'}</span>
       ),
       width: 100,
     },
     {
       key: 'status',
-      header: '状态',
-      render: (t) => {
-        const meta = taskStatusMeta(t.status, t.exitstatus);
+      header: t('dashboard.tasks.colStatus'),
+      render: (task) => {
+        const meta = taskStatusMeta(task.status, task.exitstatus, t);
         return (
           <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
             {meta.label}
@@ -426,16 +445,16 @@ export function Dashboard() {
     },
     {
       key: 'time',
-      header: '开始时间',
-      render: (t) => (
+      header: t('dashboard.tasks.colTime'),
+      render: (task) => (
         <span className="fs-sm text-secondary">
-          {formatRelative(t.starttime)}
+          {formatRelative(task.starttime)}
         </span>
       ),
       align: 'right',
       width: 120,
       sortable: true,
-      sortValue: (t) => t.starttime ?? 0,
+      sortValue: (task) => task.starttime ?? 0,
     },
   ];
 
@@ -454,10 +473,10 @@ export function Dashboard() {
 
   if (hasError) {
     return (
-      <PageShell title="仪表盘">
+      <PageShell title={t('nav.dashboard')}>
         <ErrorState
-          title="无法加载集群数据"
-          message="请确认后端服务已启动并已配置 Proxmox 连接。"
+          title={t('dashboard.loadErrorTitle')}
+          message={t('dashboard.loadErrorMsg')}
           onRetry={() => {
             void vmsQuery.refetch();
             void nodesQuery.refetch();
@@ -477,16 +496,20 @@ export function Dashboard() {
     kpi: (
       <div className="grid grid-5">
         <KpiCard
-          label="虚拟机总数"
+          label={t('dashboard.kpi.vms')}
           value={stats.total}
           icon={<IconVm size={16} />}
           tone="accent"
           loading={vmsQuery.isLoading}
           hint={
             <>
-              <span className="text-success">{stats.running} 运行中</span>
+              <span className="text-success">
+                {t('dashboard.kpi.running', { n: stats.running })}
+              </span>
               <span className="text-muted">·</span>
-              <span className="text-secondary">{stats.stopped} 已停止</span>
+              <span className="text-secondary">
+                {t('dashboard.kpi.stopped', { n: stats.stopped })}
+              </span>
             </>
           }
         />
@@ -506,7 +529,7 @@ export function Dashboard() {
             整行跳一下。现在改成「加载中骨架 / 有数据正常态 / 拿不到写未知」，
             卡片始终占住它那一格。 */}
         <KpiCard
-          label="集群态势"
+          label={t('dashboard.kpi.posture')}
           value={
             haQuery.data ? (
               <span className="posture-inline">
@@ -515,13 +538,15 @@ export function Dashboard() {
                     haQuery.data.quorum.quorate ? 'is-ok' : 'is-bad'
                   }`}
                 />
-                {haQuery.data.quorum.quorate ? '正常' : '失去仲裁'}
+                {haQuery.data.quorum.quorate
+                  ? t('dashboard.kpi.quorate')
+                  : t('dashboard.kpi.lostQuorum')}
               </span>
             ) : (
               /* 拿不到 quorum 时给一个明确的「未知」，而不是让整张卡消失 */
               <span className="posture-inline">
                 <span className="posture-dot" />
-                未知
+                {t('dashboard.kpi.unknown')}
               </span>
             )
           }
@@ -546,7 +571,7 @@ export function Dashboard() {
         />
 
         <KpiCard
-          label="CPU 使用率"
+          label={t('dashboard.kpi.cpu')}
           value={`${nodeStats.cpuAvg.toFixed(1)}%`}
           icon={<IconCpu size={16} />}
           tone={usageTone(nodeStats.cpuAvg)}
@@ -555,13 +580,16 @@ export function Dashboard() {
           progressColor={usageColor(nodeStats.cpuAvg)}
           hint={
             <span className="mono">
-              {nodeStats.usedCores.toFixed(2)} / {nodeStats.totalCores} 物理核心
+              {t('dashboard.kpi.cores', {
+                used: nodeStats.usedCores.toFixed(2),
+                total: nodeStats.totalCores,
+              })}
             </span>
           }
         />
 
         <KpiCard
-          label="内存使用率"
+          label={t('dashboard.kpi.mem')}
           value={`${nodeStats.memPercent.toFixed(1)}%`}
           icon={<IconMemory size={16} />}
           tone={usageTone(nodeStats.memPercent)}
@@ -576,7 +604,7 @@ export function Dashboard() {
         />
 
         <KpiCard
-          label="存储使用率"
+          label={t('dashboard.kpi.storage')}
           value={`${storageStats.percent.toFixed(1)}%`}
           icon={<IconStorage size={16} />}
           tone={usageTone(storageStats.percent)}
@@ -597,19 +625,23 @@ export function Dashboard() {
       <>
         <Card collapsible={false}>
           <CardHeader
-            title="集群节点"
+            title={t('dashboard.widget.nodes')}
             subtitle={
               nodesQuery.data
-                ? `${nodeStats.online}/${nodeStats.total} 在线 · 平均 CPU ${nodeStats.cpuAvg.toFixed(1)}%`
+                ? t('dashboard.nodes.subtitle', {
+                    online: nodeStats.online,
+                    total: nodeStats.total,
+                    cpu: nodeStats.cpuAvg.toFixed(1),
+                  })
                 : undefined
             }
             icon={<IconServer size={16} />}
             actions={
               <>
                 {metrics.connected ? (
-                  <span className="live-badge" title="实时指标已连接">
+                  <span className="live-badge" title={t('dashboard.nodes.liveTitle')}>
                     <span className="live-badge-dot" />
-                    实时
+                    {t('dashboard.nodes.live')}
                   </span>
                 ) : null}
                 <Button
@@ -617,7 +649,7 @@ export function Dashboard() {
                   size="sm"
                   onClick={() => navigate('/nodes')}
                 >
-                  查看全部
+                  {t('dashboard.nodes.viewAll')}
                 </Button>
               </>
             }
@@ -634,13 +666,13 @@ export function Dashboard() {
             </div>
           ) : nodesQuery.isError ? (
             <ErrorState
-              title="无法获取节点列表"
+              title={t('dashboard.nodes.loadError')}
               onRetry={() => void nodesQuery.refetch()}
             />
           ) : mergedNodes.length === 0 ? (
             <EmptyState
-              title="暂无节点"
-              description="集群中还没有可用节点。"
+              title={t('dashboard.nodes.empty')}
+              description={t('dashboard.nodes.emptyDesc')}
               compact
             />
           ) : (
@@ -649,10 +681,10 @@ export function Dashboard() {
                   节点多时只列最需要注意的前几个，剩下的去节点页看 */}
               <div className="dash-nodes">
                 <div className="dash-node-row is-head" aria-hidden="true">
-                  <span>节点</span>
+                  <span>{t('dashboard.nodes.colNode')}</span>
                   <span>CPU</span>
-                  <span>内存</span>
-                  <span>磁盘</span>
+                  <span>{t('dashboard.top.memory')}</span>
+                  <span>{t('dashboard.nodes.colDisk')}</span>
                   <span />
                 </div>
                 {cardNodes.map((node) => (
@@ -666,7 +698,7 @@ export function Dashboard() {
                   className="dash-nodes-more"
                   onClick={() => navigate('/nodes')}
                 >
-                  还有 {hiddenNodeCount} 个节点未显示 · 去节点页查看全部
+                  {t('dashboard.nodes.more', { n: hiddenNodeCount })}
                   <IconChevronRight size={13} />
                 </button>
               ) : null}
@@ -686,8 +718,8 @@ export function Dashboard() {
       <>
         <Card collapsible={false}>
           <CardHeader
-            title="资源分布"
-            subtitle={`虚拟机运行状态 · 共 ${stats.total} 台`}
+            title={t('dashboard.dist.title')}
+            subtitle={t('dashboard.dist.subtitle', { n: stats.total })}
             icon={<IconActivity size={16} />}
           />
           <div className="dist-body">
@@ -696,7 +728,7 @@ export function Dashboard() {
                 data={donutData}
                 height="100%"
                 showLegend={false}
-                centerLabel="虚拟机"
+                centerLabel={t('dashboard.dist.center')}
                 centerValue={stats.total}
               />
             </div>
@@ -727,7 +759,7 @@ export function Dashboard() {
 
             {stats.templates > 0 ? (
               <div className="dist-foot">
-                另有 {stats.templates} 个模板未计入运行状态
+                {t('dashboard.dist.templates', { n: stats.templates })}
               </div>
             ) : null}
           </div>
@@ -750,20 +782,20 @@ export function Dashboard() {
     top: (
       <Card>
         <CardHeader
-          title="资源占用排行"
+          title={t('dashboard.top.title')}
           subtitle={
             topQuery.isLoading
-              ? '加载中…'
-              : `运行中的虚拟机 · Top ${topList.length || 8}`
+              ? t('common.loading')
+              : t('dashboard.top.subtitle', { n: topList.length || 8 })
           }
           icon={<IconActivity size={16} />}
           actions={
             <SegmentedControl<'cpu' | 'mem'>
               value={topTab}
               onChange={setTopTab}
-              ariaLabel="资源占用排行指标"
+              ariaLabel={t('dashboard.top.aria')}
               options={[
-                { label: '内存', value: 'mem' },
+                { label: t('dashboard.top.memory'), value: 'mem' },
                 { label: 'CPU', value: 'cpu' },
               ]}
             />
@@ -778,8 +810,8 @@ export function Dashboard() {
             </div>
           ) : topList.length === 0 ? (
             <EmptyState
-              title="暂无数据"
-              description="集群中还没有运行中的虚拟机。"
+              title={t('dashboard.top.empty')}
+              description={t('dashboard.top.emptyDesc')}
               compact
             />
           ) : (
@@ -823,8 +855,8 @@ export function Dashboard() {
       <Card padded={false} collapsible={false}>
         <div style={{ padding: '18px 18px 0' }}>
           <CardHeader
-            title="最近任务"
-            subtitle="集群中最近执行的操作"
+            title={t('dashboard.tasks.title')}
+            subtitle={t('dashboard.tasks.subtitle')}
             icon={<IconTasks size={16} />}
             actions={
               isAdmin ? (
@@ -833,7 +865,7 @@ export function Dashboard() {
                   size="sm"
                   onClick={() => navigate('/tasks')}
                 >
-                  查看全部
+                  {t('dashboard.nodes.viewAll')}
                 </Button>
               ) : undefined
             }
@@ -842,11 +874,11 @@ export function Dashboard() {
         <Table<TaskInfo>
           columns={taskColumns}
           rows={tasksQuery.data ?? []}
-          rowKey={(t) => t.upid}
+          rowKey={(task) => task.upid}
           loading={tasksQuery.isLoading}
-          caption="最近执行的集群任务列表"
-          emptyTitle="暂无任务记录"
-          emptyDescription="集群中还没有执行过任何任务。"
+          caption={t('dashboard.tasks.caption')}
+          emptyTitle={t('dashboard.tasks.empty')}
+          emptyDescription={t('dashboard.tasks.emptyDesc')}
           onRowClick={isAdmin ? () => navigate('/tasks') : undefined}
           dense
           className="table-flush"
@@ -878,17 +910,17 @@ export function Dashboard() {
 
   return (
     <PageShell
-      title="集群仪表盘"
+      title={t('dashboard.title')}
       subtitle={
         clusterQuery.data
           ? `Proxmox VE ${clusterQuery.data.version || ''} · ${
               clusterQuery.data.quorate === true
-                ? '集群仲裁正常'
+                ? t('dashboard.subtitle.quorate')
                 : clusterQuery.data.quorate === false
-                  ? '集群仲裁异常'
-                  : '单机模式'
+                  ? t('dashboard.subtitle.notQuorate')
+                  : t('dashboard.subtitle.standalone')
             }`
-          : '正在加载集群信息…'
+          : t('dashboard.subtitle.loading')
       }
       actions={
         <>
@@ -904,7 +936,7 @@ export function Dashboard() {
             }}
             loading={vmsQuery.isFetching && !vmsQuery.isLoading}
           >
-            刷新
+            {t('dashboard.refresh')}
           </Button>
           <Button
             variant={editing ? 'primary' : 'secondary'}
@@ -914,7 +946,7 @@ export function Dashboard() {
               setEditing((value) => !value);
             }}
           >
-            {editing ? '完成' : '编辑布局'}
+            {editing ? t('dashboard.editDone') : t('dashboard.editLayout')}
           </Button>
           {/* 布局完全默认时不给这个按钮：没有可恢复的东西，点了只会困惑 */}
           {editing && !board.isDefault ? (
@@ -923,7 +955,7 @@ export function Dashboard() {
               icon={<IconRefresh size={15} />}
               onClick={() => void board.reset()}
             >
-              恢复默认布局
+              {t('dashboard.resetLayout')}
             </Button>
           ) : null}
           <Button
@@ -931,7 +963,7 @@ export function Dashboard() {
             icon={<IconVm size={15} />}
             onClick={() => navigate('/vms')}
           >
-            管理虚拟机
+            {t('dashboard.manageVms')}
           </Button>
         </>
       }
@@ -939,10 +971,7 @@ export function Dashboard() {
       {editing ? (
         <div className="widget-edit-hint">
           <IconLayout size={16} />
-          <span>
-            拖动卡片调整顺序、点「隐藏」收起不关心的内容。改动会立即保存到你的账号，
-            换浏览器或换设备都保持不变。
-          </span>
+          <span>{t('dashboard.editHint')}</span>
         </div>
       ) : null}
 
@@ -964,8 +993,8 @@ export function Dashboard() {
       {editing && board.hiddenWidgets.length > 0 ? (
         <Card collapsible={false}>
           <CardHeader
-            title="已隐藏的卡片"
-            subtitle="点一下放回它原来的位置"
+            title={t('dashboard.hiddenTitle')}
+            subtitle={t('dashboard.hiddenSubtitle')}
             icon={<IconEye size={16} />}
           />
           <div className="form-row">
@@ -977,7 +1006,7 @@ export function Dashboard() {
                 icon={<IconEye size={14} />}
                 onClick={() => board.setHidden(meta.id, false)}
               >
-                {meta.name}
+                {t(meta.nameKey)}
               </Button>
             ))}
           </div>
@@ -997,11 +1026,16 @@ export function Dashboard() {
    --------------------------------------------------------------------------- */
 
 function DashboardNodeRow({ node }: { node: NodeInfo }) {
+  const t = useT();
   const offline = node.status !== 'online';
-  const meta = nodeStatusMeta(node.status);
+  const meta = nodeStatusMeta(node.status, t);
 
   const metrics = [
-    { key: 'cpu', pct: toPercent(node.cpu), sub: node.maxcpu ? `${node.maxcpu} 核` : '—' },
+    {
+      key: 'cpu',
+      pct: toPercent(node.cpu),
+      sub: node.maxcpu ? t('dashboard.nodes.cores', { n: node.maxcpu }) : '—',
+    },
     {
       key: 'mem',
       pct: node.maxmem > 0 ? ((node.mem ?? 0) / node.maxmem) * 100 : 0,
@@ -1025,7 +1059,9 @@ function DashboardNodeRow({ node }: { node: NodeInfo }) {
         <span className={`dash-node-dot is-${offline ? 'off' : 'on'}`} aria-hidden="true" />
         <span className="fw-600 truncate">{node.node}</span>
         <span className="fs-xs text-muted truncate">
-          {offline ? '离线' : `运行 ${formatUptimeShort(node.uptime)}`}
+          {offline
+            ? t('dashboard.nodes.offline')
+            : t('dashboard.nodes.uptime', { uptime: formatUptimeShort(node.uptime) })}
           {node.connection_name ? ` · ${node.connection_name}` : ''}
         </span>
         {/* 屏幕阅读器读不到颜色，状态用徽章文字兜底 */}

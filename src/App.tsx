@@ -8,6 +8,7 @@ import { Layout } from './components/Layout';
 import { Spinner } from './components/ui/Spinner';
 import { useAuth } from './hooks/useAuth';
 import { useSiteInfo } from './hooks/useSiteInfo';
+import { useT } from './i18n';
 
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
@@ -51,10 +52,12 @@ import { NotFound } from './pages/NotFound';
    --------------------------------------------------------------------------- */
 
 function FullPageLoader() {
+  const t = useT();
+  const label = t('shell.checkingAuth');
   return (
-    <div className="notfound" role="status" aria-label="正在校验登录状态">
-      <Spinner size={30} label="正在校验登录状态" />
-      <div className="text-secondary">正在校验登录状态…</div>
+    <div className="notfound" role="status" aria-label={label}>
+      <Spinner size={30} label={label} />
+      <div className="text-secondary">{t('shell.checkingAuthHint')}</div>
     </div>
   );
 }

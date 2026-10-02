@@ -21,6 +21,7 @@ import type { NodeInfo } from '../api/types';
 import { toPercent, usageColor } from '../utils/format';
 import { IconCheck, IconChevronDown } from './Icons';
 import { Badge } from './ui/Badge';
+import { useT } from '../i18n';
 
 /** 三条指标的百分比。口径与节点页一致：cpu 是 0~1 的使用率，内存 / 磁盘按已用 / 总量。 */
 function usageOf(node: NodeInfo) {
@@ -62,7 +63,7 @@ export function NodePicker({
   onChange,
   loading = false,
   disabled = false,
-  emptyHint = '这台 PVE 上没有可用节点',
+  emptyHint,
 }: {
   nodes: NodeInfo[];
   value: string;
@@ -71,6 +72,7 @@ export function NodePicker({
   disabled?: boolean;
   emptyHint?: string;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -149,14 +151,23 @@ export function NodePicker({
           <>
             <span className="node-select-name truncate">{selected.node}</span>
             <span className="node-select-inline">
-              <span>负载 {pctText(selectedUsage.cpu, selectedUsage.offline)}</span>
-              <span>内存 {pctText(selectedUsage.mem, selectedUsage.offline)}</span>
-              <span>磁盘 {pctText(selectedUsage.disk, selectedUsage.offline)}</span>
+              <span>
+                {t('nodePicker.load')}{' '}
+                {pctText(selectedUsage.cpu, selectedUsage.offline)}
+              </span>
+              <span>
+                {t('nodePicker.mem')}{' '}
+                {pctText(selectedUsage.mem, selectedUsage.offline)}
+              </span>
+              <span>
+                {t('nodePicker.disk')}{' '}
+                {pctText(selectedUsage.disk, selectedUsage.offline)}
+              </span>
             </span>
           </>
         ) : (
           <span className="node-select-placeholder">
-            {loading ? '正在读取节点…' : '请选择节点'}
+            {loading ? t('nodePicker.loading') : t('nodePicker.placeholder')}
           </span>
         )}
         <span className={`node-select-caret ${open ? 'is-open' : ''}`}>
@@ -168,12 +179,14 @@ export function NodePicker({
         <div
           className="node-select-panel"
           role="listbox"
-          aria-label="选择节点"
+          aria-label={t('nodePicker.aria')}
           tabIndex={-1}
           onKeyDown={onPanelKey}
         >
           {nodes.length === 0 ? (
-            <div className="node-select-empty">{emptyHint}</div>
+            <div className="node-select-empty">
+              {emptyHint ?? t('nodePicker.emptyHint')}
+            </div>
           ) : (
             nodes.map((node, index) => {
               const usage = usageOf(node);
@@ -184,7 +197,7 @@ export function NodePicker({
                   role="option"
                   aria-selected={isSelected}
                   aria-disabled={usage.offline}
-                  title={usage.offline ? '节点离线，无法在其上创建' : undefined}
+                  title={usage.offline ? t('nodePicker.offlineTitle') : undefined}
                   className={
                     'node-select-option' +
                     (isSelected ? ' is-selected' : '') +
@@ -208,13 +221,23 @@ export function NodePicker({
                       dot
                       pulse={!usage.offline}
                     >
-                      {usage.offline ? '离线' : '在线'}
+                      {usage.offline
+                        ? t('nodePicker.offline')
+                        : t('nodePicker.online')}
                     </Badge>
                   </div>
                   <div className="node-select-usages">
                     <UsageText label="CPU" percent={usage.cpu} offline={usage.offline} />
-                    <UsageText label="内存" percent={usage.mem} offline={usage.offline} />
-                    <UsageText label="磁盘" percent={usage.disk} offline={usage.offline} />
+                    <UsageText
+                      label={t('nodePicker.mem')}
+                      percent={usage.mem}
+                      offline={usage.offline}
+                    />
+                    <UsageText
+                      label={t('nodePicker.disk')}
+                      percent={usage.disk}
+                      offline={usage.offline}
+                    />
                   </div>
                 </div>
               );

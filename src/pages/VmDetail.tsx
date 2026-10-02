@@ -92,7 +92,8 @@ import {
   ostypeLabel,
   taskStatusMeta,
   vmStatusMeta,
-} from '../utils/status';
+} from '../utils/status'
+import { tStatic, useT, type MessageKey } from '../i18n';;
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -124,14 +125,14 @@ type TabKey =
   | 'monitor'
   | 'config';
 
-const TABS: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
-  { key: 'overview', label: '概览', icon: <IconVm size={15} /> },
-  { key: 'hardware', label: '硬件', icon: <IconCpu size={15} /> },
-  { key: 'console', label: '控制台', icon: <IconConsole size={15} /> },
-  { key: 'snapshots', label: '快照', icon: <IconSnapshot size={15} /> },
-  { key: 'backups', label: '备份', icon: <IconBackup size={15} /> },
-  { key: 'monitor', label: '监控', icon: <IconMonitor size={15} /> },
-  { key: 'config', label: '配置', icon: <IconLayers size={15} /> },
+const TABS: Array<{ key: TabKey; labelKey: MessageKey; icon: React.ReactNode }> = [
+  { key: 'overview', labelKey: 'vmDetail.tab.overview', icon: <IconVm size={15} /> },
+  { key: 'hardware', labelKey: 'vmDetail.tab.hardware', icon: <IconCpu size={15} /> },
+  { key: 'console', labelKey: 'vmDetail.tab.console', icon: <IconConsole size={15} /> },
+  { key: 'snapshots', labelKey: 'vmDetail.tab.snapshots', icon: <IconSnapshot size={15} /> },
+  { key: 'backups', labelKey: 'vmDetail.tab.backups', icon: <IconBackup size={15} /> },
+  { key: 'monitor', labelKey: 'vmDetail.tab.monitor', icon: <IconMonitor size={15} /> },
+  { key: 'config', labelKey: 'vmDetail.tab.config', icon: <IconLayers size={15} /> },
 ];
 
 /* ==========================================================================
@@ -139,6 +140,7 @@ const TABS: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
    ========================================================================== */
 
 export function VmDetail() {
+  const t = useT();
   const { node = '', vmid: vmidParam = '' } = useParams<{
     node: string;
     vmid: string;
@@ -259,11 +261,11 @@ export function VmDetail() {
     if (!vm) return;
     const name = renameValue.trim();
     if (!name) {
-      toast.warning('名称不能为空', '留空会让虚拟机在列表里退回显示 VMID');
+      toast.warning(t('vmDetail.renameRequired'), t('vmDetail.renameRequiredHint'));
       return;
     }
     if (name.length > 63) {
-      toast.warning('名称过长', 'Proxmox 的名称上限是 63 个字符');
+      toast.warning(t('vmDetail.nameTooLong'), t('vmDetail.nameTooLongHint'));
       return;
     }
     if (name === (vm.name ?? '')) {
@@ -273,7 +275,7 @@ export function VmDetail() {
     setRenaming(true);
     try {
       await runner.run(vmsApi.updateConfig(node, vmid, { name }), {
-        title: `重命名为「${name}」`,
+        title: t('vmDetail.renameTask', { name }),
         node,
         invalidate: [['vm', node, vmid], ['vms']],
       });
@@ -289,18 +291,18 @@ export function VmDetail() {
   const power = useCallback(
     async (action: 'start' | 'stop' | 'shutdown' | 'reboot' | 'suspend' | 'resume') => {
       if (!canWrite) {
-        toast.warning('权限不足', '当前角色不允许执行电源操作');
+        toast.warning(t('vmDetail.noPermission'), t('power.denied'));
         return;
       }
       if (!vm) return;
 
-      const labels = {
-        start: '启动',
-        stop: '停止',
-        shutdown: '关机',
-        reboot: '重启',
-        suspend: '挂起',
-        resume: '恢复',
+      const labels: Record<typeof action, MessageKey> = {
+        start: 'power.start',
+        stop: 'power.stop',
+        shutdown: 'power.shutdown',
+        reboot: 'power.reboot',
+        suspend: 'power.suspend',
+        resume: 'power.resume',
       };
 
       const calls: Record<typeof action, () => Promise<{ task?: string }>> = {
@@ -314,7 +316,10 @@ export function VmDetail() {
 
       try {
         await runner.run(calls[action](), {
-          title: `${labels[action]}「${vm.name || vmid}」`,
+          title: t('power.task', {
+            action: t(labels[action]),
+            name: vm.name || vmid,
+          }),
           node,
           invalidate: [['vm', node, vmid], ['vms'], ['cluster']],
         });
@@ -330,8 +335,8 @@ export function VmDetail() {
     return (
       <div className="page">
         <ErrorState
-          title="无效的虚拟机地址"
-          message="请从虚拟机列表进入详情页。"
+          title={t('vmDetail.invalidTitle')}
+          message={t('vmDetail.invalidMessage')}
           onRetry={() => navigate('/vms')}
         />
       </div>
@@ -352,24 +357,24 @@ export function VmDetail() {
       <div className="page">
         <Breadcrumb
           items={[
-            { label: '虚拟机', to: '/vms' },
+            { label: t('nav.vms'), to: '/vms' },
             { label: `${node} / ${vmid}` },
           ]}
         />
         <ErrorState
-          title={notImpl ? '该虚拟机接口暂不可用' : '无法加载虚拟机详情'}
+          title={notImpl ? t('vmDetail.notAvailable') : t('vmDetail.loadFailed')}
           message={errorMessage(vmQuery.error)}
           notImplemented={notImpl}
           onRetry={() => void vmQuery.refetch()}
         />
         <Button variant="secondary" onClick={() => navigate('/vms')}>
-          返回列表
+          {t('vmDetail.backToList')}
         </Button>
       </div>
     );
   }
 
-  const statusMeta = vmStatusMeta(vm.status);
+  const statusMeta = vmStatusMeta(vm.status, tStatic);
   const running = isRunning(vm.status);
   const stopped = isStopped(vm.status);
   const frozen = vm.status === 'paused' || vm.status === 'suspended';
@@ -381,12 +386,12 @@ export function VmDetail() {
      让人以为开关没生效；虚拟机根本没运行时也不该说 Agent 有问题。 */
   const agentBadge: { label: string; variant: 'success' | 'warning' | 'neutral' } =
     !vm.agent_enabled
-      ? { label: '未启用', variant: 'neutral' }
+      ? { label: t('vmDetail.agentDisabled'), variant: 'neutral' }
       : vm.agent_available
-        ? { label: '可用', variant: 'success' }
+        ? { label: t('vmDetail.agentAvailable'), variant: 'success' }
         : running
-          ? { label: '无响应', variant: 'warning' }
-          : { label: '未运行', variant: 'neutral' };
+          ? { label: t('vmDetail.agentNoResponse'), variant: 'warning' }
+          : { label: t('vmDetail.notRunning'), variant: 'neutral' };
 
   const cpuPct = toPercent(vm.cpu);
   const memPct = vm.maxmem ? ((vm.mem ?? 0) / vm.maxmem) * 100 : 0;
@@ -398,7 +403,7 @@ export function VmDetail() {
         <div className="detail-header-main">
           <Breadcrumb
             items={[
-              { label: '虚拟机', to: '/vms' },
+              { label: t('nav.vms'), to: '/vms' },
               { label: `${vm.name || `VM ${vmid}`}` },
             ]}
           />
@@ -408,7 +413,7 @@ export function VmDetail() {
                 反而要用户先切回概览页 */}
             {canWrite ? (
               <IconButton
-                label="修改名称"
+                label={t('vmDetail.renameAction')}
                 onClick={() => {
                   setRenameValue(vm.name ?? '');
                   setRenameOpen(true);
@@ -423,28 +428,30 @@ export function VmDetail() {
             </Badge>
             {vm.template ? (
               <Badge variant="accent" size="sm">
-                模板
+                {t('vmDetail.badgeTemplate')}
               </Badge>
             ) : null}
             {vm.lock ? (
               <Badge variant="warning" size="sm">
-                锁定：{vm.lock}
+                {t('vmDetail.badgeLocked', { lock: vm.lock })}
               </Badge>
             ) : null}
           </div>
           <div className="detail-meta">
             <span className="detail-meta-item">
               <IconVm size={13} />
-              节点 <span className="mono">{vm.node}</span>
+              {t('common.node')} <span className="mono">{vm.node}</span>
             </span>
             <span className="detail-meta-item">
-              {ostypeLabel(vm.config.ostype)}
+              {ostypeLabel(vm.config.ostype, tStatic)}
             </span>
             <span className="detail-meta-item">
               {vm.config.bios === 'ovmf' ? 'UEFI (OVMF)' : 'SeaBIOS'}
             </span>
             <span className="detail-meta-item">
-              {running ? `运行 ${formatUptime(vm.uptime)}` : '未运行'}
+              {running
+                ? t('vmDetail.uptimeRunning', { uptime: formatUptime(vm.uptime) })
+                : t('vmDetail.notRunning')}
             </span>
             <span className="detail-meta-item">
               <Badge variant={agentBadge.variant} dot size="sm">
@@ -465,7 +472,7 @@ export function VmDetail() {
               onClick={() => void power('start')}
               disabled={noWrite}
             >
-              启动
+              {t('power.start')}
             </Button>
           ) : null}
           {running ? (
@@ -476,7 +483,7 @@ export function VmDetail() {
                 onClick={() => void power('shutdown')}
                 disabled={noWrite}
               >
-                关机
+                {t('power.shutdown')}
               </Button>
               <Button
                 variant="secondary"
@@ -484,7 +491,7 @@ export function VmDetail() {
                 onClick={() => void power('reboot')}
                 disabled={noWrite}
               >
-                重启
+                {t('power.reboot')}
               </Button>
               <Button
                 variant="danger"
@@ -492,7 +499,7 @@ export function VmDetail() {
                 onClick={() => void power('stop')}
                 disabled={noWrite}
               >
-                停止
+                {t('power.stop')}
               </Button>
               <Button
                 variant="ghost"
@@ -500,14 +507,14 @@ export function VmDetail() {
                 onClick={() => void power('suspend')}
                 disabled={noWrite}
               >
-                挂起
+                {t('power.suspend')}
               </Button>
               <Button
                 variant="secondary"
                 icon={<IconConsole size={14} />}
                 onClick={() => setTab('console')}
               >
-                控制台
+                {t('vmDetail.tab.console')}
               </Button>
             </>
           ) : null}
@@ -518,12 +525,12 @@ export function VmDetail() {
               onClick={() => void power('resume')}
               disabled={noWrite}
             >
-              恢复
+              {t('power.resume')}
             </Button>
           ) : null}
 
           <IconButton
-            label="刷新详情"
+            label={t('vmDetail.refreshDetail')}
             onClick={() => {
               void vmQuery.refetch();
               invalidate();
@@ -532,7 +539,7 @@ export function VmDetail() {
             <IconRefresh size={16} />
           </IconButton>
           <IconButton
-            label="删除虚拟机"
+            label={t('vmDetail.deleteTitle')}
             variant="danger"
             onClick={() => setDeleteOpen(true)}
             disabled={!canWrite}
@@ -543,18 +550,18 @@ export function VmDetail() {
       </div>
 
       {/* ---- Tab 导航 ---- */}
-      <div className="tabs" role="tablist" aria-label="虚拟机详情分区">
-        {TABS.map((t) => (
+      <div className="tabs" role="tablist" aria-label={t('vmDetail.tablistAria')}>
+        {TABS.map((item) => (
           <button
-            key={t.key}
+            key={item.key}
             type="button"
             role="tab"
-            aria-selected={tab === t.key}
-            className={`tab ${tab === t.key ? 'is-active' : ''}`}
-            onClick={() => setTab(t.key)}
+            aria-selected={tab === item.key}
+            className={`tab ${tab === item.key ? 'is-active' : ''}`}
+            onClick={() => setTab(item.key)}
           >
-            {t.icon}
-            <span>{t.label}</span>
+            {item.icon}
+            <span>{t(item.labelKey)}</span>
           </button>
         ))}
       </div>
@@ -613,8 +620,8 @@ export function VmDetail() {
       <Modal
         open={renameOpen}
         onClose={() => setRenameOpen(false)}
-        title="修改虚拟机名称"
-        description={`VMID ${vmid} · 节点 ${node}`}
+        title={t('vmDetail.renameTitle')}
+        description={t('vmDetail.renameDesc', { vmid, node })}
         size="sm"
         footer={
           <>
@@ -623,22 +630,24 @@ export function VmDetail() {
               onClick={() => setRenameOpen(false)}
               disabled={renaming}
             >
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" onClick={() => void saveRename()} loading={renaming}>
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
       >
         <Input
-          label="名称"
+          label={t('common.name')}
           value={renameValue}
           onChange={(e) => setRenameValue(e.target.value)}
           placeholder={`VM ${vmid}`}
           maxLength={63}
           autoFocus
-          hint={`当前名称：${vm.name || '未设置'} · 最多 63 个字符`}
+          hint={t('vmDetail.renameHint', {
+            name: vm.name || t('vmDetail.unset'),
+          })}
         />
       </Modal>
 
@@ -650,7 +659,7 @@ export function VmDetail() {
           setDeleting(true);
           try {
             await runner.run(vmsApi.delete(node, vmid, true), {
-              title: `删除「${vm.name || vmid}」`,
+              title: t('vmDetail.deleteTask', { name: vm.name || vmid }),
               node,
               invalidate: [['vms'], ['cluster'], ['storages']],
               destructive: true,
@@ -661,15 +670,15 @@ export function VmDetail() {
             setDeleting(false);
           }
         }}
-        title="删除虚拟机"
+        title={t('vmDetail.deleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={deleting}
         requireText={vm.name || String(vmid)}
         message={
           <>
-            即将删除虚拟机 <strong>{vm.name || `VM ${vmid}`}</strong>
-            （VMID {vmid}）。该操作会清除所有磁盘数据且不可恢复。
+            {t('vmDetail.deleteSoon')} <strong>{vm.name || `VM ${vmid}`}</strong>
+            {t('vmDetail.deleteTail', { vmid })}
           </>
         }
       />
@@ -702,6 +711,7 @@ function OverviewTab({
   /** 改名由页面级处理（它持有 mutation 与刷新逻辑）；无写权限时传 undefined */
   onRenameName?: () => void;
 }) {
+  const t = useT();
   const running = isRunning(vm.status);
 
   /* 磁盘的「分配总量」。真实的已用量由 probeDiskUsage 从客户机里取，
@@ -715,21 +725,24 @@ function OverviewTab({
   const cpuType = String(vm.config.cpu ?? '').split(',')[0].trim();
   const cpuTopology =
     vm.config.cores || vm.config.sockets
-      ? `${vm.config.sockets ?? 1} 插槽 × ${vm.config.cores ?? 1} 核`
+      ? t('vmDetail.cpuTopology', {
+          sockets: vm.config.sockets ?? 1,
+          cores: vm.config.cores ?? 1,
+        })
       : '';
   const cpuText = [cpuType, cpuTopology].filter(Boolean).join(' · ') || '—';
 
   const taskColumns: Array<Column<TaskInfo>> = [
     {
       key: 'type',
-      header: '类型',
-      render: (t) => <span className="mono fs-sm">{t.type}</span>,
+      header: t('vmDetail.colType'),
+      render: (task) => <span className="mono fs-sm">{task.type}</span>,
     },
     {
       key: 'status',
-      header: '状态',
-      render: (t) => {
-        const meta = taskStatusMeta(t.status, t.exitstatus);
+      header: t('vmDetail.colStatus'),
+      render: (task) => {
+        const meta = taskStatusMeta(task.status, task.exitstatus, tStatic);
         return (
           <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
             {meta.label}
@@ -740,10 +753,10 @@ function OverviewTab({
     },
     {
       key: 'time',
-      header: '时间',
-      render: (t) => (
+      header: t('vmDetail.colTime'),
+      render: (task) => (
         <span className="fs-sm text-secondary">
-          {formatRelative(t.starttime)}
+          {formatRelative(task.starttime)}
         </span>
       ),
       align: 'right',
@@ -759,7 +772,7 @@ function OverviewTab({
           底下会空出一大块。 */}
       <div className="grid grid-3 detail-full">
         <KpiCard
-          label="CPU 使用率"
+          label={t('vmDetail.kpiCpu')}
           value={`${cpuPct.toFixed(1)}%`}
           icon={<IconCpu size={16} />}
           tone={usageTone(cpuPct)}
@@ -774,7 +787,7 @@ function OverviewTab({
           }
         />
         <KpiCard
-          label="内存使用率"
+          label={t('vmDetail.kpiMem')}
           value={`${memPct.toFixed(1)}%`}
           icon={<IconMemory size={16} />}
           tone={usageTone(memPct)}
@@ -792,7 +805,7 @@ function OverviewTab({
             探测不到时（未启用 Agent / 未运行 / 非 Linux 客户机 / 读取失败）
             退回显示分配容量，不让 KPI 空着或显示假读数。 */}
         <KpiCard
-          label="磁盘使用率"
+          label={t('vmDetail.kpiDisk')}
           value={
             diskUsage ? `${diskUsage.percent.toFixed(1)}%` : formatBytes(diskTotal, 0)
           }
@@ -808,7 +821,10 @@ function OverviewTab({
               </span>
             ) : (
               <span className="mono">
-                {vm.disks.length} 块 · 共 {formatBytes(diskTotal, 0)}（未读客户机）
+                {t('vmDetail.diskMounts', {
+                  count: vm.disks.length,
+                  size: formatBytes(diskTotal, 0),
+                })}
               </span>
             )
           }
@@ -820,20 +836,23 @@ function OverviewTab({
         {/* 概览这三张卡都不提供收起：内容是固定的一组事实，
             收起只会让人多点一下，还容易忘了自己收过 */}
         <Card className="vm-basic-info" collapsible={false}>
-          <CardHeader title="基本信息" icon={<IconVm size={16} />} />
+          <CardHeader title={t('vmDetail.basicInfo')} icon={<IconVm size={16} />} />
           <InfoGrid>
             {/* 名称是可改的（PVE 的 `name` 字段）：仍用 InfoRow 保持与其余各项
                 同一套排版，只在值右侧挂一个编辑按钮 —— 单独的「重命名」按钮
                 放在标题栏反而离它修饰的对象更远。 */}
             <InfoRow
-              label="名称"
+              label={t('common.name')}
               value={
                 <span className="info-editable">
                   <span className="truncate" title={vm.name || `VM ${vm.vmid}`}>
                     {vm.name || `VM ${vm.vmid}`}
                   </span>
                   {onRenameName ? (
-                    <IconButton label="修改名称" onClick={onRenameName}>
+                    <IconButton
+                      label={t('vmDetail.renameAction')}
+                      onClick={onRenameName}
+                    >
                       <IconEdit size={13} />
                     </IconButton>
                   ) : null}
@@ -841,40 +860,55 @@ function OverviewTab({
               }
             />
             <InfoRow label="VMID" value={vm.vmid} mono />
-            <InfoRow label="节点" value={vm.node} mono />
-            <InfoRow label="操作系统" value={ostypeLabel(vm.config.ostype)} />
+            <InfoRow label={t('common.node')} value={vm.node} mono />
+            <InfoRow
+              label={t('vmDetail.os')}
+              value={ostypeLabel(vm.config.ostype, tStatic)}
+            />
             <InfoRow
               label="BIOS"
               value={vm.config.bios === 'ovmf' ? 'OVMF (UEFI)' : 'SeaBIOS'}
             />
-            <InfoRow label="机型" value={String(vm.config.machine ?? '—')} mono />
+            <InfoRow
+              label={t('vmDetail.machine')}
+              value={String(vm.config.machine ?? '—')}
+              mono
+            />
             <InfoRow label="CPU" value={cpuText} />
             {/* 基本信息里这一行问的是「配置开关」，用 agent_enabled；
                 顶部那个徽标问的是「此刻能不能用」，用 agent_available */}
             <InfoRow
-              label="Guest Agent"
+              label={t('vmDetail.agent')}
               value={
                 <Badge
                   variant={vm.agent_enabled ? 'success' : 'neutral'}
                   dot
                   size="sm"
                 >
-                  {vm.agent_enabled ? '已启用' : '未启用'}
+                  {vm.agent_enabled
+                    ? t('status.user.enabled')
+                    : t('vmDetail.agentDisabled')}
                 </Badge>
               }
             />
-            <InfoRow label="运行时长" value={running ? formatUptime(vm.uptime) : '未运行'} />
             <InfoRow
-              label="创建时间"
+              label={t('vmDetail.uptime')}
+              value={running ? formatUptime(vm.uptime) : t('vmDetail.notRunning')}
+            />
+            <InfoRow
+              label={t('common.createdAt')}
               /* PVE 8 之前建的机器没有 meta，克隆出来的机器继承来源的时间 */
-              title="面板发起的新建 / 克隆 / 恢复按实际时刻记录；其余取 PVE config 里的 meta.ctime（PVE 克隆 / 恢复会继承来源机器的时间）"
+              title={t('vmDetail.createdTitle')}
               value={vm.created ? formatDateTime(vm.created) : '—'}
             />
             <InfoRow
-              label="开机自启"
-              value={vm.config.onboot ? '是' : '否'}
+              label={t('vmDetail.onboot')}
+              value={vm.config.onboot ? t('common.yes') : t('common.no')}
             />
-            <InfoRow label="标签" value={<TagList tags={parseTags(vm.tags)} max={5} />} />
+            <InfoRow
+              label={t('vmDetail.tag')}
+              value={<TagList tags={parseTags(vm.tags)} max={5} />}
+            />
           </InfoGrid>
         </Card>
       </div>
@@ -885,12 +919,15 @@ function OverviewTab({
       <div className="detail-column">
         <Card collapsible={false}>
           <CardHeader
-            title="磁盘"
-            subtitle={`${vm.disks.length} 块 · 共 ${formatBytes(diskTotal, 0)}`}
+            title={t('vmDetail.disks')}
+            subtitle={t('vmDetail.disksSubtitle', {
+              count: vm.disks.length,
+              size: formatBytes(diskTotal, 0),
+            })}
             icon={<IconDisk size={16} />}
           />
           {vm.disks.length === 0 ? (
-            <EmptyState title="暂无磁盘" compact />
+            <EmptyState title={t('vmDetail.noDisks')} compact />
           ) : (
             <div className="flex flex-col">
               {vm.disks.map((d) => (
@@ -915,12 +952,12 @@ function OverviewTab({
 
         <Card collapsible={false}>
           <CardHeader
-            title="网络"
-            subtitle={`${vm.networks.length} 个网卡`}
+            title={t('vmDetail.network')}
+            subtitle={t('vmDetail.nicCount', { count: vm.networks.length })}
             icon={<IconNetwork size={16} />}
           />
           {vm.networks.length === 0 ? (
-            <EmptyState title="暂无网卡" compact />
+            <EmptyState title={t('vmDetail.noNics')} compact />
           ) : (
             <div className="flex flex-col">
               {vm.networks.map((n) => {
@@ -935,9 +972,9 @@ function OverviewTab({
                         <IconNetwork size={15} />
                       </span>
                       <div className="hw-item-text">
-                        <span className="hw-item-label">{name || '网卡'}</span>
+                        <span className="hw-item-label">{name || t('vmDetail.nic')}</span>
                         <span className="hw-item-value">
-                          {n.model ?? '—'} · {n.bridge ?? '未桥接'}
+                          {n.model ?? '—'} · {n.bridge ?? t('vmDetail.noBridge')}
                           {vlan ? ` · VLAN ${vlan}` : ''}
                         </span>
                         {n.macaddr ? (
@@ -945,8 +982,14 @@ function OverviewTab({
                         ) : null}
                         <span className="fs-xs text-muted">
                           {ipStatic
-                            ? `IP ${ipcfg.ip}${ipcfg.gateway ? ` · 网关 ${ipcfg.gateway}` : ''}`
-                            : 'IP 自动获取（DHCP）'}
+                            ? `${t('vmDetail.ipStatic', { ip: ipcfg.ip })}${
+                                ipcfg.gateway
+                                  ? t('vmDetail.ipGateway', {
+                                      gateway: ipcfg.gateway,
+                                    })
+                                  : ''
+                              }`
+                            : t('vmDetail.ipDhcp')}
                         </span>
                       </div>
                     </div>
@@ -959,7 +1002,7 @@ function OverviewTab({
           {/* Guest Agent 网卡信息（容错） */}
           {vm.agent_available && (vm.agent_interfaces?.length ?? 0) > 0 ? (
             <div className="mt-16">
-              <div className="wizard-section-title">客户机内网卡（Guest Agent）</div>
+              <div className="wizard-section-title">{t('vmDetail.agentNics')}</div>
               <div className="flex flex-col">
                 {vm.agent_interfaces?.map((iface) => (
                   <div className="hw-item" key={iface.name}>
@@ -968,7 +1011,7 @@ function OverviewTab({
                         <span className="hw-item-label">{iface.name}</span>
                         <span className="hw-item-value mono">
                           {iface.ip_addresses?.map((a) => a.ip_address).join(', ') ||
-                            '无地址'}
+                            t('vmDetail.noAddress')}
                         </span>
                       </div>
                     </div>
@@ -984,16 +1027,16 @@ function OverviewTab({
           表格放全宽才好读，也不会像挤在半列里那样把一边拉得老长。 */}
       <Card padded={false} className="detail-full">
         <div style={{ padding: '18px 18px 0' }}>
-          <CardHeader title="最近任务" icon={<IconRefresh size={16} />} />
+          <CardHeader title={t('vmDetail.recentTasks')} icon={<IconRefresh size={16} />} />
         </div>
         <Table<TaskInfo>
           columns={taskColumns}
           rows={tasks}
           rowKey={(t) => t.upid}
           loading={tasksLoading}
-          caption={`虚拟机 ${vm.vmid} 的最近任务`}
-          emptyTitle="暂无任务"
-          emptyDescription="该虚拟机近期没有执行过任务。"
+          caption={t('vmDetail.recentTasksCaption', { vmid: vm.vmid })}
+          emptyTitle={t('vmDetail.noTasks')}
+          emptyDescription={t('vmDetail.noTasksDesc')}
           dense
           className="table-flush"
         />
@@ -1017,6 +1060,7 @@ function HardwareTab({
   vmid: number;
   onChanged: () => void;
 }) {
+  const t = useT();
   const runner = useTaskRunner();
   const toast = useToast();
   const { canWrite } = useAuth();
@@ -1045,18 +1089,18 @@ function HardwareTab({
 
   const storageOptions = useMemo(
     () => [
-      { label: '请选择存储池', value: '' },
+      { label: t('vmDetail.selectStorage'), value: '' },
       ...(storagesQuery.data ?? [])
         .filter((s) => s.active)
         .map((s) => ({ label: `${s.storage} (${s.type})`, value: s.storage })),
     ],
-    [storagesQuery.data],
+    [storagesQuery.data, t],
   );
 
   /* 新增磁盘只能落在支持 images 内容的存储池上（ISO / 备份池放不了磁盘） */
   const diskStorageOptions = useMemo(
     () => [
-      { label: '请选择存储池', value: '' },
+      { label: t('vmDetail.selectStorage'), value: '' },
       ...(storagesQuery.data ?? [])
         .filter(
           (s) =>
@@ -1065,7 +1109,7 @@ function HardwareTab({
         )
         .map((s) => ({ label: `${s.storage} (${s.type})`, value: s.storage })),
     ],
-    [storagesQuery.data],
+    [storagesQuery.data, t],
   );
 
   /* ---- 保存通用配置 ---- */
@@ -1079,7 +1123,7 @@ function HardwareTab({
           : { [key]: value };
 
       await runner.run(vmsApi.updateConfig(node, vmid, payload), {
-        title: `修改 ${key}`,
+        title: t('vmDetail.editConfigTask', { key }),
         node,
         invalidate: [['vm', node, vmid], ['vms']],
       });
@@ -1097,7 +1141,7 @@ function HardwareTab({
     if (!ipEditNet) return;
     const ip = ipValue.trim();
     if (ip && ip.toLowerCase() !== 'dhcp' && !ip.includes('/')) {
-      toast.warning('IP 格式不正确', '静态地址需带 CIDR 前缀，如 192.168.1.10/24');
+      toast.warning(t('vmDetail.formatInvalid'), t('vmDetail.ipCidr'));
       return;
     }
     const idx = ipEditNet.replace(/\D/g, '');
@@ -1108,7 +1152,7 @@ function HardwareTab({
           [`ipconfig${idx}`]: buildIpconfig(ip, gwValue),
         }),
         {
-          title: `修改 ${ipEditNet} 的 IP`,
+          title: t('vmDetail.editNicIpTask', { nic: ipEditNet }),
           node,
           invalidate: [['vm', node, vmid], ['vms']],
         },
@@ -1127,7 +1171,7 @@ function HardwareTab({
     if (!resizeDisk) return;
     const size = resizeValue.trim().toUpperCase();
     if (!/^\d+(\.\d+)?[KMGT]?$/.test(size)) {
-      toast.warning('格式不正确', '请输入如 50G、100G 的容量');
+      toast.warning(t('vmDetail.formatInvalid'), t('vmDetail.resizeFormat'));
       return;
     }
     setBusy(true);
@@ -1138,7 +1182,7 @@ function HardwareTab({
           size: /[KMGT]$/.test(size) ? size : `${size}G`,
         }),
         {
-          title: `扩容磁盘 ${resizeDisk}`,
+          title: t('vmDetail.resizeTask', { disk: resizeDisk }),
           node,
           invalidate: [['vm', node, vmid], ['vms'], ['storages']],
         },
@@ -1157,7 +1201,7 @@ function HardwareTab({
       await runner.run(
         vmsApi.move(node, vmid, { disk, storage, delete_source: true }),
         {
-          title: `迁移磁盘 ${disk} 到 ${storage}`,
+          title: t('vmDetail.moveTask', { disk, storage }),
           node,
           invalidate: [['vm', node, vmid], ['vms'], ['storages']],
         },
@@ -1173,7 +1217,7 @@ function HardwareTab({
     setBusy(true);
     try {
       await runner.run(vmsApi.addDisk(node, vmid, body), {
-        title: `新增磁盘 ${body.size} GB`,
+        title: t('vmDetail.addDiskTask', { size: body.size }),
         node,
         invalidate: [['vm', node, vmid], ['vms'], ['storages']],
       });
@@ -1190,7 +1234,7 @@ function HardwareTab({
     setBusy(true);
     try {
       await runner.run(vmsApi.addNetwork(node, vmid, body), {
-        title: `新增网卡 ${body.bridge}`,
+        title: t('vmDetail.addNicTask', { bridge: body.bridge }),
         node,
         invalidate: [['vm', node, vmid], ['vms']],
       });
@@ -1209,7 +1253,7 @@ function HardwareTab({
     setBusy(true);
     try {
       await runner.run(vmsApi.removeHardware(node, vmid, removeTarget.key), {
-        title: `移除 ${removeTarget.key}`,
+        title: t('vmDetail.removeTask', { key: removeTarget.key }),
         node,
         invalidate: [['vm', node, vmid], ['vms'], ['storages']],
       });
@@ -1233,11 +1277,11 @@ function HardwareTab({
     <div className="detail-columns">
       <div className="detail-column">
         <Card>
-          <CardHeader title="处理器与内存" icon={<IconCpu size={16} />} />
+          <CardHeader title={t('vmDetail.cpuMem')} icon={<IconCpu size={16} />} />
           <div className="flex flex-col">
             <HwRow
               label="cpu"
-              title="CPU 类型"
+              title={t('vmDetail.hwCpuType')}
               value={String(vm.config.cpu ?? 'kvm64')}
               editable={canEdit}
               onEdit={() => {
@@ -1247,8 +1291,8 @@ function HardwareTab({
             />
             <HwRow
               label="cores"
-              title="核心数"
-              value={`${vm.config.cores ?? 1} 核`}
+              title={t('vmDetail.hwCores')}
+              value={t('vmDetail.hwCoresValue', { count: vm.config.cores ?? 1 })}
               editable={canEdit}
               onEdit={() => {
                 setEditKey('cores');
@@ -1257,8 +1301,10 @@ function HardwareTab({
             />
             <HwRow
               label="sockets"
-              title="插槽数"
-              value={`${vm.config.sockets ?? 1} 插槽`}
+              title={t('vmDetail.hwSockets')}
+              value={t('vmDetail.hwSocketsValue', {
+                count: vm.config.sockets ?? 1,
+              })}
               editable={canEdit}
               onEdit={() => {
                 setEditKey('sockets');
@@ -1267,22 +1313,22 @@ function HardwareTab({
             />
             <HwRow
               label="memory"
-              title="内存"
+              title={t('vmDetail.hwMemory')}
               value={formatBytes(Number(vm.config.memory ?? 0) * 1024 ** 2)}
               editable={canEdit}
               onEdit={() => {
                 setEditKey('memory');
                 setEditValue(configValue('memory'));
               }}
-              hint="支持在线调整（需 Guest Agent）"
+              hint={t('vmDetail.hintMemory')}
             />
             <HwRow
               label="balloon"
-              title="Balloon 最小内存"
+              title={t('vmDetail.hwBalloon')}
               value={
                 vm.config.balloon
                   ? formatBytes(Number(vm.config.balloon) * 1024 ** 2)
-                  : '未设置'
+                  : t('vmDetail.unset')
               }
               editable={canEdit}
               onEdit={() => {
@@ -1292,31 +1338,31 @@ function HardwareTab({
             />
             <HwRow
               label="numa"
-              title="NUMA"
-              value={Number(vm.config.numa) === 1 ? '已启用' : '未启用'}
+              title={t('vmDetail.hwNuma')}
+              value={Number(vm.config.numa) === 1 ? t('vmDetail.enabled') : t('vmDetail.disabled')}
               editable={canEdit}
               onEdit={() => {
                 setEditKey('numa');
                 setEditValue(configValue('numa'));
               }}
-              hint="只向客户机呈现 NUMA 拓扑；要把 vCPU 钉到宿主节点需另配 numaN"
+              hint={t('vmDetail.hintNuma')}
             />
             <HwRow
               label="affinity"
-              title="CPU 亲和性"
-              value={String(vm.config.affinity ?? '未限制')}
+              title={t('vmDetail.hwAffinity')}
+              value={String(vm.config.affinity ?? t('vmDetail.hwAffinityValue'))}
               editable={canEdit}
               onEdit={() => {
                 setEditKey('affinity');
                 setEditValue(configValue('affinity'));
               }}
-              hint="整机允许落在哪些宿主逻辑 CPU 上，如 0-7"
+              hint={t('vmDetail.hintAffinity')}
             />
           </div>
         </Card>
 
         <Card>
-          <CardHeader title="固件与引导" icon={<IconVm size={16} />} />
+          <CardHeader title={t('vmDetail.firmware')} icon={<IconVm size={16} />} />
           <div className="flex flex-col">
             <HwRow
               label="bios"
@@ -1330,7 +1376,7 @@ function HardwareTab({
             />
             <HwRow
               label="machine"
-              title="机型"
+              title={t('vmDetail.hwMachine')}
               value={String(vm.config.machine ?? 'pc')}
               editable={canEdit}
               onEdit={() => {
@@ -1340,7 +1386,7 @@ function HardwareTab({
             />
             <HwRow
               label="scsihw"
-              title="SCSI 控制器"
+              title={t('vmDetail.hwScsihw')}
               value={String(vm.config.scsihw ?? '—')}
               editable={canEdit}
               onEdit={() => {
@@ -1350,7 +1396,7 @@ function HardwareTab({
             />
             <HwRow
               label="boot"
-              title="启动顺序"
+              title={t('vmDetail.hwBoot')}
               value={String(vm.config.boot ?? vm.config.bootdisk ?? '—')}
               editable={canEdit}
               onEdit={() => {
@@ -1360,30 +1406,30 @@ function HardwareTab({
             />
             <HwRow
               label="efidisk0"
-              title="EFI 变量盘"
-              value={String(vm.config.efidisk0 ?? '未配置')}
+              title={t('vmDetail.hwEfi')}
+              value={String(vm.config.efidisk0 ?? t('vmDetail.unsetCfg'))}
               editable={canEdit}
               onEdit={() => {
                 setEditKey('efidisk0');
                 setEditValue(configValue('efidisk0'));
               }}
-              hint="Windows 11 必需（UEFI 启动）；需配合 BIOS=OVMF、机型=q35"
+              hint={t('vmDetail.hintEfi')}
             />
             <HwRow
               label="tpmstate0"
-              title="虚拟 TPM"
-              value={String(vm.config.tpmstate0 ?? '未配置')}
+              title={t('vmDetail.hwTpm')}
+              value={String(vm.config.tpmstate0 ?? t('vmDetail.unsetCfg'))}
               editable={canEdit}
               onEdit={() => {
                 setEditKey('tpmstate0');
                 setEditValue(configValue('tpmstate0'));
               }}
-              hint="Windows 11 要求 TPM 2.0"
+              hint={t('vmDetail.hintTpm')}
             />
             <HwRow
               label="ostype"
-              title="操作系统类型"
-              value={ostypeLabel(String(vm.config.ostype ?? ''))}
+              title={t('vmDetail.hwOstype')}
+              value={ostypeLabel(String(vm.config.ostype ?? ''), tStatic)}
               editable={false}
             />
           </div>
@@ -1393,8 +1439,8 @@ function HardwareTab({
       <div className="detail-column">
         <Card>
           <CardHeader
-            title="磁盘"
-            subtitle={`${vm.disks.length} 块`}
+            title={t('vmDetail.disks')}
+            subtitle={t('vmDetail.disksSubtitleShort', { count: vm.disks.length })}
             icon={<IconDisk size={16} />}
             actions={
               <Button
@@ -1404,12 +1450,12 @@ function HardwareTab({
                 onClick={() => setAddDiskOpen(true)}
                 disabled={!canEdit}
               >
-                新增磁盘
+                {t('vmDetail.addDisk')}
               </Button>
             }
           />
           {vm.disks.length === 0 ? (
-            <EmptyState title="暂无磁盘" compact />
+            <EmptyState title={t('vmDetail.noDisks')} compact />
           ) : (
             <div className="flex flex-col">
               {vm.disks.map((d, i) => {
@@ -1421,7 +1467,7 @@ function HardwareTab({
                         <IconDisk size={15} />
                       </span>
                       <div className="hw-item-text">
-                        <span className="hw-item-label">{name || '磁盘'}</span>
+                        <span className="hw-item-label">{name || t('vmDetail.hwDisk')}</span>
                         <span className="hw-item-value">
                           {formatBytes(parseSizeToBytes(d.size))} · {d.storage}
                           {d.format ? ` · ${d.format}` : ''}
@@ -1430,7 +1476,9 @@ function HardwareTab({
                     </div>
                     <div className="hw-item-actions">
                       <IconButton
-                        label={`扩容 ${name || '磁盘'}`}
+                        label={t('vmDetail.resizeDiskAria', {
+                          disk: name || t('vmDetail.hwDisk'),
+                        })}
                         onClick={() => {
                           setResizeDisk(name);
                           setResizeValue((d.size || '').replace(/[^0-9.GTKM]/gi, '') || '');
@@ -1445,17 +1493,21 @@ function HardwareTab({
                           if (e.target.value) void doMove(name, e.target.value);
                         }}
                         options={[
-                          { label: '迁移到…', value: '' },
+                          { label: t('vmDetail.moveTo'), value: '' },
                           ...(storagesQuery.data ?? [])
                             .filter((s) => s.active && s.storage !== d.storage)
                             .map((s) => ({ label: s.storage, value: s.storage })),
                         ]}
                         disabled={!canEdit}
-                        aria-label={`迁移磁盘 ${name || '磁盘'} 到其他存储`}
+                        aria-label={t('vmDetail.moveDiskAria', {
+                          disk: name || t('vmDetail.hwDisk'),
+                        })}
                         style={{ width: 110, height: 28, fontSize: 12 }}
                       />
                       <IconButton
-                        label={`移除 ${name || '磁盘'}`}
+                        label={t('vmDetail.removeDiskAria', {
+                          disk: name || t('vmDetail.hwDisk'),
+                        })}
                         variant="danger"
                         disabled={!canEdit || !name}
                         onClick={() =>
@@ -1464,9 +1516,7 @@ function HardwareTab({
                             title: `${name}（${formatBytes(
                               parseSizeToBytes(d.size),
                             )} · ${d.storage}）`,
-                            detail:
-                              '只会从虚拟机配置里摘掉这块盘，卷数据仍留在存储池上；'
-                              + '要回收空间请到「存储」页面删除该卷。',
+                            detail: t('vmDetail.removeDiskDetail'),
                           })
                         }
                       >
@@ -1482,8 +1532,8 @@ function HardwareTab({
 
         <Card>
           <CardHeader
-            title="网络设备"
-            subtitle={`${vm.networks.length} 个`}
+            title={t('vmDetail.nicCard')}
+            subtitle={t('vmDetail.nicCountShort', { count: vm.networks.length })}
             icon={<IconNetwork size={16} />}
             actions={
               <Button
@@ -1493,12 +1543,12 @@ function HardwareTab({
                 onClick={() => setAddNetOpen(true)}
                 disabled={!canEdit}
               >
-                新增网卡
+                {t('vmDetail.addNic')}
               </Button>
             }
           />
           {vm.networks.length === 0 ? (
-            <EmptyState title="暂无网卡" compact />
+            <EmptyState title={t('vmDetail.noNics')} compact />
           ) : (
             <div className="flex flex-col">
               {vm.networks.map((n) => {
@@ -1508,16 +1558,21 @@ function HardwareTab({
                 const ipStatic = ipcfg.ip && ipcfg.ip.toLowerCase() !== 'dhcp';
                 const vlan = n.vlan_tag ?? n.tag;
                 const ipLabel = ipStatic
-                  ? `IP ${ipcfg.ip}${ipcfg.gateway ? ` · 网关 ${ipcfg.gateway}` : ''}`
-                  : 'IP 自动获取（DHCP）';
+                  ? `${t('vmDetail.ipStatic', { ip: ipcfg.ip })}${
+                      ipcfg.gateway
+                        ? t('vmDetail.ipGateway', { gateway: ipcfg.gateway })
+                        : ''
+                    }`
+                  : t('vmDetail.ipDhcp');
+                const nicName = name || t('vmDetail.nic');
                 return (
                   <HwRow
                     key={name || n.macaddr}
-                    label={name || '网卡'}
-                    title={`${name || '网卡'} (${n.model ?? '—'})`}
-                    value={`${n.bridge ?? '未桥接'}${vlan ? ` · VLAN ${vlan}` : ''}${
-                      n.firewall ? ' · 防火墙' : ''
-                    }`}
+                    label={nicName}
+                    title={`${nicName} (${n.model ?? '—'})`}
+                    value={`${n.bridge ?? t('vmDetail.noBridge')}${
+                      vlan ? ` · VLAN ${vlan}` : ''
+                    }${n.firewall ? t('vmDetail.nicFirewall') : ''}`}
                     hint={`${n.macaddr ? `${n.macaddr} · ` : ''}${ipLabel}`}
                     editable={canEdit}
                     onEdit={() => {
@@ -1528,15 +1583,14 @@ function HardwareTab({
                       setRemoveTarget({
                         key: name,
                         title: `${name}（${n.model ?? '—'} · ${
-                          n.bridge ?? '未桥接'
+                          n.bridge ?? t('vmDetail.noBridge')
                         }${vlan ? ` · VLAN ${vlan}` : ''}）`,
-                        detail:
-                          `移除后客户机里的对应网卡会消失，IP 配置（ipconfig${idx}）本身保留。`,
+                        detail: t('vmDetail.removeNicDetail', { idx }),
                       })
                     }
                     extraActions={
                       <IconButton
-                        label={`编辑 ${name || '网卡'} 的 IP 地址`}
+                        label={t('vmDetail.editNicIpAria', { nic: nicName })}
                         onClick={() => {
                           setIpEditNet(name);
                           setIpValue(ipcfg.ip || 'dhcp');
@@ -1556,7 +1610,7 @@ function HardwareTab({
 
         {/* CD-ROM / ISO */}
         <Card>
-          <CardHeader title="光驱" icon={<IconDisk size={16} />} />
+          <CardHeader title={t('vmDetail.cdrom')} icon={<IconDisk size={16} />} />
           <div className="flex flex-col">
             {Object.keys(vm.config)
               .filter((k) => /^(ide|sata)\d+$/.test(k) && k !== vm.config.bootdisk)
@@ -1564,7 +1618,7 @@ function HardwareTab({
                 <HwRow
                   key={k}
                   label={k}
-                  title={`${k}（光驱）`}
+                  title={t('vmDetail.cdromLabel', { key: k })}
                   value={String(vm.config[k] ?? '—')}
                   editable={canEdit}
                   onEdit={() => {
@@ -1574,17 +1628,15 @@ function HardwareTab({
                   onRemove={() =>
                     setRemoveTarget({
                       key: k,
-                      title: `${k}（光驱）`,
-                      detail:
-                        '只删配置项，ISO 文件本身不受影响；'
-                        + '如果这一项是 cloud-init 驱动器，移除后 cloud-init 会一并失效。',
+                      title: t('vmDetail.cdromLabel', { key: k }),
+                      detail: t('vmDetail.removeCdromDetail'),
                     })
                   }
                 />
               ))}
             {Object.keys(vm.config).filter((k) => /^(ide|sata)\d+$/.test(k)).length ===
             0 ? (
-              <EmptyState title="没有光驱设备" compact />
+              <EmptyState title={t('vmDetail.noCdrom')} compact />
             ) : null}
           </div>
         </Card>
@@ -1609,42 +1661,43 @@ function HardwareTab({
       <Modal
         open={Boolean(ipEditNet)}
         onClose={() => setIpEditNet(null)}
-        title={`编辑 ${ipEditNet ?? ''} 的 IP 地址`}
-        description="静态地址通过 Cloud-Init 下发，需要虚拟机使用 cloud-init 镜像"
+        title={t('vmDetail.nicIpTitle', { nic: ipEditNet ?? '' })}
+        description={t('vmDetail.nicIpDesc')}
         size="sm"
         footer={
           <>
             <Button variant="secondary" onClick={() => setIpEditNet(null)} disabled={busy}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" onClick={saveNicIp} loading={busy}>
-              保存
+              {t('common.save')}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-16">
           <Input
-            label="IP 地址"
+            label={t('vmDetail.nicIpLabel')}
             value={ipValue}
             onChange={(e) => setIpValue(e.target.value)}
-            placeholder="dhcp 或 192.168.1.10/24"
+            placeholder={t('vmDetail.nicIpPlaceholder')}
             mono
             autoFocus
-            hint="填 dhcp 表示自动获取"
+            hint={t('vmDetail.nicIpHint')}
           />
           <Input
-            label="网关"
+            label={t('vmDetail.gateway')}
             value={gwValue}
             onChange={(e) => setGwValue(e.target.value)}
-            placeholder="如 192.168.1.1"
+            placeholder={t('vmDetail.gatewayPlaceholder')}
             mono
             disabled={ipValue.trim().toLowerCase() === 'dhcp'}
-            hint="DHCP 时无需填写"
+            hint={t('vmDetail.gatewayHint')}
           />
-          <Notice tone="info" title="生效方式">
-            修改的是该网卡的 Cloud-Init 网络配置（<code>ipconfig{ipEditNet?.replace(/\D/g, '')}</code>）。
-            若虚拟机正在运行，需重启或在客户机内重新应用网络配置后生效。
+          <Notice tone="info" title={t('vmDetail.nicIpNoticeTitle')}>
+            {t('vmDetail.nicIpNoticeDesc', {
+              idx: ipEditNet?.replace(/\D/g, '') ?? '',
+            })}
           </Notice>
         </div>
       </Modal>
@@ -1653,32 +1706,32 @@ function HardwareTab({
       <Modal
         open={Boolean(resizeDisk)}
         onClose={() => setResizeDisk(null)}
-        title="扩容磁盘"
-        description={`磁盘 ${resizeDisk ?? ''}`}
+        title={t('vmDetail.resizeTitle')}
+        description={t('vmDetail.resizeDesc', { disk: resizeDisk ?? '' })}
         size="sm"
         footer={
           <>
             <Button variant="secondary" onClick={() => setResizeDisk(null)} disabled={busy}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" onClick={doResize} loading={busy}>
-              确认扩容
+              {t('vmDetail.resizeConfirm')}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-16">
           <Input
-            label="新容量"
+            label={t('vmDetail.resizeLabel')}
             required
             value={resizeValue}
             onChange={(e) => setResizeValue(e.target.value)}
-            placeholder="如 50G"
+            placeholder={t('vmDetail.resizePlaceholder')}
             autoFocus
-            hint="单位可为 G / T，例如 100G"
+            hint={t('vmDetail.resizeHint')}
           />
-          <Notice tone="warning" title="仅支持增大">
-            磁盘只能扩容，无法缩小。扩容后需在客户机内扩展分区与文件系统才能生效。
+          <Notice tone="warning" title={t('vmDetail.resizeNoticeTitle')}>
+            {t('vmDetail.resizeNoticeDesc')}
           </Notice>
         </div>
       </Modal>
@@ -1705,13 +1758,14 @@ function HardwareTab({
         open={Boolean(removeTarget)}
         onCancel={() => setRemoveTarget(null)}
         onConfirm={() => void doRemoveHardware()}
-        title="移除硬件"
+        title={t('vmDetail.removeHwTitle')}
         danger
-        confirmText="移除"
+        confirmText={t('vmDetail.removeHwConfirm')}
         loading={busy}
         message={
           <>
-            将从虚拟机配置中移除 <strong>{removeTarget?.title}</strong>。
+            {t('vmDetail.removeHwSoon')}{' '}
+            <strong>{removeTarget?.title}</strong>
             {removeTarget?.detail ? <> {removeTarget.detail}</> : null}
           </>
         }
@@ -1737,6 +1791,7 @@ function AddDiskModal({
   onClose: () => void;
   onSubmit: (body: VmAddDiskRequest) => void;
 }) {
+  const t = useT();
   const [storage, setStorage] = useState('');
   const [size, setSize] = useState('20');
   const [format, setFormat] = useState('raw');
@@ -1762,9 +1817,9 @@ function AddDiskModal({
   const submit = () => {
     const next: Record<string, string> = {};
     const gb = Number(size.trim());
-    if (!storage) next.storage = '请选择存储池';
-    if (!Number.isFinite(gb) || gb <= 0) next.size = '请输入大于 0 的容量';
-    else if (gb > 8192) next.size = '单块磁盘最大 8192 GB';
+    if (!storage) next.storage = t('vmDetail.selectStorage');
+    if (!Number.isFinite(gb) || gb <= 0) next.size = t('vmDetail.addDiskSizeMin');
+    else if (gb > 8192) next.size = t('vmDetail.addDiskSizeMax');
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
@@ -1775,22 +1830,22 @@ function AddDiskModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="新增磁盘"
-      description="槽位（scsiN）由后端挑第一个空闲的，格式会按存储池类型自动纠正"
+      title={t('vmDetail.addDisk')}
+      description={t('vmDetail.addDiskDesc')}
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={submit} loading={busy}>
-            添加磁盘
+            {t('vmDetail.addDiskSubmit')}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-16">
-        <Field label="存储池" required error={errors.storage}>
+        <Field label={t('vmDetail.addDiskStorage')} required error={errors.storage}>
           <Select
             value={storage}
             onChange={(e) => setStorage(e.target.value)}
@@ -1798,18 +1853,18 @@ function AddDiskModal({
           />
         </Field>
         <Input
-          label="容量（GB）"
+          label={t('vmDetail.addDiskSize')}
           required
           value={size}
           onChange={(e) => setSize(e.target.value)}
           error={errors.size}
           mono
           autoFocus
-          hint="例如 20、100"
+          hint={t('vmDetail.addDiskSizeHint')}
         />
         <Field
-          label="磁盘格式"
-          hint="LVM / ZFS 等块存储只支持 raw，选了别的会被自动纠正"
+          label={t('vmDetail.addDiskFormat')}
+          hint={t('vmDetail.addDiskFormatHint')}
         >
           <Select
             value={format}
@@ -1824,17 +1879,17 @@ function AddDiskModal({
         <Switch
           checked={discard}
           onChange={setDiscard}
-          label="启用 discard"
-          hint="让客户机回收未使用的块，SSD / 精简置备存储上建议开启"
+          label={t('vmDetail.addDiskDiscard')}
+          hint={t('vmDetail.addDiskDiscardHint')}
         />
         <Switch
           checked={ssd}
           onChange={setSsd}
-          label="标记为 SSD"
-          hint="让客户机按 SSD 优化 IO 调度策略"
+          label={t('vmDetail.addDiskSsd')}
+          hint={t('vmDetail.addDiskSsdHint')}
         />
-        <Notice tone="info" title="添加之后">
-          新盘是一块未格式化的裸设备，需要进客户机分区并格式化之后才能使用。
+        <Notice tone="info" title={t('vmDetail.addDiskNoticeTitle')}>
+          {t('vmDetail.addDiskNoticeDesc')}
         </Notice>
       </div>
     </Modal>
@@ -1858,6 +1913,7 @@ function AddNetworkModal({
   onClose: () => void;
   onSubmit: (body: VmAddNetworkRequest) => void;
 }) {
+  const t = useT();
   const [bridge, setBridge] = useState('vmbr0');
   const [model, setModel] = useState('virtio');
   const [vlan, setVlan] = useState('');
@@ -1880,10 +1936,10 @@ function AddNetworkModal({
     );
     const list = bridges.length > 0 ? bridges : ifaces;
     return list.map((i) => ({
-      label: `${i.iface}${i.active ? '' : '（未激活）'}`,
+      label: `${i.iface}${i.active ? '' : t('vmDetail.addNicInactive')}`,
       value: i.iface,
     }));
-  }, [bridgesQuery.data]);
+  }, [bridgesQuery.data, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -1905,9 +1961,9 @@ function AddNetworkModal({
   const submit = () => {
     const next: Record<string, string> = {};
     const tag = vlan.trim();
-    if (!bridge) next.bridge = '请选择网桥';
+    if (!bridge) next.bridge = t('vmDetail.addNicBridgePlaceholder');
     if (tag && (!/^\d+$/.test(tag) || Number(tag) < 1 || Number(tag) > 4094)) {
-      next.vlan = 'VLAN ID 需在 1 - 4094 之间';
+      next.vlan = t('vmDetail.addNicVlanInvalid');
     }
     setErrors(next);
     if (Object.keys(next).length > 0) return;
@@ -1924,28 +1980,28 @@ function AddNetworkModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="新增网卡"
-      description="键名（netN）由后端挑空位，MAC 地址交给 Proxmox 自动生成"
+      title={t('vmDetail.addNic')}
+      description={t('vmDetail.addNicDesc')}
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={submit} loading={busy}>
-            添加网卡
+            {t('vmDetail.addNicSubmit')}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-16">
         <Field
-          label="网桥"
+          label={t('vmDetail.addNicBridge')}
           required
           error={errors.bridge}
           hint={
             bridgesQuery.isError
-              ? '无法读取节点网卡列表，请先确认名称是否正确'
+              ? t('vmDetail.addNicBridgeLoadFailed')
               : undefined
           }
         >
@@ -1958,15 +2014,15 @@ function AddNetworkModal({
                 : [{ label: bridge, value: bridge }]),
               ...bridgeOptions,
             ]}
-            placeholder="请选择网桥"
+            placeholder={t('vmDetail.addNicBridgePlaceholder')}
           />
         </Field>
-        <Field label="网卡型号">
+        <Field label={t('vmDetail.addNicModel')}>
           <Select
             value={model}
             onChange={(e) => setModel(e.target.value)}
             options={[
-              { label: 'VirtIO（半虚拟化，性能最好）', value: 'virtio' },
+              { label: t('vmDetail.addNicModelVirtio'), value: 'virtio' },
               { label: 'Intel E1000', value: 'e1000' },
               { label: 'VMware vmxnet3', value: 'vmxnet3' },
               { label: 'Realtek RTL8139', value: 'rtl8139' },
@@ -1974,22 +2030,22 @@ function AddNetworkModal({
           />
         </Field>
         <Input
-          label="VLAN 标签"
+          label={t('vmDetail.addNicVlan')}
           value={vlan}
           onChange={(e) => setVlan(e.target.value)}
           error={errors.vlan}
-          placeholder="留空表示不打标签"
+          placeholder={t('vmDetail.addNicVlanPlaceholder')}
           mono
-          hint="1 - 4094"
+          hint={t('vmDetail.addNicVlanRange')}
         />
         <Switch
           checked={firewall}
           onChange={setFirewall}
-          label="启用防火墙"
-          hint="由 Proxmox 的防火墙规则管控这张网卡"
+          label={t('vmDetail.addNicFirewall')}
+          hint={t('vmDetail.addNicFirewallHint')}
         />
-        <Notice tone="info" title="生效方式">
-          新网卡会立刻出现在配置里。若客户机没有热插拔支持，需要关机再开机才能识别。
+        <Notice tone="info" title={t('vmDetail.addNicNoticeTitle')}>
+          {t('vmDetail.addNicNoticeDesc')}
         </Notice>
       </div>
     </Modal>
@@ -2018,6 +2074,7 @@ function HwRow({
   onRemove?: () => void;
   extraActions?: ReactNode;
 }) {
+  const t = useT();
   return (
     <div className="hw-item">
       <div className="hw-item-main">
@@ -2033,13 +2090,17 @@ function HwRow({
         <div className="hw-item-actions">
           {extraActions}
           {onEdit ? (
-            <IconButton label={`编辑 ${title}`} onClick={onEdit} disabled={!editable}>
+            <IconButton
+              label={t('vmDetail.editHwAria', { title })}
+              onClick={onEdit}
+              disabled={!editable}
+            >
               <IconEdit size={15} />
             </IconButton>
           ) : null}
           {onRemove ? (
             <IconButton
-              label={`移除 ${title}`}
+              label={t('vmDetail.removeHwAria', { title })}
               variant="danger"
               onClick={onRemove}
               disabled={!editable}
@@ -2109,26 +2170,34 @@ function EditConfigModal({
   storageOptions: Array<{ label: string; value: string }>;
   currentConfig: Record<string, string | number | boolean | undefined>;
 }) {
+  const t = useT();
   if (!configKey) return null;
 
-  const LABELS: Record<string, string> = {
-    cpu: 'CPU 类型',
-    cores: '核心数（每插槽）',
-    sockets: '插槽数',
-    memory: '内存（MB）',
-    balloon: 'Balloon 最小内存（MB）',
-    bios: 'BIOS 类型',
-    machine: '机型',
-    scsihw: 'SCSI 控制器',
-    boot: '启动顺序',
-    numa: 'NUMA 拓扑',
-    affinity: 'CPU 亲和性',
-    efidisk0: 'EFI 变量盘',
-    tpmstate0: '虚拟 TPM',
-    name: '名称',
-    description: '描述',
-    agent: 'QEMU Guest Agent',
-    onboot: '开机自启',
+  /* 字段名 → 词条键。能复用硬件卡片那套标签的直接复用，不再造一批同义词 */
+  const LABELS: Record<string, MessageKey> = {
+    cpu: 'vmDetail.hwCpuType',
+    cores: 'vmDetail.cfgCores',
+    sockets: 'vmDetail.hwSockets',
+    memory: 'vmDetail.cfgMemory',
+    balloon: 'vmDetail.cfgBalloon',
+    bios: 'vmDetail.cfgBios',
+    machine: 'vmDetail.hwMachine',
+    scsihw: 'vmDetail.hwScsihw',
+    boot: 'vmDetail.hwBoot',
+    numa: 'vmDetail.cfgNumaLabel',
+    affinity: 'vmDetail.hwAffinity',
+    efidisk0: 'vmDetail.hwEfi',
+    tpmstate0: 'vmDetail.hwTpm',
+    name: 'common.name',
+    description: 'common.description',
+    agent: 'vmDetail.cfgAgent',
+    onboot: 'vmDetail.onboot',
+  };
+
+  /* 表里没有的键（例如 scsi1、net0）直接用原始键名 —— 它本身就是用户要看的标识 */
+  const labelFor = (key: string): string => {
+    const messageKey = LABELS[key];
+    return messageKey ? t(messageKey) : key;
   };
 
   const isNumeric = ['cores', 'sockets', 'memory', 'balloon', 'cpuunits'].includes(
@@ -2148,30 +2217,30 @@ function EditConfigModal({
       return (
         <div className="flex flex-col gap-16">
           <Select
-            label={LABELS.bios}
+            label={labelFor('bios')}
             value={nextBios}
             onChange={(e) => onValueChange(e.target.value)}
             options={[
-              { label: 'SeaBIOS（传统）', value: 'seabios' },
-              { label: 'OVMF（UEFI）', value: 'ovmf' },
+              { label: t('vmDetail.biosLegacy'), value: 'seabios' },
+              { label: t('vmDetail.biosUefi'), value: 'ovmf' },
             ]}
           />
           {changingBios ? (
             <Notice
               tone="warning"
-              title={`即将由 ${currentBios} 切换为 ${nextBios}`}
+              title={t('vmDetail.biosSwitchTitle', {
+                from: currentBios,
+                to: nextBios,
+              })}
             >
-              固件类型和磁盘分区方式、引导器是绑死的：MBR 装的系统需要 SeaBIOS，
-              GPT + EFI 分区需要 OVMF。已经装好系统的机器直接切换会开机失败，
-              只能通过改回原值或重装系统恢复。
+              {t('vmDetail.biosSwitchBody')}
               {nextBios === 'ovmf' && !hasEfiDisk
-                ? '另外，OVMF 还要求先挂一块 EFI 变量盘（efidisk0），否则虚拟机会直接引导失败。'
+                ? t('vmDetail.biosSwitchEfiExtra')
                 : ''}
             </Notice>
           ) : (
-            <Notice tone="info" title="OVMF 的前置条件">
-              Windows 11 等 UEFI 系统需要 OVMF，并同时配置 EFI 变量盘（efidisk0）
-              与 q35 机型。三者要配套，缺一个都起不来。
+            <Notice tone="info" title={t('vmDetail.biosOvmfTitle')}>
+              {t('vmDetail.biosOvmfBody')}
             </Notice>
           )}
         </div>
@@ -2188,7 +2257,7 @@ function EditConfigModal({
       return (
         <div className="flex flex-col gap-16">
           <Select
-            label={LABELS.machine}
+            label={labelFor('machine')}
             value={nextMachine}
             onChange={(e) => onValueChange(e.target.value)}
             options={[
@@ -2199,18 +2268,17 @@ function EditConfigModal({
           {changingMachine ? (
             <Notice
               tone="warning"
-              title={`即将由 ${currentMachine} 切换为 ${nextMachine}`}
+              title={t('vmDetail.machineSwitchTitle', {
+                from: currentMachine,
+                to: nextMachine,
+              })}
             >
-              机型决定了芯片组与磁盘控制器的 PCI 地址，切换后客户机里的系统可能
-              认不出原来的引导盘（Windows 尤其明显）。已上线的机器建议先停机、
-              确认可以回滚再改。
+              {t('vmDetail.machineSwitchBody')}
             </Notice>
           ) : null}
           {nextMachine !== 'q35' && needsQ35 ? (
-            <Notice tone="danger" title="这台机器需要 q35">
-              它已配置 EFI 变量盘或虚拟 TPM，而 OVMF 在 i440fx 上不可用 ——
-              改成 i440fx 后会直接引导失败，请把 BIOS 一并改回 SeaBIOS 并移除
-              这两块盘，或保持 q35。
+            <Notice tone="danger" title={t('vmDetail.machineQ35Title')}>
+              {t('vmDetail.machineQ35Body')}
             </Notice>
           ) : null}
         </div>
@@ -2220,7 +2288,7 @@ function EditConfigModal({
     if (configKey === 'scsihw') {
       return (
         <Select
-          label={LABELS.scsihw}
+          label={labelFor('scsihw')}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
           options={[
@@ -2236,7 +2304,7 @@ function EditConfigModal({
     if (configKey === 'cpu') {
       return (
         <Select
-          label={LABELS.cpu}
+          label={labelFor('cpu')}
           value={value || 'kvm64'}
           onChange={(e) => onValueChange(e.target.value)}
           options={[
@@ -2252,12 +2320,12 @@ function EditConfigModal({
     if (configKey === 'boot') {
       return (
         <Input
-          label={LABELS.boot}
+          label={labelFor('boot')}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          placeholder="如 scsi0;net0"
+          placeholder={t('vmDetail.bootPlaceholder')}
           mono
-          hint="按顺序尝试引导设备，分号分隔"
+          hint={t('vmDetail.bootHint')}
         />
       );
     }
@@ -2265,14 +2333,14 @@ function EditConfigModal({
     if (configKey === 'numa') {
       return (
         <Select
-          label={LABELS.numa}
+          label={labelFor('numa')}
           value={Number(value) === 1 ? '1' : '0'}
           onChange={(e) => onValueChange(e.target.value)}
           options={[
-            { label: '关闭（PVE 默认调度）', value: '0' },
-            { label: '开启（向客户机呈现 NUMA 拓扑）', value: '1' },
+            { label: t('vmDetail.numaOff'), value: '0' },
+            { label: t('vmDetail.numaOn'), value: '1' },
           ]}
-          hint="只影响客户机拓扑；把 vCPU 钉到宿主 NUMA 节点需改配置项 numaN"
+          hint={t('vmDetail.hintNuma')}
         />
       );
     }
@@ -2281,13 +2349,13 @@ function EditConfigModal({
       const bad = value.trim() !== '' && !CPUSET_RE.test(value.trim());
       return (
         <Input
-          label={LABELS.affinity}
+          label={labelFor('affinity')}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          placeholder="如 0-7"
+          placeholder={t('vmDetail.affinityPlaceholder')}
           mono
-          error={bad ? 'CPU 列表格式如 0-3,8-11（仅数字、逗号与连字符）' : undefined}
-          hint="整机允许落在哪些宿主逻辑 CPU 上；留空 = 不限制"
+          error={bad ? t('vmDetail.affinityInvalid') : undefined}
+          hint={t('vmDetail.affinityHint')}
         />
       );
     }
@@ -2299,7 +2367,7 @@ function EditConfigModal({
       return (
         <div className="flex flex-col gap-16">
           <Input
-            label={LABELS[configKey]}
+            label={labelFor(configKey)}
             value={value}
             onChange={(e) => onValueChange(e.target.value)}
             mono
@@ -2308,14 +2376,10 @@ function EditConfigModal({
                 ? 'local-lvm:1,efitype=4m,pre-enrolled-keys=1'
                 : 'local-lvm:4,version=v2.0'
             }
-            hint={
-              isEfi
-                ? 'efitype=4m 才支持 pre-enrolled-keys（Win11 安全启动）'
-                : 'PVE 的 TPM 状态盘最小 4MB'
-            }
+            hint={isEfi ? t('vmDetail.efiHint') : t('vmDetail.tpmHint')}
           />
           <Select
-            label="用选中的存储池生成"
+            label={t('vmDetail.generateFromStorage')}
             value=""
             onChange={(e) => {
               if (!e.target.value) return;
@@ -2326,13 +2390,15 @@ function EditConfigModal({
               );
             }}
             options={storageOptions}
-            hint="会覆盖上面的值；存储池需支持 images 内容"
+            hint={t('vmDetail.generateFromStorageHint')}
           />
           <Notice
             tone="warning"
-            title={isEfi ? 'EFI 盘要求 OVMF + q35' : '虚拟 TPM 要求 OVMF + q35'}
+            title={
+              isEfi ? t('vmDetail.efiNoticeTitle') : t('vmDetail.tpmNoticeTitle')
+            }
           >
-            设置后请确认 BIOS=OVMF、机型=q35，否则虚拟机会引导失败。
+            {t('vmDetail.efiTpmNoticeBody')}
           </Notice>
         </div>
       );
@@ -2343,19 +2409,19 @@ function EditConfigModal({
       return (
         <div className="flex flex-col gap-16">
           <Input
-            label={`${configKey} 配置`}
+            label={t('vmDetail.keyConfig', { key: configKey })}
             value={value}
             onChange={(e) => onValueChange(e.target.value)}
             mono
             hint={
               /^net/.test(configKey)
-                ? '格式示例：virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0,firewall=1'
-                : '格式示例：local-lvm:vm-100-disk-0,size=20G'
+                ? t('vmDetail.keyHintNet')
+                : t('vmDetail.keyHintDisk')
             }
           />
           {/^(scsi|virtio|sata|ide)/.test(configKey) ? (
             <Select
-              label="更换存储池（仅改写卷路径）"
+              label={t('vmDetail.changeStorage')}
               value=""
               onChange={(e) => {
                 if (!e.target.value) return;
@@ -2365,7 +2431,10 @@ function EditConfigModal({
                 onValueChange(`${e.target.value}:vm-0-disk-0,${size}`);
               }}
               options={storageOptions}
-              hint={`当前存储：${value.split(':')[0] || '—'} · 节点 ${node}`}
+              hint={t('vmDetail.changeStorageHint', {
+                storage: value.split(':')[0] || '—',
+                node,
+              })}
             />
           ) : null}
         </div>
@@ -2375,7 +2444,7 @@ function EditConfigModal({
     if (isNumeric) {
       return (
         <Input
-          label={LABELS[configKey] ?? configKey}
+          label={labelFor(configKey)}
           type="number"
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
@@ -2387,11 +2456,13 @@ function EditConfigModal({
 
     return (
       <Input
-        label={LABELS[configKey] ?? configKey}
+        label={labelFor(configKey)}
         value={value}
         onChange={(e) => onValueChange(e.target.value)}
         mono
-        hint={`当前值：${String(currentConfig[configKey] ?? '—')}`}
+        hint={t('vmDetail.currentValue', {
+          value: String(currentConfig[configKey] ?? '—'),
+        })}
         autoFocus
       />
     );
@@ -2401,25 +2472,22 @@ function EditConfigModal({
     <Modal
       open
       onClose={onClose}
-      title={`编辑配置 · ${configKey}`}
+      title={t('vmDetail.cfgModalTitle', { key: configKey })}
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={onSave} loading={busy}>
-            保存
+            {t('common.save')}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-16">
         {renderControl()}
-        <Notice tone="info">
-          部分配置（如 CPU 类型、BIOS、机型）需在虚拟机停止后修改才会生效；内存与
-          CPU 核心数支持在线调整。
-        </Notice>
+        <Notice tone="info">{t('vmDetail.cfgModalNotice')}</Notice>
       </div>
     </Modal>
   );
@@ -2440,6 +2508,7 @@ function SnapshotsTab({
 }) {
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
+  const t = useT();
   const { canWrite } = useAuth();
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -2479,7 +2548,7 @@ function SnapshotsTab({
           vmstate,
         }),
         {
-          title: `创建快照「${name}」`,
+          title: t('vmDetail.snapCreateTask', { name }),
           node,
           invalidate: [['snapshots', node, vmid], ['vm', node, vmid]],
         },
@@ -2496,21 +2565,21 @@ function SnapshotsTab({
   const columns: Array<Column<Snapshot>> = [
     {
       key: 'name',
-      header: '快照名称',
+      header: t('vmDetail.snapColName'),
       render: (s) => <span className="fw-500 mono">{s.name}</span>,
       sortable: true,
       sortValue: (s) => s.name,
     },
     {
       key: 'description',
-      header: '描述',
+      header: t('common.description'),
       render: (s) => (
         <span className="fs-sm text-secondary">{s.description || '—'}</span>
       ),
     },
     {
       key: 'snaptime',
-      header: '创建时间',
+      header: t('vmDetail.snapColCreated'),
       render: (s) => <span className="fs-sm mono">{formatDateTime(s.snaptime)}</span>,
       width: 160,
       sortable: true,
@@ -2518,18 +2587,18 @@ function SnapshotsTab({
     },
     {
       key: 'vmstate',
-      header: '含内存',
+      header: t('vmDetail.snapColVmstate'),
       width: 88,
       align: 'center',
       render: (s) => (
         <Badge variant={s.vmstate ? 'info' : 'neutral'} size="sm">
-          {s.vmstate ? '是' : '否'}
+          {s.vmstate ? t('common.yes') : t('common.no')}
         </Badge>
       ),
     },
     {
       key: 'parent',
-      header: '父快照',
+      header: t('vmDetail.snapColParent'),
       render: (s) => (
         <span className="fs-sm text-muted mono">{s.parent || '—'}</span>
       ),
@@ -2537,7 +2606,7 @@ function SnapshotsTab({
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('vmDetail.snapColActions'),
       width: 150,
       align: 'right',
       render: (s) => (
@@ -2548,10 +2617,10 @@ function SnapshotsTab({
             onClick={() => setRollbackTarget(s)}
             disabled={!canWrite || busy}
           >
-            回滚
+            {t('vmDetail.snapRollback')}
           </Button>
           <IconButton
-            label={`删除快照 ${s.name}`}
+            label={t('vmDetail.snapDeleteAria', { name: s.name })}
             variant="danger"
             onClick={() => setDeleteTarget(s)}
             disabled={!canWrite || busy}
@@ -2579,7 +2648,7 @@ function SnapshotsTab({
         >
           <div className="flex items-center gap-8">
             <IconSnapshot size={16} />
-            <span className="fw-600">快照</span>
+            <span className="fw-600">{t('vmDetail.tab.snapshots')}</span>
             <Badge variant="neutral" size="sm">
               {snapshots.length}
             </Badge>
@@ -2591,7 +2660,7 @@ function SnapshotsTab({
             onClick={() => setCreateOpen(true)}
             disabled={!canWrite}
           >
-            新建快照
+            {t('vmDetail.snapCreate')}
           </Button>
         </div>
 
@@ -2600,9 +2669,9 @@ function SnapshotsTab({
           rows={snapshots}
           rowKey={(s) => s.name}
           loading={snapQuery.isLoading}
-          caption={`虚拟机 ${vmid} 的快照列表`}
-          emptyTitle="暂无快照"
-          emptyDescription="为虚拟机创建快照，可在系统变更前保留还原点。"
+          caption={t('vmDetail.snapCaption', { vmid })}
+          emptyTitle={t('vmDetail.snapEmpty')}
+          emptyDescription={t('vmDetail.snapEmptyDesc')}
           className="table-flush"
         />
       </Card>
@@ -2611,12 +2680,12 @@ function SnapshotsTab({
       <Modal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        title="新建快照"
+        title={t('vmDetail.snapCreate')}
         size="sm"
         footer={
           <>
             <Button variant="secondary" onClick={() => setCreateOpen(false)} disabled={busy}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -2624,35 +2693,35 @@ function SnapshotsTab({
               loading={busy}
               disabled={!name.trim()}
             >
-              创建
+              {t('common.create')}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-16">
           <Input
-            label="快照名称"
+            label={t('vmDetail.snapColName')}
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="如 before-upgrade"
+            placeholder={t('vmDetail.snapNamePlaceholder')}
             autoFocus
             error={
               name && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)
-                ? '需以字母开头，只含字母、数字、- 和 _'
+                ? t('vmDetail.snapNameRule')
                 : undefined
             }
           />
           <Input
-            label="描述"
+            label={t('common.description')}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="记录快照用途"
+            placeholder={t('vmDetail.snapDescPlaceholder')}
           />
           <Checkbox
             checked={vmstate}
             onChange={(e) => setVmstate(e.target.checked)}
-            label="包含内存状态（回滚可恢复到运行状态）"
+            label={t('vmDetail.snapIncludeState')}
           />
         </div>
       </Modal>
@@ -2668,7 +2737,9 @@ function SnapshotsTab({
             await runner.run(
               vmsApi.rollbackSnapshot(node, vmid, rollbackTarget.name),
               {
-                title: `回滚到快照「${rollbackTarget.name}」`,
+                title: t('vmDetail.snapRollbackTask', {
+                  name: rollbackTarget.name,
+                }),
                 node,
                 invalidate: [['snapshots', node, vmid], ['vm', node, vmid]],
                 destructive: true,
@@ -2680,15 +2751,15 @@ function SnapshotsTab({
             setBusy(false);
           }
         }}
-        title="回滚快照"
-        confirmText="执行回滚"
+        title={t('vmDetail.snapRollbackTitle')}
+        confirmText={t('vmDetail.snapRollbackConfirm')}
         loading={busy}
         requireText={rollbackTarget?.name}
         message={
           <>
-            即将把虚拟机回滚到快照{' '}
-            <strong>{rollbackTarget?.name}</strong>。当前磁盘状态将被丢弃，
-            该快照之后产生的所有变更都会丢失。
+            {t('vmDetail.snapRollbackBodyPre')}
+            <strong>{rollbackTarget?.name}</strong>
+            {t('vmDetail.snapRollbackBodyTail')}
           </>
         }
       />
@@ -2702,7 +2773,7 @@ function SnapshotsTab({
           setBusy(true);
           try {
             await runner.run(vmsApi.deleteSnapshot(node, vmid, deleteTarget.name), {
-              title: `删除快照「${deleteTarget.name}」`,
+              title: t('vmDetail.snapDeleteTask', { name: deleteTarget.name }),
               node,
               invalidate: [['snapshots', node, vmid], ['vm', node, vmid]],
               destructive: true,
@@ -2713,14 +2784,15 @@ function SnapshotsTab({
             setBusy(false);
           }
         }}
-        title="删除快照"
+        title={t('vmDetail.snapDeleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={busy}
         message={
           <>
-            即将删除快照 <strong>{deleteTarget?.name}</strong>。
-            删除后无法再回滚到该时间点。
+            {t('vmDetail.snapDeleteBodyPre')}
+            <strong>{deleteTarget?.name}</strong>
+            {t('vmDetail.snapDeleteBodyTail')}
           </>
         }
       />
@@ -2744,6 +2816,7 @@ function BackupsTab({
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
   const toast = useToast();
+  const t = useT();
   const { canWrite } = useAuth();
 
   const [backupOpen, setBackupOpen] = useState(false);
@@ -2786,13 +2859,16 @@ function BackupsTab({
 
   const storageOptions = useMemo(
     () => [
-      { label: '请选择存储池', value: '' },
+      { label: t('vmDetail.selectStorage'), value: '' },
       ...backupStorages.map((s) => ({
-        label: `${s.storage} (可用 ${formatBytes(s.avail)})`,
+        label: t('vmDetail.backupStorageAvail', {
+          storage: s.storage,
+          avail: formatBytes(s.avail),
+        }),
         value: s.storage,
       })),
     ],
-    [backupStorages],
+    [backupStorages, t],
   );
 
   /* 默认选中第一个备份存储 */
@@ -2807,7 +2883,7 @@ function BackupsTab({
 
   const runBackup = async () => {
     if (!storage) {
-      toast.warning('请选择存储池');
+      toast.warning(t('vmDetail.selectStorage'));
       return;
     }
     setBusy(true);
@@ -2822,7 +2898,7 @@ function BackupsTab({
           notes: notes || undefined,
         }),
         {
-          title: `备份「${vm.name || vmid}」`,
+          title: t('vmDetail.backupTask', { name: vm.name || vmid }),
           node,
           invalidate: [['backups'], ['storages'], ['cluster']],
         },
@@ -2838,7 +2914,7 @@ function BackupsTab({
   const columns: Array<Column<BackupItem>> = [
     {
       key: 'volid',
-      header: '备份文件',
+      header: t('vmDetail.backupColFile'),
       render: (b) => (
         <span className="mono fs-sm" title={b.volid}>
           {b.volid.split('/').pop() ?? b.volid}
@@ -2847,7 +2923,7 @@ function BackupsTab({
     },
     {
       key: 'ctime',
-      header: '创建时间',
+      header: t('vmDetail.snapColCreated'),
       render: (b) => <span className="fs-sm mono">{formatDateTime(b.ctime)}</span>,
       width: 160,
       sortable: true,
@@ -2855,7 +2931,7 @@ function BackupsTab({
     },
     {
       key: 'size',
-      header: '大小',
+      header: t('vmDetail.backupColSize'),
       render: (b) => <span className="mono fs-sm">{formatBytes(b.size)}</span>,
       width: 100,
       align: 'right',
@@ -2864,7 +2940,7 @@ function BackupsTab({
     },
     {
       key: 'format',
-      header: '格式',
+      header: t('vmDetail.backupColFormat'),
       render: (b) => (
         <Badge variant="neutral" size="sm">
           {b.format}
@@ -2874,7 +2950,7 @@ function BackupsTab({
     },
     {
       key: 'notes',
-      header: '备注',
+      header: t('vmDetail.backupColNote'),
       render: (b) => (
         <span className="fs-sm text-secondary truncate" title={b.notes}>
           {b.notes || '—'}
@@ -2883,7 +2959,7 @@ function BackupsTab({
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('vmDetail.snapColActions'),
       width: 176,
       align: 'right',
       render: (b) => (
@@ -2900,16 +2976,19 @@ function BackupsTab({
             }}
             disabled={!canWrite || busy}
           >
-            恢复
+            {t('vmDetail.backupRestore')}
           </Button>
           <IconButton
-            label="下载备份文件"
+            label={t('vmDetail.backupDownload')}
             onClick={() => {
               /* 宿主机上的路径由「存储路径 + 归档名」拼出，缺存储信息就下不了。
                  连接不用带：下载链接是浏览器直接打开的，带不了请求头，后端会按
                  节点归属推断（这台机器在哪个 PVE 上）。 */
               if (!b.storage) {
-                toast.error('无法下载', '这条归档缺少存储信息，请刷新后重试');
+                toast.error(
+                  t('vmDetail.backupDownloadFailed'),
+                  t('vmDetail.backupDownloadFailedHint'),
+                );
                 return;
               }
               window.open(
@@ -2925,7 +3004,7 @@ function BackupsTab({
             <IconBackup size={15} />
           </IconButton>
           <IconButton
-            label="删除备份"
+            label={t('vmDetail.backupDelete')}
             variant="danger"
             onClick={() => setDeleteTarget(b)}
             disabled={!canWrite || busy}
@@ -2953,7 +3032,7 @@ function BackupsTab({
         >
           <div className="flex items-center gap-8">
             <IconBackup size={16} />
-            <span className="fw-600">备份文件</span>
+            <span className="fw-600">{t('vmDetail.backupFiles')}</span>
             <Badge variant="neutral" size="sm">
               {(backupsQuery.data ?? []).length}
             </Badge>
@@ -2965,14 +3044,14 @@ function BackupsTab({
             onClick={() => setBackupOpen(true)}
             disabled={!canWrite}
           >
-            立即备份
+            {t('vmDetail.backupNow')}
           </Button>
         </div>
 
         {backupsQuery.isError && isNotImplemented(backupsQuery.error) ? (
           <div style={{ padding: 16 }}>
-            <Notice tone="info" title="该功能需要后端支持">
-              备份列表接口（/backups）尚未实现，暂时无法展示备份文件。
+            <Notice tone="info" title={t('vmDetail.backupBackendTitle')}>
+              {t('vmDetail.backupBackendBody')}
             </Notice>
           </div>
         ) : (
@@ -2981,9 +3060,9 @@ function BackupsTab({
             rows={backupsQuery.data ?? []}
             rowKey={(b) => b.volid}
             loading={backupsQuery.isLoading}
-            caption={`虚拟机 ${vmid} 的备份文件列表`}
-            emptyTitle="暂无备份"
-            emptyDescription="该虚拟机还没有备份文件，点击「立即备份」创建。"
+            caption={t('vmDetail.backupCaption', { vmid })}
+            emptyTitle={t('vmDetail.backupEmpty')}
+            emptyDescription={t('vmDetail.backupEmptyDesc')}
             className="table-flush"
           />
         )}
@@ -2993,13 +3072,13 @@ function BackupsTab({
       <Modal
         open={backupOpen}
         onClose={() => setBackupOpen(false)}
-        title="立即备份"
-        description={`虚拟机 ${vm.name || vmid}（节点 ${node}）`}
+        title={t('vmDetail.backupNow')}
+        description={t('vmDetail.backupDesc', { name: vm.name || vmid, node })}
         size="sm"
         footer={
           <>
             <Button variant="secondary" onClick={() => setBackupOpen(false)} disabled={busy}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -3007,50 +3086,50 @@ function BackupsTab({
               loading={busy}
               disabled={!storage}
             >
-              开始备份
+              {t('vmDetail.backupStart')}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-16">
           <Select
-            label="目标存储"
+            label={t('vmDetail.backupStorage')}
             required
             value={storage}
             onChange={(e) => setStorage(e.target.value)}
             options={storageOptions}
             hint={
               backupStorages.length === 0
-                ? '该节点没有支持备份的存储池'
+                ? t('vmDetail.backupNoStorage')
                 : undefined
             }
           />
           <Select
-            label="备份模式"
+            label={t('vmDetail.backupMode')}
             value={mode}
             onChange={(e) => setMode(e.target.value)}
             options={[
-              { label: 'Snapshot（不中断服务）', value: 'snapshot' },
-              { label: 'Suspend（短暂挂起）', value: 'suspend' },
-              { label: 'Stop（停止后备份）', value: 'stop' },
+              { label: t('vmDetail.backupModeSnapshot'), value: 'snapshot' },
+              { label: t('vmDetail.backupModeSuspend'), value: 'suspend' },
+              { label: t('vmDetail.backupModeStop'), value: 'stop' },
             ]}
           />
           <Select
-            label="压缩算法"
+            label={t('vmDetail.backupCompress')}
             value={compress}
             onChange={(e) => setCompress(e.target.value)}
             options={[
-              { label: 'ZSTD（推荐，快且压缩率好）', value: 'zstd' },
+              { label: t('vmDetail.backupCompressZstd'), value: 'zstd' },
               { label: 'LZO', value: 'lzo' },
               { label: 'GZIP', value: 'gzip' },
-              { label: '不压缩', value: '0' },
+              { label: t('vmDetail.backupCompressNone'), value: '0' },
             ]}
           />
           <Input
-            label="备注"
+            label={t('vmDetail.backupColNote')}
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="如 升级前全量备份"
+            placeholder={t('vmDetail.backupNotePlaceholder')}
           />
         </div>
       </Modal>
@@ -3063,7 +3142,10 @@ function BackupsTab({
           if (!restoreTarget) return;
           const targetId = Number(restoreVmid);
           if (!Number.isInteger(targetId) || targetId < 100) {
-            toast.error('VMID 无效', '请输入 100 以上的整数');
+            toast.error(
+              t('vmDetail.restoreInvalidTitle'),
+              t('vmDetail.restoreInvalidHint'),
+            );
             return;
           }
           setBusy(true);
@@ -3078,7 +3160,7 @@ function BackupsTab({
                 start: restoreStart,
               }),
               {
-                title: `恢复备份到 VMID ${targetId}`,
+                title: t('vmDetail.restoreTask', { vmid: targetId }),
                 node,
                 invalidate: [['vms'], ['vm', node, vmid], ['cluster']],
               },
@@ -3089,45 +3171,45 @@ function BackupsTab({
             setBusy(false);
           }
         }}
-        title="从备份恢复虚拟机"
+        title={t('vmDetail.restoreTitle')}
         danger
-        confirmText="开始恢复"
+        confirmText={t('vmDetail.restoreConfirm')}
         loading={busy}
         requireText={restoreTarget ? String(restoreTarget.vmid) : undefined}
         message={
           <>
-            即将从备份{' '}
-            <strong>{restoreTarget?.volid.split('/').pop()}</strong> 恢复虚拟机。
-            若目标 VMID 已存在，其数据将被覆盖，操作不可撤销。
+            {t('vmDetail.restoreBodyPre')}
+            <strong>{restoreTarget?.volid.split('/').pop()}</strong>
+            {t('vmDetail.restoreBodyTail')}
           </>
         }
       >
         <div className="flex flex-col gap-16">
           <Input
-            label="目标 VMID"
+            label={t('vmDetail.restoreVmid')}
             required
             value={restoreVmid}
             onChange={(e) => setRestoreVmid(e.target.value.replace(/\D/g, ''))}
             mono
-            hint="填写原 VMID 表示覆盖恢复；填写新 ID 表示恢复为新虚拟机"
+            hint={t('vmDetail.restoreVmidHint')}
           />
           <Select
-            label="目标存储（可选）"
+            label={t('vmDetail.restoreStorage')}
             value={restoreStorage}
             onChange={(e) => setRestoreStorage(e.target.value)}
             options={storageOptions}
-            hint="留空则恢复到备份中记录的原始存储"
+            hint={t('vmDetail.restoreStorageHint')}
           />
           <div className="flex flex-col gap-8">
             <Checkbox
               checked={restoreStart}
               onChange={(e) => setRestoreStart(e.target.checked)}
-              label="恢复完成后立即启动"
+              label={t('vmDetail.restoreStartNow')}
             />
             <Checkbox
               checked={restoreForce}
               onChange={(e) => setRestoreForce(e.target.checked)}
-              label="强制覆盖同名磁盘（force）"
+              label={t('vmDetail.restoreForce')}
             />
           </div>
         </div>
@@ -3150,7 +3232,7 @@ function BackupsTab({
                 volid: deleteTarget.volid,
               }),
               {
-                title: '删除备份文件',
+                title: t('vmDetail.backupDeleteTitle'),
                 node,
                 invalidate: [['backups'], ['storages']],
                 destructive: true,
@@ -3162,14 +3244,15 @@ function BackupsTab({
             setBusy(false);
           }
         }}
-        title="删除备份文件"
+        title={t('vmDetail.backupDeleteTitle')}
         danger
-        confirmText="删除"
+        confirmText={t('common.delete')}
         loading={busy}
         message={
           <>
-            即将删除备份文件{' '}
-            <strong>{deleteTarget?.volid.split('/').pop()}</strong>。
+            {t('vmDetail.backupDeleteBodyPre')}
+            <strong>{deleteTarget?.volid.split('/').pop()}</strong>
+            {t('vmDetail.backupDeleteBodyTail')}
           </>
         }
       />
@@ -3193,6 +3276,7 @@ function MonitorTab({
   guestFs: VmGuestFilesystem[] | null;
   diskUsage: { total: number; used: number; percent: number } | null;
 }) {
+  const t = useT();
   const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
 
   const rrdQuery = useQuery({
@@ -3227,24 +3311,24 @@ function MonitorTab({
       <div className="flex items-center justify-between gap-12 flex-wrap">
         <span className="live-indicator">
           <span className="live-dot" aria-hidden="true" />
-          实时更新 · 每 5 秒刷新
+          {t('vmDetail.monLive')}
         </span>
         <SegmentedControl<RrdTimeframe>
           value={timeframe}
           onChange={setTimeframe}
-          ariaLabel="监控时间范围"
+          ariaLabel={t('vmDetail.monRangeAria')}
           options={[
-            { label: '1 小时', value: 'hour' },
-            { label: '1 天', value: 'day' },
-            { label: '1 周', value: 'week' },
-            { label: '1 月', value: 'month' },
+            { label: t('vmDetail.monHour'), value: 'hour' },
+            { label: t('vmDetail.monDay'), value: 'day' },
+            { label: t('vmDetail.monWeek'), value: 'week' },
+            { label: t('vmDetail.monMonth'), value: 'month' },
           ]}
         />
       </div>
 
       {notImpl ? (
-        <Notice tone="info" title="监控接口暂不可用">
-          后端尚未实现 /vms/{node}/{vmid}/rrddata 接口。
+        <Notice tone="info" title={t('vmDetail.monNotImplTitle')}>
+          {t('vmDetail.monNotImplBody', { node, vmid })}
         </Notice>
       ) : null}
 
@@ -3252,17 +3336,17 @@ function MonitorTab({
       {latest ? (
         <div className="grid grid-4">
           <KpiCard
-            label="CPU 使用率"
+            label={t('vmDetail.kpiCpu')}
             value={`${latestCpu.toFixed(1)}%`}
             tone={
               usageTone(latestCpu)
             }
             progress={latestCpu}
             progressColor={usageColor(latestCpu)}
-            hint={<span className="text-secondary">最近一次采样</span>}
+            hint={<span className="text-secondary">{t('vmDetail.monLastSample')}</span>}
           />
           <KpiCard
-            label="内存已用"
+            label={t('vmDetail.monMemUsed')}
             value={formatBytes(memUsed, 0)}
             hint={<span className="mono">/ {formatBytes(memTotal, 0)}</span>}
             tone={
@@ -3272,7 +3356,7 @@ function MonitorTab({
             progressColor={usageColor(latestMem)}
           />
           <KpiCard
-            label="网络吞吐"
+            label={t('vmDetail.monNet')}
             value={`${formatBytes((latest.netin ?? 0) + (latest.netout ?? 0), 0)}/s`}
             hint={
               <>
@@ -3287,16 +3371,24 @@ function MonitorTab({
             }
           />
           <KpiCard
-            label="磁盘 I/O"
+            label={t('vmDetail.monDiskIo')}
             value={`${formatBytes(
               (latest.diskread ?? 0) + (latest.diskwrite ?? 0),
               0,
             )}/s`}
             hint={
               <>
-                <span>读 {formatBytes(latest.diskread, 0)}/s</span>
+                <span>
+                  {t('vmDetail.monRead', {
+                    value: `${formatBytes(latest.diskread, 0)}/s`,
+                  })}
+                </span>
                 <span className="text-muted">·</span>
-                <span>写 {formatBytes(latest.diskwrite, 0)}/s</span>
+                <span>
+                  {t('vmDetail.monWrite', {
+                    value: `${formatBytes(latest.diskwrite, 0)}/s`,
+                  })}
+                </span>
               </>
             }
           />
@@ -3320,7 +3412,7 @@ function MonitorTab({
             <div className="chart-wrap">
               <div className="chart-header">
                 <div className="chart-header-main">
-                  <div className="chart-title">客户机磁盘用量</div>
+                  <div className="chart-title">{t('vmDetail.monGuestFs')}</div>
                   <div className="chart-stats">
                     <div className="chart-stat">
                       <span
@@ -3333,7 +3425,7 @@ function MonitorTab({
                       >
                         {diskUsage ? `${diskUsage.percent.toFixed(1)}%` : '—'}
                       </span>
-                      <span className="chart-stat-label">整体已用</span>
+                      <span className="chart-stat-label">{t('vmDetail.monFsOverall')}</span>
                     </div>
                     {diskUsage ? (
                       <div className="chart-stat">
@@ -3341,14 +3433,16 @@ function MonitorTab({
                           {formatBytes(diskUsage.used, 0)}
                         </span>
                         <span className="chart-stat-label">
-                          共 {formatBytes(diskUsage.total, 0)}
+                          {t('vmDetail.monFsTotal', {
+                            total: formatBytes(diskUsage.total, 0),
+                          })}
                         </span>
                       </div>
                     ) : null}
                   </div>
                 </div>
                 <span className="chart-legend-item fs-source">
-                  经 Guest Agent 执行 df 读取
+                  {t('vmDetail.monFsSource')}
                 </span>
               </div>
 
@@ -3370,7 +3464,10 @@ function MonitorTab({
                       value={fs.percent}
                       height={6}
                       color={usageColor(fs.percent)}
-                      ariaLabel={`${fs.mountpoint} 使用率 ${fs.percent.toFixed(1)}%`}
+                      ariaLabel={t('vmDetail.monFsTileAria', {
+                        mountpoint: fs.mountpoint,
+                        percent: fs.percent.toFixed(1),
+                      })}
                     />
                     <div className="fs-tile-foot">
                       <span className="mono">
@@ -3433,6 +3530,7 @@ function ConfigTab({
   vmid: number;
   vm: VmDetailType;
 }) {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
   const toast = useToast();
 
@@ -3458,9 +3556,12 @@ function ConfigTab({
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(json);
-      toast.success('已复制', '配置 JSON 已复制到剪贴板');
+      toast.success(t('vmDetail.cfgCopied'), t('vmDetail.cfgCopiedHint'));
     } catch {
-      toast.error('复制失败', '浏览器拒绝了剪贴板访问');
+      toast.error(
+        t('vmDetail.cfgCopyFailed'),
+        t('vmDetail.cfgCopyFailedHint'),
+      );
     }
   };
 
@@ -3470,8 +3571,8 @@ function ConfigTab({
     <div className="flex flex-col gap-20">
       <Card>
         <CardHeader
-          title="原始配置"
-          subtitle="来自 Proxmox /config 接口的完整 JSON"
+          title={t('vmDetail.cfgRaw')}
+          subtitle={t('vmDetail.cfgRawSub')}
           icon={<IconLayers size={16} />}
           actions={
             <>
@@ -3481,11 +3582,13 @@ function ConfigTab({
                   size="sm"
                   onClick={() => setExpanded((v) => !v)}
                 >
-                  {expanded ? '收起' : '展开全部'}
+                  {expanded
+                    ? t('vmDetail.cfgCollapse')
+                    : t('vmDetail.cfgExpandAll')}
                 </Button>
               ) : null}
               <Button variant="secondary" size="sm" onClick={() => void copy()}>
-                复制 JSON
+                {t('vmDetail.cfgCopyJson')}
               </Button>
             </>
           }
@@ -3495,20 +3598,20 @@ function ConfigTab({
 
       <Card>
         <CardHeader
-          title="待生效配置"
-          subtitle="需要重启或关机后才会应用变更"
+          title={t('vmDetail.cfgPending')}
+          subtitle={t('vmDetail.cfgPendingSub')}
           icon={<IconAlert size={16} />}
         />
         {pendingNotImpl ? (
-          <Notice tone="info" title="该功能需要后端支持">
-            /vms/{node}/{vmid}/pending 接口尚未实现。
+          <Notice tone="info" title={t('vmDetail.cfgPendingBackendTitle')}>
+            {t('vmDetail.cfgPendingBackendBody', { node, vmid })}
           </Notice>
         ) : pendingQuery.isLoading ? (
           <div className="skeleton" style={{ height: 60, borderRadius: 6 }} />
         ) : (pendingQuery.data ?? []).length === 0 ? (
           <EmptyState
-            title="没有待生效的配置"
-            description="当前所有配置变更均已应用。"
+            title={t('vmDetail.cfgPendingEmpty')}
+            description={t('vmDetail.cfgPendingEmptyDesc')}
             compact
           />
         ) : (
@@ -3522,7 +3625,7 @@ function ConfigTab({
                     : String(vm.config[item.key] ?? '—')}
                   {item.delete ? (
                     <Badge variant="danger" size="sm" className="ml-8">
-                      待删除
+                      {t('vmDetail.cfgPendingDelete')}
                     </Badge>
                   ) : null}
                 </span>

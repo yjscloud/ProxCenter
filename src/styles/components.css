@@ -360,38 +360,53 @@
   min-width: 0;
 }
 
-/* --- InfoRow / InfoGrid --- */
+/* --- InfoRow / InfoGrid ---
+   规格表式的键值对。三处改动都是为了「扫得下去」：
+
+   1. 每一行都是**同样宽度的标签列 + 值列**（grid，而不是各行自己 flex 撑开）。
+      早先每行是独立的 flex 盒，值贴着各自单元格的右边缘 —— 在两列网格里
+      「内存」和「根分区」的值会落在两条不同的竖线上，眼睛对不齐也就扫不动。
+   2. 值改为左对齐跟在标签列后面，右对齐在窄格里会贴边、参差得更明显。
+   3. 虚线换成实线细线，并给整块加一条顶线：每行都有底线，不再依赖
+      `:last-child`（多列网格里它只能干掉最后一个单元格，前一行照样留着线）。 */
 .info-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 10px 20px;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  column-gap: 28px;
+  border-top: 1px solid var(--border-muted);
 }
 
 .info-row {
-  display: flex;
+  display: grid;
+  /* 标签列按比例给：窄格里不会把值挤没，长标签又能自己占两行 */
+  grid-template-columns: minmax(72px, 38%) minmax(0, 1fr);
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 0;
-  border-bottom: 1px dashed var(--border-muted);
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-muted);
   font-size: var(--font-size-base);
 }
 
-.info-row:last-child {
-  border-bottom: none;
+.info-label {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.01em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  /* 悬停时标签提亮一档：不加背景色就不会在网格里糊出一片色块 */
+  transition: color 0.12s ease;
 }
 
-.info-label {
+.info-row:hover .info-label {
   color: var(--text-secondary);
-  flex-shrink: 0;
-  font-size: var(--font-size-sm);
 }
 
 .info-value {
   color: var(--text-primary);
-  text-align: right;
   min-width: 0;
   overflow-wrap: anywhere;
+  /* 读数与容量上下对齐，跳数时不会左右抖 */
+  font-variant-numeric: tabular-nums;
 }
 
 /* --- KPI --- */
@@ -2518,6 +2533,59 @@ body.is-col-resizing * {
   align-items: center;
   gap: 2px;
   justify-content: flex-end;
+}
+
+/* --- 宿主机网卡表格 ---
+   单元格一格里放两行：主值（接口名 / 地址 / 状态徽标）+ 一行更小更淡的
+   补充说明（取址方式、网关、开机自启）。分成两行而不是再开一列，是为了
+   把「属于同一件事」的信息收在一起 —— 地址和网关拆成两列要来回扫才
+   对得上，而它们本来就是同一个网段里的出口。 */
+.net-cell {
+  display: flex;
+  flex-direction: column;
+  /* 必须显式 start：flex 子项默认 stretch，徽标会被拉成整格宽的一条
+     （「Active」挂在一个横贯整列的空壳里）。 */
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* start 之后子项不再被 stretch，长值仍要能折行而不是顶破格子 */
+.net-cell > * {
+  max-width: 100%;
+}
+
+.net-sub {
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+/* 桥接端口 / bond 从属：逐个拆成芯片。原来是一整串逗号文本，既数不出
+   有几个，也认不出具体是哪个；芯片多了会自动换行，不会把表格撑宽。 */
+.net-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.net-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* VLAN 那一枚是「这条接口的用途」，不是它的成员，用品牌色区分开 */
+.net-chip.is-accent {
+  border-color: var(--accent-border);
+  background: var(--accent-dim);
+  color: var(--accent);
 }
 
 /* 表格里的「可点击文本」：安全组名、IP 集合名这类该像链接而不是按钮 */

@@ -39,7 +39,8 @@ import {
   roleMeta,
   userEnabledMeta,
   userStatusMeta,
-} from '../utils/status';
+} from '../utils/status'
+import { tStatic, useT, type TFunc } from '../i18n';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import type {
@@ -64,122 +65,128 @@ interface PermissionRow {
   roles: PanelRole[];
 }
 
-const PERMISSION_MATRIX: PermissionRow[] = [
-  {
-    key: 'vm.view',
-    label: '查看虚拟机',
-    description: '浏览虚拟机列表、详情、监控图表与控制台',
-    roles: ['admin', 'operator', 'viewer'],
-  },
-  {
-    key: 'vm.console',
-    label: '使用控制台',
-    description: '打开 VNC 图形控制台，可直接操作虚拟机 / 容器内部',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'vm.power',
-    label: '电源操作',
-    description: '启动、关闭、重启、挂起虚拟机',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'vm.create',
-    label: '创建与克隆',
-    description: '创建虚拟机、克隆、从模板部署',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'vm.delete',
-    label: '删除虚拟机',
-    description: '销毁虚拟机并清理其磁盘',
-    roles: ['admin'],
-  },
-  {
-    key: 'vm.config',
-    label: '修改配置',
-    description: '调整 CPU、内存、磁盘、网卡等硬件配置',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'vm.snapshot',
-    label: '快照管理',
-    description: '创建、回滚、删除虚拟机快照',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'vm.migrate',
-    label: '迁移虚拟机',
-    description: '在节点之间在线或离线迁移虚拟机',
-    roles: ['admin'],
-  },
-  {
-    key: 'backup.view',
-    label: '查看备份',
-    description: '浏览、下载备份文件',
-    roles: ['admin', 'operator', 'viewer'],
-  },
-  {
-    key: 'backup.create',
-    label: '创建与恢复备份',
-    description: '立即备份、恢复备份、管理备份计划',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'backup.delete',
-    label: '删除备份',
-    description: '删除备份文件与备份计划',
-    roles: ['admin'],
-  },
-  {
-    key: 'node.view',
-    label: '查看节点',
-    description: '浏览节点状态、存储、网络配置',
-    roles: ['admin', 'operator', 'viewer'],
-  },
-  {
-    key: 'network.manage',
-    label: '修改网络配置',
-    description: '新增/修改/删除网桥、VLAN、物理网卡绑定（普通用户仅可查看）',
-    roles: ['admin'],
-  },
-  {
-    key: 'storage.upload',
-    label: '上传镜像',
-    description: '向存储上传 ISO 与容器模板',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'task.view',
-    label: '查看任务',
-    description: '浏览任务队列与实时日志',
-    roles: ['admin', 'operator', 'viewer'],
-  },
-  {
-    key: 'task.control',
-    label: '控制任务',
-    description: '停止运行中的任务、清理任务记录',
-    roles: ['admin', 'operator'],
-  },
-  {
-    key: 'user.manage',
-    label: '用户管理',
-    description: '创建、编辑、删除面板用户，分配角色',
-    roles: ['admin'],
-  },
-  {
-    key: 'audit.view',
-    label: '审计日志',
-    description: '查看所有操作审计记录',
-    roles: ['admin'],
-  },
-  {
-    key: 'config.manage',
-    label: '连接配置',
-    description: '修改 Proxmox 集群连接参数与 API Token',
-    roles: ['admin'],
-  },
-];
+/**
+ * 权限矩阵：文案随语言走，因此做成接收 t 的工厂函数（模块级常量会让文案
+ * 停在首次加载时的语言上）。
+ */
+function permissionMatrix(t: TFunc): PermissionRow[] {
+  return [
+    {
+      key: 'vm.view',
+      label: t('users.perm.vmView.label'),
+      description: t('users.perm.vmView.desc'),
+      roles: ['admin', 'operator', 'viewer'],
+    },
+    {
+      key: 'vm.console',
+      label: t('users.perm.vmConsole.label'),
+      description: t('users.perm.vmConsole.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'vm.power',
+      label: t('users.perm.vmPower.label'),
+      description: t('users.perm.vmPower.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'vm.create',
+      label: t('users.perm.vmCreate.label'),
+      description: t('users.perm.vmCreate.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'vm.delete',
+      label: t('users.perm.vmDelete.label'),
+      description: t('users.perm.vmDelete.desc'),
+      roles: ['admin'],
+    },
+    {
+      key: 'vm.config',
+      label: t('users.perm.vmConfig.label'),
+      description: t('users.perm.vmConfig.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'vm.snapshot',
+      label: t('users.perm.vmSnapshot.label'),
+      description: t('users.perm.vmSnapshot.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'vm.migrate',
+      label: t('users.perm.vmMigrate.label'),
+      description: t('users.perm.vmMigrate.desc'),
+      roles: ['admin'],
+    },
+    {
+      key: 'backup.view',
+      label: t('users.perm.backupView.label'),
+      description: t('users.perm.backupView.desc'),
+      roles: ['admin', 'operator', 'viewer'],
+    },
+    {
+      key: 'backup.create',
+      label: t('users.perm.backupCreate.label'),
+      description: t('users.perm.backupCreate.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'backup.delete',
+      label: t('users.perm.backupDelete.label'),
+      description: t('users.perm.backupDelete.desc'),
+      roles: ['admin'],
+    },
+    {
+      key: 'node.view',
+      label: t('users.perm.nodeView.label'),
+      description: t('users.perm.nodeView.desc'),
+      roles: ['admin', 'operator', 'viewer'],
+    },
+    {
+      key: 'network.manage',
+      label: t('users.perm.networkManage.label'),
+      description: t('users.perm.networkManage.desc'),
+      roles: ['admin'],
+    },
+    {
+      key: 'storage.upload',
+      label: t('users.perm.storageUpload.label'),
+      description: t('users.perm.storageUpload.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'task.view',
+      label: t('users.perm.taskView.label'),
+      description: t('users.perm.taskView.desc'),
+      roles: ['admin', 'operator', 'viewer'],
+    },
+    {
+      key: 'task.control',
+      label: t('users.perm.taskControl.label'),
+      description: t('users.perm.taskControl.desc'),
+      roles: ['admin', 'operator'],
+    },
+    {
+      key: 'user.manage',
+      label: t('users.perm.userManage.label'),
+      description: t('users.perm.userManage.desc'),
+      roles: ['admin'],
+    },
+    {
+      key: 'audit.view',
+      label: t('users.perm.auditView.label'),
+      description: t('users.perm.auditView.desc'),
+      roles: ['admin'],
+    },
+    {
+      key: 'config.manage',
+      label: t('users.perm.configManage.label'),
+      description: t('users.perm.configManage.desc'),
+      roles: ['admin'],
+    },
+  ];
+}
 
 const ROLE_ORDER: PanelRole[] = ['admin', 'operator', 'viewer'];
 
@@ -188,9 +195,13 @@ const ROLE_ORDER: PanelRole[] = ['admin', 'operator', 'viewer'];
    --------------------------------------------------------------------------- */
 
 export function Users() {
+  const t = useT();
   const queryClient = useQueryClient();
   const toast = useToast();
   const { isAdmin, user: currentUser } = useAuth();
+
+  const permissionMatrixData = useMemo(() => permissionMatrix(t), [t]);
+  const permissionColumnsData = useMemo(() => permissionColumns(t), [t]);
 
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
@@ -261,8 +272,8 @@ export function Users() {
     if (fromApi && fromApi.length > 0) {
       return fromApi.map((r) => ({ label: roleLabel(r), value: r.id }));
     }
-    return ROLE_ORDER.map((r) => ({ label: roleMeta(r).label, value: r }));
-  }, [rolesQuery.data]);
+    return ROLE_ORDER.map((r) => ({ label: roleMeta(r, t).label, value: r }));
+  }, [rolesQuery.data, t]);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['users'] });
@@ -272,14 +283,14 @@ export function Users() {
   const columns: Array<Column<UserOut>> = [
     {
       key: 'username',
-      header: '用户名',
+      header: t('users.colUsername'),
       render: (u) => (
         <div className="vm-name-cell">
           <span className="fw-500 flex items-center gap-6">
             {u.username}
             {u.username === currentUser?.username ? (
               <Badge variant="accent" size="sm">
-                当前登录
+                {t('users.currentLogin')}
               </Badge>
             ) : null}
           </span>
@@ -293,10 +304,10 @@ export function Users() {
     },
     {
       key: 'role',
-      header: '角色',
+      header: t('users.colRole'),
       width: 120,
       render: (u) => {
-        const meta = roleMeta(u.role);
+        const meta = roleMeta(u.role, tStatic);
         return (
           <Badge variant={meta.variant} dot size="sm">
             {meta.label}
@@ -308,14 +319,14 @@ export function Users() {
     },
     {
       key: 'enabled',
-      header: '状态',
+      header: t('common.status'),
       width: 110,
       render: (u) => {
         // 待审批 / 已拒绝比「启用与否」更值得先说：这类账号根本登不进来，
         // 再显示一个绿色的「已启用」只会自相矛盾。
         const meta = isPendingApproval(u.status) || u.status === 'rejected'
-          ? userStatusMeta(u.status)
-          : userEnabledMeta(u.enabled);
+          ? userStatusMeta(u.status, tStatic)
+          : userEnabledMeta(u.enabled, tStatic);
         return (
           <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
             {meta.label}
@@ -325,7 +336,7 @@ export function Users() {
     },
     {
       key: 'comment',
-      header: '备注',
+      header: t('users.fieldComment'),
       render: (u) => (
         <span className="fs-sm text-secondary truncate" title={u.comment}>
           {u.comment || '—'}
@@ -334,7 +345,7 @@ export function Users() {
     },
     {
       key: 'created',
-      header: '创建时间',
+      header: t('common.createdAt'),
       width: 170,
       render: (u) => (
         <span className="mono fs-sm">
@@ -344,13 +355,13 @@ export function Users() {
     },
     {
       key: 'actions',
-      header: '操作',
+      header: t('common.actions'),
       width: 130,
       align: 'right',
       render: (u) => (
         <span className="row-actions">
           <IconButton
-            label={`编辑用户 ${u.username}`}
+            label={t('users.editUserAria', { name: u.username })}
             variant="primary"
             disabled={!isAdmin}
             onClick={(e) => {
@@ -362,7 +373,7 @@ export function Users() {
             <IconEdit size={15} />
           </IconButton>
           <IconButton
-            label={`重置密码 ${u.username}`}
+            label={t('users.resetPwAria', { name: u.username })}
             disabled={!isAdmin}
             onClick={(e) => {
               e.stopPropagation();
@@ -372,7 +383,7 @@ export function Users() {
             <IconKey size={15} />
           </IconButton>
           <IconButton
-            label={`删除用户 ${u.username}`}
+            label={t('users.deleteUserAria', { name: u.username })}
             variant="danger"
             disabled={!isAdmin || u.username === currentUser?.username}
             onClick={(e) => {
@@ -391,19 +402,19 @@ export function Users() {
   const pendingColumns: Array<Column<UserOut>> = [
     {
       key: 'username',
-      header: '用户名',
+      header: t('users.colUsername'),
       render: (u) => (
         <div className="vm-name-cell">
           <span className="fw-500">{u.username}</span>
           <span className="fs-xs text-muted">
-            {u.email || '未填写邮箱'}
+            {u.email || t('users.emailMissing')}
           </span>
         </div>
       ),
     },
     {
       key: 'created',
-      header: '申请时间',
+      header: t('users.colAppliedAt'),
       width: 180,
       render: (u) => (
         <span className="mono fs-sm">
@@ -413,7 +424,7 @@ export function Users() {
     },
     {
       key: 'actions',
-      header: '审批',
+      header: t('users.colApprove'),
       width: 160,
       align: 'right',
       render: (u) => (
@@ -427,7 +438,7 @@ export function Users() {
               setApproveTarget(u);
             }}
           >
-            通过
+            {t('users.approve')}
           </Button>
           <Button
             variant="secondary"
@@ -438,7 +449,7 @@ export function Users() {
               setRejectTarget(u);
             }}
           >
-            拒绝
+            {t('users.reject')}
           </Button>
         </span>
       ),
@@ -450,10 +461,10 @@ export function Users() {
       title={
         <>
           <IconUsers size={20} />
-          用户管理
+          {t('users.title')}
         </>
       }
-      subtitle="管理面板账号与角色分配，所有操作均记录到审计日志"
+      subtitle={t('users.subtitle')}
       actions={
         <>
           <Button
@@ -462,7 +473,7 @@ export function Users() {
             onClick={() => invalidate()}
             loading={usersQuery.isFetching && !usersQuery.isLoading}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
           <Button
             variant="primary"
@@ -473,58 +484,57 @@ export function Users() {
               setEditorOpen(true);
             }}
           >
-            新建用户
+            {t('users.newUser')}
           </Button>
         </>
       }
     >
       {!isAdmin ? (
-        <Notice tone="info" title="只读视图">
-          用户管理仅对管理员开放。你可以查看现有账号与角色权限说明，
-          但无法进行创建、编辑或删除操作。
+        <Notice tone="info" title={t('users.readonlyTitle')}>
+          {t('users.readonlyBody')}
         </Notice>
       ) : null}
 
       {/* 统计 */}
       <div className="grid grid-5">
         <KpiCard
-          label="用户总数"
+          label={t('users.kpiTotal')}
           value={stats.total}
           icon={<IconUsers size={18} />}
           tone="accent"
           loading={usersQuery.isLoading}
         />
         <KpiCard
-          label="管理员"
+          label={t('status.role.admin')}
           value={stats.admin}
           icon={<IconShield size={18} />}
           tone="danger"
           loading={usersQuery.isLoading}
         />
         <KpiCard
-          label="普通用户"
+          label={t('status.role.operator')}
           value={stats.operator}
           icon={<IconUser size={18} />}
           tone="warning"
           loading={usersQuery.isLoading}
         />
         <KpiCard
-          label="只读 / 已禁用"
+          label={t('users.kpiViewerDisabled')}
           value={`${stats.viewer} / ${stats.disabled}`}
           icon={<IconEye size={18} />}
           tone="neutral"
           loading={usersQuery.isLoading}
         />
         <KpiCard
-          label="待审批"
+          label={t('status.user.pending')}
           value={stats.pending}
           icon={<IconClock size={18} />}
           tone={stats.pending > 0 ? 'warning' : 'neutral'}
           loading={usersQuery.isLoading}
           hint={
             stats.pending > 0
-              ? '自助注册的账号，需分配角色后才能登录'
-              : '没有待处理的注册申请'
+              ? t('users.kpiPendingHint')
+              : t('users.kpiPendingNone')
           }
         />
       </div>
@@ -536,8 +546,8 @@ export function Users() {
         <Card padded={false} collapsible={false}>
           <div style={{ padding: '18px 18px 0' }}>
             <CardHeader
-              title="待审批注册申请"
-              subtitle={`${pendingUsers.length} 个账号等待审批，通过时可一并分配角色与权限`}
+              title={t('users.pendingTitle')}
+              subtitle={t('users.pendingSubtitle', { n: pendingUsers.length })}
               icon={<IconClock size={17} />}
             />
           </div>
@@ -545,7 +555,7 @@ export function Users() {
             columns={pendingColumns}
             rows={pendingUsers}
             rowKey={(u) => u.id ?? u.username}
-            caption="等待管理员审批的注册申请"
+            caption={t('users.pendingCaption')}
             dense
             className="table-flush"
           />
@@ -558,36 +568,38 @@ export function Users() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索用户名、邮箱、备注…"
+            placeholder={t('users.searchPlaceholder')}
             prefix={<IconSearch size={15} />}
             block={false}
-            aria-label="搜索用户"
+            aria-label={t('users.searchAria')}
           />
           <Select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
             options={[
-              { label: '全部角色', value: '' },
-              ...ROLE_ORDER.map((r) => ({ label: roleMeta(r).label, value: r })),
+              { label: t('users.filterAllRoles'), value: '' },
+              ...ROLE_ORDER.map((r) => ({ label: roleMeta(r, t).label, value: r })),
             ]}
-            aria-label="按角色筛选"
+            aria-label={t('users.filterRoleAria')}
           />
         </div>
         <div className="toolbar-right">
-          <span className="fs-sm text-muted">显示 {filtered.length} 个用户</span>
+          <span className="fs-sm text-muted">
+            {t('users.showing', { n: filtered.length })}
+          </span>
         </div>
       </div>
 
       {usersQuery.isError && isNotImplemented(usersQuery.error) ? (
         <ErrorState
           notImplemented
-          title="用户管理接口尚未实现"
-          message="后端 /users 返回未实现。建议后端把面板用户存到独立数据库表，不要复用 Proxmox 的 PVE 用户体系。"
+          title={t('users.notImplTitle')}
+          message={t('users.notImplMsg')}
           onRetry={() => void usersQuery.refetch()}
         />
       ) : usersQuery.isError ? (
         <ErrorState
-          title="无法加载用户列表"
+          title={t('users.loadFailed')}
           message={errorMessage(usersQuery.error)}
           onRetry={() => void usersQuery.refetch()}
         />
@@ -597,10 +609,12 @@ export function Users() {
           rows={filtered}
           rowKey={(u) => u.id ?? u.username}
           loading={usersQuery.isLoading}
-          caption="面板用户列表"
-          emptyTitle={search || roleFilter ? '没有匹配的用户' : '暂无用户'}
+          caption={t('users.listCaption')}
+          emptyTitle={
+            search || roleFilter ? t('users.emptySearch') : t('users.empty')
+          }
           emptyDescription={
-            search || roleFilter ? '尝试调整搜索关键词或筛选条件。' : undefined
+            search || roleFilter ? t('users.emptySearchDesc') : undefined
           }
         />
       )}
@@ -608,8 +622,8 @@ export function Users() {
       {/* ---- 角色权限说明 ---- */}
       <Card>
         <CardHeader
-          title="角色与权限"
-          subtitle="面板采用三级角色模型，权限点由后端在 JWT 中下发"
+          title={t('users.rolesTitle')}
+          subtitle={t('users.rolesSubtitle')}
           icon={<IconShield size={17} />}
         />
         <div className="grid grid-3 mb-16">
@@ -623,44 +637,32 @@ export function Users() {
         </div>
 
         <Table<PermissionRow>
-          columns={PERMISSION_COLUMNS}
-          rows={PERMISSION_MATRIX}
+          columns={permissionColumnsData}
+          rows={permissionMatrixData}
           rowKey={(p) => p.key}
-          caption="各角色权限对照表"
+          caption={t('users.permCaption')}
           dense
           className="perm-matrix"
         />
       </Card>
 
-      <CollapsibleCard title="关于密码与安全策略" icon={<IconKey size={15} />}>
+      <CollapsibleCard title={t('users.securityTitle')} icon={<IconKey size={15} />}>
         <div className="desc-list">
           <div className="desc-item">
-            <div className="desc-label">密码存储</div>
-            <div className="desc-value">
-              面板用户的密码必须在后端用 bcrypt 或 argon2 做单向哈希，
-              绝不可明文落库或写入日志。前端提交后立即清空内存中的原文。
-            </div>
+            <div className="desc-label">{t('users.secPwStore')}</div>
+            <div className="desc-value">{t('users.secPwStoreBody')}</div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">Token 有效期</div>
-            <div className="desc-value">
-              建议 access_token 有效期 8 小时，并在响应中带 exp；
-              前端在收到 401 时会自动清理本地会话并跳回登录页。
-            </div>
+            <div className="desc-label">{t('users.secToken')}</div>
+            <div className="desc-value">{t('users.secTokenBody')}</div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">Proxmox 凭据</div>
-            <div className="desc-value">
-              面板用同一个 API Token 访问集群，因此「面板角色」只限制面板自身的能力。
-              如果需要对不同用户做 Proxmox 级别的细粒度授权，需要在后端改用
-              Proxmox 的用户票据（PVEAuthCookie）而非单一 Token。
-            </div>
+            <div className="desc-label">{t('users.secPve')}</div>
+            <div className="desc-value">{t('users.secPveBody')}</div>
           </div>
           <div className="desc-item">
-            <div className="desc-label">默认账号</div>
-            <div className="desc-value">
-              首次部署后请立即修改默认管理员密码，并删除或禁用任何示例账号。
-            </div>
+            <div className="desc-label">{t('users.secDefault')}</div>
+            <div className="desc-value">{t('users.secDefaultBody')}</div>
           </div>
         </div>
       </CollapsibleCard>
@@ -697,30 +699,21 @@ export function Users() {
           if (!rejectTarget) return;
           setBusy(true);
           try {
-            await usersApi.reject(
-              rejectTarget.username,
-              '管理员在用户管理页拒绝',
-            );
-            toast.success(`已拒绝 ${rejectTarget.username} 的注册申请`);
+            await usersApi.reject(rejectTarget.username, t('users.rejectReason'));
+            toast.success(t('users.rejectedToast', { name: rejectTarget.username }));
             setRejectTarget(null);
             invalidate();
           } catch (err) {
-            toast.error('拒绝申请失败', errorMessage(err));
+            toast.error(t('users.rejectFailed'), errorMessage(err));
           } finally {
             setBusy(false);
           }
         }}
-        title="拒绝注册申请"
+        title={t('users.rejectTitle')}
         danger
-        confirmText="拒绝申请"
+        confirmText={t('users.rejectConfirm')}
         loading={busy}
-        message={
-          <>
-            将拒绝 <strong>{rejectTarget?.username}</strong> 的注册申请。
-            该账号会保留在列表中（状态「已拒绝」）但无法登录，
-            用户名也不会被他人重复注册。如需恢复，可在编辑用户时把状态改回「正常」。
-          </>
-        }
+        message={t('users.rejectMessage', { name: rejectTarget?.username ?? '' })}
       />
 
       {/* ---- 重置密码 ---- */}
@@ -742,27 +735,24 @@ export function Users() {
           setBusy(true);
           try {
             await usersApi.remove(deleteTarget.username);
-            toast.success(`已删除用户 ${deleteTarget.username}`);
+            toast.success(t('users.deletedToast', { name: deleteTarget.username }));
             setDeleteTarget(null);
             invalidate();
           } catch (err) {
-            toast.error('删除用户失败', errorMessage(err));
+            toast.error(t('users.deleteFailed'), errorMessage(err));
           } finally {
             setBusy(false);
           }
         }}
-        title="删除面板用户"
+        title={t('users.deleteTitle')}
         danger
-        confirmText="删除用户"
+        confirmText={t('users.deleteConfirm')}
         loading={busy}
         requireText={deleteTarget?.username}
-        message={
-          <>
-            即将删除面板账号 <strong>{deleteTarget?.username}</strong>
-            （{roleMeta(deleteTarget?.role).label}）。
-            该用户将无法再登录面板，但其在 Proxmox 上已执行的操作与审计记录会保留。
-          </>
-        }
+        message={t('users.deleteMessage', {
+          name: deleteTarget?.username ?? '',
+          role: roleMeta(deleteTarget?.role, t).label,
+        })}
       />
 
       <RoleManager />
@@ -774,56 +764,60 @@ export function Users() {
    权限矩阵列
    --------------------------------------------------------------------------- */
 
-const PERMISSION_COLUMNS: Array<Column<PermissionRow>> = [
-  {
-    key: 'label',
-    header: '权限',
-    render: (p) => (
-      <div className="vm-name-cell">
-        <span className="fw-500">{p.label}</span>
-        <span className="fs-xs text-muted mono">{p.key}</span>
-      </div>
-    ),
-  },
-  {
-    key: 'description',
-    header: '说明',
-    render: (p) => (
-      <span className="fs-sm text-secondary">{p.description}</span>
-    ),
-  },
-  ...ROLE_ORDER.map<Column<PermissionRow>>((role) => ({
-    key: `role-${role}`,
-    header: roleMeta(role).label,
-    width: 90,
-    align: 'center',
-    render: (p) =>
-      p.roles.includes(role) ? (
-        <span className="perm-yes" title="具备该权限">
-          <IconCheck size={16} />
-          <span className="sr-only">具备</span>
-        </span>
-      ) : (
-        <span className="perm-no" title="不具备该权限">
-          <IconClose size={16} />
-          <span className="sr-only">不具备</span>
-        </span>
+function permissionColumns(t: TFunc): Array<Column<PermissionRow>> {
+  return [
+    {
+      key: 'label',
+      header: t('users.permColLabel'),
+      render: (p) => (
+        <div className="vm-name-cell">
+          <span className="fw-500">{p.label}</span>
+          <span className="fs-xs text-muted mono">{p.key}</span>
+        </div>
       ),
-  })),
-];
+    },
+    {
+      key: 'description',
+      header: t('users.permColDesc'),
+      render: (p) => (
+        <span className="fs-sm text-secondary">{p.description}</span>
+      ),
+    },
+    ...ROLE_ORDER.map<Column<PermissionRow>>((role) => ({
+      key: `role-${role}`,
+      header: roleMeta(role, t).label,
+      width: 90,
+      align: 'center',
+      render: (p) =>
+        p.roles.includes(role) ? (
+          <span className="perm-yes" title={t('users.permYes')}>
+            <IconCheck size={16} />
+            <span className="sr-only">{t('users.permYesShort')}</span>
+          </span>
+        ) : (
+          <span className="perm-no" title={t('users.permNo')}>
+            <IconClose size={16} />
+            <span className="sr-only">{t('users.permNoShort')}</span>
+          </span>
+        ),
+    })),
+  ];
+}
 
 /* ---------------------------------------------------------------------------
    角色卡片
    --------------------------------------------------------------------------- */
 
 function RoleCard({ role, info }: { role: PanelRole; info?: RoleOut }) {
-  const meta = roleMeta(role);
-  const count = PERMISSION_MATRIX.filter((p) => p.roles.includes(role)).length;
+  const t = useT();
+  const meta = roleMeta(role, t);
+  const matrix = permissionMatrix(t);
+  const count = matrix.filter((p) => p.roles.includes(role)).length;
 
   const description: Record<PanelRole, string> = {
-    admin: '完全控制面板与集群，包含用户管理、网络改造、删除等高风险操作。',
-    operator: '普通用户权限：电源操作、创建克隆、快照、备份恢复，不能删除虚拟机或改动网络。',
-    viewer: '只读账号：可浏览所有资源与监控数据，无法执行任何修改类操作。',
+    admin: t('users.roleAdminDesc'),
+    operator: t('users.roleOperatorDesc'),
+    viewer: t('users.roleViewerDesc'),
   };
 
   return (
@@ -838,9 +832,9 @@ function RoleCard({ role, info }: { role: PanelRole; info?: RoleOut }) {
       </div>
       <div className="fs-sm text-secondary">{description[role]}</div>
       <div className="fs-xs text-muted">
-        拥有 {count} / {PERMISSION_MATRIX.length} 项权限
+        {t('users.rolePermissionCount', { n: count, total: matrix.length })}
         {info?.permissions && info.permissions.length > 0
-          ? ` · 后端声明 ${info.permissions.length} 条`
+          ? t('users.roleBackendDeclared', { n: info.permissions.length })
           : ''}
       </div>
       {info?.description ? (
@@ -869,6 +863,7 @@ function UserEditor({
   onDone: () => void;
   existingUsers: UserOut[];
 }) {
+  const t = useT();
   const toast = useToast();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -945,29 +940,29 @@ function UserEditor({
 
     if (!isEdit) {
       const name = username.trim();
-      if (!name) next.username = '请填写用户名';
+      if (!name) next.username = t('users.validation.usernameRequired');
       else if (!/^[a-zA-Z0-9._-]{3,32}$/.test(name)) {
-        next.username = '3-32 位，仅允许字母、数字、点、下划线、连字符';
+        next.username = t('users.validation.usernameFormat');
       } else if (
         existingUsers.some(
           (u) => u.username.toLowerCase() === name.toLowerCase(),
         )
       ) {
-        next.username = '该用户名已存在';
+        next.username = t('users.validation.usernameExists');
       }
     }
 
     if (!isEdit || password) {
-      if (!password) next.password = '请设置密码';
-      else if (password.length < 8) next.password = '密码至少 8 位';
+      if (!password) next.password = t('users.validation.passwordRequired');
+      else if (password.length < 8) next.password = t('users.validation.passwordMin');
       else if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-        next.password = '密码需同时包含字母与数字';
+        next.password = t('users.validation.passwordAlnum');
       }
-      if (password !== confirm) next.confirm = '两次输入的密码不一致';
+      if (password !== confirm) next.confirm = t('users.validation.passwordMismatch');
     }
 
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      next.email = '邮箱格式不正确';
+      next.email = t('users.validation.emailFormat');
     }
 
     setErrors(next);
@@ -988,7 +983,7 @@ function UserEditor({
           set_permissions: true,
           status: status as UserAccountStatus,
         });
-        toast.success(`已更新用户 ${user.username}`);
+        toast.success(t('users.updatedToast', { name: user.username }));
       } else {
         await usersApi.create({
           username: username.trim(),
@@ -998,13 +993,19 @@ function UserEditor({
           comment: comment.trim() || undefined,
           permissions: useOverride ? perms : null,
         });
-        toast.success(`已创建用户 ${username.trim()}`, `角色：${roleLabelByValue(role, roleOptions)}`);
+        toast.success(
+          t('users.createdToast', { name: username.trim() }),
+          t('users.createdRoleToast', { role: roleLabelByValue(role, roleOptions) }),
+        );
       }
       setPassword('');
       setConfirm('');
       onDone();
     } catch (err) {
-      toast.error(isEdit ? '更新用户失败' : '创建用户失败', errorMessage(err));
+      toast.error(
+        isEdit ? t('users.updateFailed') : t('users.createFailed'),
+        errorMessage(err),
+      );
     } finally {
       setBusy(false);
     }
@@ -1014,34 +1015,38 @@ function UserEditor({
     <Modal
       open={open}
       onClose={onClose}
-      title={isEdit ? `编辑用户 ${user?.username}` : '新建面板用户'}
-      description={
+      title={
         isEdit
-          ? '留空密码字段表示不修改现有密码'
-          : '创建后用户即可使用该账号登录面板'
+          ? t('users.editUserTitle', { name: user?.username ?? '' })
+          : t('users.newUserTitle')
+      }
+      description={
+        isEdit ? t('users.editorDescEdit') : t('users.editorDescNew')
       }
       size="md"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
             onClick={() => void submit()}
             loading={busy}
           >
-            {isEdit ? '保存修改' : '创建用户'}
+            {isEdit ? t('users.saveChanges') : t('users.createUser')}
           </Button>
         </>
       }
     >
       <div className="dyn-list">
         <Field
-          label="用户名"
+          label={t('users.fieldUsername')}
           required={!isEdit}
           error={errors.username}
-          hint={isEdit ? '用户名创建后不可修改' : '登录面板时使用'}
+          hint={
+            isEdit ? t('users.fieldUsernameHintEdit') : t('users.fieldUsernameHintNew')
+          }
         >
           <Input
             value={username}
@@ -1053,24 +1058,22 @@ function UserEditor({
         </Field>
 
         <Field
-          label={isEdit ? '新密码' : '密码'}
+          label={isEdit ? t('users.fieldPasswordEdit') : t('users.fieldPassword')}
           required={!isEdit}
           error={errors.password}
-          hint={
-            password
-              ? '建议包含大小写字母、数字与符号，长度 12 位以上'
-              : undefined
-          }
+          hint={password ? t('users.passwordHint') : undefined}
         >
           <Input
             type={showPassword ? 'text' : 'password'}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
-            placeholder={isEdit ? '留空则不修改' : '至少 8 位，含字母与数字'}
+            placeholder={
+              isEdit ? t('users.passwordPlaceholderEdit') : t('users.passwordPlaceholder')
+            }
             suffix={
               <IconButton
-                label={showPassword ? '隐藏密码' : '显示密码'}
+                label={showPassword ? t('users.hidePassword') : t('users.showPassword')}
                 onClick={() => setShowPassword((v) => !v)}
               >
                 {showPassword ? <IconEyeOff size={15} /> : <IconEye size={15} />}
@@ -1080,7 +1083,7 @@ function UserEditor({
         </Field>
 
         {!isEdit || password ? (
-          <Field label="确认密码" required error={errors.confirm}>
+          <Field label={t('users.fieldConfirmPassword')} required error={errors.confirm}>
             <Input
               type={showPassword ? 'text' : 'password'}
               value={confirm}
@@ -1090,7 +1093,11 @@ function UserEditor({
           </Field>
         ) : null}
 
-        <Field label="角色" required hint="决定该用户在面板中可执行的操作范围">
+        <Field
+          label={t('users.fieldRole')}
+          required
+          hint={t('users.fieldRoleHint')}
+        >
           <Select
             value={role}
             onChange={(e) => setRole(e.target.value)}
@@ -1101,11 +1108,13 @@ function UserEditor({
         {/* ---- 权限：默认跟随角色，可切到自定义逐条勾选 ---- */}
         <div className="perm-block">
           <div className="perm-block-head">
-            <span className="fw-600">权限</span>
+            <span className="fw-600">{t('users.permBlock')}</span>
             <span className="fs-xs text-muted">
               {useOverride
-                ? `自定义（${perms.length} 项）`
-                : `跟随角色「${roleLabelByValue(role, roleOptions)}」`}
+                ? t('users.permCustom', { n: perms.length })
+                : t('users.permFollowing', {
+                    name: roleLabelByValue(role, roleOptions),
+                  })}
             </span>
           </div>
 
@@ -1115,8 +1124,8 @@ function UserEditor({
               setUseOverride(v);
               if (!v) setPerms(rolePerms);
             }}
-            label="自定义该用户的权限"
-            hint="关闭时权限随角色变化；打开后可逐条勾选，之后改角色不再影响他"
+            label={t('users.customPermsLabel')}
+            hint={t('users.customPermsHint')}
           />
 
           <PermissionPicker
@@ -1126,7 +1135,11 @@ function UserEditor({
           />
         </div>
 
-        <Field label="邮箱" error={errors.email} hint="可选，用于接收通知">
+        <Field
+          label={t('users.fieldEmail')}
+          error={errors.email}
+          hint={t('users.fieldEmailHint')}
+        >
           <Input
             type="email"
             value={email}
@@ -1137,12 +1150,12 @@ function UserEditor({
         </Field>
 
         {!isEdit ? (
-          <Field label="备注">
+          <Field label={t('users.fieldComment')}>
             <Textarea
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               rows={2}
-              placeholder="例如：张三，运维组"
+              placeholder={t('users.commentPlaceholder')}
             />
           </Field>
         ) : (
@@ -1150,20 +1163,20 @@ function UserEditor({
             <Switch
               checked={enabled}
               onChange={setEnabled}
-              label="启用该账号"
-              hint="禁用后用户无法登录，但账号与其审计记录保留"
+              label={t('users.enableAccount')}
+              hint={t('users.enableAccountHint')}
             />
             <Field
-              label="审批状态"
-              hint="自助注册的账号先落在「待审批」；这里可以把被拒绝的申请改回正常"
+              label={t('users.fieldApprovalStatus')}
+              hint={t('users.fieldApprovalStatusHint')}
             >
               <Select
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
                 options={[
-                  { label: '正常（可登录）', value: 'active' },
-                  { label: '待审批（禁止登录）', value: 'pending' },
-                  { label: '已拒绝（禁止登录）', value: 'rejected' },
+                  { label: t('users.statusActive'), value: 'active' },
+                  { label: t('users.statusPending'), value: 'pending' },
+                  { label: t('users.statusRejected'), value: 'rejected' },
                 ]}
               />
             </Field>
@@ -1171,9 +1184,8 @@ function UserEditor({
         )}
       </div>
 
-      <Notice tone="info" title="密码安全提示">
-        面板密码与 Proxmox 集群凭据相互独立。面板使用统一的 API Token 访问集群，
-        因此所有面板用户的集群操作权限由「角色」在面板层拦截。
+      <Notice tone="info" title={t('users.pwSecurityTitle')}>
+        {t('users.pwSecurityBody')}
       </Notice>
     </Modal>
   );
@@ -1194,6 +1206,7 @@ function ApprovalDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const open = Boolean(user);
 
@@ -1238,12 +1251,12 @@ function ApprovalDialog({
         set_permissions: true,
       });
       toast.success(
-        `已通过 ${user.username} 的注册申请`,
-        `角色：${roleLabelByValue(role, roleOptions)}`,
+        t('users.approvedToast', { name: user.username }),
+        t('users.createdRoleToast', { role: roleLabelByValue(role, roleOptions) }),
       );
       onDone();
     } catch (err) {
-      toast.error('审批失败', errorMessage(err));
+      toast.error(t('users.approveFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1253,38 +1266,42 @@ function ApprovalDialog({
     <Modal
       open={open}
       onClose={onClose}
-      title={`审批注册申请${user ? ` · ${user.username}` : ''}`}
-      description="通过后该账号即可登录面板，角色与权限在这里一次定好"
+      title={
+        user
+          ? t('users.approveTitleWith', { name: user.username })
+          : t('users.approveTitle')
+      }
+      description={t('users.approveDesc')}
       size="md"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
             onClick={() => void submit()}
             loading={busy}
           >
-            通过并开通
+            {t('users.approveConfirm')}
           </Button>
         </>
       }
     >
       <div className="dyn-list">
-        <Field label="申请人">
+        <Field label={t('users.fieldApplicant')}>
           <Input value={user?.username ?? ''} disabled readOnly />
         </Field>
 
-        <Field label="邮箱">
+        <Field label={t('users.fieldEmail')}>
           <Input
-            value={user?.email || '（申请时未填写）'}
+            value={user?.email || t('users.emailNotProvided')}
             disabled
             readOnly
           />
         </Field>
 
-        <Field label="申请时间">
+        <Field label={t('users.colAppliedAt')}>
           <Input
             value={user?.created ? formatDateTime(user.created) : '—'}
             disabled
@@ -1294,9 +1311,9 @@ function ApprovalDialog({
         </Field>
 
         <Field
-          label="角色"
+          label={t('users.fieldRole')}
           required
-          hint="决定该用户在面板中可执行的操作范围"
+          hint={t('users.fieldRoleHint')}
         >
           <Select
             value={role}
@@ -1308,11 +1325,13 @@ function ApprovalDialog({
         {/* ---- 权限：默认跟随角色，可切到自定义逐条勾选 ---- */}
         <div className="perm-block">
           <div className="perm-block-head">
-            <span className="fw-600">权限</span>
+            <span className="fw-600">{t('users.permBlock')}</span>
             <span className="fs-xs text-muted">
               {useOverride
-                ? `自定义（${perms.length} 项）`
-                : `跟随角色「${roleLabelByValue(role, roleOptions)}」`}
+                ? t('users.permCustom', { n: perms.length })
+                : t('users.permFollowing', {
+                    name: roleLabelByValue(role, roleOptions),
+                  })}
             </span>
           </div>
 
@@ -1322,8 +1341,8 @@ function ApprovalDialog({
               setUseOverride(v);
               if (!v) setPerms(rolePerms);
             }}
-            label="为该用户单独指定权限"
-            hint="关闭时权限随角色变化；打开后可逐条勾选，之后改角色不再影响他"
+            label={t('users.permsForUserLabel')}
+            hint={t('users.customPermsHint')}
           />
 
           <PermissionPicker
@@ -1350,6 +1369,7 @@ function ResetPasswordDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -1368,15 +1388,15 @@ function ResetPasswordDialog({
   const submit = async () => {
     if (!user) return;
     if (password.length < 8) {
-      setError('密码至少 8 位');
+      setError(t('users.validation.passwordMin'));
       return;
     }
     if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-      setError('密码需同时包含字母与数字');
+      setError(t('users.validation.passwordAlnum'));
       return;
     }
     if (password !== confirm) {
-      setError('两次输入的密码不一致');
+      setError(t('users.validation.passwordMismatch'));
       return;
     }
     setError('');
@@ -1384,12 +1404,12 @@ function ResetPasswordDialog({
     try {
       await usersApi.update(user.username, { password });
       toast.success(
-        `已重置 ${user.username} 的密码`,
-        '请通过安全渠道告知该用户新密码',
+        t('users.resetSuccessToast', { name: user.username }),
+        t('users.resetSuccessDetail'),
       );
       onDone();
     } catch (err) {
-      toast.error('重置密码失败', errorMessage(err));
+      toast.error(t('users.resetFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1399,13 +1419,13 @@ function ResetPasswordDialog({
     <Modal
       open={Boolean(user)}
       onClose={onClose}
-      title={`重置密码 — ${user?.username ?? ''}`}
-      description="直接设置新密码，用户下次登录时生效"
+      title={t('users.resetTitle', { name: user?.username ?? '' })}
+      description={t('users.resetDesc')}
       size="sm"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -1414,23 +1434,23 @@ function ResetPasswordDialog({
             loading={busy}
             disabled={!password || !confirm}
           >
-            重置密码
+            {t('users.resetAction')}
           </Button>
         </>
       }
     >
       <div className="dyn-list">
-        <Field label="新密码" required error={error || undefined}>
+        <Field label={t('users.fieldNewPassword')} required error={error || undefined}>
           <Input
             type={show ? 'text' : 'password'}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
             autoFocus
-            placeholder="至少 8 位，含字母与数字"
+            placeholder={t('users.passwordPlaceholder')}
             suffix={
               <IconButton
-                label={show ? '隐藏密码' : '显示密码'}
+                label={show ? t('users.hidePassword') : t('users.showPassword')}
                 onClick={() => setShow((v) => !v)}
               >
                 {show ? <IconEyeOff size={15} /> : <IconEye size={15} />}
@@ -1439,7 +1459,7 @@ function ResetPasswordDialog({
           />
         </Field>
 
-        <Field label="确认新密码" required>
+        <Field label={t('users.fieldConfirmNewPassword')} required>
           <Input
             type={show ? 'text' : 'password'}
             value={confirm}
@@ -1452,9 +1472,8 @@ function ResetPasswordDialog({
         </Field>
       </div>
 
-      <Notice tone="warning" title="重置后请通知用户">
-        面板不会通过邮件自动发送新密码。请通过安全渠道（如内部 IM）告知用户，
-        并建议其登录后立即修改。
+      <Notice tone="warning" title={t('users.resetNotifyTitle')}>
+        {t('users.resetNotifyBody')}
       </Notice>
     </Modal>
   );
@@ -1469,6 +1488,7 @@ function ResetPasswordDialog({
    --------------------------------------------------------------------------- */
 
 function RoleManager() {
+  const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { isAdmin } = useAuth();
@@ -1490,11 +1510,11 @@ function RoleManager() {
     setBusy(true);
     try {
       await rolesApi.remove(deleteTarget.id);
-      toast.success('已删除角色', deleteTarget.name);
+      toast.success(t('users.roleDeletedToast'), deleteTarget.name);
       setDeleteTarget(null);
       invalidate();
     } catch (err) {
-      toast.error('删除角色失败', errorMessage(err));
+      toast.error(t('users.roleDeleteFailed'), errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -1505,8 +1525,8 @@ function RoleManager() {
   return (
     <Card>
       <CardHeader
-        title="角色管理"
-        subtitle="角色 = 一组权限的命名预设。内置角色中「超级管理员」不可修改，还有用户在用的角色不可删除"
+        title={t('users.roleManagerTitle')}
+        subtitle={t('users.roleManagerSubtitle')}
         icon={<IconShield size={17} />}
         actions={
           <Button
@@ -1518,13 +1538,13 @@ function RoleManager() {
               setEditorOpen(true);
             }}
           >
-            新建角色
+            {t('users.newRole')}
           </Button>
         }
       />
 
       {rolesQuery.isLoading ? (
-        <div className="fs-sm text-muted">正在加载角色…</div>
+        <div className="fs-sm text-muted">{t('users.rolesLoading')}</div>
       ) : (
         <div className="flex flex-col gap-8">
           {roles.map((r) => (
@@ -1538,7 +1558,7 @@ function RoleManager() {
                     {r.name}
                     {r.builtin ? (
                       <Badge variant="neutral" size="sm">
-                        内置
+                        {t('users.builtin')}
                       </Badge>
                     ) : null}
                   </span>
@@ -1548,8 +1568,8 @@ function RoleManager() {
               </div>
 
               <div className="set-conn-tags set-conn-meta">
-                <span>{r.permissions.length} 项权限</span>
-                <span>{r.user_count ?? 0} 个用户</span>
+                <span>{t('users.permCount', { n: r.permissions.length })}</span>
+                <span>{t('users.userCount', { n: r.user_count ?? 0 })}</span>
               </div>
 
               <div className="set-conn-actions">
@@ -1562,10 +1582,10 @@ function RoleManager() {
                     setEditorOpen(true);
                   }}
                 >
-                  编辑
+                  {t('common.edit')}
                 </Button>
                 <IconButton
-                  label={`删除角色 ${r.name}`}
+                  label={t('users.deleteRoleAria', { name: r.name })}
                   variant="danger"
                   disabled={r.builtin || (r.user_count ?? 0) > 0}
                   onClick={() => setDeleteTarget(r)}
@@ -1594,17 +1614,12 @@ function RoleManager() {
         onConfirm={async () => {
           await remove();
         }}
-        title="删除角色"
+        title={t('users.deleteRoleTitle')}
         danger
-        confirmText="删除角色"
+        confirmText={t('users.deleteRoleConfirm')}
         loading={busy}
         requireText={deleteTarget?.name}
-        message={
-          <>
-            即将删除角色 <strong>{deleteTarget?.name}</strong>
-            。删除后使用该角色的用户需要重新指派角色。
-          </>
-        }
+        message={t('users.deleteRoleMessage', { name: deleteTarget?.name ?? '' })}
       />
     </Card>
   );
@@ -1622,6 +1637,7 @@ function RoleEditor({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -1642,7 +1658,7 @@ function RoleEditor({
   const submit = async () => {
     const cleaned = name.trim();
     if (!cleaned) {
-      setErrors({ name: '请填写角色名称' });
+      setErrors({ name: t('users.roleNameRequired') });
       return;
     }
     setBusy(true);
@@ -1653,18 +1669,21 @@ function RoleEditor({
           description: description.trim(),
           permissions: perms,
         });
-        toast.success('已更新角色', cleaned);
+        toast.success(t('users.roleUpdatedToast'), cleaned);
       } else {
         await rolesApi.create({
           name: cleaned,
           description: description.trim(),
           permissions: perms,
         });
-        toast.success('已创建角色', cleaned);
+        toast.success(t('users.roleCreatedToast'), cleaned);
       }
       onDone();
     } catch (err) {
-      toast.error(isEdit ? '更新角色失败' : '创建角色失败', errorMessage(err));
+      toast.error(
+        isEdit ? t('users.roleUpdateFailed') : t('users.roleCreateFailed'),
+        errorMessage(err),
+      );
     } finally {
       setBusy(false);
     }
@@ -1674,42 +1693,48 @@ function RoleEditor({
     <Modal
       open={open}
       onClose={onClose}
-      title={isEdit ? `编辑角色 ${role?.name}` : '新建角色'}
-      description="勾选该角色包含的权限。用户可选它作为权限模板，也可在此基础上单独微调"
+      title={
+        isEdit
+          ? t('users.roleEditTitle', { name: role?.name ?? '' })
+          : t('users.roleNewTitle')
+      }
+      description={t('users.roleEditorDesc')}
       size="lg"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={() => void submit()} loading={busy}>
-            {isEdit ? '保存修改' : '创建角色'}
+            {isEdit ? t('users.saveChanges') : t('users.roleCreate')}
           </Button>
         </>
       }
     >
       <div className="dyn-list">
-        <Field label="角色名称" required error={errors.name}>
+        <Field label={t('users.fieldRoleName')} required error={errors.name}>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="如 只读审计 / 自建运维组"
+            placeholder={t('users.roleNamePlaceholder')}
           />
         </Field>
 
-        <Field label="说明" hint="可选，展示在角色列表中">
+        <Field label={t('users.fieldDesc')} hint={t('users.fieldDescHint')}>
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={2}
-            placeholder="这个角色的用途"
+            placeholder={t('users.roleDescPlaceholder')}
           />
         </Field>
 
         <div className="perm-block">
           <div className="perm-block-head">
-            <span className="fw-600">权限</span>
-            <span className="fs-xs text-muted">已选 {perms.length} 项</span>
+            <span className="fw-600">{t('users.permBlock')}</span>
+            <span className="fs-xs text-muted">
+              {t('users.selectedCount', { n: perms.length })}
+            </span>
           </div>
           <PermissionPicker value={perms} onChange={setPerms} />
         </div>
@@ -1722,7 +1747,7 @@ function RoleEditor({
 function roleLabel(info: RoleOut): string {
   // 自定义角色用它的名字，内置角色用既有映射
   if (info.name) return info.name;
-  return roleMeta(String(info.id) as PanelRole).label;
+  return roleMeta(String(info.id) as PanelRole, tStatic).label;
 }
 
 function roleLabelByValue(

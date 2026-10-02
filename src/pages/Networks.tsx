@@ -22,11 +22,13 @@ import {
   IconChevronRight,
   IconServer,
 } from '../components/Icons';
-import { isBridgeType, isPhysicalType, netTypeLabel } from '../utils/status';
+import { isBridgeType, isPhysicalType, netTypeLabel } from '../utils/status'
+import { useT } from '../i18n';
 import { useAuth } from '../hooks/useAuth';
 import type { NetworkInterface } from '../api/types';
 
 export function Networks() {
+  const t = useT();
   const navigate = useNavigate();
   /* 本页是只读总览；节点内的网络写操作同样只对管理员开放 */
   const { hasPermission } = useAuth();
@@ -68,7 +70,7 @@ export function Networks() {
               node: n.node,
               connectionId,
               ifaces: [] as NetworkInterface[],
-              error: err instanceof Error ? err.message : '加载失败',
+              error: err instanceof Error ? err.message : t('state.loadFailed'),
             };
           }
         }),
@@ -96,7 +98,7 @@ export function Networks() {
               i.gateway,
               i.bridge_ports,
               i.comments,
-              netTypeLabel(i.type),
+              netTypeLabel(i.type, t),
               g.node,
             ]
               .filter(Boolean)
@@ -113,7 +115,7 @@ export function Networks() {
         }),
       }))
       .filter((g) => g.ifaces.length > 0 || (!search && !typeFilter && !activeFilter));
-  }, [groups, search, typeFilter, activeFilter]);
+  }, [groups, search, typeFilter, activeFilter, t]);
 
   /* 统计 */
   const stats = useMemo(() => {
@@ -129,23 +131,23 @@ export function Networks() {
   const columns: Array<Column<NetworkInterface>> = [
     {
       key: 'iface',
-      header: '接口名',
+      header: t('networks.colIface'),
       render: (i) => <span className="mono fw-500">{i.iface}</span>,
       width: 150,
     },
     {
       key: 'type',
-      header: '类型',
+      header: t('networks.colType'),
       render: (i) => (
         <Badge variant={isBridgeType(i.type) ? 'accent' : 'neutral'} size="sm">
-          {netTypeLabel(i.type)}
+          {netTypeLabel(i.type, t)}
         </Badge>
       ),
       width: 130,
     },
     {
       key: 'active',
-      header: '激活',
+      header: t('networks.colActive'),
       width: 92,
       align: 'center',
       render: (i) => (
@@ -155,13 +157,13 @@ export function Networks() {
           pulse={i.active}
           size="sm"
         >
-          {i.active ? '已激活' : '未激活'}
+          {i.active ? t('status.storage.active') : t('status.storage.inactive')}
         </Badge>
       ),
     },
     {
       key: 'address',
-      header: '地址',
+      header: t('networks.colAddress'),
       render: (i) => (
         <span className="mono fs-sm">
           {i.address ? (
@@ -177,7 +179,7 @@ export function Networks() {
     },
     {
       key: 'gateway',
-      header: '网关',
+      header: t('networks.colGateway'),
       render: (i) => (
         <span className="mono fs-sm text-secondary">{i.gateway || '—'}</span>
       ),
@@ -185,7 +187,7 @@ export function Networks() {
     },
     {
       key: 'ports',
-      header: '桥接端口 / 从属',
+      header: t('networks.colPorts'),
       render: (i) => (
         <span className="mono fs-sm text-secondary">
           {i.bridge_ports || i.bond_slaves || '—'}
@@ -195,7 +197,7 @@ export function Networks() {
     },
     {
       key: 'comments',
-      header: '备注',
+      header: t('networks.colComments'),
       render: (i) => (
         <span className="fs-sm text-secondary truncate" title={i.comments}>
           {i.comments || '—'}
@@ -212,13 +214,17 @@ export function Networks() {
       title={
         <>
           <IconNetwork size={20} />
-          网络总览
+          {t('networks.title')}
         </>
       }
       subtitle={
         groups.length > 0
-          ? `${groups.length} 个节点 · ${stats.total} 个接口 · ${stats.bridges} 个网桥`
-          : '正在加载…'
+          ? t('networks.subtitleSummary', {
+              nodes: groups.length,
+              total: stats.total,
+              bridges: stats.bridges,
+            })
+          : t('common.loading')
       }
       actions={
         <Button
@@ -230,38 +236,36 @@ export function Networks() {
           }}
           loading={netQueries.isFetching && !netQueries.isLoading}
         >
-          刷新
+          {t('common.refresh')}
         </Button>
       }
     >
-      <Notice tone="info" title="只读总览">
-        {canManageNet
-          ? '此页面汇总集群内所有节点的网络接口，仅供查看。若要新增、修改网卡或应用配置变更，请进入对应节点的「网络」标签页操作。'
-          : '此页面汇总集群内所有节点的网络接口。当前账号对网络只有查看权限，新增、修改网卡或应用配置变更需要管理员权限。'}
+      <Notice tone="info" title={t('networks.readOnlyTitle')}>
+        {canManageNet ? t('networks.readOnlyAdmin') : t('networks.readOnlyUser')}
       </Notice>
 
       {/* ---- 概览统计 ---- */}
       <div className="grid grid-4">
         <Card collapsible={false}>
-          <CardHeader title="接口总数" icon={<IconNetwork size={16} />} />
+          <CardHeader title={t('networks.kpi.total')} icon={<IconNetwork size={16} />} />
           <div className="kpi-value">{stats.total}</div>
-          <div className="kpi-hint">跨 {groups.length} 个节点</div>
+          <div className="kpi-hint">{t('networks.kpi.totalHint', { n: groups.length })}</div>
         </Card>
         <Card collapsible={false}>
-          <CardHeader title="网桥" icon={<IconNetwork size={16} />} />
+          <CardHeader title={t('networks.kpi.bridges')} icon={<IconNetwork size={16} />} />
           <div className="kpi-value">{stats.bridges}</div>
-          <div className="kpi-hint">可作为虚拟机网络</div>
+          <div className="kpi-hint">{t('networks.kpi.bridgesHint')}</div>
         </Card>
         <Card collapsible={false}>
-          <CardHeader title="物理网卡" icon={<IconServer size={16} />} />
+          <CardHeader title={t('networks.kpi.physical')} icon={<IconServer size={16} />} />
           <div className="kpi-value">{stats.physical}</div>
-          <div className="kpi-hint">含绑定接口</div>
+          <div className="kpi-hint">{t('networks.kpi.physicalHint')}</div>
         </Card>
         <Card collapsible={false}>
-          <CardHeader title="未激活" icon={<IconNetwork size={16} />} />
+          <CardHeader title={t('networks.kpi.inactive')} icon={<IconNetwork size={16} />} />
           <div className="kpi-value">{stats.inactive}</div>
           <div className="kpi-hint">
-            {stats.inactive > 0 ? '请检查这些接口' : '全部接口正常'}
+            {stats.inactive > 0 ? t('networks.kpi.inactiveHint') : t('networks.kpi.allOk')}
           </div>
         </Card>
       </div>
@@ -272,35 +276,37 @@ export function Networks() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索接口名、地址、备注…"
+            placeholder={t('networks.searchPlaceholder')}
             prefix={<IconSearch size={15} />}
             block={false}
-            aria-label="搜索网络接口"
+            aria-label={t('networks.searchAria')}
           />
           <Select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
             options={[
-              { label: '全部类型', value: '' },
-              { label: '网桥', value: 'bridge' },
-              { label: '物理网卡 / 绑定', value: 'physical' },
+              { label: t('networks.typeAll'), value: '' },
+              { label: t('networks.typeBridge'), value: 'bridge' },
+              { label: t('networks.typePhysical'), value: 'physical' },
             ]}
-            aria-label="按类型筛选"
+            aria-label={t('networks.typeFilterAria')}
           />
           <Select
             value={activeFilter}
             onChange={(e) => setActiveFilter(e.target.value)}
             options={[
-              { label: '全部状态', value: '' },
-              { label: '仅已激活', value: 'active' },
-              { label: '仅未激活', value: 'inactive' },
+              { label: t('networks.stateAll'), value: '' },
+              { label: t('networks.stateActive'), value: 'active' },
+              { label: t('networks.stateInactive'), value: 'inactive' },
             ]}
-            aria-label="按激活状态筛选"
+            aria-label={t('networks.stateFilterAria')}
           />
         </div>
         <div className="toolbar-right">
           <span className="fs-sm text-muted">
-            {filtered.reduce((s, g) => s + g.ifaces.length, 0)} 个接口
+            {t('networks.ifaceCount', {
+              n: filtered.reduce((s, g) => s + g.ifaces.length, 0),
+            })}
           </span>
         </div>
       </div>
@@ -311,15 +317,15 @@ export function Networks() {
       ) : nodes.length === 0 ? (
         <Card>
           <EmptyState
-            title="暂无节点"
-            description="集群中没有可用节点。"
+            title={t('networks.noNodes')}
+            description={t('networks.noNodesDesc')}
             icon={<IconServer size={28} />}
           />
         </Card>
       ) : anyError && groups.every((g) => g.error) ? (
         <ErrorState
-          title="无法加载网络信息"
-          message="所有节点的网卡接口都请求失败，请检查后端 /nodes/{node}/network 接口。"
+          title={t('networks.loadErrorTitle')}
+          message={t('networks.loadErrorMsg')}
           onRetry={() => void netQueries.refetch()}
         />
       ) : (
@@ -341,11 +347,13 @@ export function Networks() {
                   <IconServer size={16} />
                   <span className="fw-600">{group.node}</span>
                   <Badge variant="neutral" size="sm">
-                    {group.ifaces.length} 个接口
+                    {t('networks.ifaceCount', { n: group.ifaces.length })}
                   </Badge>
                   {group.ifaces.filter((i) => !i.active).length > 0 ? (
                     <Badge variant="warning" size="sm" dot>
-                      {group.ifaces.filter((i) => !i.active).length} 个未激活
+                      {t('networks.inactiveCount', {
+                        n: group.ifaces.filter((i) => !i.active).length,
+                      })}
                     </Badge>
                   ) : null}
                 </div>
@@ -357,13 +365,13 @@ export function Networks() {
                     navigate(`/nodes/${encodeURIComponent(group.node)}?tab=network${group.connectionId ? `&conn=${encodeURIComponent(group.connectionId)}` : ""}`)
                   }
                 >
-                  {canManageNet ? '管理此节点网络' : '查看此节点网络'}
+                  {canManageNet ? t('networks.manageNode') : t('networks.viewNode')}
                 </Button>
               </div>
 
               {group.error ? (
                 <div style={{ padding: 16 }}>
-                  <Notice tone="danger" title="该节点网络信息加载失败">
+                  <Notice tone="danger" title={t('networks.nodeLoadFailed')}>
                     {group.error}
                   </Notice>
                 </div>
@@ -372,8 +380,8 @@ export function Networks() {
                   columns={columns}
                   rows={group.ifaces}
                   rowKey={(i) => `${group.connectionId ?? ""}:${group.node}/${i.iface}`}
-                  caption={`节点 ${group.node} 的网络接口`}
-                  emptyTitle="该节点没有匹配的接口"
+                  caption={t('networks.nodeCaption', { node: group.node })}
+                  emptyTitle={t('networks.nodeEmpty')}
                   dense
                   className="table-flush"
                 />
@@ -389,8 +397,8 @@ export function Networks() {
       {/* 快捷跳转 */}
       <Card collapsible={false}>
         <CardHeader
-          title="网络管理操作"
-          subtitle="新增 / 修改网卡、应用配置变更请到节点详情页"
+          title={t('networks.manageTitle')}
+          subtitle={t('networks.manageSubtitle')}
           icon={<IconNetwork size={16} />}
         />
         <div className="flex flex-wrap gap-8">
@@ -404,11 +412,11 @@ export function Networks() {
                 navigate(`/nodes/${encodeURIComponent(n.node)}?tab=network${n.connection_id ? `&conn=${encodeURIComponent(n.connection_id)}` : ""}`)
               }
             >
-              {n.node} 网络设置
+              {t('networks.nodeSettings', { node: n.node })}
             </Button>
           ))}
           {nodes.length === 0 ? (
-            <IconButton label="刷新" onClick={() => void nodesQuery.refetch()}>
+            <IconButton label={t('common.refresh')} onClick={() => void nodesQuery.refetch()}>
               <IconRefresh size={16} />
             </IconButton>
           ) : null}

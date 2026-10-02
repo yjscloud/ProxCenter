@@ -14,7 +14,7 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 
 from .config import settings
-from . import apitokens, store
+from . import apitokens, i18n, store
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -656,7 +656,7 @@ async def get_current_user(
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未提供认证凭据",
+            detail=i18n.t("error.no_credentials"),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -909,7 +909,11 @@ def require_permission(permission: str) -> Callable[..., Any]:
         if not has_user_permission(user, permission):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"权限不足：需要 {permission} 权限（当前角色：{user['role']}）",
+                detail=i18n.t(
+                    "error.permission_denied_role",
+                    permission=permission,
+                    role=user["role"],
+                ),
             )
         return user
 

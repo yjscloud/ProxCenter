@@ -22,23 +22,29 @@ import { Badge } from './ui/Badge';
 import { SegmentedControl } from './ui/Input';
 import { IconChevronDown, IconCopy } from './Icons';
 import { useToast } from '../hooks/useToast';
+import { useT, type MessageKey } from '../i18n';
 import type { BulkAction, BulkItemResult, BulkResponse } from '../api/types';
 
-const ACTION_LABELS: Record<string, string> = {
-  start: '开机',
-  stop: '停止',
-  shutdown: '关机',
-  reboot: '重启',
-  suspend: '挂起',
-  resume: '恢复',
-  delete: '删除',
-  tag: '打标签',
-  migrate: '迁移',
-  snapshot: '创建快照',
+/**
+ * 动作 → 词条键。这里不能直接给文案：这个函数也会被非组件代码用到（toast 消息），
+ * 带不了 hook —— 由调用方 t() 取当前语言。
+ */
+const ACTION_LABEL_KEYS: Record<string, MessageKey> = {
+  start: 'bulk.start',
+  stop: 'bulk.stop',
+  shutdown: 'bulk.shutdown',
+  reboot: 'bulk.reboot',
+  suspend: 'bulk.suspend',
+  resume: 'bulk.resume',
+  delete: 'bulk.delete',
+  tag: 'bulk.tag',
+  migrate: 'bulk.migrate',
+  snapshot: 'bulk.snapshot',
 };
 
-export function bulkActionLabel(action: BulkAction | string): string {
-  return ACTION_LABELS[action] ?? action;
+/** 动作对应的词条键；未知动作回退到「未知」，免得把 key 露在界面上 */
+export function bulkActionKey(action: BulkAction | string): MessageKey {
+  return ACTION_LABEL_KEYS[action] ?? 'common.unknown';
 }
 
 export interface BulkResultNoticeProps {
@@ -58,8 +64,9 @@ export function BulkResultNotice({
   onRetryFailed,
   retrying = false,
 }: BulkResultNoticeProps) {
+  const t = useT();
   const toast = useToast();
-  const label = bulkActionLabel(result.action);
+  const label = t(bulkActionKey(result.action));
   const tone = result.failed === 0 ? 'success' : result.ok === 0 ? 'danger' : 'warning';
 
   const hasFailure = result.failed > 0;
@@ -85,23 +92,32 @@ export function BulkResultNotice({
       .filter((item) => !item.ok)
       .map(
         (item) =>
-          `${item.node}/${item.vmid}\t${item.name || ''}\t${item.error || '未知原因'}`,
+          `${item.node}/${item.vmid}\t${item.name || ''}\t${
+            item.error || t('bulk.unknownReason')
+          }`,
       );
     if (lines.length === 0) return;
     try {
       await navigator.clipboard.writeText(
-        `${label}失败清单（${lines.length} 台）\n${lines.join('\n')}`,
+        `${t('bulk.failedList', { label, count: lines.length })}\n${lines.join('\n')}`,
       );
-      toast.success('已复制失败清单', `${lines.length} 台失败记录已复制到剪贴板`);
+      toast.success(
+        t('bulk.copyList'),
+        t('bulk.copiedHint', { count: lines.length }),
+      );
     } catch {
-      toast.error('复制失败', '浏览器不允许访问剪贴板');
+      toast.error(t('common.copyFailed'), t('common.clipboardDenied'));
     }
   };
 
   return (
     <Notice
       tone={tone}
-      title={`批量${label}完成：成功 ${result.ok} 台，失败 ${result.failed} 台`}
+      title={t('bulk.summaryTitle', {
+        label,
+        ok: result.ok,
+        failed: result.failed,
+      })}
       action={
         <div className="flex items-center gap-8">
           <Button
@@ -115,15 +131,15 @@ export function BulkResultNotice({
             aria-expanded={open}
             onClick={() => setOpen((value) => !value)}
           >
-            {open ? '收起明细' : `查看明细 ${result.total}`}
+            {open ? t('bulk.collapse') : t('bulk.expand', { count: result.total })}
           </Button>
           {result.failed > 0 && onRetryFailed ? (
             <Button size="sm" variant="secondary" loading={retrying} onClick={onRetryFailed}>
-              仅重试失败的 {result.failed} 台
+              {t('bulk.retryFailed', { count: result.failed })}
             </Button>
           ) : null}
           <Button size="sm" variant="ghost" onClick={onClose}>
-            关闭
+            {t('common.close')}
           </Button>
         </div>
       }
@@ -134,11 +150,11 @@ export function BulkResultNotice({
             <SegmentedControl<ResultFilter>
               value={filter}
               onChange={setFilter}
-              ariaLabel="批量结果筛选"
+              ariaLabel={t('bulk.filterAria')}
               options={[
-                { label: `全部 ${result.total}`, value: 'all' },
-                { label: `成功 ${result.ok}`, value: 'ok' },
-                { label: `失败 ${result.failed}`, value: 'fail' },
+                { label: t('bulk.filterAll', { count: result.total }), value: 'all' },
+                { label: t('bulk.filterOk', { count: result.ok }), value: 'ok' },
+                { label: t('bulk.filterFail', { count: result.failed }), value: 'fail' },
               ]}
             />
             {hasFailure ? (
@@ -148,24 +164,24 @@ export function BulkResultNotice({
                 icon={<IconCopy size={13} />}
                 onClick={() => void copyFailed()}
               >
-                复制失败清单
+                {t('bulk.copyList')}
               </Button>
             ) : null}
           </div>
 
           {rows.length === 0 ? (
-            <div className="bulk-detail-empty">这个筛选下没有记录。</div>
+            <div className="bulk-detail-empty">{t('bulk.emptyFilter')}</div>
           ) : (
             /* 台数多时（上限 200）不能把页面撑爆，列表自己滚 */
             <div className="bulk-detail-scroll">
               <table className="bulk-detail-table">
-                <caption className="sr-only">批量{label}的逐台结果</caption>
+                <caption className="sr-only">{t('bulk.caption', { label })}</caption>
                 <thead>
                   <tr>
-                    <th scope="col">对象</th>
-                    <th scope="col">名称</th>
-                    <th scope="col">结果</th>
-                    <th scope="col">说明</th>
+                    <th scope="col">{t('bulk.colTarget')}</th>
+                    <th scope="col">{t('bulk.colName')}</th>
+                    <th scope="col">{t('bulk.colResult')}</th>
+                    <th scope="col">{t('bulk.colNote')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -188,11 +204,11 @@ export function BulkResultNotice({
                           size="sm"
                           dot
                         >
-                          {item.ok ? `已${label}` : '失败'}
+                          {item.ok ? t('bulk.doneOne', { label }) : t('bulk.failed')}
                         </Badge>
                       </td>
                       <td className="fs-xs text-muted bulk-detail-error">
-                        {item.ok ? '—' : item.error || '未知原因'}
+                        {item.ok ? '—' : item.error || t('bulk.unknownReason')}
                       </td>
                     </tr>
                   ))}
@@ -203,8 +219,9 @@ export function BulkResultNotice({
         </div>
       ) : (
         <span className="fs-sm text-secondary">
-          成功 {result.ok} 台
-          {hasFailure ? `，失败 ${result.failed} 台` : ''}。点「查看明细」逐台核对。
+          {t('bulk.summaryOk', { count: result.ok })}
+          {hasFailure ? t('bulk.summaryFailed', { count: result.failed }) : ''}
+          {t('bulk.summaryTail')}
         </span>
       )}
     </Notice>

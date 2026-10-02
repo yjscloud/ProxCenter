@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from .. import security
+from .. import i18n, security
 
 logger = logging.getLogger(__name__)
 from ..formatters import normalize_task
@@ -63,7 +63,7 @@ async def get_task(
     if not resolved:
         raise HTTPException(
             status_code=400,
-            detail="无法从 UPID 解析节点，请显式提供 node 参数",
+            detail=i18n.tr("无法从 UPID 解析节点，请显式提供 node 参数"),
         )
 
     try:
@@ -117,7 +117,7 @@ async def delete_task(
     client = get_client()
     resolved = node or node_from_upid(upid)
     if not resolved:
-        raise HTTPException(status_code=400, detail="无法从 UPID 解析节点")
+        raise HTTPException(status_code=400, detail=i18n.tr("无法从 UPID 解析节点"))
 
     try:
         await client.delete(f"/nodes/{resolved}/tasks/{upid}")
@@ -180,7 +180,7 @@ async def tasks_websocket(
     so the browser does not have to poll the task list itself.
     """
     if not security.ws_origin_allowed(websocket):
-        await _reject(websocket, 4403, "来源校验失败")
+        await _reject(websocket, 4403, i18n.tr("来源校验失败"))
         return
     try:
         # 浏览器不带查询参数（令牌在 HttpOnly cookie 里），脚本仍可 ?token=
@@ -193,12 +193,12 @@ async def tasks_websocket(
 
     role = payload.get("role", "viewer")
     if not security.has_permission(role, "task.view"):
-        await _reject(websocket, 4403, "权限不足")
+        await _reject(websocket, 4403, i18n.tr("权限不足"))
         return
 
     client = get_client()
     if not client.conn.configured:
-        await _reject(websocket, 1011, "Proxmox 连接未配置")
+        await _reject(websocket, 1011, i18n.tr("Proxmox 连接未配置"))
         return
 
     await websocket.accept()
@@ -250,7 +250,7 @@ async def metrics_websocket(
     独立的轮询。集中到这里轮询一次、广播给所有连接，天然去重。
     """
     if not security.ws_origin_allowed(websocket):
-        await _reject(websocket, 4403, "来源校验失败")
+        await _reject(websocket, 4403, i18n.tr("来源校验失败"))
         return
     try:
         payload = security.decode_token(security.ws_token(websocket, token))
@@ -261,12 +261,12 @@ async def metrics_websocket(
 
     role = payload.get("role", "viewer")
     if not security.has_permission(role, "node.view"):
-        await _reject(websocket, 4403, "权限不足")
+        await _reject(websocket, 4403, i18n.tr("权限不足"))
         return
 
     client = get_client()
     if not client.conn.configured:
-        await _reject(websocket, 1011, "Proxmox 连接未配置")
+        await _reject(websocket, 1011, i18n.tr("Proxmox 连接未配置"))
         return
 
     await websocket.accept()

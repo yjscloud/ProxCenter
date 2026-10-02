@@ -13,22 +13,26 @@ import { Table, type Column } from './ui/Table';
 import { EmptyState } from './ui/EmptyState';
 import { IconDisk, IconStorage } from './Icons';
 import { formatBytes, usageColor } from '../utils/format';
+import { useT, type TFunc } from '../i18n';
 import type { DiskHealth } from '../api/types';
 
-/** 健康状态 → 徽标样式与文案 */
-function healthMeta(health: string): {
+/** 健康状态 → 徽标样式与文案（文案随语言走，故接收 t） */
+function healthMeta(
+  health: string,
+  t: TFunc,
+): {
   variant: 'success' | 'warning' | 'danger' | 'neutral';
   label: string;
 } {
   switch (health) {
     case 'passed':
-      return { variant: 'success', label: '正常' };
+      return { variant: 'success', label: t('disk.healthOk') };
     case 'warning':
-      return { variant: 'warning', label: '警告' };
+      return { variant: 'warning', label: t('disk.healthWarn') };
     case 'failed':
-      return { variant: 'danger', label: '故障' };
+      return { variant: 'danger', label: t('disk.healthFail') };
     default:
-      return { variant: 'neutral', label: '未知' };
+      return { variant: 'neutral', label: t('disk.healthUnknown') };
   }
 }
 
@@ -45,6 +49,7 @@ function wearoutColor(remain: number): string {
 
 /** 展开行：单块磁盘的 SMART 明细 */
 function DiskSmartDetail({ node, disk }: { node: string; disk: string }) {
+  const t = useT();
   const query = useQuery({
     queryKey: ['health', 'smart', node, disk],
     queryFn: () => healthApi.diskSmart(node, disk),
@@ -53,14 +58,10 @@ function DiskSmartDetail({ node, disk }: { node: string; disk: string }) {
   });
 
   if (query.isLoading) {
-    return <div className="fs-sm text-muted">正在读取 SMART 数据…</div>;
+    return <div className="fs-sm text-muted">{t('disk.smartLoading')}</div>;
   }
   if (query.isError || !query.data) {
-    return (
-      <div className="fs-sm text-muted">
-        无法读取该磁盘的 SMART 数据（可能需要 node.manage 权限）。
-      </div>
-    );
+    return <div className="fs-sm text-muted">{t('disk.smartError')}</div>;
   }
 
   const data = query.data;
@@ -68,7 +69,7 @@ function DiskSmartDetail({ node, disk }: { node: string; disk: string }) {
   /* NVMe 盘没有结构化属性，PVE 给的是一段原文 */
   if (data.attributes.length === 0) {
     return (
-      <pre className="smart-text">{data.text || '该磁盘没有返回 SMART 明细。'}</pre>
+      <pre className="smart-text">{data.text || t('disk.smartEmpty')}</pre>
     );
   }
 
@@ -78,7 +79,7 @@ function DiskSmartDetail({ node, disk }: { node: string; disk: string }) {
     <div className="flex flex-col gap-8">
       {failed.length > 0 ? (
         <div className="smart-alert">
-          {failed.length} 项属性已触发失败阈值：
+          {t('disk.smartFailedAttrs', { n: failed.length })}
           {failed.map((a) => a.name).join('、')}
         </div>
       ) : null}
@@ -111,6 +112,7 @@ export function DiskHealthPanel({
   node: string;
   conn: string;
 }) {
+  const t = useT();
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const disksQuery = useQuery({
@@ -134,7 +136,7 @@ export function DiskHealthPanel({
   const columns: Array<Column<DiskHealth>> = [
     {
       key: 'devpath',
-      header: '设备',
+      header: t('disk.colDevice'),
       width: 150,
       mono: true,
       render: (d) => (
@@ -148,13 +150,13 @@ export function DiskHealthPanel({
     },
     {
       key: 'type',
-      header: '类型',
+      header: t('disk.colType'),
       width: 84,
       render: (d) => <span className="fs-sm text-secondary">{d.type || '—'}</span>,
     },
     {
       key: 'model',
-      header: '型号 / 序列号',
+      header: t('disk.colModel'),
       render: (d) => (
         <div className="flex flex-col">
           <span className="fs-sm truncate" title={d.model || d.vendor}>
@@ -170,7 +172,7 @@ export function DiskHealthPanel({
     },
     {
       key: 'size',
-      header: '容量',
+      header: t('disk.colSize'),
       width: 90,
       align: 'right',
       render: (d) => (
@@ -179,18 +181,20 @@ export function DiskHealthPanel({
     },
     {
       key: 'used',
-      header: '用途',
+      header: t('disk.colUsage'),
       width: 110,
       render: (d) => (
-        <span className="fs-sm text-secondary">{d.used || '未使用'}</span>
+        <span className="fs-sm text-secondary">
+          {d.used || t('disk.notUsed')}
+        </span>
       ),
     },
     {
       key: 'health',
-      header: '健康',
+      header: t('disk.colHealth'),
       width: 84,
       render: (d) => {
-        const meta = healthMeta(d.health);
+        const meta = healthMeta(d.health, t);
         return (
           <Badge variant={meta.variant} size="sm" dot={d.health !== 'passed'}>
             {meta.label}
@@ -200,7 +204,7 @@ export function DiskHealthPanel({
     },
     {
       key: 'wearout',
-      header: '剩余寿命',
+      header: t('disk.colWearout'),
       width: 110,
       align: 'right',
       render: (d) =>
@@ -222,18 +226,22 @@ export function DiskHealthPanel({
     <>
       <Card>
         <CardHeader
-          title="磁盘健康"
+          title={t('disk.title')}
           subtitle={
             disksQuery.isLoading
-              ? '正在读取…'
-              : `${disks.length} 块磁盘${problemDisks > 0 ? ` · ${problemDisks} 块异常` : ' · 全部正常'}`
+              ? t('disk.loading')
+              : `${t('disk.summary', { n: disks.length })}${
+                  problemDisks > 0
+                    ? t('disk.summaryProblems', { n: problemDisks })
+                    : t('disk.summaryOk')
+                }`
           }
           icon={<IconDisk size={16} />}
         />
         {disksQuery.isError ? (
           <EmptyState
-            title="无法读取磁盘信息"
-            description="PVE 未返回磁盘列表，可能是权限不足（需要 node.manage）。"
+            title={t('disk.loadFailedTitle')}
+            description={t('disk.loadFailedDesc')}
             compact
           />
         ) : (
@@ -242,11 +250,11 @@ export function DiskHealthPanel({
             rows={disks}
             rowKey={(d) => d.devpath}
             loading={disksQuery.isLoading}
-            caption={`节点 ${node} 的磁盘健康状态`}
+            caption={t('disk.caption', { node })}
             dense
             className="table-flush"
-            emptyTitle="暂无磁盘"
-            emptyDescription="该节点上没有检测到物理磁盘。"
+            emptyTitle={t('disk.empty')}
+            emptyDescription={t('disk.emptyDesc')}
             onRowClick={(d) =>
               setExpanded((cur) => (cur === d.devpath ? null : d.devpath))
             }
@@ -260,7 +268,7 @@ export function DiskHealthPanel({
           <div className="disk-smart-panel">
             <div className="disk-smart-head">
               <span className="fw-600 mono">{expanded}</span>
-              <span className="fs-xs text-muted">SMART 明细</span>
+              <span className="fs-xs text-muted">{t('disk.smartDetails')}</span>
             </div>
             <DiskSmartDetail node={node} disk={expanded} />
           </div>
@@ -271,8 +279,8 @@ export function DiskHealthPanel({
       {pools.length > 0 ? (
         <Card>
           <CardHeader
-            title="ZFS 池"
-            subtitle={`${pools.length} 个池`}
+            title={t('disk.zfsTitle')}
+            subtitle={t('disk.zfsCount', { n: pools.length })}
             icon={<IconStorage size={16} />}
           />
           <div className="flex flex-col gap-12">
@@ -290,8 +298,11 @@ export function DiskHealthPanel({
                     </Badge>
                   </div>
                   <div className="fs-xs text-secondary">
-                    已用 {formatBytes(alloc, 0)} / {formatBytes(total, 0)}
-                    {p.frag ? ` · 碎片 ${p.frag}` : ''}
+                    {t('disk.zfsUsed', {
+                      used: formatBytes(alloc, 0),
+                      total: formatBytes(total, 0),
+                    })}
+                    {p.frag ? t('disk.zfsFrag', { v: p.frag }) : ''}
                     {p.errors && p.errors !== 'No known data errors'
                       ? ` · ${p.errors}`
                       : ''}

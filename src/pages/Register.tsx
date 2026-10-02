@@ -19,11 +19,13 @@ import {
   IconUser,
 } from '../components/Icons';
 import { AuthShell } from '../components/AuthShell';
+import { useT } from '../i18n';
 
 /* 与后端 users.py 的用户名规则保持一致 */
 const USERNAME_RE = /^[a-zA-Z0-9._-]{3,32}$/;
 
 export function Register() {
+  const t = useT();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -39,30 +41,30 @@ export function Register() {
     const name = username.trim();
 
     if (!name) {
-      next.username = '请输入用户名';
+      next.username = t('register.err.usernameRequired');
     } else if (!USERNAME_RE.test(name)) {
-      next.username = '3-32 位，仅限字母、数字、点、下划线与短横线';
+      next.username = t('register.err.usernameRule');
     }
 
     // 邮箱必填：审批结果（通过 / 拒绝）会发到这里
     if (!email.trim()) {
-      next.email = '请输入邮箱，审批结果会发送到该邮箱';
+      next.email = t('register.err.emailRequired');
     } else if (!email.includes('@')) {
-      next.email = '邮箱格式不正确';
+      next.email = t('register.err.emailInvalid');
     }
 
     if (!password) {
-      next.password = '请输入密码';
+      next.password = t('register.err.passwordRequired');
     } else if (password.length < 8) {
-      next.password = '密码至少 8 位';
+      next.password = t('register.err.passwordTooShort');
     } else if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-      next.password = '密码需同时包含字母与数字';
+      next.password = t('register.err.passwordWeak');
     }
 
     if (!confirm) {
-      next.confirm = '请再次输入密码';
+      next.confirm = t('register.err.confirmRequired');
     } else if (confirm !== password) {
-      next.confirm = '两次输入的密码不一致';
+      next.confirm = t('register.err.confirmMismatch');
     }
 
     setErrors(next);
@@ -93,27 +95,26 @@ export function Register() {
   return (
     <AuthShell>
       <h1 className="login-title">
-        {done ? '申请已提交' : '注册账号'}
+        {done ? t('register.titleDone') : t('register.title')}
       </h1>
       <p className="login-subtitle">
-        {done
-          ? '接下来等待管理员审批'
-          : '提交后需管理员审批，通过后才能登录'}
+        {done ? t('register.subtitleDone') : t('register.subtitle')}
       </p>
 
       {done ? (
         <>
           <div className="mb-16">
-            <Notice tone="success" title="注册成功，等待审批">
-              账号 <b className="mono">{username.trim()}</b> 已创建，
-              但需要管理员审批通过后才能登录。审批结果与所需时间请联系管理员确认。
+            <Notice tone="success" title={t('register.successTitle')}>
+              {t('register.successBodyPre')}
+              <b className="mono">{username.trim()}</b>
+              {t('register.successBodyPost')}
             </Notice>
           </div>
 
           <div className="login-form">
             <Link to="/login" style={{ textDecoration: 'none' }}>
               <Button variant="primary" size="lg" block>
-                返回登录
+                {t('auth.backToLogin')}
               </Button>
             </Link>
           </div>
@@ -128,38 +129,38 @@ export function Register() {
           ) : null}
 
           <Input
-            label="用户名"
+            label={t('register.username')}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="例如 zhangsan"
+            placeholder={t('register.usernamePlaceholder')}
             autoComplete="username"
             autoFocus
             disabled={submitting}
             prefix={<IconUser size={15} />}
             error={errors.username}
-            hint="3-32 位，仅限字母、数字、点、下划线与短横线"
+            hint={t('register.usernameHint')}
             required
           />
 
           <Input
-            label="邮箱"
+            label={t('register.email')}
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="用于接收审批结果"
+            placeholder={t('register.emailPlaceholder')}
             autoComplete="email"
             disabled={submitting}
             error={errors.email}
-            hint="审批通过或拒绝都会发到这个邮箱，请填写真实地址"
+            hint={t('register.emailHint')}
             required
           />
 
           <Input
-            label="密码"
+            label={t('register.password')}
             type={showPassword ? 'text' : 'password'}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="至少 8 位，含字母与数字"
+            placeholder={t('register.passwordPlaceholder')}
             autoComplete="new-password"
             disabled={submitting}
             prefix={<IconKey size={15} />}
@@ -169,8 +170,12 @@ export function Register() {
               <button
                 type="button"
                 onClick={() => setShowPassword((v) => !v)}
-                aria-label={showPassword ? '隐藏密码' : '显示密码'}
-                title={showPassword ? '隐藏密码' : '显示密码'}
+                aria-label={
+                  showPassword ? t('auth.login.hidePassword') : t('auth.login.showPassword')
+                }
+                title={
+                  showPassword ? t('auth.login.hidePassword') : t('auth.login.showPassword')
+                }
                 style={{
                   background: 'none',
                   border: 'none',
@@ -186,11 +191,11 @@ export function Register() {
           />
 
           <Input
-            label="确认密码"
+            label={t('register.confirmPassword')}
             type={showPassword ? 'text' : 'password'}
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
-            placeholder="再次输入密码"
+            placeholder={t('register.confirmPlaceholder')}
             autoComplete="new-password"
             disabled={submitting}
             prefix={<IconCheck size={15} />}
@@ -205,16 +210,16 @@ export function Register() {
             block
             loading={submitting}
           >
-            {submitting ? '正在提交…' : '提交注册申请'}
+            {submitting ? t('register.submitting') : t('register.submit')}
           </Button>
         </form>
       )}
 
       <div className="login-health">
         <div className="login-health-row">
-          <span className="login-health-label">已经有账号了？</span>
+          <span className="login-health-label">{t('register.haveAccount')}</span>
           <Link to="/login" className="fs-sm">
-            返回登录
+            {t('auth.backToLogin')}
           </Link>
         </div>
       </div>

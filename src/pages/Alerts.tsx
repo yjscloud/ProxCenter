@@ -32,6 +32,7 @@ import {
 } from "../components/Icons";
 import { useSectionSpy } from "../hooks/useSectionSpy";
 import { useSiteInfo } from "../hooks/useSiteInfo";
+import { tStatic, useT, type TFunc } from "../i18n";
 import { formatRelative, usageColor } from "../utils/format";
 import { isRunning } from "../utils/status";
 import type {
@@ -40,14 +41,19 @@ import type {
   AlertWebhookConfig,
 } from "../api/types";
 
-const METRICS = [
-  { value: "cpu", label: "CPU 使用率", icon: <IconCpu size={14} /> },
-  { value: "mem", label: "内存使用率", icon: <IconMemory size={14} /> },
-  { value: "disk", label: "磁盘使用率", icon: <IconDisk size={14} /> },
-  { value: "offline", label: "离线", icon: <IconPower size={14} /> },
-  { value: "backup", label: "备份失败", icon: <IconBackup size={14} /> },
-];
-const METRIC_MAP = Object.fromEntries(METRICS.map((m) => [m.value, m]));
+/**
+ * 指标定义：label 在组件内取词（切语言即时生效），因此做成接收 t 的工厂函数，
+ * 不能提到模块级常量（那会让文案停在首次加载时的语言上）。
+ */
+function metricOptions(t: TFunc) {
+  return [
+    { value: "cpu", label: t("alerts.metric.cpu"), icon: <IconCpu size={14} /> },
+    { value: "mem", label: t("alerts.metric.mem"), icon: <IconMemory size={14} /> },
+    { value: "disk", label: t("alerts.metric.disk"), icon: <IconDisk size={14} /> },
+    { value: "offline", label: t("alerts.metric.offline"), icon: <IconPower size={14} /> },
+    { value: "backup", label: t("alerts.metric.backup"), icon: <IconBackup size={14} /> },
+  ];
+}
 
 /**
  * 状态型指标：它们不看阈值，只看「状态是否偏离预期」。
@@ -68,25 +74,14 @@ const isStateMetric = (metric: string) => STATE_METRICS.has(metric);
 
 const SECTION_PREFIX = "alert-";
 
-const SECTIONS = [
-  { id: "notify", group: "推送与通道", label: "告警推送开关", icon: <IconBell size={15} /> },
-  { id: "channels", group: "推送与通道", label: "告警通知渠道", icon: <IconChat size={15} /> },
-  { id: "email", group: "推送与通道", label: "告警通知（邮件）", icon: <IconMail size={15} /> },
-  { id: "rules", group: "规则与记录", label: "告警规则", icon: <IconFilter size={15} /> },
-  { id: "history", group: "规则与记录", label: "告警历史", icon: <IconClock size={15} /> },
-];
-
-/** 分组标题右侧的作用范围说明 */
-const GROUP_DESC: Record<string, string> = {
-  推送与通道: "往哪儿发、发不发 —— 飞书群机器人、通用 Webhook、邮件",
-  规则与记录: "什么情况算告警，以及已经发出去的那些",
-};
+/** 分组键：与下面 section.group 对应，文案在组件内取词 */
+type SectionGroup = "channels" | "records";
 
 function newRule(): AlertRule {
   return {
     // 同一毫秒内连续新增两条会撞 id，加随机后缀避免被后端按 id 合并
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: "新告警规则",
+    name: tStatic("alerts.newRuleName"),
     target_type: "node",
     target: "*",
     metric: "cpu",
@@ -108,7 +103,57 @@ function toText(note: unknown, fallback: string): string {
 }
 
 export function Alerts() {
+  const t = useT();
   const qc = useQueryClient();
+
+  /* 区块导航、分组说明与指标定义：文案随语言走，所以在组件内构造 */
+  const sections = useMemo(
+    () => [
+      {
+        id: "notify",
+        group: "channels" as SectionGroup,
+        label: t("alerts.secNotify"),
+        icon: <IconBell size={15} />,
+      },
+      {
+        id: "channels",
+        group: "channels" as SectionGroup,
+        label: t("alerts.secChannels"),
+        icon: <IconChat size={15} />,
+      },
+      {
+        id: "email",
+        group: "channels" as SectionGroup,
+        label: t("alerts.secEmail"),
+        icon: <IconMail size={15} />,
+      },
+      {
+        id: "rules",
+        group: "records" as SectionGroup,
+        label: t("alerts.secRules"),
+        icon: <IconFilter size={15} />,
+      },
+      {
+        id: "history",
+        group: "records" as SectionGroup,
+        label: t("alerts.secHistory"),
+        icon: <IconClock size={15} />,
+      },
+    ],
+    [t],
+  );
+  const groupDesc = useMemo<Record<SectionGroup, string>>(
+    () => ({
+      channels: t("alerts.groupChannelsDesc"),
+      records: t("alerts.groupRecordsDesc"),
+    }),
+    [t],
+  );
+  const metrics = useMemo(() => metricOptions(t), [t]);
+  const metricMap = useMemo(
+    () => Object.fromEntries(metrics.map((m) => [m.value, m])),
+    [metrics],
+  );
   const [rules, setRules] = useState<AlertRule[] | null>(null);
   const [feishu, setFeishu] = useState<Record<string, any> | null>(null);
   const [emailCfg, setEmailCfg] = useState<AlertEmailConfig | null>(null);
@@ -148,7 +193,7 @@ export function Alerts() {
   /* 标题预览：与后端同一口径 —— 填了用填的，留空用面板名称 */
   const titleBrand = String(feishu?.title || "").trim() || site.name;
   const [activeSection, setActiveSection] = useSectionSpy(
-    SECTIONS.map((item) => item.id),
+    sections.map((item) => item.id),
     { prefix: SECTION_PREFIX },
   );
   function goSection(id: string) {
@@ -161,7 +206,7 @@ export function Alerts() {
   // 目标下拉选项：宿主机取节点名；虚拟机只列运行中的（取值用 VMID，
   // 集群内唯一，避免同名虚拟机造成歧义），「全部」表示监控所有对象。
   const targetOptions = useMemo(() => {
-    const all = [{ label: "全部", value: "*" }];
+    const all = [{ label: t("alerts.all"), value: "*" }];
     return {
       node: [
         ...all,
@@ -177,7 +222,7 @@ export function Alerts() {
           })),
       ],
     };
-  }, [nodesQuery.data, vmsQuery.data]);
+  }, [nodesQuery.data, vmsQuery.data, t]);
 
   useEffect(() => {
     if (!query.data) return;
@@ -225,7 +270,7 @@ export function Alerts() {
           webhook_clear: webhookClear,
           secret_clear: secretClear,
         }),
-      "通知配置已保存",
+      t("alerts.notifySaved"),
     );
     if (!ok) return;
     setWebhookClear(false);
@@ -238,7 +283,7 @@ export function Alerts() {
     await run(
       "mail",
       () => alertsApi.saveEmail(emailCfg),
-      "告警邮件设置已保存",
+      t("alerts.emailSaved"),
     );
   }
 
@@ -247,9 +292,9 @@ export function Alerts() {
       "test",
       async () => {
         await alertsApi.test();
-        return "测试卡片已推送，请到飞书群确认";
+        return t("alerts.testPushed");
       },
-      "已发送",
+      t("alerts.sent"),
     );
   }
 
@@ -263,7 +308,7 @@ export function Alerts() {
           webhook_clear: hookWebhookClear,
           secret_clear: hookSecretClear,
         }),
-      "通用 Webhook 配置已保存",
+      t("alerts.hookSaved"),
     );
     if (!ok) return;
     setHookWebhookClear(false);
@@ -277,9 +322,9 @@ export function Alerts() {
       "hooktest",
       async () => {
         await alertsApi.test("webhook");
-        return "测试请求已发出，请到接收端确认是否收到";
+        return t("alerts.testRequestSent");
       },
-      "已发送",
+      t("alerts.sent"),
     );
   }
 
@@ -323,11 +368,11 @@ export function Alerts() {
     activeAlarms.map((a) => String(a.target || "")).filter(Boolean),
   );
   const historySubtitle = [
-    activeTargets.size > 0 ? `正在告警 ${activeTargets.size} 个对象` : "",
-    records.length > 0 ? `共 ${records.length} 条` : "",
-    records.length > 0 ? `告警 ${alarmCount}` : "",
-    records.length > 0 ? `恢复 ${recoveryCount}` : "",
-    failCount > 0 ? `发送失败 ${failCount}` : "",
+    activeTargets.size > 0 ? t("alerts.activeObjects", { n: activeTargets.size }) : "",
+    records.length > 0 ? t("alerts.totalRecords", { n: records.length }) : "",
+    records.length > 0 ? t("alerts.alarmCount", { n: alarmCount }) : "",
+    records.length > 0 ? t("alerts.recoveryCount", { n: recoveryCount }) : "",
+    failCount > 0 ? t("alerts.failedCount", { n: failCount }) : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -336,7 +381,7 @@ export function Alerts() {
     const ok = await run(
       "clear",
       async () => (await alertsApi.clearHistory()).detail,
-      "告警历史已清除",
+      t("alerts.historyCleared"),
     );
     if (ok) setClearHistoryOpen(false);
   }
@@ -353,7 +398,7 @@ export function Alerts() {
   function targetSelectOptions(rule: AlertRule) {
     const list = targetOptions[rule.target_type === "vm" ? "vm" : "node"];
     if (list.some((o) => o.value === rule.target)) return list;
-    return [{ label: `${rule.target}（已不在列表）`, value: rule.target }, ...list];
+    return [{ label: t("alerts.notInList", { name: rule.target }), value: rule.target }, ...list];
   }
 
   /* ---- 推送来源开关（全局，管理员）----
@@ -375,8 +420,8 @@ export function Alerts() {
       setMsg({
         tone: "success",
         text: next
-          ? `已恢复推送：${label}`
-          : `已停止推送：${label}（巡检照常，命中也不记入告警历史）`,
+          ? t("alerts.notifyResumed", { label })
+          : t("alerts.notifyMuted", { label }),
       });
     } catch (err) {
       const detail = (err as any)?.response?.data?.detail;
@@ -388,8 +433,8 @@ export function Alerts() {
 
   return (
     <PageShell
-      title="监控告警"
-      subtitle="宿主机与虚拟机的 CPU / 内存 / 磁盘超过阈值时，通过飞书 / 邮件 / 通用 Webhook 发送告警"
+      title={t("alerts.title")}
+      subtitle={t("alerts.subtitle")}
       actions={
         <>
           {/* 导出走服务端流式 CSV：本页只展示最近 80 条，导出取全量历史。
@@ -398,16 +443,16 @@ export function Alerts() {
             variant="secondary"
             icon={<IconDownload size={15} />}
             onClick={() => window.open(exportUrl("alerts"), "_blank")}
-            title="导出全部告警历史（不受本页 80 条限制）"
+            title={t("alerts.exportTitle")}
           >
-            导出历史
+            {t("alerts.exportHistory")}
           </Button>
           <Button
             variant="secondary"
             icon={<IconRefresh size={15} />}
             onClick={() => void query.refetch()}
           >
-            刷新
+            {t("common.refresh")}
           </Button>
           <Button
             variant="primary"
@@ -418,13 +463,13 @@ export function Alerts() {
                 "check",
                 async () => {
                   const r = await alertsApi.check();
-                  return "检测完成，命中 " + r.count + " 条";
+                  return t("alerts.checkDoneCount", { n: r.count });
                 },
-                "检测完成",
+                t("alerts.checkDone"),
               )
             }
           >
-            立即检测
+            {t("alerts.checkNow")}
           </Button>
         </>
       }
@@ -432,7 +477,7 @@ export function Alerts() {
       {msg ? (
         <Notice
           tone={msg.tone === "danger" ? "danger" : "success"}
-          title={msg.tone === "danger" ? "操作失败" : "操作成功"}
+          title={msg.tone === "danger" ? t("common.opFailed") : t("alerts.opSuccess")}
         >
           {msg.text}
         </Notice>
@@ -443,19 +488,19 @@ export function Alerts() {
           措辞要说全「也不记录」：否则用户会以为历史里还能翻到，实际上这些告警
           连库都不会进（见 alerting.record），事后是真的查不到。 */}
       {mutedSources.length > 0 ? (
-        <Notice tone="warning" title="部分告警已停止推送">
-          {mutedSources.map((item) => item.label).join("、")}
-          ：这些来源的告警当前既不会发出，也不会记入告警历史（工作台待办里同样不会出现）。
-          到下方「告警推送开关」可恢复。
+        <Notice tone="warning" title={t("alerts.partialMuted")}>
+          {t("alerts.mutedNotice", {
+            sources: mutedSources.map((item) => item.label).join("、"),
+          })}
         </Notice>
       ) : null}
 
       {/* 区块导航：点一下跳到对应分区，滚动时高亮当前所在分区（见 useSectionSpy） */}
-      <nav className="page-index" aria-label="告警页分区">
-        {SECTIONS.map((item, index) => (
+      <nav className="page-index" aria-label={t("alerts.pageAria")}>
+        {sections.map((item, index) => (
           <Fragment key={item.id}>
             {/* 分组之间一道竖线：吸顶条只有一行高，再挂分组标题会把它撑成两行 */}
-            {index > 0 && SECTIONS[index - 1].group !== item.group ? (
+            {index > 0 && sections[index - 1].group !== item.group ? (
               <span className="page-index-sep" aria-hidden="true" />
             ) : null}
             <a
@@ -464,7 +509,7 @@ export function Alerts() {
                 item.id === activeSection ? " is-active" : ""
               }`}
               aria-current={item.id === activeSection ? "true" : undefined}
-              title={GROUP_DESC[item.group]}
+              title={groupDesc[item.group]}
               onClick={(event) => {
                 /* 当页跳转：别让浏览器把它当成换页 */
                 event.preventDefault();
@@ -479,15 +524,15 @@ export function Alerts() {
       </nav>
 
       <header className="page-section-head">
-        <h2 className="page-section-title">推送与通道</h2>
-        <p className="page-section-desc">{GROUP_DESC["推送与通道"]}</p>
+        <h2 className="page-section-title">{t("alerts.groupChannels")}</h2>
+        <p className="page-section-desc">{groupDesc.channels}</p>
       </header>
 
       {/* 推送来源开关：管「发不发」，与下面几张通道卡（管「往哪发」）正交 */}
       <Card className="page-block" id={`${SECTION_PREFIX}notify`}>
         <CardHeader
-          title="告警推送开关"
-          subtitle="按来源决定是否发送告警。关掉之后该来源的巡检照常运行，但命中的告警整条丢弃：飞书 / 邮件 / 通用 Webhook 与站内消息都不再发出，也不会写进告警历史与工作台待办"
+          title={t("alerts.notifyTitle")}
+          subtitle={t("alerts.notifySubtitle")}
           icon={<IconBell size={16} />}
         />
         <div className="grid grid-auto-320">
@@ -503,15 +548,15 @@ export function Alerts() {
                 hint={
                   on
                     ? item.description
-                    : `已停止推送 · ${item.description}`
+                    : t("alerts.mutedSuffix", { desc: item.description })
                 }
               />
             );
           })}
         </div>
         {!isAdmin ? (
-          <Notice tone="info" title="只读">
-            这些开关是全局设置（影响所有用户会收到的告警），只有管理员可以修改。
+          <Notice tone="info" title={t("alerts.readonly")}>
+            {t("alerts.readonlyNotice")}
           </Notice>
         ) : null}
       </Card>
@@ -526,34 +571,34 @@ export function Alerts() {
           的能力 —— 所以合并的是配置界面，不是投递链路。两个都开就都发。 */}
       <Card className="page-block" id={`${SECTION_PREFIX}channels`}>
         <CardHeader
-          title="告警通知渠道"
-          subtitle="告警与恢复通知通过下面已启用的渠道发出；两个渠道互相独立，可以只开一个，也可以都开"
+          title={t("alerts.channelsTitle")}
+          subtitle={t("alerts.channelsSubtitle")}
           icon={<IconAlert size={16} />}
         />
 
         <div className="alc-ch alc-ch--first">
           <span className="alc-ch-name">
             <IconChat size={15} />
-            飞书机器人
+            {t("alerts.feishuBot")}
           </span>
           {/* 只在被关掉时才亮出来：常态下挂一个「已启用」是纯噪音。
               注意飞书这条通道目前没有界面开关（enabled 默认 true），
               这里如实反映后端状态，为将来补开关留好位置。 */}
           {feishu && !feishu.enabled ? (
             <Badge variant="warning" size="sm" dot>
-              已停用
+              {t("alerts.disabled")}
             </Badge>
           ) : null}
           <Badge variant={webhookSet ? "success" : "neutral"} size="sm" dot>
             <span className="flex items-center gap-4">
               <IconKey size={12} />
-              {webhookSet ? "Webhook 已加密保存" : "未配置 Webhook"}
+              {webhookSet ? t("alerts.webhookSaved") : t("alerts.webhookUnset")}
             </span>
           </Badge>
           <Badge variant={secretSet ? "success" : "neutral"} size="sm" dot>
             <span className="flex items-center gap-4">
               <IconKey size={12} />
-              {secretSet ? "签名已配置" : "未配置签名"}
+              {secretSet ? t("alerts.signatureSet") : t("alerts.signatureUnset")}
             </span>
           </Badge>
           <div className="alc-ch-actions">
@@ -563,7 +608,7 @@ export function Alerts() {
               loading={busy === "test"}
               onClick={() => void sendTest()}
             >
-              发送测试
+              {t("alerts.sendTest")}
             </Button>
             <Button
               variant="primary"
@@ -573,7 +618,7 @@ export function Alerts() {
               disabled={feishu === null}
               onClick={() => void saveFeishu()}
             >
-              保存
+              {t("common.save")}
             </Button>
           </div>
         </div>
@@ -581,14 +626,14 @@ export function Alerts() {
         {feishu ? (
           <div className="form-grid">
             <div className="field">
-              <label className="field-label">机器人 Webhook 地址</label>
+              <label className="field-label">{t("alerts.feishuWebhookLabel")}</label>
               <div className="input-wrap">
                 <input
                   className="input"
                   value={feishu.webhook || ""}
                   placeholder={
                     webhookSet
-                      ? "留空表示不修改当前地址"
+                      ? t("alerts.keepAddress")
                       : "https://open.feishu.cn/open-apis/bot/v2/hook/..."
                   }
                   onChange={(e) => {
@@ -599,7 +644,7 @@ export function Alerts() {
                 {webhookSet && !webhookClear ? (
                   <span className="input-suffix">
                     <IconButton
-                      label="清除 Webhook"
+                      label={t("alerts.clearWebhook")}
                       variant="danger"
                       onClick={() => {
                         setWebhookClear(true);
@@ -613,25 +658,27 @@ export function Alerts() {
               </div>
               <div className="field-message">
                 {webhookClear ? (
-                  <span className="text-danger">保存后将清除该 Webhook，告警不再推送。</span>
+                  <span className="text-danger">{t("alerts.clearWebhookWarn")}</span>
                 ) : webhookSet ? (
                   <>
-                    已加密存储，当前地址：
+                    {t("alerts.storedCurrent")}
                     <span className="mono">{webhookMasked}</span>
                   </>
                 ) : (
-                  "粘贴飞书群机器人的 Webhook 地址，保存后自动加密存储。"
+                  t("alerts.feishuWebhookHint")
                 )}
               </div>
             </div>
             <div className="field">
-              <label className="field-label">签名密钥（选填）</label>
+              <label className="field-label">{t("alerts.secretLabel")}</label>
               <div className="input-wrap">
                 <input
                   className="input"
                   type="password"
                   value={feishu.secret || ""}
-                  placeholder={secretSet ? "已加密保存，留空表示不修改" : "机器人开启签名校验时填写"}
+                  placeholder={
+                    secretSet ? t("alerts.secretPlaceholderSet") : t("alerts.secretPlaceholderFeishu")
+                  }
                   onChange={(e) => {
                     setSecretClear(false);
                     setFeishu({ ...feishu, secret: e.target.value });
@@ -640,7 +687,7 @@ export function Alerts() {
                 {secretSet && !secretClear ? (
                   <span className="input-suffix">
                     <IconButton
-                      label="清除签名密钥"
+                      label={t("alerts.clearSecret")}
                       variant="danger"
                       onClick={() => {
                         setSecretClear(true);
@@ -654,14 +701,14 @@ export function Alerts() {
               </div>
               <div className="field-message">
                 {secretClear
-                  ? "保存后将清除签名密钥。"
+                  ? t("alerts.clearSecretWarn")
                   : secretSet
-                    ? "密钥已加密存储，出于安全考虑不会回显。"
-                    : "仅在机器人开启「签名校验」时需要填写。"}
+                    ? t("alerts.secretHidden")
+                    : t("alerts.secretFeishuHint")}
               </div>
             </div>
             <div className="field">
-              <label className="field-label">冷却时间（秒）</label>
+              <label className="field-label">{t("alerts.cooldownLabel")}</label>
               <div className="input-wrap">
                 <input
                   className="input"
@@ -675,7 +722,7 @@ export function Alerts() {
             </div>
             {/* 卡片大标题默认写死产品名，这里让用户换成自己的叫法 */}
             <div className="field">
-              <label className="field-label">告警标题</label>
+              <label className="field-label">{t("alerts.titleLabel")}</label>
               <div className="input-wrap">
                 <input
                   className="input"
@@ -689,8 +736,7 @@ export function Alerts() {
                 />
               </div>
               <div className="field-message">
-                飞书卡片大标题里的名字，例如「🔴 {titleBrand} 资源告警」。
-                留空则用「设置 → 站点信息」里的面板名称。
+                {t("alerts.titleHint", { brand: titleBrand })}
               </div>
             </div>
           </div>
@@ -703,23 +749,23 @@ export function Alerts() {
         <div className="alc-ch">
           <span className="alc-ch-name">
             <IconPlug size={15} />
-            通用 Webhook
+            {t("alerts.hookName")}
           </span>
           {hook && !hook.enabled ? (
             <Badge variant="warning" size="sm" dot>
-              已停用
+              {t("alerts.disabled")}
             </Badge>
           ) : null}
           <Badge variant={hookSet ? "success" : "neutral"} size="sm" dot>
             <span className="flex items-center gap-4">
               <IconKey size={12} />
-              {hookSet ? "地址已加密保存" : "未配置地址"}
+              {hookSet ? t("alerts.hookAddressSaved") : t("alerts.hookAddressUnset")}
             </span>
           </Badge>
           <Badge variant={hookSecretSet ? "success" : "neutral"} size="sm" dot>
             <span className="flex items-center gap-4">
               <IconKey size={12} />
-              {hookSecretSet ? "签名已配置" : "未配置签名"}
+              {hookSecretSet ? t("alerts.signatureSet") : t("alerts.signatureUnset")}
             </span>
           </Badge>
           <div className="alc-ch-actions">
@@ -730,7 +776,7 @@ export function Alerts() {
               disabled={!hook?.enabled}
               onClick={() => void sendHookTest()}
             >
-              发送测试
+              {t("alerts.sendTest")}
             </Button>
             <Button
               variant="primary"
@@ -740,7 +786,7 @@ export function Alerts() {
               disabled={hook === null}
               onClick={() => void saveHook()}
             >
-              保存
+              {t("common.save")}
             </Button>
           </div>
         </div>
@@ -749,14 +795,14 @@ export function Alerts() {
           <>
             <div className="form-grid">
               <div className="field">
-                <label className="field-label">Webhook 地址</label>
+                <label className="field-label">{t("alerts.hookAddressLabel")}</label>
                 <div className="input-wrap">
                   <input
                     className="input"
                     value={hook.webhook || ""}
                     placeholder={
                       hookSet
-                        ? "留空表示不修改当前地址"
+                        ? t("alerts.keepAddress")
                         : "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
                     }
                     onChange={(e) => {
@@ -767,7 +813,7 @@ export function Alerts() {
                   {hookSet && !hookWebhookClear ? (
                     <span className="input-suffix">
                       <IconButton
-                        label="清除 Webhook 地址"
+                        label={t("alerts.clearHookAddress")}
                         variant="danger"
                         onClick={() => {
                           setHookWebhookClear(true);
@@ -781,29 +827,29 @@ export function Alerts() {
                 </div>
                 <div className="field-message">
                   {hookWebhookClear ? (
-                    <span className="text-danger">
-                      保存后将清除该地址，告警不再推送到这条通道。
-                    </span>
+                    <span className="text-danger">{t("alerts.clearHookAddressWarn")}</span>
                   ) : hookSet ? (
                     <>
-                      已加密存储，当前地址：
+                      {t("alerts.storedCurrent")}
                       <span className="mono">{hookMasked}</span>
                     </>
                   ) : (
-                    "粘贴接收端地址（企业微信 / 钉钉 / Slack 的机器人 Webhook，或自建服务）。"
+                    t("alerts.hookAddressHint")
                   )}
                 </div>
               </div>
 
               <div className="field">
-                <label className="field-label">签名密钥（选填）</label>
+                <label className="field-label">{t("alerts.secretLabel")}</label>
                 <div className="input-wrap">
                   <input
                     className="input"
                     type="password"
                     value={hook.secret || ""}
                     placeholder={
-                      hookSecretSet ? "已加密保存，留空表示不修改" : "接收端校验签名时填写"
+                      hookSecretSet
+                        ? t("alerts.secretPlaceholderSet")
+                        : t("alerts.secretPlaceholderHook")
                     }
                     onChange={(e) => {
                       setHookSecretClear(false);
@@ -813,7 +859,7 @@ export function Alerts() {
                   {hookSecretSet && !hookSecretClear ? (
                     <span className="input-suffix">
                       <IconButton
-                        label="清除签名密钥"
+                        label={t("alerts.clearSecret")}
                         variant="danger"
                         onClick={() => {
                           setHookSecretClear(true);
@@ -827,17 +873,17 @@ export function Alerts() {
                 </div>
                 <div className="field-message">
                   {hookSecretClear ? (
-                    "保存后将清除签名密钥。"
+                    t("alerts.clearSecretWarn")
                   ) : hookSecretSet ? (
-                    "密钥已加密存储，出于安全考虑不会回显。"
+                    t("alerts.secretHidden")
                   ) : (
-                    "填了密钥才会带签名头：X-Panel-Timestamp 与 X-Panel-Signature（sha256=HMAC-SHA256(密钥, 时间戳\\n请求体)）。"
+                    t("alerts.hookSignatureHint")
                   )}
                 </div>
               </div>
 
               <div className="field">
-                <label className="field-label">冷却时间（秒）</label>
+                <label className="field-label">{t("alerts.cooldownLabel")}</label>
                 <div className="input-wrap">
                   <input
                     className="input"
@@ -855,14 +901,14 @@ export function Alerts() {
               <Switch
                 checked={hook.enabled}
                 onChange={(v) => setHook({ ...hook, enabled: v })}
-                label="启用通用 Webhook"
-                hint="默认关闭：配好地址并确认接收端能收到测试消息后再打开"
+                label={t("alerts.enableHook")}
+                hint={t("alerts.enableHookHint")}
               />
             </div>
 
             <div className="mt-16">
               <div className="flex items-center gap-8 flex-wrap">
-                <span className="fs-sm fw-500">请求体模板</span>
+                <span className="fs-sm fw-500">{t("alerts.templateLabel")}</span>
                 {Object.entries(query.data?.hook_presets ?? {}).map(([key, preset]) => (
                   <Button
                     key={key}
@@ -884,12 +930,9 @@ export function Alerts() {
                 />
               </div>
               <div className="field-message">
-                <div>
-                  留空则用内置默认体。点上面的按钮可一键套用各渠道的模板；
-                  模板必须是合法 JSON，占位符会按 JSON 字符串规则转义后填入。
-                </div>
+                <div>{t("alerts.templateHint1")}</div>
                 <div className="mt-4">
-                  可用占位符：
+                  {t("alerts.placeholders")}
                   {(
                     query.data?.hook_placeholders ?? [
                       "title",
@@ -912,8 +955,8 @@ export function Alerts() {
 
             <div className="mt-16">
               <Field
-                label="额外请求头（选填）"
-                hint='JSON 对象，如 {"Authorization":"Bearer xxx"}；用于渠道特有的鉴权头'
+                label={t("alerts.extraHeaders")}
+                hint={t("alerts.extraHeadersHint")}
               >
                 <Textarea
                   value={hook.headers}
@@ -926,12 +969,10 @@ export function Alerts() {
             </div>
 
             <div className="mt-16">
-              <Notice tone="info" title="关于签名">
-                签名是面板自己的约定，不是各家渠道的原生签名 —— 自建接收端照上面
-                的方式算一遍 HMAC 再比对即可（建议同时校验时间戳在可接受窗口内，
-                否则抓到一次请求就能重放）。企业微信 / Slack 不需要签名；
-                <strong>钉钉开启「加签」后要求把 sign 放进 URL 查询参数</strong>
-                ，那不是请求体模板能表达的，需要在钉钉侧关掉加签或自行中转。
+              <Notice tone="info" title={t("alerts.aboutSignature")}>
+                {t("alerts.sigIntro")}
+                <strong>{t("alerts.sigDingtalkStrong")}</strong>
+                {t("alerts.sigOutro")}
               </Notice>
             </div>
           </>
@@ -943,8 +984,8 @@ export function Alerts() {
       {/* ---- 邮件通道：与飞书并列的第二条通知路径，收件人按用户各自配置 ---- */}
       <Card className="page-block" id={`${SECTION_PREFIX}email`}>
         <CardHeader
-          title="告警通知（邮件）"
-          subtitle="告警与恢复通知发到你的邮箱；发信用的是管理员在「设置 → 邮件通知」里配的 SMTP"
+          title={t("alerts.emailTitle")}
+          subtitle={t("alerts.emailSubtitle")}
           icon={<IconBell size={16} />}
           actions={
             <>
@@ -953,7 +994,7 @@ export function Alerts() {
                 dot
                 size="sm"
               >
-                {mailReady ? "SMTP 已就绪" : "SMTP 未配置"}
+                {mailReady ? t("alerts.smtpReady") : t("alerts.smtpUnset")}
               </Badge>
               <Button
                 variant="primary"
@@ -963,7 +1004,7 @@ export function Alerts() {
                 disabled={!emailCfg}
                 onClick={() => void saveEmail()}
               >
-                保存
+                {t("common.save")}
               </Button>
             </>
           }
@@ -971,9 +1012,8 @@ export function Alerts() {
 
         {!mailReady ? (
           <div className="mb-16">
-            <Notice tone="warning" title="全局 SMTP 尚未配置">
-              邮件通道需要管理员先在「设置 → 邮件通知」里填写 SMTP 服务器。
-              在配好之前，这里即使打开开关也发不出邮件。
+            <Notice tone="warning" title={t("alerts.smtpMissingTitle")}>
+              {t("alerts.smtpMissingBody")}
             </Notice>
           </div>
         ) : null}
@@ -983,15 +1023,15 @@ export function Alerts() {
             <Switch
               checked={emailCfg.enabled}
               onChange={(v) => setEmailCfg({ ...emailCfg, enabled: v })}
-              label="启用邮件通知"
-              hint="与飞书通道相互独立，可以只开其中一个，也可以两个都开"
+              label={t("alerts.enableEmail")}
+              hint={t("alerts.enableEmailHint")}
             />
             <Field
-              label="收件地址"
+              label={t("alerts.recipientsLabel")}
               hint={
                 accountEmail
-                  ? `留空则发到你的账号邮箱：${accountEmail}`
-                  : "留空且账号未填邮箱时不会投递，建议直接填写收件地址"
+                  ? t("alerts.recipientsHintAccount", { email: accountEmail })
+                  : t("alerts.recipientsHintNoAccount")
               }
             >
               <Input
@@ -999,7 +1039,7 @@ export function Alerts() {
                 onChange={(e) =>
                   setEmailCfg({ ...emailCfg, recipients: e.target.value })
                 }
-                placeholder="多个地址用英文逗号分隔"
+                placeholder={t("alerts.recipientsPlaceholder")}
                 mono
               />
             </Field>
@@ -1010,17 +1050,15 @@ export function Alerts() {
       </Card>
 
       <header className="page-section-head">
-        <h2 className="page-section-title">规则与记录</h2>
-        <p className="page-section-desc">{GROUP_DESC["规则与记录"]}</p>
+        <h2 className="page-section-title">{t("alerts.groupRecords")}</h2>
+        <p className="page-section-desc">{groupDesc.records}</p>
       </header>
 
       <Card className="page-block" id={`${SECTION_PREFIX}rules`}>
         <CardHeader
-          title="告警规则"
+          title={t("alerts.rulesTitle")}
           subtitle={
-            isAdmin
-              ? "规则按用户隔离，管理员可见全部；他人的规则只读，保存只会更新自己的"
-              : "规则归属你自己，告警只推送到你配置的飞书机器人；目标选「全部」表示监控所有对象"
+            isAdmin ? t("alerts.rulesSubtitleAdmin") : t("alerts.rulesSubtitleUser")
           }
           icon={<IconAlert size={16} />}
           actions={
@@ -1031,7 +1069,7 @@ export function Alerts() {
                 icon={<IconPlus size={14} />}
                 onClick={() => setRules([...(rules ?? []), newRule()])}
               >
-                添加规则
+                {t("alerts.addRule")}
               </Button>
               <Button
                 variant="primary"
@@ -1049,11 +1087,11 @@ export function Alerts() {
                       // 否则保存后界面仍显示旧数据（含历史重复项）
                       setRules(res.rules ?? []);
                     },
-                    "规则已保存",
+                    t("alerts.rulesSaved"),
                   )
                 }
               >
-                保存规则
+                {t("alerts.saveRules")}
               </Button>
             </>
           }
@@ -1063,13 +1101,13 @@ export function Alerts() {
             <table className="table table-dense">
               <thead>
                 <tr>
-                  {isAdmin ? <th>归属</th> : null}
-                  <th>规则名称</th>
-                  <th>对象</th>
-                  <th>目标</th>
-                  <th>指标</th>
-                  <th>阈值(%)</th>
-                  <th>启用</th>
+                  {isAdmin ? <th>{t("alerts.colOwner")}</th> : null}
+                  <th>{t("alerts.colRuleName")}</th>
+                  <th>{t("alerts.colTargetType")}</th>
+                  <th>{t("alerts.colTarget")}</th>
+                  <th>{t("alerts.colMetric")}</th>
+                  <th>{t("alerts.colThreshold")}</th>
+                  <th>{t("alerts.colEnabled")}</th>
                   <th />
                 </tr>
               </thead>
@@ -1105,8 +1143,8 @@ export function Alerts() {
                           patch(i, { target_type: e.target.value, target: "*" })
                         }
                       >
-                        <option value="node">宿主机</option>
-                        <option value="vm">虚拟机</option>
+                        <option value="node">{t("alerts.targetNode")}</option>
+                        <option value="vm">{t("alerts.targetVm")}</option>
                       </select>
                     </td>
                     <td>
@@ -1130,7 +1168,7 @@ export function Alerts() {
                         disabled={readonly}
                         onChange={(e) => patch(i, { metric: e.target.value })}
                       >
-                        {METRICS.map((m) => (
+                        {metrics.map((m) => (
                           <option key={m.value} value={m.value}>
                             {m.label}
                           </option>
@@ -1141,7 +1179,7 @@ export function Alerts() {
                       {isStateMetric(r.metric) ? (
                         /* 状态型指标不看阈值：这里给一句语义说明，
                            而不是一个填了也没有任何作用的数字框 */
-                        <span className="fs-xs text-muted">状态异常即告警</span>
+                        <span className="fs-xs text-muted">{t("alerts.stateAlarm")}</span>
                       ) : (
                         <div className="input-wrap">
                           <input
@@ -1164,7 +1202,7 @@ export function Alerts() {
                     </td>
                     <td>
                       <IconButton
-                        label={readonly ? "他人的规则，不能删除" : "删除规则"}
+                        label={readonly ? t("alerts.deleteRuleReadonly") : t("alerts.deleteRule")}
                         variant="danger"
                         disabled={readonly}
                         onClick={() => setRules(rules.filter((_, k) => k !== i))}
@@ -1179,13 +1217,13 @@ export function Alerts() {
             </table>
           </div>
         ) : (
-          <div className="text-secondary fs-sm">还没有告警规则，点击右上角「添加规则」新增。</div>
+          <div className="text-secondary fs-sm">{t("alerts.rulesEmpty")}</div>
         )}
       </Card>
 
       <Card className="page-block" id={`${SECTION_PREFIX}history`}>
         <CardHeader
-          title="告警历史"
+          title={t("alerts.historyTitle")}
           subtitle={historySubtitle || undefined}
           icon={<IconAlert size={16} />}
           actions={
@@ -1197,7 +1235,7 @@ export function Alerts() {
               disabled={records.length === 0}
               onClick={() => setClearHistoryOpen(true)}
             >
-              清除历史
+              {t("alerts.clearHistory")}
             </Button>
           }
         />
@@ -1209,21 +1247,23 @@ export function Alerts() {
               /* 静默记录已在 records 里被滤掉，这里只剩两种投递状态：送达 / 发送失败 */
               const state = sent ? "sent" : "failed";
               const isRecovery = r.kind === "recovery";
-              const meta = METRIC_MAP[r.metric] ?? { label: r.metric, icon: <IconAlert size={14} /> };
+              const meta = metricMap[r.metric] ?? { label: r.metric, icon: <IconAlert size={14} /> };
               const value = Number(r.value ?? 0);
               const threshold = Number(r.threshold ?? 0);
               const pct = Math.min(100, Math.max(0, value));
               /* 与全站同一套分档（见 utils/format 的 usageColor） */
               const fillColor = usageColor(value);
               const targetLabel =
-                (r.target_type === "node" ? "宿主机 " : "虚拟机 ") + (r.target ?? "");
+                (r.target_type === "node"
+                  ? t("alerts.targetNodePrefix")
+                  : t("alerts.targetVmPrefix")) + (r.target ?? "");
               const badgeText = sent
                 ? isRecovery
-                  ? "已恢复"
-                  : "已发送"
+                  ? t("alerts.badgeRecovered")
+                  : t("alerts.badgeSent")
                 : isRecovery
-                  ? "恢复通知失败"
-                  : "发送失败";
+                  ? t("alerts.badgeRecoveryFailed")
+                  : t("alerts.badgeSendFailed");
               const badgeVariant = sent
                 ? isRecovery
                   ? "info"
@@ -1239,7 +1279,7 @@ export function Alerts() {
                       <span className={`alert-card-icon is-${state}`}>
                         {sent ? <IconCheck size={15} /> : <IconClose size={15} />}
                       </span>
-                      <span className="alert-card-title">{r.rule_name ?? "告警"}</span>
+                      <span className="alert-card-title">{r.rule_name ?? t("alerts.fallbackAlarm")}</span>
                       <Badge variant={badgeVariant} size="sm" dot>
                         {badgeText}
                       </Badge>
@@ -1268,7 +1308,7 @@ export function Alerts() {
                          直接陈述结果更清楚 */
                       <div className="alert-card-metric-val">
                         <span className="fw-600">
-                          {isRecovery ? "已恢复正常" : "状态异常"}
+                          {isRecovery ? t("alerts.recoveredOk") : t("alerts.stateAbnormal")}
                         </span>
                       </div>
                     ) : (
@@ -1281,12 +1321,12 @@ export function Alerts() {
                           <span
                             className="alert-card-bar-threshold"
                             style={{ left: `${Math.min(100, threshold)}%` }}
-                            title={`阈值 ${threshold}%`}
+                            title={t("alerts.threshold", { n: threshold })}
                           />
                         </div>
                         <div className="alert-card-metric-val">
                           <span className="mono fw-600">{value}%</span>
-                          <span className="text-muted"> 阈值 {threshold}%</span>
+                          <span className="text-muted"> {t("alerts.threshold", { n: threshold })}</span>
                         </div>
                       </div>
                     )}
@@ -1296,16 +1336,16 @@ export function Alerts() {
             })}
           </div>
         ) : (
-          <div className="text-secondary fs-sm">暂无告警记录。</div>
+          <div className="text-secondary fs-sm">{t("alerts.historyEmpty")}</div>
         )}
       </Card>
 
       <ConfirmDialog
         open={clearHistoryOpen}
         danger
-        title="清除告警历史"
-        confirmText="清除"
-        message={`将清空告警历史：列表中的 ${records.length} 条，以及更早版本留下、已不再展示的静默记录。此操作不可撤销。正在告警中的对象不受影响，指标恢复时仍会推送恢复通知。`}
+        title={t("alerts.clearTitle")}
+        confirmText={t("alerts.clearConfirm")}
+        message={t("alerts.clearMessage", { n: records.length })}
         onCancel={() => setClearHistoryOpen(false)}
         onConfirm={clearHistory}
       />

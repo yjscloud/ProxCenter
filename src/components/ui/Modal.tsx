@@ -11,6 +11,7 @@ import {
 import { createPortal } from 'react-dom';
 import { IconButton } from './Button';
 import { IconClose } from '../Icons';
+import { useT } from '../../i18n';
 
 export type ModalSize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
 
@@ -49,6 +50,7 @@ export function Modal({
   hideClose = false,
   className,
 }: ModalProps) {
+  const t = useT();
   const dialogRef = useRef<HTMLDivElement>(null);
   const lastFocusedRef = useRef<HTMLElement | null>(null);
 
@@ -139,7 +141,7 @@ export function Modal({
         className={`modal modal-${size} ${className ?? ''}`}
         role="dialog"
         aria-modal="true"
-        aria-label={typeof title === 'string' ? title : '对话框'}
+        aria-label={typeof title === 'string' ? title : t('modal.dialogAria')}
         tabIndex={-1}
       >
         {title || !hideClose ? (
@@ -151,7 +153,7 @@ export function Modal({
               ) : null}
             </div>
             {!hideClose ? (
-              <IconButton label="关闭对话框" onClick={onClose}>
+              <IconButton label={t('modal.closeDialog')} onClick={onClose}>
                 <IconClose size={16} />
               </IconButton>
             ) : null}
@@ -191,6 +193,7 @@ export function Drawer({
   footer,
   width = 620,
 }: DrawerProps) {
+  const t = useT();
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -215,14 +218,14 @@ export function Drawer({
         style={{ width: `min(${width}px, 100vw)` }}
         role="dialog"
         aria-modal="true"
-        aria-label={typeof title === 'string' ? title : '详情面板'}
+        aria-label={typeof title === 'string' ? title : t('modal.panelAria')}
       >
         <div className="drawer-header">
           <div className="drawer-header-text">
             {title ? <h2 className="drawer-title">{title}</h2> : null}
             {subtitle ? <div className="drawer-subtitle">{subtitle}</div> : null}
           </div>
-          <IconButton label="关闭面板" onClick={onClose}>
+          <IconButton label={t('modal.closePanel')} onClick={onClose}>
             <IconClose size={16} />
           </IconButton>
         </div>

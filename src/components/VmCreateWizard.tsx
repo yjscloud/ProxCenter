@@ -1,5 +1,9 @@
 /* ==========================================================================
    ProxCenter — 创建虚拟机向导（4 步 + 确认）
+
+   同一个弹窗里还有「快速部署」模式（QuickDeployForm）：选规格 → 选位置 → 起名
+   即可下发，适合标准机器；NUMA / PCI 直通 / 多网卡多磁盘这些仍走本向导。
+   两者用一个开关切换 —— 入口只有一个（列表页的「创建虚拟机」）。
    ========================================================================== */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,6 +25,7 @@ import {
   Checkbox,
   Field,
   Input,
+  SegmentedControl,
   Select,
   Switch,
   Textarea,
@@ -28,6 +33,7 @@ import {
 import { Notice } from './ui/EmptyState';
 import { Badge } from './ui/Badge';
 import { NodePicker } from './NodePicker';
+import { QuickDeployForm } from './QuickDeployForm';
 import {
   IconPlus,
   IconTrash,
@@ -81,6 +87,9 @@ const STEPS = [
 const CI_STEP = 4;
 
 type StepIndex = 0 | 1 | 2 | 3 | 4 | 5;
+
+/** 两种下单方式：快速（选规格）与自定义（逐步填写） */
+type CreateMode = 'quick' | 'custom';
 
 /* ---------------------------------------------------------------------------
    表单状态
@@ -143,6 +152,12 @@ interface FormState {
   cores: number;
   sockets: number;
   memory: number;
+  /**
+   * 内存气球的最低保留量（MB），**字符串**：'' = 不下发这个键（PVE 按整份内存
+   * 算，宿主机收不回空闲内存）；0 = 显式关掉气球驱动；其它值 = 保留这么多。
+   * 需要区分「没填」与「填 0」，所以不用 number。
+   */
+  balloon: string;
   startOnBoot: boolean;
   bootOrder: string;
 
@@ -198,6 +213,7 @@ const initialState: FormState = {
   cores: 2,
   sockets: 1,
   memory: 2048,
+  balloon: '',
   startOnBoot: false,
   /* 启动顺序留空 = 让后端按第一块磁盘的总线自动设置（boot=order=<磁盘>）。
      刻意不写死 scsi0：磁盘总线是用户可改的，一旦从 scsi 换成 sata（Windows
@@ -343,6 +359,19 @@ function validateStep(
     if (form.memory < 512) e.memory = '内存不能小于 512 MB';
     else if (form.memory > 1_048_576) e.memory = '内存不能超过 1048576 MB';
 
+    /* 内存气球：留空 = 不回收（不下发该键），0 = 关闭气球驱动。填了值就必须
+       低于内存上限，否则 PVE 直接拒掉建机请求。 */
+    if (form.balloon.trim()) {
+      const balloon = Number(form.balloon);
+      if (!Number.isFinite(balloon) || balloon < 0) {
+        e.balloon = '最低保留内存需为不小于 0 的整数';
+      } else if (balloon > 0 && balloon < 128) {
+        e.balloon = '最低保留内存不能小于 128 MB';
+      } else if (balloon > 0 && form.memory && balloon >= form.memory) {
+        e.balloon = '最低保留内存必须小于内存上限';
+      }
+    }
+
     /* 高级硬件：cpuset 是唯一会被 PVE 直接拒的输入，格式必须在提交前拦住 */
     if (form.numaAffinity.trim() && !isCpuset(form.numaAffinity)) {
       e.numaAffinity = 'CPU 列表格式如 0-3,8-11（仅数字、逗号与连字符）';
@@ -419,6 +448,37 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
   const autoPickedRef = useRef(false);
   /* 目标 PVE 主机：空串 = 面板当前连接；否则用指定连接创建（多台 PVE 场景） */
   const [targetConn, setTargetConn] = useState('');
+
+  /**
+   * 快速部署 / 自定义部署。默认选快速 —— 绝大多数创建都是「标准机器」；
+   * 管理员还没定义任何规格时退回自定义（否则一进来就是个空的选择区）。
+   * 用户手动切过之后，就不再被自动改回去。
+   */
+  const [mode, setMode] = useState<CreateMode>('quick');
+  const modeTouchedRef = useRef(false);
+  /** 用户主动切换：记下来，别再被「有没有规格」的自动判断覆盖 */
+  const pickMode = (next: CreateMode) => {
+    modeTouchedRef.current = true;
+    setMode(next);
+  };
+
+  /* 规格表：只为「默认用哪种模式」而读。表单自己也读同一份，react-query 缓存
+     共用，不会多一次请求 */
+  const specsQuery = useQuery({
+    queryKey: ['config', 'specs'],
+    queryFn: configApi.getSpecs,
+    enabled: open,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!open || modeTouchedRef.current || !specsQuery.data) return;
+    const usable = specsQuery.data.specs.filter(
+      (s) => s.kind === 'vm' || s.kind === 'both',
+    );
+    setMode(usable.length > 0 ? 'quick' : 'custom');
+  }, [open, specsQuery.data]);
 
   /* ---- 依赖数据 ---- */
   /* 已保存的 PVE 主机列表，供「目标 PVE 主机」选择 */
@@ -518,6 +578,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     setErrors({});
     setTargetConn('');
     autoPickedRef.current = false;
+    setMode('quick');
+    modeTouchedRef.current = false;
   }, [open]);
 
   /* 预填面板默认 DNS：每次打开只填一次，用户自己写的值不会被覆盖。
@@ -853,6 +915,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     };
 
     let payload: VmCreateRequest;
+    /* 内存气球：留空就不下发这个键（沿用 PVE 默认 —— 整份内存不回收） */
+    const balloonOption = form.balloon.trim() ? Number(form.balloon) : undefined;
 
     if (form.mode === 'clone' && selectedCloneSource) {
       payload = {
@@ -864,6 +928,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         sockets: form.sockets,
         cpu_type: form.cpuType,
         ostype: form.ostype,
+        balloon: balloonOption,
         ...numaOptions,
         disks: [],
         networks: [],
@@ -905,6 +970,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         sockets: form.sockets,
         cpu_type: form.cpuType,
         ostype: form.ostype,
+        balloon: balloonOption,
         disks,
         networks,
         iso: form.iso || undefined,
@@ -1105,6 +1171,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       size="lg"
       closeOnOverlay={false}
       footer={
+        /* 快速模式自带提交按钮（在表单末尾），这里不再重复一套 footer */
+        mode === 'quick' ? undefined : (
         <>
           <div className="flex-1">
             {currentErrors > 0 ? (
@@ -1141,8 +1209,38 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
             </Button>
           )}
         </>
+        )
       }
     >
+      {/* ---- 快速 / 自定义：入口只有一个（列表页的「创建虚拟机」）---- */}
+      <div className="flex items-center gap-12 flex-wrap mb-16">
+        <SegmentedControl<CreateMode>
+          value={mode}
+          onChange={pickMode}
+          ariaLabel="创建方式"
+          options={[
+            { label: '快速部署', value: 'quick' },
+            { label: '自定义部署', value: 'custom' },
+          ]}
+        />
+        <span className="fs-sm text-muted">
+          {mode === 'quick'
+            ? '选规格、选位置、起名即下发；规格由管理员在「设置 → 资源规格」里定义'
+            : '逐步填写：系统、硬件、磁盘、网络、初始化'}
+        </span>
+      </div>
+
+      {mode === 'quick' ? (
+        /* 快速模式自带提交按钮（在表单末尾），所以上面的 footer 让位 */
+        <QuickDeployForm
+          open={open}
+          kind="qemu"
+          onCreated={onCreated}
+          onClose={onClose}
+          onSwitchToCustom={() => pickMode('custom')}
+        />
+      ) : (
+        <>
       {/* ---- 步骤条 ---- */}
       <div className="wizard-steps" role="list" aria-label="创建步骤">
         {STEPS.map((label, i) => (
@@ -1624,6 +1722,18 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                 onChange={(e) => update('memory', Number(e.target.value) || 0)}
                 error={errors.memory}
                 hint={`约 ${formatBytes(form.memory * 1024 ** 2)}`}
+              />
+              {/* 气球：PVE 没这个键时按整份内存算，宿主机收不回空闲内存。
+                  留空保持原行为，填了才有回收空间。 */}
+              <Input
+                label="最低保留内存（MB）"
+                type="number"
+                min={0}
+                step={256}
+                value={form.balloon}
+                onChange={(e) => update('balloon', e.target.value)}
+                error={errors.balloon}
+                hint="留空 = 不回收（默认）；如 1024 = 至少保留 1G，余量可被宿主机收回"
               />
             </div>
 
@@ -2373,6 +2483,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
           带 <span className="text-danger">*</span> 的字段为必填项
         </span>
       </div>
+        </>
+      )}
     </Modal>
   );
 }

@@ -4302,6 +4302,109 @@ body.is-col-resizing * {
   font-size: 12px;
 }
 
+/* ---------------------------------------------------------------------------
+   资源规格卡片（创建弹窗里的「快速部署」模式）：一眼看出几核几 G 多大盘，点一下选中
+   --------------------------------------------------------------------------- */
+.spec-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.spec-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--transition),
+    background var(--transition);
+}
+
+.spec-card:hover {
+  border-color: var(--accent-border);
+}
+
+.spec-card:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
+.spec-card.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.spec-card-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.spec-card-spec {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.spec-card-spec b {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.spec-card-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   资源规格编辑行（设置 → 资源规格）
+   一行一个规格：头部是预览徽标 + 删除，下面是名称 / 适用 / 核 / 内存 / 磁盘 / 说明
+   --------------------------------------------------------------------------- */
+.spec-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.spec-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.spec-row-spacer {
+  flex: 1;
+}
+
+.spec-row-grid {
+  display: grid;
+  grid-template-columns:
+    minmax(150px, 1.3fr) minmax(150px, 1.1fr) 88px 108px 108px
+    minmax(150px, 1.3fr);
+  gap: 10px;
+}
+
+@media (max-width: 1100px) {
+  .spec-row-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .spec-row-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* 窄屏：触发器上三个数挤不下就只留节点名（面板里的三条例行会自动折行） */
 @media (max-width: 480px) {
   .node-select-inline {

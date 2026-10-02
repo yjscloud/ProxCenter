@@ -79,6 +79,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useSectionSpy } from '../hooks/useSectionSpy';
 import { DEFAULT_SITE_INFO } from '../hooks/useSiteInfo';
 import { BrandLogo } from '../components/BrandLogo';
+import { ResourceSpecsPanel } from '../components/ResourceSpecsPanel';
 import { NodeNoteField, useNodeMeta } from '../components/NodeMeta';
 import type {
   ClusterStatus,
@@ -199,6 +200,16 @@ export function Settings() {
       icon: <IconVm size={16} />,
       adminOnly: true,
       render: () => <VMCreateDefaultsSection />,
+    },
+    {
+      id: 'specs',
+      group: '服务端配置',
+      label: '资源规格',
+      /* 与卡片标题一致：导航项与卡片标题不一样时，用户点了会以为走错了地方 */
+      desc: '下单页可选套餐（几核 / 内存 / 磁盘），用户不必自己算资源',
+      icon: <IconBox size={16} />,
+      adminOnly: true,
+      render: () => <ResourceSpecsPanel />,
     },
     {
       id: 'sidebar',

@@ -523,6 +523,28 @@ export interface VmDefaults {
   dns: string;
 }
 
+/**
+ * 资源规格（套餐）：管理员在设置页定义「几核 / 几 G 内存 / 多大盘」，
+ * 用户在下单页直接挑一个，不用自己算资源。
+ *
+ * 规格只是**一组数字**：创建时被翻译成 `cores` / `memory` / 磁盘大小交给既有的
+ * 创建接口，不参与配额判定（配额按台数，见 `VmQuotaInfo`）。
+ */
+export interface ResourceSpec {
+  /** 稳定标识，前端拿它当 key 与表单值 */
+  id: string;
+  name: string;
+  /** 适用类型：虚拟机 / 容器 / 通用 */
+  kind: 'vm' | 'lxc' | 'both';
+  /** 核数 */
+  cores: number;
+  /** 内存（MB） */
+  memory: number;
+  /** 磁盘（GB） */
+  disk: number;
+  description?: string;
+}
+
 /* ---------------------------------------------------------------------------
    硬件健康
    --------------------------------------------------------------------------- */
@@ -1149,6 +1171,7 @@ export type BulkAction =
   | 'delete'
   | 'tag'
   | 'migrate'
+  | 'balloon'
   | 'snapshot';
 
 /** 一台目标机器。type 能带就带，省掉后端一次探测请求。 */
@@ -1171,6 +1194,8 @@ export interface BulkParams {
   tags?: string;
   /** replace = 覆盖；append = 追加到原标签之后 */
   tag_mode?: 'replace' | 'append';
+  /** balloon：内存气球的最低保留量（MB）。0 = 关掉气球驱动；只对虚拟机有效 */
+  balloon?: number;
   /** migrate */
   target_node?: string;
   online?: boolean;
@@ -1356,7 +1381,6 @@ export interface CloudInitConfig {
   ip_configs?: Array<{ ip: string; gateway: string }>;
   nameserver?: string;
   searchdomain?: string;
-  upgrade?: boolean;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1750,6 +1774,8 @@ export interface TemplateFromImageRequest {
   storage: string;
   memory?: number;
   cores?: number;
+  /** 内存气球的最低保留量（MB）：设了它，克隆出来的机器才有可回收的余量 */
+  balloon?: number;
   cpu_type?: string;
   ostype?: string;
   /** 目标磁盘大小（GB），仅在大于镜像原始大小时生效 */
@@ -1795,6 +1821,8 @@ export interface TemplateCloneRequest {
   storage?: string;
   memory?: number;
   cores?: number;
+  /** 内存气球的最低保留量（MB）：覆盖模板自带的值（模板不带就是「整份内存」） */
+  balloon?: number;
   ci_user?: string;
   ci_password?: string;
   ssh_keys?: string;
@@ -1908,6 +1936,11 @@ export interface VmCreateRequest {
   machine?: string;
   boot_order?: string;
   start_on_boot?: boolean;
+  /**
+   * 内存气球的最低保留量（MiB）。不传时 PVE 按「整份内存」算，宿主机收不回
+   * 客户机的空闲内存；0 = 显式关掉气球驱动，其它值 = 保留这么多。
+   */
+  balloon?: number;
   cloudinit?: CloudInitConfig;
   clone_from?: {
     vmid: number;

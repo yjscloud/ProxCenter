@@ -781,7 +781,7 @@ retention/immutability、S3 Object Lock、或只读挂载。**只靠 PVE API 做
 |---|---|---|
 | `SECRET_KEY` | `change-me-...` | 签发登录 JWT，同时是库里密文（PVE Token、SMTP 密码等）的加密根。**留占位值或短于 32 位会直接拒绝启动**；生成随机值：`python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员账号 |
-| `ADMIN_PASSWORD` | 空 | 首次启动的管理员密码。**留空、短于 12 位或 `admin123` 之类弱口令会拒绝启动**（`./start-prod.sh` 首次生成 `.env` 时会自动填入随机口令并打印） |
+| `ADMIN_PASSWORD` | 空 | 首次启动的管理员密码。**留空、短于 12 位或 `admin123` 之类弱口令会拒绝启动**（`./start-prod.sh` 首次生成 `.env` 时会自动填入随机口令并打印；`./deploy.sh` 遇到空/弱口令且库里还没有管理员时会当场要求重设，非交互模式则生成随机口令并在结尾显示一次） |
 | `FORCE_HTTPS` | `false` | 设为 `true` 后明文 HTTP 一律 `308` 跳到 `https://<Host>`，HTTPS 响应附 HSTS；仅本机回环（健康检查 / 运维脚本）豁免。TLS 由前面的 Nginx/Caddy 终结 |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | uvicorn 信任哪些来源的 `X-Forwarded-Proto`。**只填本机反代**：放宽成 `0.0.0.0` 等于让公网请求自称「我是 https」，从而绕过 `FORCE_HTTPS`。限流的来源 IP 也只信这里面的对端传来的 `X-Forwarded-For` |
 | `LOGIN_MAX_FAILURES` | `5` | 登录失败几次就锁定（账号 + 来源 IP 双计数） |

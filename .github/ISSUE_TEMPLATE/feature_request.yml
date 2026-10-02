@@ -1,0 +1,55 @@
+name: 功能建议 / Feature request
+description: 想要面板做而目前做不到的事 / Something the panel should do but doesn't
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        建议先看一眼 README「二、功能」与「八、后续迭代计划」—— 里面有已经排期的方向
+        （比如 SDN、计费与用量），如果正好撞上，可以直接在那个方向上补充你的用法。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前请确认 / Before submitting
+      options:
+        - label: 我确认 README 的功能清单里没有这一项（或说明了它与我想要的不一样）
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题 / What are you trying to do
+      description: 说清场景比说清方案更有用 —— 同一件事往往有更省事的做法。
+      placeholder: |
+        例：我给团队开了 20 个账号，每人都能创建虚拟机，但我希望按「人」限制每月能开几台。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你设想的做法 / Proposed solution
+      description: 你希望界面上在哪、怎么操作、结果是什么。可选，但很有帮助。
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 现在你是怎么绕过的 / Alternatives you've considered
+      placeholder: 例：现在只能人工盯着，或去 PVE 上手动限制
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: 你愿意提 PR 吗 / Would you be willing to contribute
+      options:
+        - 愿意，需要一点方向上的指引
+        - 愿意，改法我自己可以定
+        - 这次只提建议，暂时不方便写代码
+    validations:
+      required: false

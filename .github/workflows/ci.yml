@@ -1,0 +1,86 @@
+# ProxCenter CI —— 后端单元/接口测试 + 前端类型检查与构建
+#
+# 两件事：一是让 PR 有最低门槛，二是 README 顶部那枚 CI 徽章 —— 一个长期绿的
+# 徽章是「这项目还在维护」最直观的信号，红了同样直观，所以下面每一条命令都先
+# 在本地跑通、确认不依赖任何外部 Proxmox 才写进来：
+#
+#   * 后端用例连的是一个**独立的测试库**（<DB_NAME>_test，由 tests/conftest.py
+#     自己 CREATE DATABASE），因此这里起一个 MySQL 服务容器就够，不需要 PVE；
+#   * 前端三步（typecheck / 依赖图检查 / 生产构建）就是 `npm run verify`。
+#
+# Python 固定 3.11：deploy.sh 要求 ≥ 3.11，本仓库也只在 3.11 上验证过。
+# 想加 3.13 之类的新版本，先把这一行改成矩阵、确认全绿再上 —— 否则徽章会直接变红。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一个分支连着推几次时，把还在跑的旧任务取消掉
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端测试（pytest + MySQL）
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-root-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      # 用 root：用例要自己建一个 <DB_NAME>_test 库（没有建库权限时用例会整体 skip，
+      # 那样 CI 就变成假绿了）
+      DB_USER: root
+      DB_PASSWORD: ci-root-password
+      DB_NAME: proxcenter
+      SECRET_KEY: ci-only-secret-key-not-used-anywhere-else-0123456789
+      ADMIN_PASSWORD: Ci-Only-Admin-Pa55w0rd!
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: 安装依赖
+        # requirements-dev.txt 里已经 `-r requirements.txt`，一条命令装全
+        run: python -m pip install --upgrade pip -q -r backend/requirements-dev.txt
+
+      - name: 跑测试
+        working-directory: backend
+        run: python -m pytest -q
+
+  frontend:
+    name: 前端（类型检查 + 构建）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # vite 5 要求 Node 18+，本仓用 20 验证
+          node-version: "20"
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
+      # 与 README「五、测试」里写的命令一致：tsc --noEmit → 依赖图检查 → vite build
+      - name: 类型检查 / 依赖图 / 构建
+        run: npm run verify

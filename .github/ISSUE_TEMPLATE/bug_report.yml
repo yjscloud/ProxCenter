@@ -1,0 +1,102 @@
+name: Bug 报告 / Bug report
+description: 面板行为与预期不符时用这个模板 / Something behaves differently than documented
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！信息给得越具体，定位越快。请把**日志原文**贴进来（截图的文字搜不了），
+        并记得**去掉里面的 Token / 口令 / 域名**。
+
+        Thanks for reporting. Paste the raw log text (not a screenshot) and redact secrets.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前请确认 / Before submitting
+      options:
+        - label: 我已读过 README「六、排查问题」，尤其是「Token 特权分离导致列表全空」与「数据库账号授权」两条
+          required: true
+        - label: 我用的是最新代码（main 分支或最新 Release），不是几个月前的快照
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象 / What happens
+      description: 你做了什么、看到了什么。若有报错，把原文贴全（含 HTTP 状态码）。
+      placeholder: |
+        例：在「虚拟机 → 创建虚拟机」里点提交后，页面提示 500，
+        后端日志（journalctl -u proxcenter -n 50）里是 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望的结果 / Expected
+      placeholder: 例：应该创建成功并在列表里出现
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 看到 ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 面板版本 / Panel version
+      description: 页面左下角/「关于」里的版本号，或 `git -C <仓库> rev-parse --short HEAD`
+      placeholder: 例如 v1.0.0 或 8811a84
+    validations:
+      required: true
+
+  - type: input
+    id: pve
+    attributes:
+      label: Proxmox VE 版本 / PVE version
+      description: 节点上执行 `pveversion`（面板「设置 → 环境自检」里也能看到）
+      placeholder: 例如 8.4.0 / 9.0.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 部署方式 / Deployment
+      options:
+        - sudo ./deploy.sh（systemd 服务）
+        - ./start-prod.sh（前台运行）
+        - 手动起后端 + 前端开发模式（npm run dev）
+        - 其他（在下面补充说明）
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器与版本 / Browser
+      description: 只涉及界面时才需要
+      placeholder: 例如 Chrome 130 / Safari 18
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / Logs
+      description: |
+        `journalctl -u proxcenter -n 100 --no-pager`（或 `tail -n 100 logs/panel.log`）。
+        容器里部署的话给 `docker logs`。**请删掉 Token、口令、Cookie、内网域名。**
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,9 @@
+# 允许开空白 issue：有人只是想问个用法问题，强迫他选「Bug / 功能」反而会逼出错误信息
+blank_issues_enabled: true
+contact_links:
+  - name: 安全问题 / 漏洞上报（请不要开公开 issue）
+    url: https://github.com/yjscloud/ProxCenter/security/policy
+    about: 走 GitHub 的私密漏洞上报，或按 SECURITY.md 里的方式私下联系
+  - name: 面板列表全空 / 连不上 PVE / 起不来（先看这里）
+    url: https://github.com/yjscloud/ProxCenter/blob/main/README.md#六排查问题
+    about: README「六、排查问题」覆盖了最常见的四类：Token 特权分离、数据库授权、端口占用、证书

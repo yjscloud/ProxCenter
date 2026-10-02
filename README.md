@@ -1,12 +1,43 @@
 # ProxCenter — Proxmox VE 8.x / 9.x 管理面板
 
-对接 **Proxmox VE 8.x / 9.x** 的 Web 管理系统。提供虚拟机与 **LXC 容器**的全生命周期管理、
-cloud-init 模板流水线、网络配置、监控大盘、快照备份、浏览器内控制台（VNC / 串口）
-以及多用户权限与操作审计。
+**简体中文 | [English](README.en.md)**
 
-- 后端：Python 3.13 + FastAPI + httpx（异步）
-- 前端：React 18 + TypeScript + Vite + TanStack Query + Recharts
-- 存储：MySQL 8（面板用户、审计日志、连接配置）
+[![License](https://img.shields.io/github/license/yjscloud/ProxCenter?color=blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/yjscloud/ProxCenter?sort=semver&color=success&label=release)](../../releases)
+[![CI](https://github.com/yjscloud/ProxCenter/actions/workflows/ci.yml/badge.svg)](https://github.com/yjscloud/ProxCenter/actions/workflows/ci.yml)
+[![Last commit](https://img.shields.io/github/last-commit/yjscloud/ProxCenter)](../../commits/main)
+[![Stars](https://img.shields.io/github/stars/yjscloud/ProxCenter?style=flat)](../../stargazers)
+![Python](https://img.shields.io/badge/python-3.11%2B-3776ab)
+![React](https://img.shields.io/badge/react-18-61dafb)
+
+对接 **Proxmox VE 8.x / 9.x** 的**自托管** Web 管理面板：虚拟机与 **LXC 容器**的全生命周期
+管理、cloud-init 模板流水线、网络与防火墙、监控大盘、快照与备份、浏览器内控制台（VNC /
+串口）、多用户权限与操作审计，另含 SSH 防暴力破解、端口与进程异常检测、安全基线加固。
+一条命令即可部署：
+
+```bash
+sudo ./deploy.sh      # 后端 + 前端 + 数据库 + systemd 服务，装完打印登录账号与口令
+```
+
+> **关键词**：Proxmox VE 管理面板 · PVE 面板 · Proxmox web panel · LXC 容器管理 ·
+> cloud-init 模板 · 自托管虚拟化管理平台 · Proxmox alternative UI · 支持 PVE 8 / PVE 9
+
+**技术栈**：Python 3.11+ / FastAPI / httpx（异步） · React 18 + TypeScript + Vite +
+TanStack Query + Recharts · MySQL 8（面板用户、审计日志、连接配置）
+
+## 目录
+
+- [在线演示](#在线演示) · [联系与反馈](#联系与反馈)
+- **一、[快速开始](#一快速开始)** —— [1 准备 API Token](#1-准备-proxmox-api-token) →
+  [2 授权](#2-授权) → [3 启动](#3-启动) → [4 生产部署](#4-生产部署) →
+  [5 开机自启](#5-开机自启与服务管理systemd)
+- **二、[功能](#二功能)** —— 虚拟机管理 · 批量操作 · 容器（LXC） · 模板（cloud-init
+  流水线） · 网络 · 防火墙 / 安全组 · SSH 登录安全 / 防暴力破解 · 安全基线检查与加固 ·
+  端口与进程异常检测 · 应急响应兜底 · 主机登录审计 · 监控 · 快照与备份 · 控制台 ·
+  用户与审计 · 下发配额 · 监控与集成的用户隔离 · 设置与环境自检
+- **三、[配置项](#三配置项)** · **四、[项目结构](#四项目结构)** · **五、[测试](#五测试)** ·
+  **六、[排查问题](#六排查问题)** · **七、[安全说明](#七安全说明)** ·
+  **八、[后续迭代计划](#八后续迭代计划)**
 
 ---
 
@@ -61,7 +92,7 @@ pveum user token add panel@pve panel --privsep 0
 
 `full-tokenid` 填到面板的 **Token ID**，`value` 填到 **Token Secret**。
 
-### 3. 授权
+### 2. 授权
 
 面板需要管理虚拟机的权限，按集群路径授予：
 
@@ -85,7 +116,7 @@ pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUs
 > PVE 账号密码**（`console_user` / `console_password`）。不填则控制台功能不可用，
 > 其余功能不受影响。
 
-### 4. 启动
+### 3. 启动
 
 ```bash
 # --- 后端 ---
@@ -120,7 +151,7 @@ npm run dev      # 开发模式，监听 5173，已配置 /api 代理到 8080
 **登录后请立刻做两件事**：① 在「设置 → Proxmox 连接配置」填入 host / Token ID / Token Secret；
 ② 在「用户管理」里改掉管理员密码。
 
-### 5. 生产部署
+### 4. 生产部署
 
 生产形态是**单端口同源**：FastAPI 同时提供 `/api`（含控制台的 WebSocket）
 与前端构建产物 `dist/`，因此不需要额外的静态服务器或反向代理。
@@ -128,7 +159,7 @@ npm run dev      # 开发模式，监听 5173，已配置 /api 代理到 8080
 #### 方式一：一键部署（推荐）
 
 ```bash
-git clone https://github.com/<你的用户名>/proxcenter.git
+git clone https://github.com/yjscloud/proxcenter.git
 cd proxcenter
 sudo ./deploy.sh
 ```
@@ -266,7 +297,7 @@ FORCE_HTTPS=true
 FORWARDED_ALLOW_IPS=127.0.0.1   # 不要放宽，否则公网可伪造 X-Forwarded-Proto 绕过
 ```
 
-### 6. 开机自启与服务管理（systemd）
+### 5. 开机自启与服务管理（systemd）
 
 交给 systemd 后，机器重启会自动拉起面板，进程异常退出也会自动重启 —— 这一点
 是 `nohup` 做不到的（那个进程一旦退出就不会再回来）。
@@ -810,7 +841,7 @@ retention/immutability、S3 Object Lock、或只读挂载。**只靠 PVE API 做
 |---|---|---|
 | `SECRET_KEY` | `change-me-...` | 签发登录 JWT，同时是库里密文（PVE Token、SMTP 密码等）的加密根。**留占位值或短于 32 位会直接拒绝启动**；生成随机值：`python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员账号 |
-| `ADMIN_PASSWORD` | 空 | 首次启动的管理员密码。**留空、短于 12 位或 `admin123` 之类弱口令会拒绝启动**（`./start-prod.sh` 首次生成 `.env` 时会自动填入随机口令并打印；`./deploy.sh` 默认直接生成一个随机强口令写入 `.env`，装完在结尾打印一次，`--reconfigure` 时才会当场问你要不要自己定） |
+| `ADMIN_PASSWORD` | 空 | 首次启动的管理员密码。**留空、短于 12 位或 `admin123` 之类弱口令会拒绝启动**（`./start-prod.sh` 首次生成 `.env` 时会自动填入随机口令并打印；`./deploy.sh` 遇到空/弱口令且库里还没有管理员时会当场要求重设，非交互模式则生成随机口令并在结尾显示一次） |
 | `FORCE_HTTPS` | `false` | 设为 `true` 后明文 HTTP 一律 `308` 跳到 `https://<Host>`，HTTPS 响应附 HSTS；仅本机回环（健康检查 / 运维脚本）豁免。TLS 由前面的 Nginx/Caddy 终结 |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | uvicorn 信任哪些来源的 `X-Forwarded-Proto`。**只填本机反代**：放宽成 `0.0.0.0` 等于让公网请求自称「我是 https」，从而绕过 `FORCE_HTTPS`。限流的来源 IP 也只信这里面的对端传来的 `X-Forwarded-For` |
 | `LOGIN_MAX_FAILURES` | `5` | 登录失败几次就锁定（账号 + 来源 IP 双计数） |

@@ -27,6 +27,19 @@
 #                     --db-name proxcenter_panel --db-user proxcenter --db-password 'xxx'
 #    ./deploy.sh --help
 # ============================================================================
+# 这个脚本用了 bash 专有语法（数组、$'\n'、local、read -s …）。Debian / Ubuntu 上
+# /bin/sh 是 dash，直接 `sh deploy.sh` 会在中途报一堆莫名其妙的语法错；而
+# RHEL 系的 sh 恰好是 bash，同一条命令却没事 —— 这种「换个发行版就炸」的坑要在
+# 第一行拦住：发现当前 shell 不是 bash 就用 bash 重新执行自己。
+if [ -z "${BASH_VERSION:-}" ]; then
+  if command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  fi
+  echo "[x] 本脚本需要 bash（当前 shell 不是 bash，且系统里找不到 bash）。" >&2
+  echo "    请改用： bash $0 $*" >&2
+  exit 2
+fi
+
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +55,11 @@ SKIP_FRONTEND=0
 USE_SYSTEMD=1
 INSTALL_DEPS=1        # 0 = --skip-deps：只检查系统依赖，不安装
 INSTALL_DB=1          # 0 = --no-install-db：本机没数据库也不代装（默认代装，做到零参数可部署）
+RESET_DB_PASSWORD=0   # 1 = --reset-db-password：把已存在账号的口令对齐成 .env 里的值
+ASSUME_YES=0          # 1 = --yes：不提问，全部用默认值（CI / 无人值守）
+RECONFIGURE=0         # 1 = --reconfigure：已有 .env 也重新提问一遍（SECRET_KEY 不动）
+INTERACTIVE=1         # 0 = 非交互（--yes，或没有可用的终端）
+ADMIN_PASSWORD_INPUT=""   # 交互里填的初始管理员口令；留空则随机生成
 DB_NAME="${DB_NAME:-}"
 DB_USER="${DB_USER:-}"
 DB_PASSWORD="${DB_PASSWORD:-}"
@@ -63,6 +81,11 @@ ProxCenter 一键部署
   --skip-deps             只检查系统依赖，不自动安装（离线 / 内网 / 想自己管依赖时用）
   --no-install-db         本机没有 MySQL/MariaDB 时也不代装（默认代装，见下）
   --install-db            兼容旧用法，等于默认行为（保留参数，不再需要显式指定）
+  --reset-db-password     把数据库账号的口令对齐成 backend/.env 里的值（账号被别的
+                          应用共用时别用；建号时不会改已存在账号的口令）
+  -y, --yes               不提问，全部用默认值（无人值守 / CI；口令随机生成）
+  --reconfigure           已有 backend/.env 也重新提问一遍：默认值取自现有配置，
+                          回车即保持不变（SECRET_KEY 与未填的口令都不会被改）
   --no-systemd            只准备虚拟环境 / 依赖 / .env / 前端产物，不装服务（无需 root）
   --db-host HOST          数据库地址（默认 127.0.0.1）
   --db-port PORT          数据库端口（默认 3306）
@@ -75,10 +98,20 @@ ProxCenter 一键部署
 环境变量同名可用：DB_NAME / DB_USER / DB_PASSWORD / DB_HOST / DB_PORT /
 MYSQL_ROOT_PASSWORD
 
+交互：
+  第一次部署时会把「端口 / 数据库名 / 账号 / 口令 / MySQL 管理员口令 / 初始管理员
+  口令 / 是否代装数据库」逐项问一遍：直接回车 = 用默认值，口令留空 = 随机生成。
+  所以「一路回车」就是全自动部署，想自己定口令就当场填。
+  重复执行不会再问（backend/.env 已存在就沿用，只覆盖命令行显式给的值）；
+  想在已有安装上重问一遍加 --reconfigure（默认值取自现有配置，回车即不变）。
+  非交互场景（--yes，或没有终端）不提问，全部用默认值。
+
 示例：
-  # 最常见的用法：什么都不用给 —— 缺系统依赖就装，本机没数据库就装 MariaDB，
-  # 库名 / 账号 / 口令自动生成并写进 backend/.env，然后建库授权、装服务、自检
+  # 最常见的用法：交互式一键部署
   sudo ./deploy.sh
+
+  # 无人值守：不提问，全部默认（缺依赖就装，缺库就装 MariaDB，口令随机生成）
+  sudo ./deploy.sh --yes
 
   # 数据库已经有人管（远程库 / 已有实例），只填面板要用的凭据
   sudo ./deploy.sh --db-host 10.0.0.9 --db-name proxcenter_panel \
@@ -104,6 +137,9 @@ while [ $# -gt 0 ]; do
     --skip-deps) INSTALL_DEPS=0; shift ;;
     --install-db) INSTALL_DB=1; shift ;;
     --no-install-db) INSTALL_DB=0; shift ;;
+    --reset-db-password) RESET_DB_PASSWORD=1; shift ;;
+    -y|--yes) ASSUME_YES=1; shift ;;
+    --reconfigure) RECONFIGURE=1; shift ;;
     --no-systemd) USE_SYSTEMD=0; shift ;;
     --db-host) DB_HOST="${2:-}"; shift 2 ;;
     --db-port) DB_PORT="${2:-}"; shift 2 ;;
@@ -126,7 +162,55 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# --- 交互提问 -----------------------------------------------------------------
+# 只在有终端时提问：--yes、或读不到 /dev/tty（cron / CI / 管道）时一律走默认值。
+# 提示写 stderr、输入读 /dev/tty —— 这样即使 stdout 被 tee 进日志，交互也照常。
+if [ "$ASSUME_YES" -eq 1 ] || [ ! -r /dev/tty ]; then
+  INTERACTIVE=0
+fi
+
+# 普通提问：显示默认值，直接回车即接受
+ask() {
+  local prompt="$1" default="$2" reply=""
+  [ "$INTERACTIVE" -eq 1 ] || { printf '%s' "$default"; return 0; }
+  printf '    %s [%s]: ' "$prompt" "$default" >&2
+  IFS= read -r reply < /dev/tty || reply=""
+  printf '%s' "${reply:-$default}"
+}
+
+# 口令提问：不回显，也不把已有值打到屏幕上（只写「回车保留」）
+ask_secret() {
+  local prompt="$1" default="$2" reply=""
+  [ "$INTERACTIVE" -eq 1 ] || { printf '%s' "$default"; return 0; }
+  if [ -n "$default" ]; then
+    printf '    %s [回车保留已设置的值]: ' "$prompt" >&2
+  else
+    printf '    %s: ' "$prompt" >&2
+  fi
+  IFS= read -r -s reply < /dev/tty || reply=""
+  printf '\n' >&2
+  printf '%s' "${reply:-$default}"
+}
+
+# 是/否提问：返回 0 = 是（回车取默认值）
+ask_yesno() {
+  local prompt="$1" default="${2:-y}" reply="" hint="Y/n"
+  [ "$default" = "y" ] || hint="y/N"
+  [ "$INTERACTIVE" -eq 1 ] || { [ "$default" = "y" ]; return $?; }
+  printf '    %s [%s]: ' "$prompt" "$hint" >&2
+  IFS= read -r reply < /dev/tty || reply=""
+  case "${reply:-$default}" in
+    [Yy]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # 从 backend/.env 读一个键（不存在则输出空串）
+#
+# 解析规则刻意与 python-dotenv（后端 pydantic-settings 用的就是它）保持一致：
+# 去掉值两侧空白、剥掉一层成对引号、未加引号时把「 #」之后当注释截掉。
+# 两边规则不一致的后果很隐蔽：脚本用完整值去建库、应用用截断值来连 ——
+# 命令全绿，装完服务才 Access denied。
 env_get() {
   [ -f "$ENV_FILE" ] || return 0
   "$VPY" - "$ENV_FILE" "$1" <<'PY'
@@ -134,9 +218,15 @@ import pathlib, sys
 path, key = sys.argv[1], sys.argv[2]
 for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
     line = line.strip()
-    if line.startswith(key + "="):
-        print(line.split("=", 1)[1].strip())
-        break
+    if not line or line.startswith("#") or not line.startswith(key + "="):
+        continue
+    value = line.split("=", 1)[1].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]          # 成对引号：原样取值，里面的 # 是内容
+    elif " #" in value:
+        value = value.split(" #", 1)[0].rstrip()   # 未加引号：空格+# 起是注释
+    print(value)
+    break
 PY
 }
 
@@ -423,17 +513,59 @@ step "[2/5] 准备后端配置"
 if [ ! -f "$ENV_FILE" ]; then
   cp "$ENV_EXAMPLE" "$ENV_FILE"
   info "已从 .env.example 生成 backend/.env"
-
-  # SECRET_KEY 与初始管理员口令必须是随机值：后端会拒绝占位 SECRET_KEY 与弱口令
-  # 启动，所以这一步不能省。SECRET_KEY 一旦确定就不要再改 —— 它是库里密文的加密根。
-  SECRET="$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(48))')"
-  ADMIN_PW="$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(16))')"
-  env_set SECRET_KEY "$SECRET"
-  env_set ADMIN_PASSWORD "$ADMIN_PW"
   FIRST_RUN=1
 else
   info "backend/.env 已存在，保留现有值（只覆盖命令行显式指定的项）"
   FIRST_RUN=0
+fi
+
+# --- 交互提问（只在这台机器第一次部署时问，重复执行不会再来一遍）---------------
+# 直接回车 = 用括号里的默认值；口令类留空 = 随机生成。所以「一路回车」就是全自动，
+# 想自己指定就当场填。非交互场景（--yes / 没有终端）一律用默认值，不提问。
+if [ "$FIRST_RUN" -eq 1 ] || [ "$RECONFIGURE" -eq 1 ]; then
+  # --reconfigure 时默认值取自现有 .env：一路回车就等于「什么都不改」，
+  # 尤其不会把已有口令换成新生成的（那会让应用连不上库）。
+  if [ "$RECONFIGURE" -eq 1 ]; then
+    PORT="${PORT:-$(env_get PORT)}"
+    DB_NAME="${DB_NAME:-$(env_get DB_NAME)}"
+    DB_USER="${DB_USER:-$(env_get DB_USER)}"
+    DB_PASSWORD="${DB_PASSWORD:-$(env_get DB_PASSWORD)}"
+    if [ "$INTERACTIVE" -eq 1 ]; then
+      echo
+      info "（--reconfigure）默认值取自现有 backend/.env，回车即保持不变；"
+      info "口令留空则沿用（不会被换成新生成的）。SECRET_KEY 不动。"
+    fi
+  elif [ "$INTERACTIVE" -eq 1 ]; then
+    echo
+    info "下面几项可以直接回车用默认值（口令留空 = 自动生成随机值）："
+  fi
+
+  PORT="$(ask "面板监听端口" "${PORT:-8080}")"
+  DB_NAME="$(ask "数据库名" "${DB_NAME:-proxcenter_panel}")"
+  DB_USER="$(ask "数据库账号" "${DB_USER:-proxcenter}")"
+  DB_PASSWORD="$(ask_secret "数据库口令（留空 = 随机生成）" "$DB_PASSWORD")"
+  MYSQL_ROOT_PASSWORD="$(ask_secret "MySQL 管理员口令（留空 = 试本机免密凭据；只用于建库授权）" "$MYSQL_ROOT_PASSWORD")"
+  if [ "$FIRST_RUN" -eq 1 ]; then
+    ADMIN_PASSWORD_INPUT="$(ask_secret "面板初始管理员口令（admin 用；留空 = 随机生成）" "")"
+  else
+    ADMIN_PASSWORD_INPUT="$(ask_secret "面板管理员口令（留空 = 不改）" "")"
+  fi
+  if ask_yesno "本机没有数据库时自动安装 MariaDB 并启动" "y"; then
+    INSTALL_DB=1
+  else
+    INSTALL_DB=0
+  fi
+fi
+
+# SECRET_KEY 与初始管理员口令必须是随机值：后端会拒绝占位 SECRET_KEY 与弱口令
+# 启动，所以这一步不能省。SECRET_KEY 一旦确定就不要再改 —— 它是库里密文的加密根，
+# 换了它，库里已存的 PVE Token / SMTP 口令就全解不开（所以重配置时绝不动它）。
+if [ "$FIRST_RUN" -eq 1 ]; then
+  env_set SECRET_KEY "$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(48))')"
+  env_set ADMIN_PASSWORD "${ADMIN_PASSWORD_INPUT:-$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(16))')}"
+elif [ -n "$ADMIN_PASSWORD_INPUT" ]; then
+  # 已有安装：只有明确填了新口令才改
+  env_set ADMIN_PASSWORD "$ADMIN_PASSWORD_INPUT"
 fi
 
 # 显式给出的值才写回
@@ -515,6 +647,17 @@ mysql_admin() {
   esac
 }
 
+# 连不上库 = 服务起不来。装服务前把话说明白，比等 systemd 反复重启强。
+# --no-systemd（只准备环境与依赖）时不拦：那种用法的目的可能只是装依赖。
+db_problem() {
+  if [ "$USE_SYSTEMD" -eq 0 ]; then
+    warn "$1"
+    warn "--no-systemd：继续执行，但这样生成的配置装成服务后起不来。"
+  else
+    die "$1"
+  fi
+}
+
 # 1) 客户端：建库脚本与自检都要用
 if ! need_cmd mysql; then
   ensure_pkg mysql-cli || warn "装 MySQL 客户端失败，稍后跳过自动建库"
@@ -557,6 +700,15 @@ if need_cmd mysql && db_listening "$DBH" "$DBP"; then
   ADMIN_MODE="$(find_mysql_admin || true)"
   if [ -n "$ADMIN_MODE" ]; then
     info "创建数据库 $DB_NAME_NOW 与账号 $DB_USER_NOW（管理员连接方式：$ADMIN_MODE）"
+    # CREATE USER IF NOT EXISTS 对**已存在**的账号不会改口令 —— 这是最容易踩的一步：
+    # .env 里的口令被重新生成过（例如删过 .env 再重跑），账号却还停在旧口令上，
+    # 于是命令全绿、应用启动时才报 Access denied。--reset-db-password 显式对齐。
+    RESET_SQL=""
+    if [ "$RESET_DB_PASSWORD" -eq 1 ]; then
+      info "（--reset-db-password）把 $DB_USER_NOW 的口令对齐成 $ENV_FILE 里的值"
+      RESET_SQL="ALTER USER '$DB_USER_NOW'@'%' IDENTIFIED BY '$DB_PASSWORD_SQL';
+ALTER USER '$DB_USER_NOW'@'localhost' IDENTIFIED BY '$DB_PASSWORD_SQL';"
+    fi
     # 口令走 MYSQL_PWD 而不是 --password：命令行参数会出现在 ps 里，
     # 也会触发 mysql 客户端的「口令不安全」告警。
     if mysql_admin "$ADMIN_MODE" <<SQL
@@ -565,6 +717,7 @@ CREATE USER IF NOT EXISTS '$DB_USER_NOW'@'%' IDENTIFIED BY '$DB_PASSWORD_SQL';
 CREATE USER IF NOT EXISTS '$DB_USER_NOW'@'localhost' IDENTIFIED BY '$DB_PASSWORD_SQL';
 GRANT ALL PRIVILEGES ON \`$DB_NAME_NOW\`.* TO '$DB_USER_NOW'@'%';
 GRANT ALL PRIVILEGES ON \`$DB_NAME_NOW\`.* TO '$DB_USER_NOW'@'localhost';
+$RESET_SQL
 FLUSH PRIVILEGES;
 SQL
     then
@@ -573,11 +726,18 @@ SQL
            -u "$DB_USER_NOW" "$DB_NAME_NOW" -e 'SELECT 1' >/dev/null 2>&1; then
         info "已用面板账号连库验证通过"
       else
-        # 刻意不做 ALTER USER 强行对齐口令：这个账号可能还被别的应用用着，
-        # 悄悄改掉它的口令等于把别人的服务弄挂 —— 只提示，由人来决定。
-        warn "建库授权完成，但用面板账号仍连不上 $DB_NAME_NOW。若该账号早已存在且口令
-    与本次生成的不同，请自行确认后对齐（会同时影响这个账号的其它用途）：
-      ALTER USER '$DB_USER_NOW'@'%' IDENTIFIED BY '<backend/.env 里的 DB_PASSWORD>';"
+        # 这里不能自动 ALTER：账号可能被别的应用共用，悄悄改口令等于把别人的服务
+        # 弄挂。但也不能只 warn —— 那样部署会「看起来成功」、装完服务才开始崩溃。
+        # 所以直接失败，并把两种成因与对策写清楚（含一键开关）。
+        db_problem "用面板账号连不上数据库：$DB_USER_NOW@$DBH:$DBP 库 $DB_NAME_NOW
+    （服务装上后会一直重启：Access denied for user）。两种成因与对策：
+      ① 账号早已存在且口令与 .env 里的不同 —— CREATE USER IF NOT EXISTS 不会改口令，
+         而 .env 的口令可能被重新生成过（删过 .env 再重跑）。该账号没被别的应用共用时：
+              sudo ./deploy.sh --reset-db-password
+      ② .env 里 DB_PASSWORD 的写法让解析截断了（值里有 # 空格 或引号时 dotenv 会截断）。
+         对比一下两边读到的长度：
+              awk -F= '/^DB_PASSWORD=/{print \"env 长度\", length(\$2)}' $ENV_FILE
+              cd $ROOT && ./.venv/bin/python -c \"import sys; sys.path.insert(0,'backend'); from app.config import settings; print('app 长度', len(settings.db_password))\""
       fi
     else
       warn "自动建库失败，请手工执行下面这段 SQL：
@@ -596,17 +756,6 @@ SQL
 else
   warn "数据库不可达（$DBH:$DBP）或没有 mysql 客户端，跳过自动建库"
 fi
-
-# 连不上库 = 服务起不来。装服务前把话说明白，比等 systemd 反复重启强。
-# --no-systemd（只准备环境与依赖）时不拦：那种用法的目的可能只是装依赖。
-db_problem() {
-  if [ "$USE_SYSTEMD" -eq 0 ]; then
-    warn "$1"
-    warn "--no-systemd：继续执行，但这样生成的配置装成服务后起不来。"
-  else
-    die "$1"
-  fi
-}
 
 if [ -z "$DB_NAME_NOW" ] || [ -z "$DB_USER_NOW" ]; then
   db_problem "backend/.env 里读不到数据库配置（DB_NAME / DB_USER）。正常情况下本脚本会

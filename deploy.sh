@@ -17,14 +17,16 @@
 #       不改 Nginx、不动防火墙、不碰 MySQL 的其它库。HTTPS 与反代见 README。
 #       唯一的例外在 [0/5] 步：**缺系统依赖时按发行版自动安装**（只装缺的那几个，
 #       装完立刻验证；不想让它动系统就加 --skip-deps 退回「只检查不安装」）。
+#    4. 不问：默认**全程不提问**，一条命令跑到底 —— 端口 / 库名 / 账号用默认值，
+#       SECRET_KEY 与各口令随机生成，装完把「面板地址 + 管理员口令 + 下一步」
+#       一次打印清楚。需要自己指定的走命令行参数（--port / --db-*），需要逐项
+#       确认的加 --reconfigure，两条路都不必让脚本停下等输入。
 #
 #  用法：
-#    sudo ./deploy.sh --db-name proxcenter_panel --db-user proxcenter \
-#                     --db-password '你的强口令'
+#    sudo ./deploy.sh                 # 全自动：默认值 + 随机口令，装完打印账号口令
+#    sudo ./deploy.sh --reconfigure   # 想自己定端口 / 库名 / 口令时用（逐项提问，回车即默认）
 #    sudo ./deploy.sh --port 9000 --service proxcenter --skip-frontend
-#    ./deploy.sh --no-systemd          # 只准备环境与依赖（无需 root）
-#    sudo ./deploy.sh --mysql-root-password 'root口令' --install-db \
-#                     --db-name proxcenter_panel --db-user proxcenter --db-password 'xxx'
+#    ./deploy.sh --no-systemd         # 只准备环境与依赖（无需 root）
 #    ./deploy.sh --help
 # ============================================================================
 # 这个脚本用了 bash 专有语法（数组、$'\n'、local、read -s …）。Debian / Ubuntu 上
@@ -56,9 +58,9 @@ USE_SYSTEMD=1
 INSTALL_DEPS=1        # 0 = --skip-deps：只检查系统依赖，不安装
 INSTALL_DB=1          # 0 = --no-install-db：本机没数据库也不代装（默认代装，做到零参数可部署）
 RESET_DB_PASSWORD=0   # 1 = --reset-db-password：把已存在账号的口令对齐成 .env 里的值
-ASSUME_YES=0          # 1 = --yes：不提问，全部用默认值（CI / 无人值守）
-RECONFIGURE=0         # 1 = --reconfigure：已有 .env 也重新提问一遍（SECRET_KEY 不动）
-INTERACTIVE=1         # 0 = 非交互（--yes，或没有可用的终端）
+ASSUME_YES=0          # 1 = --yes：不提问（现在这就是默认行为，保留参数兼容旧脚本）
+RECONFIGURE=0         # 1 = --reconfigure：逐项提问一遍（默认值取自现有 .env，SECRET_KEY 不动）
+INTERACTIVE=0         # 只有 --reconfigure 且有终端时才置 1，见下面的判定
 ADMIN_PASSWORD_INPUT=""   # 交互里填的初始管理员口令；留空则随机生成
 DB_NAME="${DB_NAME:-}"
 DB_USER="${DB_USER:-}"
@@ -83,15 +85,16 @@ ProxCenter 一键部署
   --install-db            兼容旧用法，等于默认行为（保留参数，不再需要显式指定）
   --reset-db-password     把数据库账号的口令对齐成 backend/.env 里的值（账号被别的
                           应用共用时别用；建号时不会改已存在账号的口令）
-  -y, --yes               不提问，全部用默认值（无人值守 / CI；口令随机生成）
-  --reconfigure           已有 backend/.env 也重新提问一遍：默认值取自现有配置，
-                          回车即保持不变（SECRET_KEY 与未填的口令都不会被改）
+  -y, --yes               不提问，全部用默认值（**这就是默认行为**，保留参数以便旧脚本）
+  --reconfigure           逐项提问一遍（端口 / 库名 / 账号 / 口令 / 是否代装数据库）：
+                          默认值取自现有配置，回车即保持不变（SECRET_KEY 不动，
+                          口令留空 = 沿用，不会被换成新生成的）
   --no-systemd            只准备虚拟环境 / 依赖 / .env / 前端产物，不装服务（无需 root）
   --db-host HOST          数据库地址（默认 127.0.0.1）
   --db-port PORT          数据库端口（默认 3306）
-  --db-name NAME          面板数据库名（必填，除非 backend/.env 里已经有）
-  --db-user USER          面板数据库账号
-  --db-password PASS      面板数据库口令
+  --db-name NAME          面板数据库名（默认 proxcenter_panel）
+  --db-user USER          面板数据库账号（默认 proxcenter）
+  --db-password PASS      面板数据库口令（默认随机生成）
   --mysql-root-password P 仅用于自动建库建号的 MySQL 管理员口令（选填）
   -h, --help              显示本帮助
 
@@ -99,21 +102,25 @@ ProxCenter 一键部署
 MYSQL_ROOT_PASSWORD
 
 交互：
-  第一次部署时会把「端口 / 数据库名 / 账号 / 口令 / MySQL 管理员口令 / 初始管理员
-  口令 / 是否代装数据库」逐项问一遍：直接回车 = 用默认值，口令留空 = 随机生成。
-  另外，若 backend/.env 里的 ADMIN_PASSWORD 为空或过弱（后端对「首次建号口令」有
-  至少 12 位、且不能是常见弱口令的硬性要求，不满足会拒绝启动），脚本会当场要求
-  重设 —— 库里已经建过管理员的部署不会被打扰（改它也不影响现有登录口令）。
-  所以「一路回车」就是全自动部署，想自己定口令就当场填。
-  重复执行不会再问（backend/.env 已存在就沿用，只覆盖命令行显式给的值）；
-  想在已有安装上重问一遍加 --reconfigure（默认值取自现有配置，回车即不变）。
-  非交互场景（--yes，或没有终端）不提问，全部用默认值。
+  **默认不提问。** sudo ./deploy.sh 会一条命令跑到底：端口用 8080、库名用
+  proxcenter_panel、账号用 proxcenter，SECRET_KEY / 数据库口令 / 管理员口令全部
+  随机生成（后端对「首次建号口令」有「至少 12 位、且不能是常见弱口令」的硬性要求，
+  不满足会拒绝启动，所以这里必须给一个随机强口令）。
+  装完最后一屏会把面板地址、管理员账号与初始口令打印出来 —— 口令只显示这一次，
+  请登录后立即在「个人中心 → 修改密码」里改掉。
+  要自己指定参数：加 --port / --db-* 等（仍然不提问）；
+  要逐项确认：加 --reconfigure（默认值取自现有 backend/.env，回车即保持不变）。
+  重复执行只覆盖命令行显式给的值，不会动已有配置（backend/.env 已存在就沿用）。
+  没有终端（cron / CI / 管道）时不提问，全部用默认值。
 
 示例：
-  # 最常见的用法：交互式一键部署
+  # 最常见的用法：全自动一键部署（不提问；缺依赖就装，缺库就装 MariaDB，口令随机）
   sudo ./deploy.sh
 
-  # 无人值守：不提问，全部默认（缺依赖就装，缺库就装 MariaDB，口令随机生成）
+  # 想自己定端口 / 库名 / 口令：逐项提问，回车即用默认值
+  sudo ./deploy.sh --reconfigure
+
+  # --yes 与默认行为等价（保留参数，旧脚本不用改）
   sudo ./deploy.sh --yes
 
   # 数据库已经有人管（远程库 / 已有实例），只填面板要用的凭据
@@ -166,9 +173,15 @@ need_cmd() {
 }
 
 # --- 交互提问 -----------------------------------------------------------------
-# 只在有终端时提问：--yes、或读不到 /dev/tty（cron / CI / 管道）时一律走默认值。
+# 默认**不提问**（见文件头的原则 4）：一条命令跑到底，装完把账号口令打印出来。
+# 只有显式 --reconfigure 才逐项提问，且必须有终端 —— 加 -y 或读不到 /dev/tty
+# （cron / CI / 管道）时仍旧走默认值，脚本永远不会卡在等输入上。
+# 注意方向：默认值是 0，这里要**显式打开**（早先默认是开、判定只负责关，改默认值
+# 时很容易漏掉另一半 —— 那样 --reconfigure 会变成空操作）。
 # 提示写 stderr、输入读 /dev/tty —— 这样即使 stdout 被 tee 进日志，交互也照常。
-if [ "$ASSUME_YES" -eq 1 ] || [ ! -r /dev/tty ]; then
+if [ "$RECONFIGURE" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ] && [ -r /dev/tty ]; then
+  INTERACTIVE=1
+else
   INTERACTIVE=0
 fi
 
@@ -532,9 +545,10 @@ else
   FIRST_RUN=0
 fi
 
-# --- 交互提问（只在这台机器第一次部署时问，重复执行不会再来一遍）---------------
-# 直接回车 = 用括号里的默认值；口令类留空 = 随机生成。所以「一路回车」就是全自动，
-# 想自己指定就当场填。非交互场景（--yes / 没有终端）一律用默认值，不提问。
+# --- 逐项确认（只有 --reconfigure 才会真的提问）--------------------------------
+# 不提问时这几个 ask 直接返回默认值：端口 8080 / 库名 proxcenter_panel / 账号
+# proxcenter，口令留空则由下一段用随机值补上。所以自动化场景里这一段等价于
+# 「全部默认」，不会停下来等输入。
 if [ "$FIRST_RUN" -eq 1 ] || [ "$RECONFIGURE" -eq 1 ]; then
   # --reconfigure 时默认值取自现有 .env：一路回车就等于「什么都不改」，
   # 尤其不会把已有口令换成新生成的（那会让应用连不上库）。
@@ -834,17 +848,23 @@ elif admin_still_needs_creating; then
   while [ "$tries" -lt 3 ]; do
     tries=$((tries + 1))
     reply=""
+    generated=0
     if [ "$INTERACTIVE" -eq 1 ]; then
       reply="$(ask_secret "面板管理员（admin）口令（至少 12 位；留空 = 随机生成）" "")"
     fi
     if [ -z "$reply" ]; then
       reply="$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(16))')"
       ADMIN_PW_CHANGED=1
+      generated=1
     fi
     if admin_pw_ok "$reply"; then
       env_set ADMIN_PASSWORD "$reply"
       admin_fixed=1
-      info "已写入 backend/.env 的 ADMIN_PASSWORD"
+      if [ "$generated" -eq 1 ]; then
+        info "已自动生成面板管理员（admin）的初始口令（装完在结尾打印一次）"
+      else
+        info "已写入 backend/.env 的 ADMIN_PASSWORD"
+      fi
       break
     fi
     warn "太短或太常见，请再试一次（至少 12 位）"
@@ -1034,25 +1054,38 @@ fi
 # ---------------------------------------------------------------------------
 # 完成
 # ---------------------------------------------------------------------------
+# 面板地址尽量写成「能直接点开」的样子：这一屏就是给用户抄的，留个 <本机IP>
+# 让他自己替换，等于把最后一步又推回给他。取不到就退回占位符（不猜、不硬编）。
+LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [ -z "$LAN_IP" ]; then
+  LAN_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+fi
+[ -n "$LAN_IP" ] || LAN_IP="<本机IP>"
+ADMIN_USERNAME_NOW="$(env_get ADMIN_USERNAME)"
+ADMIN_USERNAME_NOW="${ADMIN_USERNAME_NOW:-admin}"
+
 echo
 echo "============================================================"
 echo " 部署完成"
-echo "   面板地址 : http://<本机IP>:${PORT_NOW}"
-echo "   API 文档 : http://<本机IP>:${PORT_NOW}/api/docs"
+echo "   面板地址 : http://${LAN_IP}:${PORT_NOW}"
+echo "   登录账号 : ${ADMIN_USERNAME_NOW}"
+echo "   API 文档 : http://${LAN_IP}:${PORT_NOW}/api/docs"
 echo "   数据库   : ${DB_NAME_NOW:-?} @ ${DBH:-?}:${DBP:-?}（账号 ${DB_USER_NOW:-?}）"
 echo "   配置文件 : $ENV_FILE  ← 数据库口令在里面（自动生成，不回显）"
 echo "   服务管理 : systemctl {status|restart|stop} $SERVICE"
 echo "   日志     : journalctl -u $SERVICE -f   或   tail -f $ROOT/logs/panel.log"
 if [ "${FIRST_RUN:-0}" -eq 1 ] || [ "${ADMIN_PW_CHANGED:-0}" -eq 1 ]; then
   echo
-  echo "  管理员账号 ： admin"
-  echo "  管理员口令 ： $(env_get ADMIN_PASSWORD)"
-  echo "  ↑ 只显示这一次。库里若还没有管理员，这就是首次登录用的口令，请立即登录后改掉；"
-  echo "    已建过号的部署，本次只改了 backend/.env，现有登录口令不变。"
+  echo "   ★ 初始管理员口令（只显示这一次）："
+  echo "       $(env_get ADMIN_PASSWORD)"
+  echo "     请立即登录后改掉：右上角用户名 →「个人中心」→ 修改密码。"
+  echo "     （管理员也可以去「设置 → 用户管理」给自己重置密码。）"
+  echo "     库里已有管理员时，本次只改了 backend/.env，现有登录口令不变。"
 fi
 echo
-echo " 下一步（公网访问必做）："
-echo "   1) 按 README「用 Nginx 上 HTTPS」配好反代与证书；"
-echo "   2) 在 backend/.env 里设 FORCE_HTTPS=true 后 systemctl restart $SERVICE；"
-echo "   3) 登录后在「设置 → Proxmox 连接配置」填入 PVE 地址与 API Token。"
+echo " 下一步："
+echo "   1) 用上面的账号登录，先改掉初始口令；"
+echo "   2) 在「设置 → Proxmox 连接配置」填入 PVE 地址与 API Token；"
+echo "   3) 公网访问：按 README「用 Nginx 上 HTTPS」配好反代与证书，再在"
+echo "      backend/.env 里设 FORCE_HTTPS=true 并 systemctl restart $SERVICE。"
 echo "============================================================"

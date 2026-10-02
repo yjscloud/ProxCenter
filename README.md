@@ -130,11 +130,26 @@ npm run dev      # 开发模式，监听 5173，已配置 /api 代理到 8080
 ```bash
 git clone https://github.com/<你的用户名>/proxcenter.git
 cd proxcenter
-sudo ./deploy.sh --mysql-root-password '<MySQL root 口令>' \
+sudo ./deploy.sh
+```
+
+**一条命令、全程不提问。** 端口用 `8080`、库名用 `proxcenter_panel`、账号用
+`proxcenter`，`SECRET_KEY` / 数据库口令 / 初始管理员口令全部随机生成；缺系统依赖
+按发行版自动装，本机没有数据库就装一个 MariaDB。装完最后一屏会把**面板地址与初始
+管理员口令打印一次** —— 口令只显示这一次，请登录后立即在「个人中心 → 修改密码」
+里改掉（管理员也可以走「设置 → 用户管理」给自己重置密码）。
+
+要自己指定参数就照常传，仍然不会提问：
+
+```bash
+sudo ./deploy.sh --port 9000 --mysql-root-password '<MySQL root 口令>' \
                  --db-name proxcenter_panel \
                  --db-user proxcenter \
                  --db-password '<面板库口令>'
 ```
+
+想逐项确认（端口 / 库名 / 账号 / 口令 / 是否代装数据库，回车即用默认值）加
+`--reconfigure`；`--yes` 与默认行为等价，保留是为了兼容旧脚本。
 
 `deploy.sh` 依次完成下列事情，**幂等** —— 重复执行不会破坏已有配置：
 
@@ -142,15 +157,16 @@ sudo ./deploy.sh --mysql-root-password '<MySQL root 口令>' \
 |---|---|
 | 1 | 检查 Python ≥ 3.11 / Node.js / systemd，创建 `.venv` 并安装后端依赖 |
 | 2 | 首次运行时从 `.env.example` 生成 `backend/.env`，**随机生成 `SECRET_KEY` 与初始管理员口令**（在结尾打印一次） |
-| 3 | 建库建号（给了 `--mysql-root-password` 时）、把 `DB_*` 写回 `.env`，并**用面板账号实连一次**做验证 |
+| 3 | 建库建号（管理员凭据按「`--mysql-root-password` → 本机免密 root → `debian-sys-maint` → `~/.my.cnf`」依次试）、把 `DB_*` 写回 `.env`，并**用面板账号实连一次**做验证 |
 | 4 | `npm install` + `npm run build` 产出 `dist/`（机器上没有 Node 时用 `--skip-frontend` 复用已有产物） |
-| 5 | 生成 `/etc/systemd/system/proxcenter.service`、`enable --now`，最后请求 `/api/health` 自检并打印面板地址 |
+| 5 | 生成 `/etc/systemd/system/proxcenter.service`、`enable --now`，最后请求 `/api/health` 自检并打印面板地址与账号口令 |
 
 常用参数：
 
 | 参数 | 说明 |
 |---|---|
 | `--port 9000` | 换监听端口（同时写回 `.env`） |
+| `--reconfigure` | 逐项提问一遍（默认值取自现有 `.env`，回车即保持不变） |
 | `--service pc-panel` | 换 systemd 服务名（同机多实例时用） |
 | `--user deploy` | 服务运行用户（默认 `root`；用非 root 时要保证该用户对仓库目录与 `logs/` 可写） |
 | `--skip-frontend` | 跳过构建，复用现有 `dist/`（服务器上没有 Node.js） |
@@ -794,7 +810,7 @@ retention/immutability、S3 Object Lock、或只读挂载。**只靠 PVE API 做
 |---|---|---|
 | `SECRET_KEY` | `change-me-...` | 签发登录 JWT，同时是库里密文（PVE Token、SMTP 密码等）的加密根。**留占位值或短于 32 位会直接拒绝启动**；生成随机值：`python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员账号 |
-| `ADMIN_PASSWORD` | 空 | 首次启动的管理员密码。**留空、短于 12 位或 `admin123` 之类弱口令会拒绝启动**（`./start-prod.sh` 首次生成 `.env` 时会自动填入随机口令并打印；`./deploy.sh` 遇到空/弱口令且库里还没有管理员时会当场要求重设，非交互模式则生成随机口令并在结尾显示一次） |
+| `ADMIN_PASSWORD` | 空 | 首次启动的管理员密码。**留空、短于 12 位或 `admin123` 之类弱口令会拒绝启动**（`./start-prod.sh` 首次生成 `.env` 时会自动填入随机口令并打印；`./deploy.sh` 默认直接生成一个随机强口令写入 `.env`，装完在结尾打印一次，`--reconfigure` 时才会当场问你要不要自己定） |
 | `FORCE_HTTPS` | `false` | 设为 `true` 后明文 HTTP 一律 `308` 跳到 `https://<Host>`，HTTPS 响应附 HSTS；仅本机回环（健康检查 / 运维脚本）豁免。TLS 由前面的 Nginx/Caddy 终结 |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | uvicorn 信任哪些来源的 `X-Forwarded-Proto`。**只填本机反代**：放宽成 `0.0.0.0` 等于让公网请求自称「我是 https」，从而绕过 `FORCE_HTTPS`。限流的来源 IP 也只信这里面的对端传来的 `X-Forwarded-For` |
 | `LOGIN_MAX_FAILURES` | `5` | 登录失败几次就锁定（账号 + 来源 IP 双计数） |

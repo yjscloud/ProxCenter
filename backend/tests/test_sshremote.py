@@ -21,7 +21,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
 from app import sshguard, sshremote  # noqa: E402
-from test_api_routes import api, auth_headers  # noqa: E402,F401
+from test_api_routes import api, auth_headers, user_with_permissions  # noqa: E402,F401
 
 NOW = time.time()
 
@@ -294,16 +294,8 @@ class TestFleetApi:
         assert "不合法" in bad.json()["detail"]
 
     def test_viewer_cannot_manage_hosts(self, api) -> None:
-        admin = auth_headers(api)
-        api.post(
-            "/api/users",
-            headers=admin,
-            json={"username": "sshview2", "password": "Unit-Test-Pa55word", "role": "viewer"},
-        )
-        login = api.post(
-            "/api/auth/login", json={"username": "sshview2", "password": "Unit-Test-Pa55word"}
-        )
-        viewer = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        # 受管主机列表属于主机级数据，默认只给管理员；用自定义角色授予「读」
+        viewer = user_with_permissions(api, ["ssh.view"], "sshview2")
         assert api.get("/api/ssh/hosts", headers=viewer).status_code == 200
         assert (
             api.post(

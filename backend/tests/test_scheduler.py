@@ -52,6 +52,32 @@ def _run(coro):
     return asyncio.run(_shutdown_pool(coro))
 
 
+@pytest.fixture(autouse=True)
+def _clean_runtime():
+    """把作业**运行态**归零：它是模块级全局，会在用例之间串味。
+
+    ``scheduler._RUNTIME`` 活在整个进程里，而上面的用例会故意让作业抛异常
+    （``last_status='error'``）。不清理的话，后面那条 ``test_overview_reports_counts``
+    看到的 ``failing=2`` 是前一条用例留下的痕迹，不是它自己的结论。
+
+    只清「跑过几次 / 最近一次结果」这类运行态；间隔与启停由 ``load_state()``
+    从库里恢复（conftest 每个用例都清库，于是都回到默认值）。
+    """
+    for state in scheduler._RUNTIME.values():
+        state.running = False
+        state.runs = 0
+        state.failures = 0
+        state.skipped = 0
+        state.last_status = "never"
+        state.last_start = 0.0
+        state.last_end = 0.0
+        state.last_duration_ms = 0.0
+        state.last_error = ""
+        state.last_summary = ""
+        state.last_manual = False
+    yield
+
+
 @pytest.fixture()
 def db(clean_mysql_db):
     """只建表、**不启动 app**，供模块级用例使用。

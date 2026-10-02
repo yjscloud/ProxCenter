@@ -102,6 +102,38 @@ def auth_headers(client: TestClient) -> Dict[str, str]:
     return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
 
+def user_with_permissions(
+    api: TestClient, permissions: List[str], username: str, password: str = "Unit-Test-Pa55word"
+) -> Dict[str, str]:
+    """建一个「只带 `permissions` 这几项权限」的用户并登录，返回它的 Authorization 头。
+
+    **为什么不能直接拿内置的 viewer**：面板把 `ssh.view` / `baseline.view` /
+    `ports.view` 这类**主机级**数据默认只给管理员（`ssh_hosts` 表没有「这台主机归谁」
+    这个维度，发给普通用户等于把宿主机信息公开）。所以「普通角色能看但不能改」
+    这类用例，得先由管理员在**自定义角色**里把读权限授予它 —— 这也正是产品里的
+    实际用法（见 `app/security.py` 中 ROLE_PERMISSIONS 的注释）。
+    """
+    admin = auth_headers(api)
+    name = f"{username}-readonly"
+    role = api.post(
+        "/api/roles",
+        headers=admin,
+        json={"id": name, "name": name, "permissions": list(permissions)},
+    )
+    assert role.status_code in (200, 201), role.text
+    created = api.post(
+        "/api/users",
+        headers=admin,
+        json={"username": username, "password": password, "role": name},
+    )
+    assert created.status_code in (200, 201), created.text
+    login = api.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
 # --------------------------------------------------------------- auth basics
 class TestAuthFlow:
     def test_login_returns_token_and_user(self, api) -> None:
@@ -153,6 +185,9 @@ class TestLoginCaptcha:
 
         # 先拿管理员 token：开启验证码后 auth_headers 的裸登录会被拦
         admin = auth_headers(api)
+        # 默认验证方式是滑块（它不返回任何图片），这条守的是图形码那一路，
+        # 所以先显式切到 image —— 不切的话 ch 里根本没有 image 字段
+        set_captcha_mode(api, "image")
         settings.login_captcha = True
         try:
             # 没带验证码 → 拦在密码校验之前
@@ -207,6 +242,22 @@ class TestLoginCaptcha:
 
 
 # ------------------------------------------- 登录验证方式（关闭 / 图形 / 滑块）
+def set_captcha_mode(api, mode: str) -> None:
+    """把验证方式写进 settings KV（就是 /api/config/login-captcha 那一档）。
+
+    刻意做成模块级函数：登录验证的**默认方式是滑块**（不返回任何图片素材），
+    所以凡是断言「拿到一张图」的用例，都必须先显式切到 image —— 否则在默认
+    模式下取不到 image 字段。改成滑块之后在这里踩过一次，留个函数免得再踩。
+    """
+    resp = api.put(
+        "/api/config/login-captcha",
+        json={"mode": mode},
+        headers=auth_headers(api),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["mode"] == mode
+
+
 class TestLoginCaptchaMode:
     """三档验证方式与滑块拼图。
 
@@ -216,13 +267,7 @@ class TestLoginCaptchaMode:
 
     @staticmethod
     def _set_mode(api, mode: str) -> None:
-        resp = api.put(
-            "/api/config/login-captcha",
-            json={"mode": mode},
-            headers=auth_headers(api),
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["mode"] == mode
+        set_captcha_mode(api, mode)
 
     def test_default_follows_env_flag(self, api) -> None:
         """KV 里没记录时回落到 LOGIN_CAPTCHA；conftest 把它关了 → off。
@@ -284,10 +329,14 @@ class TestLoginCaptchaMode:
         ch = api.get("/api/auth/captcha").json()
         assert ch["required"] is True
         assert ch["mode"] == "slider"
-        assert ch["background"].startswith("data:image/png;base64,")
-        assert ch["piece"].startswith("data:image/png;base64,")
-        # 拼图块必须完整落在画布内，否则前端拖到位也盖不住缺口
-        assert 0 <= ch["piece_y"] <= ch["height"] - ch["piece_size"]
+        # 滑块没有拼图也没有图片素材：只给几何量与 id，前端据此算可拖动范围。
+        # （早先这里是 background / piece / piece_size 那套拼图字段，改版后没有了）
+        assert ch["width"] > 0
+        assert 0 < ch["handle_size"] < ch["width"]
+        assert ch["tolerance"] >= 0
+        assert not any(
+            isinstance(v, str) and v.startswith("data:image") for v in ch.values()
+        )
         # 目标位置不返回给前端 —— 它只留在服务端内存里
         assert "x" not in ch and "target" not in ch
 

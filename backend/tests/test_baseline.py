@@ -26,7 +26,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 from app import baseline, sshremote  # noqa: E402
 from app.config import settings  # noqa: E402
 from conftest import connect  # noqa: E402
-from test_api_routes import api, auth_headers  # noqa: E402,F401
+from test_api_routes import api, auth_headers, user_with_permissions  # noqa: E402,F401
 
 STRONG = "Unit-Test-Pa55word"
 
@@ -39,6 +39,29 @@ def _audit_actions() -> List[str]:
             return [row[0] for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def _ensure_managed_host(api, host_id: str, address: str = "10.0.0.30") -> str:
+    """建一台受管主机，返回它的 id。
+
+    ``/api/baseline/fix`` 会用 ``hostscope.assert_host_access`` 校验 host_id
+    **真的存在**（host_id 在请求体里，路由依赖取不到，只能在函数里查）。所以用例
+    里不能凭空写一个 id —— 早先这里直接写 ``remote-1`` 是 404「主机不存在」。
+    """
+    resp = api.post(
+        "/api/ssh/hosts",
+        headers=auth_headers(api),
+        json={
+            "id": host_id,
+            "name": host_id,
+            "host": address,
+            "username": "root",
+            "auth_type": "password",
+            "secret": "x",
+        },
+    )
+    assert resp.status_code in (200, 201), resp.text
+    return str(resp.json().get("id") or host_id)
 
 
 def _mk_check(
@@ -791,10 +814,11 @@ class TestApi:
             return {"ok": True, "detail": "stub", "path": "/tmp/x"}
 
         monkeypatch.setattr(baseline, "apply_fix", _fake)
+        host_id = _ensure_managed_host(api, "remote-1")
         resp = api.post(
             "/api/baseline/fix",
             headers=auth_headers(api),
-            json={"key": "time_sync", "host_id": "remote-1"},
+            json={"key": "time_sync", "host_id": host_id},
         )
         assert resp.status_code == 200, resp.text
         assert seen == {"key": "time_sync", "host_id": "remote-1"}
@@ -823,34 +847,33 @@ class TestApi:
             return {"applied": [], "fixed": 0, "failed": 0}
 
         monkeypatch.setattr(baseline, "apply_fixes", _fake)
+        host_id = _ensure_managed_host(api, "remote-1")
         resp = api.post(
             "/api/baseline/fix-all",
             headers=auth_headers(api),
-            json={"host_id": "remote-1"},
+            json={"host_id": host_id},
         )
         assert resp.status_code == 200, resp.text
         assert called == {"keys": None, "host_id": "remote-1"}
         assert "baseline.fix_all" in _audit_actions()
 
-    def test_viewer_can_view_but_not_fix(self, api, monkeypatch) -> None:
-        admin = auth_headers(api)
-        api.post(
-            "/api/users",
-            headers=admin,
-            json={"username": "baviewer", "password": STRONG, "role": "viewer"},
-        )
-        login = api.post(
-            "/api/auth/login", json={"username": "baviewer", "password": STRONG}
-        )
-        assert login.status_code == 200, login.text
-        viewer = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    def test_non_admin_cannot_view_panel_host_report(self, api, monkeypatch) -> None:
+        """基线报告默认取面板本机，普通用户拿不到（授权也放不开）。
+
+        ``hostscope.assert_local_access`` 会把本机数据固定留给管理员，提示也写明了
+        「普通用户只能查看自己添加的受管主机」。给不给 ``baseline.view`` 都一样：
+        那把钥匙开的是受管主机那扇门。
+        """
+        viewer = user_with_permissions(api, ["baseline.view"], "baviewer", STRONG)
 
         async def _fake() -> Dict[str, Any]:
             return _stub_report()
 
         monkeypatch.setattr(baseline, "collect", _fake)
         report_resp = api.get("/api/baseline/report", headers=viewer)
-        assert report_resp.status_code == 200, report_resp.text
+        assert report_resp.status_code == 403, report_resp.text
+        # 本机数据不是「看不了」，而是「不该看」：提示要能说清这一点
+        assert "仅管理员" in report_resp.json()["detail"]
         assert (
             api.post(
                 "/api/baseline/fix", headers=viewer, json={"key": "time_sync"}

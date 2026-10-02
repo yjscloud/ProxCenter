@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,7 +19,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
 from app import hostaudit, store  # noqa: E402
-from test_api_routes import api, auth_headers  # noqa: E402,F401
+from test_api_routes import api, auth_headers, user_with_permissions  # noqa: E402,F401
 
 SUCCESS_LINE = (
     "root     pts/6        172.16.149.5     Fri Sep 25 07:24:58 2026   still logged in"
@@ -147,6 +148,10 @@ class TestParseSudo:
 
 class TestHostAuditApi:
     def _stub(self, monkeypatch, logins=("success",), sudo=None) -> None:
+        # 时间戳必须是「现在附近」：汇入只回溯 IMPORT_LOOKBACK_DAYS（7 天），
+        # 写死一个过去的常量会让用例在某天突然变成「一条都没导进来」—— 踩过一次。
+        now = time.time()
+
         async def fake_logins(host_id: str, kind: str = "success", limit: int = 500):
             entries = [
                 {
@@ -154,7 +159,7 @@ class TestHostAuditApi:
                     "user": "root",
                     "tty": "pts/0",
                     "ip": "172.16.149.3" if kind == "success" else "9.9.9.9",
-                    "start": 1_790_300_000,
+                    "start": now - 600,
                     "end": None,
                     "duration": "",
                     "state": "still logged in",
@@ -173,7 +178,7 @@ class TestHostAuditApi:
                     {
                         "kind": "sudo",
                         "success": True,
-                        "ts": 1_790_300_100,
+                        "ts": now - 300,
                         "user": "ops",
                         "target": "root",
                         "tty": "pts/1",
@@ -230,18 +235,14 @@ class TestHostAuditApi:
         local = next(item for item in cursors if item["host_id"] == "local")
         assert local["last_ts"] > 0
 
-    def test_viewer_can_read_but_not_import(self, api, monkeypatch) -> None:
-        admin = auth_headers(api)
-        api.post(
-            "/api/users",
-            headers=admin,
-            json={"username": "auditview", "password": "Unit-Test-Pa55word", "role": "viewer"},
-        )
-        login = api.post(
-            "/api/auth/login", json={"username": "auditview", "password": "Unit-Test-Pa55word"}
-        )
-        viewer = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        assert api.get("/api/host-audit/logins", headers=viewer).status_code == 200
+    def test_non_admin_cannot_read_panel_host_audit(self, api, monkeypatch) -> None:
+        """登录审计默认取的是面板本机，普通用户拿不到。
+
+        与 SSH 概览同理（``hostscope`` 的本地数据恒为管理员专属）：默认不带
+        ``host_id`` 就是本机，即便被授予 ``ssh.view`` 也是 403。导入同理。
+        """
+        viewer = user_with_permissions(api, ["ssh.view"], "auditview")
+        assert api.get("/api/host-audit/logins", headers=viewer).status_code == 403
         assert api.post("/api/host-audit/import", headers=viewer).status_code == 403
 
     def test_vm_view_matches_source_ip(self, api, monkeypatch) -> None:
@@ -254,7 +255,12 @@ class TestHostAuditApi:
         from app import alerting
 
         monkeypatch.setattr(alerting, "resolve_vm_ip", fake_ip)
-        data = api.get("/api/host-audit/vm/pve1/100", headers=auth_headers(api)).json()
+        headers = auth_headers(api)
+        # VM 视角读的是**已汇入面板审计**的记录，不是实时采集：先把这台主机的
+        # 日志导进来，否则这条用例永远拿到 0 条
+        imp = api.post("/api/host-audit/import?host_id=local", headers=headers)
+        assert imp.status_code == 200, imp.text
+        data = api.get("/api/host-audit/vm/pve1/100", headers=headers).json()
         assert data["ip"] == "172.16.149.3"
         assert len(data["entries"]) == 1
         # 命中记录的主机标签取自 host_rows()，不是采集桩里写死的名字

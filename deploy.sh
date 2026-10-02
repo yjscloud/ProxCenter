@@ -101,6 +101,9 @@ MYSQL_ROOT_PASSWORD
 交互：
   第一次部署时会把「端口 / 数据库名 / 账号 / 口令 / MySQL 管理员口令 / 初始管理员
   口令 / 是否代装数据库」逐项问一遍：直接回车 = 用默认值，口令留空 = 随机生成。
+  另外，若 backend/.env 里的 ADMIN_PASSWORD 为空或过弱（后端对「首次建号口令」有
+  至少 12 位、且不能是常见弱口令的硬性要求，不满足会拒绝启动），脚本会当场要求
+  重设 —— 库里已经建过管理员的部署不会被打扰（改它也不影响现有登录口令）。
   所以「一路回车」就是全自动部署，想自己定口令就当场填。
   重复执行不会再问（backend/.env 已存在就沿用，只覆盖命令行显式给的值）；
   想在已有安装上重问一遍加 --reconfigure（默认值取自现有配置，回车即不变）。
@@ -767,6 +770,107 @@ else
   warn "数据库不可达（$DBH:$DBP）或没有 mysql 客户端，跳过自动建库"
 fi
 
+# --- 口令强度：后端会拒绝启动的两件事，在这里先说清楚并补上 ---------------------
+# 规则与 app/config.py 一致：
+#   SECRET_KEY      空 / 短于 32 位 / 仍是占位值  → 直接拒绝启动
+#                   （它既是登录 JWT 的签名密钥，也是库里密文的加密根）
+#   ADMIN_PASSWORD  空 / 短于 12 位 / 属于弱口令表 → **首次建号**时拒绝启动
+# 老版本部署的 .env 里 ADMIN_PASSWORD 是留空的（.env.example 就是这么给的），只要
+# 库里还没建过管理员，服务就会反复重启 —— 实测踩到过，所以这里主动处理。
+ADMIN_PW_CHANGED=0
+
+admin_pw_ok() {
+  local v="$1" lower
+  [ ${#v} -ge 12 ] || return 1
+  lower="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    admin123|admin|admin@123|password|passw0rd|123456|root) return 1 ;;
+  esac
+  return 0
+}
+
+secret_key_ok() {
+  local v="$1"
+  [ ${#v} -ge 32 ] || return 1
+  case "$v" in change-me*|changeme|secret) return 1 ;; esac
+  return 0
+}
+
+# .env 里的 ADMIN_PASSWORD 还有没有机会被用上：只有库里一个管理员都没有时，它才会
+# 被拿去建号。已经建过号的部署改这里不影响现有登录，所以不该去打扰用户。
+admin_still_needs_creating() {
+  need_cmd mysql || return 0
+  local mode count
+  mode="$(find_mysql_admin || true)"
+  [ -n "$mode" ] || return 0
+  # 全新库连 users 表都还没有，这句会报错 —— 按「还没有管理员」处理
+  count="$(mysql_admin "$mode" -N -B -e 'SELECT COUNT(*) FROM users' "$DB_NAME_NOW" 2>/dev/null || echo '')"
+  case "$count" in ""|0) return 0 ;; *) return 1 ;; esac
+}
+
+if ! secret_key_ok "$(env_get SECRET_KEY)"; then
+  if [ "$FIRST_RUN" -eq 1 ]; then
+    env_set SECRET_KEY "$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(48))')"
+    info "已生成随机 SECRET_KEY"
+  else
+    die "backend/.env 里的 SECRET_KEY 太短或仍是占位值，后端会拒绝启动。
+    它既是登录 JWT 的签名密钥，也是库里密文的加密根 ——
+      · 全新安装：删掉 .env 里那一行（或删掉整个 .env 重新生成）再重跑即可；
+      · 已有数据：换掉它会让已存的密文（PVE Token / SMTP 口令）全部解不开，
+        确认清楚再改：$ENV_FILE"
+  fi
+fi
+
+if admin_pw_ok "$(env_get ADMIN_PASSWORD)"; then
+  :
+elif admin_still_needs_creating; then
+  # 库里还没有管理员 → 这份口令就是建号用的，弱了会把服务直接挡在门外
+  if [ "$INTERACTIVE" -eq 1 ]; then
+    warn "backend/.env 里的 ADMIN_PASSWORD 为空或太弱，而库里还没有管理员 ——"
+    warn "后端会以「首次建号口令过弱」为由拒绝启动（至少 12 位，且不能是常见弱口令）。"
+  fi
+  tries=0
+  admin_fixed=0
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    reply=""
+    if [ "$INTERACTIVE" -eq 1 ]; then
+      reply="$(ask_secret "面板管理员（admin）口令（至少 12 位；留空 = 随机生成）" "")"
+    fi
+    if [ -z "$reply" ]; then
+      reply="$("$VPY" -c 'import secrets; print(secrets.token_urlsafe(16))')"
+      ADMIN_PW_CHANGED=1
+    fi
+    if admin_pw_ok "$reply"; then
+      env_set ADMIN_PASSWORD "$reply"
+      admin_fixed=1
+      info "已写入 backend/.env 的 ADMIN_PASSWORD"
+      break
+    fi
+    warn "太短或太常见，请再试一次（至少 12 位）"
+  done
+  if [ "$admin_fixed" -ne 1 ]; then
+    db_problem "ADMIN_PASSWORD 仍不满足强度要求，后端会拒绝启动。请手工在 $ENV_FILE 里
+    设一个至少 12 位的新口令后重跑；生成一个可用：
+      python -c \"import secrets; print(secrets.token_urlsafe(16))\""
+  fi
+else
+  warn "backend/.env 里的 ADMIN_PASSWORD 偏弱，但库里已有管理员（改它不影响现有登录）；
+    以后若要重建账号，请先换成至少 12 位的随机口令。"
+fi
+
+# 配置预检：让后端自己读一遍 .env。弱 SECRET_KEY / 弱管理员口令 / 缺项都会在这里
+# 原样报出来，而不是等装完服务反复重启才发现。
+if ( cd "$ROOT/backend" && "$VPY" -c 'from app.config import settings' ) 2>/tmp/pc_cfg.$$; then
+  info "配置预检通过"
+  rm -f /tmp/pc_cfg.$$
+else
+  warn "后端拒绝了这份配置（原文如下）："
+  sed 's/^/    /' /tmp/pc_cfg.$$ >&2 || true
+  rm -f /tmp/pc_cfg.$$
+  db_problem "请按上面那句话修 $ENV_FILE 后重跑本脚本。"
+fi
+
 if [ -z "$DB_NAME_NOW" ] || [ -z "$DB_USER_NOW" ]; then
   db_problem "backend/.env 里读不到数据库配置（DB_NAME / DB_USER）。正常情况下本脚本会
     自动生成并写入 $ENV_FILE —— 出现这句通常是文件不可读或键名被改坏了。
@@ -939,11 +1043,12 @@ echo "   数据库   : ${DB_NAME_NOW:-?} @ ${DBH:-?}:${DBP:-?}（账号 ${DB_USE
 echo "   配置文件 : $ENV_FILE  ← 数据库口令在里面（自动生成，不回显）"
 echo "   服务管理 : systemctl {status|restart|stop} $SERVICE"
 echo "   日志     : journalctl -u $SERVICE -f   或   tail -f $ROOT/logs/panel.log"
-if [ "${FIRST_RUN:-0}" -eq 1 ]; then
+if [ "${FIRST_RUN:-0}" -eq 1 ] || [ "${ADMIN_PW_CHANGED:-0}" -eq 1 ]; then
   echo
-  echo "  初始管理员账号：admin"
-  echo "  初始管理员口令：$(env_get ADMIN_PASSWORD)"
-  echo "  ↑ 只显示这一次，请立即登录并修改。"
+  echo "  管理员账号 ： admin"
+  echo "  管理员口令 ： $(env_get ADMIN_PASSWORD)"
+  echo "  ↑ 只显示这一次。库里若还没有管理员，这就是首次登录用的口令，请立即登录后改掉；"
+  echo "    已建过号的部署，本次只改了 backend/.env，现有登录口令不变。"
 fi
 echo
 echo " 下一步（公网访问必做）："

@@ -21,7 +21,12 @@ sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
 from app import alerting, sshguard  # noqa: E402
-from test_api_routes import ADMIN, api, auth_headers  # noqa: E402,F401
+from test_api_routes import (  # noqa: E402,F401
+    ADMIN,
+    api,
+    auth_headers,
+    user_with_permissions,
+)
 
 FIXED_NOW = 1_790_000_000.0  # 固定参照点：纯解析用例用它，不依赖当前时间
 # 接口用例必须用「刚刚」的时间戳：面板只统计窗口内的行，写历史时间会被过滤掉
@@ -424,24 +429,17 @@ class TestSshApi:
         ).status_code == 200
         assert api.delete("/api/ssh/known-ips/10.0.0.9", headers=headers).status_code == 200
 
-    def test_viewer_can_read_but_not_manage(self, api, monkeypatch) -> None:
-        """SSH 封禁会影响整台主机：普通角色只能看。"""
-        from test_api_routes import ADMIN
+    def test_non_admin_cannot_read_panel_host_overview(self, api, monkeypatch) -> None:
+        """面板本机的 SSH 数据恒为管理员专属，授权也放不开。
 
-        admin = auth_headers(api)
-        api.post(
-            "/api/users",
-            headers=admin,
-            json={"username": "sshviewer", "password": "Unit-Test-Pa55word", "role": "viewer"},
-        )
-        login = api.post(
-            "/api/auth/login",
-            json={"username": "sshviewer", "password": "Unit-Test-Pa55word"},
-        )
-        assert login.status_code == 200, login.text
-        viewer = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        `/api/ssh/overview` 挂的是 ``hostscope.require_local_admin``：宿主机的登录
+        爆破记录既不是普通用户的机器、也不是他能处置的东西。所以即便管理员用
+        自定义角色把 ``ssh.view`` 授予了他（那让他能看**自己添加的受管主机**），
+        本机概览仍然是 403 —— 管理类接口同理。
+        """
+        viewer = user_with_permissions(api, ["ssh.view"], "sshviewer")
 
-        assert api.get("/api/ssh/overview", headers=viewer).status_code == 200
+        assert api.get("/api/ssh/overview", headers=viewer).status_code == 403
         assert api.put(
             "/api/ssh/policy", headers=viewer, json={"max_failures": 1}
         ).status_code == 403

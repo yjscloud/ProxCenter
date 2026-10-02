@@ -289,20 +289,24 @@ class TestPushGate:
         )
         assert rec.calls["feishu"] == 1
 
-    def test_record_muted_writes_history_but_not_inbox(
-        self, db, monkeypatch
-    ) -> None:
-        """停推的语义是「彻底静默，只留可追溯的记录」。"""
-        # 站内投递换成了计数器，所以「发没发」看 rec.calls，别看库里的行数
+    def test_record_muted_drops_the_whole_entry(self, db, monkeypatch) -> None:
+        """停推是「这一类告警我不要了」：整条丢弃，不写历史也不留站内消息。
+
+        早先的语义是「只留历史、不发站内」，但那样首页工作台的「N 条异常待处理」
+        一分不少 —— 关掉开关却什么都没变，开关等于没关。所以改成整条丢弃
+        （见 ``alerting.record`` 的注释）。站内投递换成了计数器，所以「发没发」
+        看 rec.calls，别看库里的行数。
+        """
         rec = _Recorder(monkeypatch)
         _run(alerting.save_notify_sources({SOURCE: False}))
         before = _history_count()
 
-        _run(alerting.record(_entry(), source=SOURCE))
+        # 用一条「没发出去」的记录：result='sent' 是唯一例外（那条已经投递出去了，
+        # 说明开关是在投递之后才关的），不该被静默规则抹掉
+        _run(alerting.record(_entry(result="failed"), source=SOURCE))
 
-        # 历史照写 —— 否则「停推期间到底有没有出事」无从查证，那是失明不是静默
-        assert _history_count() == before + 1
-        # 站内消息不发
+        # 历史也一并丢掉：不写历史才叫静默，留记录那叫失明
+        assert _history_count() == before
         assert rec.calls["inbox"] == 0
 
     def test_record_enabled_writes_both(self, db, monkeypatch) -> None:

@@ -20,7 +20,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 from app import backupguard, isolation, portguard  # noqa: E402
 from app.config import settings  # noqa: E402
 from conftest import connect  # noqa: E402
-from test_api_routes import api, auth_headers  # noqa: E402,F401
+from test_api_routes import api, auth_headers, user_with_permissions  # noqa: E402,F401
 
 STRONG = "Unit-Test-Pa55word"
 
@@ -466,16 +466,8 @@ class TestApi:
         assert fetched.json()["policy"]["cooldown_minutes"] == 30
 
     def test_viewer_can_read_but_not_manage_ports(self, api) -> None:
-        admin = auth_headers(api)
-        api.post(
-            "/api/users",
-            headers=admin,
-            json={"username": "portviewer", "password": STRONG, "role": "viewer"},
-        )
-        login = api.post(
-            "/api/auth/login", json={"username": "portviewer", "password": STRONG}
-        )
-        viewer = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        # 端口清单是主机级数据，默认只给管理员；用自定义角色授予「读」
+        viewer = user_with_permissions(api, ["ports.view"], "portviewer", STRONG)
         assert api.get("/api/ports/policy", headers=viewer).status_code == 200
         assert (
             api.put(

@@ -70,7 +70,15 @@ def _font(size: int) -> ImageFont.ImageFont:
             return ImageFont.truetype(random.choice(_FONTS), size)
         except OSError:
             pass
-    return ImageFont.load_default()
+    # 干净系统（容器 / 最小化安装）上 /usr/share/fonts 里一个 TTF 都没有。此时
+    # Pillow 的 load_default() 是**固定尺寸的点阵字体**：请求 size 也画不大，
+    # 结果是 272x80 的画布上只有十几像素高的小字 —— 验证码「很小」就是这个原因
+    # （实测：有字体时字高约 41px，退化成点阵字体后只剩 18px）。
+    # Pillow ≥ 10.1 的 load_default(size=...) 用内置的可缩放字体，优先用它。
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # 更老的 Pillow：只能退回固定点阵字体
+        return ImageFont.load_default()
 
 
 def _render(code: str) -> bytes:
@@ -180,13 +188,17 @@ MODE_LABEL = {
 async def get_mode() -> str:
     """当前登录验证方式。
 
-    在线配置优先；没配过时回落到 ``LOGIN_CAPTCHA``（默认 True → 图形码）——
-    已经有部署把它设成 0 关掉了验证码，升级后不该被悄悄重新打开。
+    在线配置优先；没配过时回落到 ``LOGIN_CAPTCHA``，**默认拖动滑块**：
+
+    * 滑块不依赖字体与图片素材，任何系统上表现都一致 —— 图形码在没装字体的
+      干净服务器上字会小到看不清（见 :func:`_font`），默认给滑块更稳；
+    * 已经有部署把 ``LOGIN_CAPTCHA`` 设成 0 关掉了验证码，升级后不该被悄悄
+      重新打开，所以这种情况仍然保持「关闭」。
     """
     raw = (await store.get_setting(MODE_KEY) or "").strip().lower()
     if raw in MODES:
         return raw
-    return MODE_IMAGE if settings.login_captcha else MODE_OFF
+    return MODE_SLIDER if settings.login_captcha else MODE_OFF
 
 
 async def set_mode(mode: str) -> str:

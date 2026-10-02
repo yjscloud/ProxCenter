@@ -312,6 +312,8 @@ pkgs_for() {
     apt-get:curl)      echo "curl" ;;
     apt-get:tar)       echo "tar" ;;
     apt-get:gzip)      echo "gzip" ;;
+    # 图形验证码用系统 TTF 画字；没有字体时靠 Pillow 内置字体兜底（字会小一圈）
+    apt-get:fonts)     echo "fonts-dejavu-core" ;;
     # RHEL 支系（dnf / yum / zypper / apk）包名基本一致，合在一起写
     dnf:python|yum:python|zypper:python|apk:python)          echo "python3" ;;
     # RHEL 的 venv 靠 python3-pip 带进来的 ensurepip；Debian 是独立的 python3-venv
@@ -326,6 +328,8 @@ pkgs_for() {
     dnf:curl|yum:curl|zypper:curl|apk:curl)                  echo "curl" ;;
     dnf:tar|yum:tar|zypper:tar|apk:tar)                      echo "tar" ;;
     dnf:gzip|yum:gzip|zypper:gzip|apk:gzip)                  echo "gzip" ;;
+    dnf:fonts|yum:fonts|zypper:fonts)                        echo "dejavu-sans-fonts" ;;
+    apk:fonts)                                               echo "ttf-dejavu" ;;
     *) return 1 ;;
   esac
 }
@@ -375,6 +379,12 @@ ensure_pkg() {
 for tool in curl tar gzip; do
   need_cmd "$tool" || ensure_pkg "$tool" || true
 done
+
+# 一个 TTF 字体：图形验证码要靠系统字体画字。代码里对「一个字都没有」有兜底
+# （改用 Pillow 内置的可缩放字体），但装了字体渲染效果更好，也不影响其它绘图功能。
+if ! ls /usr/share/fonts/**/*.ttf >/dev/null 2>&1; then
+  ensure_pkg fonts || warn "没装字体，图形验证码将使用 Pillow 内置字体（能看清，但不如系统字体好看）"
+fi
 
 # --- Python 3.11+ -------------------------------------------------------------
 # 与 start.sh / start-prod.sh 保持同一套候选顺序。

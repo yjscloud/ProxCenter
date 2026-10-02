@@ -311,8 +311,10 @@ export function Templates() {
             <code>192.168.1.10/24</code>）与网关。
           </li>
           <li>
-            <strong>内存与 Balloon</strong>：模板内存设置不要过小（建议 ≥ 1024
-            MB），并保留 balloon 以便克隆后动态调整。
+            <strong>内存与 Balloon</strong>：模板内存不要过小（建议 ≥ 1024 MB）。
+            再把<strong>最低保留内存</strong>设成一个更低的值（如 1024）——
+            PVE 不设这个值时按「整份内存」算，宿主机即使看到克隆体空闲也收不回内存；
+            这个值会被所有克隆继承，在模板上设一次最省事。
           </li>
           <li>
             <strong>转换前清理</strong>：转模板前执行{' '}
@@ -743,6 +745,8 @@ function CloneTemplateDialog({
   const [targetStorage, setTargetStorage] = useState('');
   const [targetNode, setTargetNode] = useState('');
   const [description, setDescription] = useState('');
+  /** 内存气球的最低保留量（MB）。空 = 不下发（沿用模板的值） */
+  const [balloon, setBalloon] = useState('');
   const [busy, setBusy] = useState(false);
 
   /* 容器模板与虚拟机模板的克隆参数不同：容器没有链接克隆，且占用 rootdir 存储 */
@@ -790,6 +794,7 @@ function CloneTemplateDialog({
       setTargetNode('');
       setTargetStorage('');
       setDescription('');
+      setBalloon('');
       setFull(false);
     }
   }, [template]);
@@ -863,6 +868,8 @@ function CloneTemplateDialog({
               full,
               storage: targetStorage || undefined,
               target_node: targetNode || undefined,
+              /* 内存气球：覆盖模板自带的值（模板不带就是「整份内存不回收」） */
+              balloon: balloon.trim() ? Number(balloon) : undefined,
               description: description || undefined,
               /* 与旧行为保持一致：克隆完不自动开机 */
               start: false,
@@ -941,6 +948,18 @@ function CloneTemplateDialog({
             })),
           ]}
         />
+        {/* 内存气球：模板不带这个值时 PVE 按整份内存算，克隆体在宿主机上收不回内存 */}
+        {isLxc ? null : (
+          <Input
+            label="最低保留内存（MB，可选）"
+            type="number"
+            min={0}
+            step={256}
+            value={balloon}
+            onChange={(e) => setBalloon(e.target.value)}
+            hint="留空 = 沿用模板；如 1024 = 至少保留 1G，余量可被宿主机收回"
+          />
+        )}
         <Select
           label="目标存储（可选）"
           value={targetStorage}
@@ -1029,6 +1048,8 @@ function TemplateCreateWizard({
   const [cpuType, setCpuType] = useState('host');
   const [cores, setCores] = useState(2);
   const [memory, setMemory] = useState(2048);
+  /** 内存气球的最低保留量（MB）。空 = 不下发（PVE 默认按整份内存，不回收） */
+  const [balloon, setBalloon] = useState('');
   const [diskStorage, setDiskStorage] = useState('');
   const [diskSize, setDiskSize] = useState(20);
   const [bridge, setBridge] = useState('vmbr0');
@@ -1161,7 +1182,9 @@ function TemplateCreateWizard({
     Boolean(vmid) &&
     Boolean(diskStorage) &&
     memory >= 512 &&
-    cores >= 1;
+    cores >= 1 &&
+    /* 内存气球：留空 = 不回收；填了就必须低于内存上限 */
+    (!balloon.trim() || (Number(balloon) >= 128 && Number(balloon) < memory));
 
   /* ---- 提交（模式 A） ---- */
   const submitImage = async () => {
@@ -1178,6 +1201,8 @@ function TemplateCreateWizard({
         memory,
         cores,
         sockets: 1,
+        /* 模板上的气球会被每个克隆继承 —— 想让克隆机能被宿主机回收内存就设它 */
+        balloon: balloon.trim() ? Number(balloon) : undefined,
         cpu_type: cpuType,
         ostype,
         disks: [
@@ -1376,6 +1401,21 @@ function TemplateCreateWizard({
               value={memory}
               onChange={(e) => setMemory(Number(e.target.value) || 0)}
               hint={`约 ${formatBytes(memory * 1024 ** 2)}`}
+            />
+            {/* 模板的气球值会被每个克隆继承；不设则等于「整份内存不回收」 */}
+            <Input
+              label="最低保留内存（MB）"
+              type="number"
+              min={0}
+              step={256}
+              value={balloon}
+              onChange={(e) => setBalloon(e.target.value)}
+              error={
+                balloon.trim() && Number(balloon) >= memory
+                  ? '必须小于内存上限'
+                  : undefined
+              }
+              hint="留空 = 不回收；如 1024 = 至少保留 1G，克隆体可被宿主机收回余量"
             />
             <Select
               label="磁盘存储池"

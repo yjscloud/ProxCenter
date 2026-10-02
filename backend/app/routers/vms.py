@@ -795,6 +795,10 @@ async def _create_from_clone(
         overrides["memory"] = payload.memory
     if payload.cores:
         overrides["cores"] = payload.cores
+    # 内存气球：模板自带的值（或 PVE 默认的「整份内存」）不该绑死克隆出来的机器。
+    # 只跳过 None —— 0 是有效值（显式关掉气球驱动）。
+    if payload.balloon is not None:
+        overrides["balloon"] = payload.balloon
     if payload.tags:
         overrides["tags"] = payload.tags
     if payload.description:

@@ -373,6 +373,12 @@ def build_vm_config(
         "onboot": 1 if req.start_on_boot else 0,
     }
 
+    # 内存气球：不写这个键时 PVE 按「整份内存」处理（balloon = memory），宿主机
+    # 收不回客户机的空闲内存；写更低的值才有回收空间。0 也是有效值 —— PVE 用它
+    # 显式关掉气球驱动，所以这里只跳过 None，不把 0 当「没填」。
+    if req.balloon is not None:
+        config["balloon"] = req.balloon
+
     # ---- 高级硬件：NUMA 拓扑 / CPU 亲和性 ----
     config.update(build_numa_config(req))
 
@@ -474,8 +480,11 @@ def build_cloudinit_config(ci: CloudInitSpec, network_count: int = 1) -> Dict[st
         config["nameserver"] = ci.nameserver
     if ci.searchdomain:
         config["searchdomain"] = ci.searchdomain
-    if ci.upgrade:
-        config["ciupgrade"] = 1
+
+    # 这里曾经有 ci.upgrade → config["ciupgrade"] = 1（PVE 的「每次开机升级软件包」）。
+    # 实测它默认关闭、界面里从来没有入口、模板里也没有这个键，留着只会让人误开 ——
+    # 一旦打开，每台机器每次开机都会跑一遍 dnf/apt 全量升级，CPU 与内存的尖峰很显眼
+    # （客户机内的升级行为另有其事，见 /etc/cloud/cloud.cfg 的 package_upgrade）。
 
     count = max(network_count, len(ci.ip_configs), 1)
     for idx in range(count):

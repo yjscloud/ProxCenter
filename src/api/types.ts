@@ -386,7 +386,7 @@ export interface ConnectionConfigInput {
    * 首次配置时必须填写。
    */
   token_secret?: string;
-  /** 控制台（VNC/串口）用的 PVE 账号，留空则禁用控制台 */
+  /** 控制台（VNC）用的 PVE 账号，留空则禁用控制台 */
   console_user?: string;
   /** 留空 = 保持后端已存的密码不变 */
   console_password?: string;

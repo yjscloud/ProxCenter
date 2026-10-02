@@ -121,7 +121,7 @@ export function ConsoleTab({
       {/* ---- 工具栏 ---- */}
       <div className="console-toolbar">
         <div className="console-toolbar-left">
-          {/* 只有 VNC 一种控制台：串口终端已移除，容器与虚拟机统一走 VNC */}
+          {/* 仅提供 VNC 控制台，容器与虚拟机统一走 VNC */}
           <span className="console-mode-label">
             <IconConsole size={14} />
             VNC 图形控制台

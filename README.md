@@ -11,8 +11,8 @@
 ![React](https://img.shields.io/badge/react-18-61dafb)
 
 对接 **Proxmox VE 8.x / 9.x** 的**自托管** Web 管理面板：虚拟机与 **LXC 容器**的全生命周期
-管理、cloud-init 模板流水线、网络与防火墙、监控大盘、快照与备份、浏览器内控制台（VNC /
-串口）、多用户权限与操作审计，另含 SSH 防暴力破解、端口与进程异常检测、安全基线加固。
+管理、cloud-init 模板流水线、网络与防火墙、监控大盘、快照与备份、浏览器内 VNC 控制台、
+多用户权限与操作审计，另含 SSH 防暴力破解、端口与进程异常检测、安全基线加固。
 一条命令即可部署：
 
 ```bash
@@ -111,7 +111,7 @@ pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUs
 | 备份、ISO 与模板存储 | `PVEDatastoreUser`（读写用 `PVEDatastoreAdmin`）|
 | 网桥 / VLAN 管理 | `PVESDNUser` |
 
-> **重要**：Proxmox 不允许用 API Token 打开 VNC / 串口控制台，这两类接口只接受
+> **重要**：Proxmox 不允许用 API Token 打开 VNC 控制台，这类接口只接受
 > 用户密码换取的 ticket。若要在浏览器里使用控制台，请在面板设置里**另外填写一个
 > PVE 账号密码**（`console_user` / `console_password`）。不填则控制台功能不可用，
 > 其余功能不受影响。
@@ -230,7 +230,7 @@ nohup ./start-prod.sh > logs/panel.log 2>&1 &
 ```
 
 后端启动时会检测 `dist/`：只要构建产物存在，FastAPI 就会在 8080 端口同时提供
-前端页面与 `/api`，前端与后端**同源**，VNC / 串口控制台的 WebSocket 也能直接
+前端页面与 `/api`，前端与后端**同源**，VNC 控制台的 WebSocket 也能直接
 工作。直接暴露到公网时不要只开 `http://<服务器IP>:8080` —— 请按下文的 Nginx
 示例上 443 并打开 `FORCE_HTTPS=true`。
 
@@ -272,7 +272,7 @@ server {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
 
-        # 这三行是 VNC / 串口控制台能工作的前提
+        # 这三行是 VNC 控制台能工作的前提
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
 
@@ -463,7 +463,7 @@ PVE 上容器与虚拟机是**两套 API 端点**（`/nodes/{node}/lxc/{vmid}/..
 - **网络**：`netN` 一览与增删。容器的 IP **写在网卡配置里**（`ip=` / `ip6=`），
   没有 cloud-init 可以下发地址，改完要重启容器才生效。
 - **快照**：创建 / 回滚 / 删除。**容器快照不含内存状态**（`vmstate` 不适用）。
-- **控制台**：串口终端（xterm.js）是容器的常用入口，图形控制台入口同样保留。
+- **控制台**：图形控制台（VNC），容器与虚拟机统一入口。
 - **迁移 / 克隆**：跨节点迁移、克隆出新容器（**只有全量克隆**，PVE 不支持容器的链接克隆）。
 - **重置用户口令**：容器没有 Guest Agent，PVE 的 API 里也没有「在容器里执行命令」的
   端点（对 PVE 9.2 的 API schema 逐条核对过：`/nodes/{node}/lxc/{vmid}` 下既没有
@@ -757,7 +757,6 @@ retention/immutability、S3 Object Lock、或只读挂载。**只靠 PVE API 做
 ### 控制台
 浏览器内直接操作虚拟机，无需跳转 Proxmox 原生界面：
 - **noVNC**：图形控制台，支持自动重连、全屏、发送 Ctrl+Alt+Del。
-- **xterm.js**：串口控制台，适合无 GUI 的云镜像（模板已自动挂载 `serial0`）。
 
 后端做 WebSocket 双向透传，PVE 的 Web 界面**无需暴露到公网**。
 
@@ -928,7 +927,7 @@ proxcenter/
 │           ├── backups.py         备份……（含备份防护：受保护备份登记与核对）
 │           ├── backups.py         备份、恢复、备份计划
 │           ├── tasks.py           任务队列 + 实时进度 WebSocket
-│           ├── console.py         VNC / 串口 WebSocket 代理（虚拟机与容器共用链路）
+│           ├── console.py         VNC WebSocket 代理（虚拟机与容器共用链路）
 │           ├── users.py           面板用户管理
 │           └── audit.py           审计日志
 └── src/
@@ -997,7 +996,7 @@ npm run serve:dist -- 9000 http://10.0.0.5:8080   # 自定义端口与后端地�
 PVE 9 上实测通过虚拟机 / 容器的创建、启停与控制台。
 
 版本号只用于展示：`/version` 返回的 `pveversion` 形如 `pve-manager/9.0.3/<hash>`，
-面板取中间那段显示，不需要跟着 PVE 升级改代码。控制台账号（VNC / 串口）是唯一
+面板取中间那段显示，不需要跟着 PVE 升级改代码。控制台账号（VNC）是唯一
 与 PVE 版本强相关的配置项 —— PVE 的 websocket 端点只认 `PVEAuthCookie`，不接受
 API Token，这个限制 8.x / 9.x 一致。
 
@@ -1063,12 +1062,12 @@ pveum acl modify / --tokens 'root@pam!panel' --roles PVEAuditor   # 节点指标
 dir / NFS / CIFS 类存储。面板会自动纠正格式，但如果存储已满就只能换池。
 
 **控制台打不开，提示需要账号密码**
-这是 Proxmox 的设计限制：API Token 无法访问 `vncproxy` / `termproxy`。
+这是 Proxmox 的设计限制：API Token 无法访问 `vncproxy`。
 在设置里补一个 PVE 账号密码即可（建议用权限最小的专用账号，仅授予 `PVEVMUser`）。
 
 **控制台连上但黑屏**
-云镜像默认不输出到串口。模板构建时面板已自动配置 `serial0` + `vga: serial0`，
-若使用的是手工建的模板，需要在 PVE 里补上这两项，或改用 noVNC 图形控制台。
+云镜像默认不向图形控制台输出启动日志。模板构建时面板已自动配置 `serial0` + `vga: serial0`，
+若使用的是手工建的模板，需要在 PVE 里补上这两项。
 
 **模板构建卡在 importdisk**
 镜像必须放在 dir / NFS / CIFS 存储上。用 LVM 或 ZFS 存放 `.img` 文件会导致这一步失败，
@@ -1243,7 +1242,7 @@ bridge / bond 是**节点级**对象，同一个 `vmbr0` 在每个节点上各�
 | **可观测性** | `/api/metrics` 导出 Prometheus 格式 + 附带 Grafana 面板 | 想把面板接入现有监控体系时 |
 | **审计与合规** | 审计日志外送 SIEM（syslog / HTTP）、操作导出、只读审计员角色 | 等保 / 内控要求时 |
 | **单点登录** | LDAP / OIDC / SAML 对接，保留本地账号作为兜底 | 企业内部统一身份；需先明确「角色从目录映射还是面板分配」 |
-| **控制台体验** | 移动端手势（双指缩放、拖拽）、多标签页、会话录制与回放 | 现有 noVNC / xterm 已可用，属体验增强 |
+| **控制台体验** | 移动端手势（双指缩放、拖拽）、多标签页、会话录制与回放 | 现有 noVNC 已可用，属体验增强 |
 | **部署形态** | Dockerfile / docker-compose、Helm chart、离线安装包 | 现在只有 systemd + `deploy.sh`；容器化要注意控制台 WebSocket 与 `FORCE_HTTPS` 的配合 |
 | **工程化** | GitHub Actions（pytest + `npm run verify`）、覆盖率门禁、Playwright 端到端用例 | 越早做收益越大；注意现有测试依赖 MySQL，CI 里要单独起一个测试库 |
 | **前端** | 亮色主题切换、中英双语（i18n）、PWA 离线壳 | 现在只有深色主题与中文；i18n 要趁字符串还没散得太开时做 |

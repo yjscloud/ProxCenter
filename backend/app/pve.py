@@ -1038,7 +1038,7 @@ class ProxmoxClient:
         if not self.conn.console_user or not self.conn.console_password:
             raise ProxmoxError(
                 "Console access requires a Proxmox account (username + password) "
-                "in Settings. API tokens cannot open VNC/xterm consoles.",
+                "in Settings. API tokens cannot open VNC consoles.",
                 status_code=428,
                 endpoint="POST /access/ticket",
             )

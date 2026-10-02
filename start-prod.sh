@@ -3,7 +3,7 @@
 #  ProxCenter — 生产部署启动脚本（后端 + 内置前端，同源，无需 Nginx）
 #
 #  后端（FastAPI，监听 0.0.0.0:8080）直接托管前端构建产物 dist/，
-#  /api 与 WebSocket（VNC / 串口控制台）都在同一端口上，免去反向代理。
+#  /api 与 WebSocket（VNC 控制台）都在同一端口上，免去反向代理。
 #
 #  用法：
 #    ./start-prod.sh                                 # 前台运行

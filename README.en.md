@@ -12,7 +12,7 @@
 
 A **self-hosted** web panel for **Proxmox VE 8.x / 9.x**. It manages QEMU virtual machines and
 **LXC containers** end to end — a cloud-init template pipeline, networking and firewall,
-monitoring dashboards, snapshots and backups, an in-browser console (VNC / serial), multi-user
+monitoring dashboards, snapshots and backups, an in-browser VNC console, multi-user
 RBAC with an audit log — and goes beyond the basics with SSH brute-force protection, port and
 process anomaly detection and security baseline hardening.
 
@@ -52,7 +52,7 @@ TanStack Query + Recharts · MySQL 8 (panel users, audit log, connection setting
   operations with graceful shutdown and force-stop fallback, edit CPU / memory / name / tags,
   disk resize, move disks between storages, live migration across nodes, batch operations.
 - **LXC containers** — dedicated wizard, rootfs and mount points (`mpN`), resize, snapshots,
-  serial console, clone and migrate. Containers are matched to their own API endpoints, not
+  clone and migrate. Containers are matched to their own API endpoints, not
   treated as VMs.
 - **cloud-init template pipeline** — build a template from a cloud image step by step (download,
   import, configure, convert, seal) with per-step task waiting, then clone from it.
@@ -75,7 +75,7 @@ TanStack Query + Recharts · MySQL 8 (panel users, audit log, connection setting
 - **Monitoring** — node, VM and container metrics with history, alerts, notification channels
   (mail / webhook / bots) and per-user isolation of integrations.
 - **Snapshots and backups** — create, roll back and delete snapshots; browse node backups.
-- **Console** — VNC for QEMU, serial terminal for containers, embedded in the panel.
+- **Console** — VNC, embedded in the panel.
 - **Users and audit** — roles and fine-grained permissions, two-factor authentication,
   self-registration with admin approval, login lockout, rate limiting, and an audit log of
   every write operation.
@@ -128,8 +128,8 @@ Split the roles if you prefer least privilege:
 | Backups, ISO and template storage | `PVEDatastoreUser` (`PVEDatastoreAdmin` to write) |
 | Bridges and VLANs | `PVESDNUser` |
 
-> **Important**: Proxmox does not allow an API token to open a VNC or serial console — those
-> endpoints only accept a ticket derived from a user password. To use the console in the
+> **Important**: Proxmox does not allow an API token to open a VNC console — this
+> endpoint only accepts a ticket derived from a user password. To use the console in the
 > browser, also fill in a PVE **user name and password** in the panel settings
 > (`console_user` / `console_password`). Without it the console is disabled; everything else
 > keeps working.
@@ -193,7 +193,7 @@ at runtime under **Settings**, which takes precedence. The essentials:
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | — | MySQL connection. Create the database first: `CREATE DATABASE proxcenter_panel CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` — tables are created on startup. |
 | `PVE_HOST` / `PVE_PORT` / `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | — | Initial Proxmox connection (editable in the UI). |
 | `PVE_VERIFY_SSL` | `true` | Keep it on. Set to `false` only for a self-signed or expired PVE certificate — it exposes your API token to a man in the middle. |
-| `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | empty | Needed for VNC / serial console (see above). |
+| `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | empty | Needed for the VNC console (see above). |
 | `FORCE_HTTPS` | `false` | Redirect plain HTTP with `308` and send HSTS. Terminate TLS in front of the panel (Nginx / Caddy). |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Which proxies may set `X-Forwarded-Proto`. Widening this to `0.0.0.0` lets anyone claim "I am HTTPS" and bypass `FORCE_HTTPS`. |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions (delete, change credentials, reset a guest password) ask for your password again. |

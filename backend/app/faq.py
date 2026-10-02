@@ -34,7 +34,7 @@ DEFAULT_FAQS: List[Dict[str, str]] = [
     },
     {
         "q": "为什么浏览器控制台还需要额外填一个 Proxmox 账号？",
-        "a": "Proxmox 不允许 API Token 调用 vncproxy / termproxy，控制台只认用户名密码"
+        "a": "Proxmox 不允许 API Token 调用 vncproxy，控制台只认用户名密码"
         "换取的 ticket。该功能可选，不填不影响其它功能。",
     },
     {

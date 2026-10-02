@@ -518,7 +518,7 @@ async def diagnostics(
             "console",
             "控制台凭据",
             "warn",
-            "未配置。Proxmox 不接受 API Token 打开 VNC / 串口控制台",
+            "未配置。Proxmox 不接受 API Token 打开 VNC 控制台",
             "如需浏览器内控制台，请额外填写一个 Proxmox 账号密码",
         )
 

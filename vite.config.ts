@@ -15,7 +15,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
-        // VNC / 串口控制台走 WebSocket，必须开启代理
+        // VNC 控制台走 WebSocket，必须开启代理
         ws: true,
       },
     },

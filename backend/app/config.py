@@ -85,8 +85,9 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_password: str = "admin123"
 
-    # 登录页图形验证码（防脚本爆破密码）。默认强制；
-    # 内网纯人用或自动化联调时可设 LOGIN_CAPTCHA=0 关闭。
+    # 登录页人机验证（防脚本爆破密码）。默认开启，**具体方式默认「拖动滑块」**
+    # （可在「设置 → 登录验证」里切换成图形验证码或关闭，见 app/captcha.py）。
+    # 内网纯人用或自动化联调时可设 LOGIN_CAPTCHA=0 彻底关闭。
     login_captcha: bool = True
 
     # --- 登录失败锁定 ------------------------------------------------------

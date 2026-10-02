@@ -13,7 +13,7 @@ from .config import settings
 class LoginRequest(BaseModel):
     username: str
     password: str
-    # 图形验证码；验证方式为「关闭」时不校验，字段可缺省
+    # 图形验证码的答案；验证方式不是「图形验证码」时不校验，字段可缺省
     captcha_id: str = ""
     captcha_code: str = ""
     # 滑块验证码：拖动结束时拼图块的水平位置（展示坐标 px）。

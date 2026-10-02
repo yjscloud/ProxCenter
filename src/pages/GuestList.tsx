@@ -55,6 +55,7 @@ import { ErrorState, Notice } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { VmCreateWizard } from '../components/VmCreateWizard';
 import { LxcCreateWizard } from '../components/LxcCreateWizard';
+import { ResetGuestPasswordDialog } from '../components/ResetGuestPasswordDialog';
 import {
   IconBox,
   IconVm,
@@ -75,6 +76,7 @@ import {
   IconPlus,
   IconDownload,
   IconEdit,
+  IconKey,
 } from '../components/Icons';
 import {
   formatBytes,
@@ -253,10 +255,13 @@ interface RowMenuProps {
   onSnapshot: () => void;
   onMigrate: () => void;
   onAssign: () => void;
+  onResetPassword: () => void;
   onDelete: () => void;
   disabled: boolean;
   /** 是否显示「指派归属」（仅管理员可用该操作） */
   canAssign: boolean;
+  /** 是否显示「重置用户口令」（需要 vm.config） */
+  canResetPassword: boolean;
 }
 
 function RowMenu({
@@ -267,9 +272,11 @@ function RowMenu({
   onSnapshot,
   onMigrate,
   onAssign,
+  onResetPassword,
   onDelete,
   disabled,
   canAssign,
+  canResetPassword,
 }: RowMenuProps) {
   const meta = KIND_META[kind];
   const [open, setOpen] = useState(false);
@@ -379,6 +386,9 @@ function RowMenu({
           {canAssign
             ? item('指派给用户', <IconUser size={15} />, onAssign)
             : null}
+          {canResetPassword
+            ? item('重置用户口令', <IconKey size={15} />, onResetPassword)
+            : null}
           <div className="user-dropdown-divider" />
           {item(`删除${meta.noun}`, <IconTrash size={15} />, onDelete, true)}
         </div>
@@ -399,7 +409,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const runner = useTaskRunner();
-  const { canWrite, isAdmin } = useAuth();
+  const { canWrite, isAdmin, hasPermission } = useAuth();
+  /* 后端的重置口令接口要 vm.config；没这个权限就别把入口摆出来（点进去只会 403） */
+  const canConfig = hasPermission('vm.config');
 
   const copyText = async (text: string) => {
     try {
@@ -439,6 +451,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const [migrateTarget, setMigrateTarget] = useState<VmSummary | null>(null);
   const [snapshotTarget, setSnapshotTarget] = useState<VmSummary | null>(null);
   const [assignTarget, setAssignTarget] = useState<VmSummary | null>(null);
+  /* 重置客户机内用户口令（虚拟机走 Guest Agent / cloud-init，容器走宿主机 SSH） */
+  const [passwordTarget, setPasswordTarget] = useState<VmSummary | null>(null);
   const [pendingAction, setPendingAction] = useState(false);
   /* 手动填写 IP：平台识别不到时才开放（见 IP 列） */
   const [ipTarget, setIpTarget] = useState<VmSummary | null>(null);
@@ -1173,6 +1187,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               onMigrate={() => setMigrateTarget(vm)}
               onAssign={() => setAssignTarget(vm)}
               canAssign={isAdmin}
+              onResetPassword={() => setPasswordTarget(vm)}
+              canResetPassword={canConfig}
               onDelete={() => setDeleteTarget(vm)}
             />
           </span>
@@ -1656,6 +1672,16 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         onDone={() => {
           invalidateGuests();
           setAssignTarget(null);
+        }}
+      />
+
+      <ResetGuestPasswordDialog
+        guest={passwordTarget}
+        noun={meta.noun}
+        onClose={() => setPasswordTarget(null)}
+        onDone={() => {
+          invalidateGuests(passwordTarget ?? undefined);
+          setPasswordTarget(null);
         }}
       />
 

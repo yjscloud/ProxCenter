@@ -479,6 +479,19 @@ class IpConfigRequest(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class GuestPasswordRequest(BaseModel):
+    """重置客户机（虚拟机 / 容器）内某个用户的口令。
+
+    虚拟机与容器共用一套请求体：对用户来说这就是「改那台机器里某个账号的密码」，
+    两边没有语义差别，差别只在后端走哪条通道（见 :mod:`app.guestpasswd`）。
+    """
+
+    username: str = Field(default="root", max_length=32)
+    password: str = Field(max_length=128)
+    # 留空 = 用后端推荐的方式（不重启的优先）。可选值：agent / cloudinit / ssh
+    method: str = Field(default="", pattern="^(agent|cloudinit|ssh)?$")
+
+
 # ------------------------------------------------------------------- lxc
 class LxcNetworkSpec(BaseModel):
     """容器网卡（``net0``）。

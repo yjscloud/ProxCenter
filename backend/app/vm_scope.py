@@ -85,13 +85,34 @@ async def resolve_vm_connection(node: str, vmid: Any, owner: Optional[str]) -> s
     """推断虚拟机所在连接的 id；无法确定时返回空串（表示沿用当前连接）。"""
     refs = await ownership.find_refs_by_vm(node, vmid)
     if refs:
-        if owner:
-            for conn_id, username in refs:
-                if username == owner:
-                    return _normalize(conn_id)
-        if len(refs) == 1:
-            return _normalize(refs[0][0])
+        # 归属表记的是「创建时的那条连接」。那条连接被删掉之后，这些记录就变成
+        # 指向一个不存在的 id —— 照它绑定，每个单机接口都会回
+        # 「目标 PVE 连接不存在或已被删除」，表现是详情页整页打不开（电源、快照、
+        # 改配全都连带失效）。所以先剔掉指向已消失连接的记录，再按原规则选；
+        # 全被剔掉时自然落到下面的探测，由探测重新定位到真正托管它的那台 PVE。
+        known = _known_connection_ids()
+        refs = [r for r in refs if _normalize(r[0]) in known]
+        if refs:
+            if owner:
+                for conn_id, username in refs:
+                    if username == owner:
+                        return _normalize(conn_id)
+            if len(refs) == 1:
+                return _normalize(refs[0][0])
     return await _probe_connection(node, vmid)
+
+
+def _known_connection_ids() -> set:
+    """当前还存在的连接 id（外加空串：归属表里的 "-" 表示「当时用的是当前连接」）。"""
+    from .store import get_connections
+
+    ids = {""}
+    try:
+        for conn in get_connections():
+            ids.add(str(conn.get("id") or ""))
+    except Exception:  # noqa: BLE001 - 存储异常时退化为「只认空串」，仍会去探测
+        return {""}
+    return ids
 
 
 async def resolve_node_connection(node: str) -> str:

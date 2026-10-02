@@ -1384,6 +1384,58 @@ export interface CloudInitConfig {
 }
 
 /* ---------------------------------------------------------------------------
+   重置客户机内用户口令（虚拟机 / 容器共用）
+   --------------------------------------------------------------------------- */
+
+/** 重置通道。容器只有 ssh 一条，虚拟机有 agent / cloudinit 两条 */
+export type GuestPasswordMethodId = 'agent' | 'cloudinit' | 'ssh';
+
+/** 一条重置通道的可用性与说明（后端探测后回传，前端渲染成单选） */
+export interface GuestPasswordMethod {
+  id: GuestPasswordMethodId;
+  label: string;
+  description: string;
+  available: boolean;
+  /** 不可选的原因；available=false 时必定有值 */
+  reason: string;
+  /** 这条路会不会重启客户机 */
+  restarts: boolean;
+}
+
+/** 「这台客户机现在能怎么改口令」的探测结果 */
+export interface GuestPasswordMethods {
+  kind: 'qemu' | 'lxc';
+  node: string;
+  vmid: number;
+  running: boolean;
+  methods: GuestPasswordMethod[];
+  /** 后端推荐的方式；一条都不可用时为空串 */
+  recommended: string;
+  /** 默认用户名 */
+  username: string;
+  /** 容器走 ssh 时命中的受管主机（仅容器有） */
+  ssh_host?: { name: string; host: string; username: string };
+}
+
+export interface GuestPasswordRequest {
+  username: string;
+  password: string;
+  /** 留空 = 用后端推荐的方式（不重启的优先） */
+  method?: GuestPasswordMethodId | '';
+}
+
+export interface GuestPasswordResult {
+  ok: boolean;
+  method: GuestPasswordMethodId;
+  username: string;
+  detail: string;
+  /** 是否已经重启客户机（cloud-init 那条路会） */
+  restarted: boolean;
+  /** cloud-init 那条路带回的重启任务 UPID */
+  task: string;
+}
+
+/* ---------------------------------------------------------------------------
    硬件增删（虚拟机详情 → 硬件）
    --------------------------------------------------------------------------- */
 

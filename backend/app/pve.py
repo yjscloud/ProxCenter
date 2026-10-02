@@ -651,6 +651,17 @@ class ProxmoxClient:
     async def qemu_cloudinit(self, node: str, vmid: int) -> Dict[str, Any]:
         return await self.get(f"/nodes/{node}/qemu/{vmid}/cloudinit")
 
+    async def qemu_cloudinit_regen(self, node: str, vmid: int) -> Any:
+        """重新生成 config drive（GUI 上的「Regenerate Image」）。
+
+        **这是改 cloud-init 口令时必须的一步**：PVE 每次生成都会换一个
+        ``instance-id``（见 ``/cloudinit/dump?type=meta``），而 cloud-init 只在
+        看到新 instance-id 时才重跑 per-instance 模块。只改 ``cipassword`` 不重新
+        生成，重启后口令不会变 —— 这正是「改了 cloud-init 密码但登不进去」的常见
+        原因。
+        """
+        return await self.put(f"/nodes/{node}/qemu/{vmid}/cloudinit")
+
     # ------------------------------------------------------- agent (optional)
     async def qemu_agent_network(self, node: str, vmid: int) -> List[Dict[str, Any]]:
         data = await self.get(f"/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces")
@@ -659,6 +670,23 @@ class ProxmoxClient:
     async def qemu_agent_ping(self, node: str, vmid: int) -> Dict[str, Any]:
         data = await self.post(f"/nodes/{node}/qemu/{vmid}/agent/ping")
         return data or {}
+
+    async def qemu_agent_set_password(
+        self, node: str, vmid: int, username: str, password: str
+    ) -> Any:
+        """让客户机内的 agent 直接把某个用户的口令改掉（``guest-set-user-password``）。
+
+        即时生效、不用重启，但要求 agent 以 root 身份运行、且 agent 足够新；
+        老版本 agent 会回 ``child process has failed to set user password``，
+        调用方应退回在客户机里执行 ``chpasswd``（见 :mod:`app.guestpasswd`）。
+
+        参数名是 ``username`` / ``password``（PVE 自己的下划线拼法），且 PVE 侧
+        要求口令至少 5 位 —— 不足会被 PVE 直接拒掉，根本到不了客户机。
+        """
+        return await self.post(
+            f"/nodes/{node}/qemu/{vmid}/agent/set-user-password",
+            data={"username": username, "password": password},
+        )
 
     async def qemu_agent_exec(
         self,

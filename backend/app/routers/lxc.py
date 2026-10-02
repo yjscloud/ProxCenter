@@ -20,7 +20,16 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import defaults, guest_created, ownership, quota, security, store, vmconfig
+from .. import (
+    defaults,
+    guest_created,
+    guestpasswd,
+    ownership,
+    quota,
+    security,
+    store,
+    vmconfig,
+)
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -31,6 +40,7 @@ from ..pve import (
     requested_connection,
 )
 from ..schemas import (
+    GuestPasswordRequest,
     LxcAddMount,
     LxcAddNetwork,
     LxcCloneRequest,
@@ -746,6 +756,62 @@ async def remove_container_hardware(
         detail={"key": key, "value": config.get(key)},
     )
     return {"task": task, "key": key}
+
+
+# ---- 重置客户机内用户口令 ----
+# 容器没有 Guest Agent，PVE 的 API 也没有「在容器里执行命令」的端点，
+# 所以这里只有一条通道：借「SSH → 受管主机」的凭据在宿主机上执行
+# pct exec <vmid> -- chpasswd（详见 app.guestpasswd 的模块说明）。
+@router.get("/lxc/{node}/{vmid}/password-methods")
+async def container_password_methods(
+    node: str,
+    vmid: int,
+    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+) -> Dict[str, Any]:
+    """这个容器现在能不能改口令、走哪条路。"""
+    client = get_client()
+    try:
+        return await guestpasswd.inspect(guestpasswd.CT_KIND, client, node, vmid)
+    except ProxmoxError as exc:
+        _raise(exc)
+
+
+@router.post("/lxc/{node}/{vmid}/password")
+async def reset_container_password(
+    node: str,
+    vmid: int,
+    payload: GuestPasswordRequest,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    _step_up: Dict[str, Any] = Depends(security.require_step_up()),
+) -> Dict[str, Any]:
+    """重置容器内某个用户的口令。"""
+    client = get_client()
+    target = f"{node}/{vmid}/{payload.username}"
+    try:
+        result = await guestpasswd.reset(
+            guestpasswd.CT_KIND,
+            client,
+            node,
+            vmid,
+            username=payload.username,
+            password=payload.password,
+            method=payload.method,
+        )
+    except HTTPException as exc:
+        await security.audit(
+            request, user, "ct.password.reset", target=target,
+            result="failed", detail=str(exc.detail)[:300],
+        )
+        raise
+    await security.audit(
+        request, user, "ct.password.reset", target=target,
+        detail={
+            "method": result.get("method"),
+            "restarted": result.get("restarted"),
+        },
+    )
+    return result
 
 
 @router.post("/lxc/{node}/{vmid}/resize")

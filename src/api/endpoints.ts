@@ -147,6 +147,9 @@ import type {
   LxcMigrateRequest,
   VmDiskUsage,
   VmHardwareResult,
+  GuestPasswordMethods,
+  GuestPasswordRequest,
+  GuestPasswordResult,
   VmMigrateRequest,
   VmMoveRequest,
   VmResizeRequest,
@@ -694,6 +697,30 @@ export const vmsApi = {
   migrate: (node: string, vmid: number, body: VmMigrateRequest) =>
     post<TaskResponse>(`/vms/${node}/${vmid}/migrate`, body),
 
+  /**
+   * 重置客户机内某个用户的口令。
+   *
+   * 后端按顺序试：Guest Agent（即时生效）→ cloud-init（会重启）。
+   * 先读 `passwordMethods` 看这台机器现在能走哪条，别硬猜 —— 关机、没装
+   * agent、没挂 cloud-init 盘的机器情况各不相同。
+   */
+  passwordMethods: (node: string, vmid: number, connectionId?: unknown) =>
+    get<GuestPasswordMethods>(
+      `/vms/${node}/${vmid}/password-methods`,
+      scoped(connectionId),
+    ),
+  resetPassword: (
+    node: string,
+    vmid: number,
+    body: GuestPasswordRequest,
+    connectionId?: unknown,
+  ) =>
+    post<GuestPasswordResult>(
+      `/vms/${node}/${vmid}/password`,
+      body,
+      scoped(connectionId),
+    ),
+
   /* 归属指派（管理员：把存量虚拟机交给某个用户） */
   getOwner: (node: string, vmid: number, connectionId?: string) =>
     get<{ node: string; vmid: number; owner: string | null }>(
@@ -826,6 +853,30 @@ export const lxcApi = {
   /** 把 rootfs / mpN 迁到别的存储 */
   moveVolume: (node: string, vmid: number, body: LxcMoveRequest) =>
     post<TaskResponse>(`/lxc/${node}/${vmid}/move`, body),
+
+  /**
+   * 重置容器内某个用户的口令。
+   *
+   * 容器没有 Guest Agent，PVE 的 API 里也没有「在容器里执行命令」的端点，
+   * 所以后端只有一条通道：借「SSH → 受管主机」的凭据在宿主机上执行
+   * `pct exec <vmid> -- chpasswd`。没配受管主机时 `passwordMethods` 会说明。
+   */
+  passwordMethods: (node: string, vmid: number, connectionId?: unknown) =>
+    get<GuestPasswordMethods>(
+      `/lxc/${node}/${vmid}/password-methods`,
+      scoped(connectionId),
+    ),
+  resetPassword: (
+    node: string,
+    vmid: number,
+    body: GuestPasswordRequest,
+    connectionId?: unknown,
+  ) =>
+    post<GuestPasswordResult>(
+      `/lxc/${node}/${vmid}/password`,
+      body,
+      scoped(connectionId),
+    ),
 
   /* 硬件增删：网卡（netN）与挂载点（mpN） */
   addNetwork: (node: string, vmid: number, body: LxcCreateNetwork) =>

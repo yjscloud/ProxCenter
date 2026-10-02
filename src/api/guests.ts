@@ -25,13 +25,26 @@ import {
   vncWsUrl,
 } from './endpoints';
 import { guestTypeOf } from './types';
-import type { Snapshot, SnapshotCreateRequest, TaskInfo } from './types';
+import type {
+  GuestPasswordMethods,
+  GuestPasswordRequest,
+  GuestPasswordResult,
+  Snapshot,
+  SnapshotCreateRequest,
+  TaskInfo,
+} from './types';
 
 /** 足以定位一个 guest 的最小信息；`type` 缺失时按虚拟机处理。 */
 export interface GuestRef {
   node: string;
   vmid: number;
   type?: string;
+  /**
+   * 所在 PVE 连接（列表接口会带上）。多主机场景下必须转发给后端：不带的话
+   * 后端会去归属表里推断，而归属表记的是「创建时的那条连接」，连接被删过就会
+   * 指向一个不存在的 id。
+   */
+  connection_id?: string | null;
 }
 
 interface TaskResponseLike {
@@ -154,6 +167,27 @@ export const guestsApi = {
   /* 控制台（只有 VNC） */
   vncProxy: (g: GuestRef) =>
     isLxc(g) ? lxcApi.vncProxy(g.node, g.vmid) : vmsApi.vncProxy(g.node, g.vmid),
+
+  /**
+   * 重置客户机内某个用户的口令。
+   *
+   * 请求体两边一样（用户名 + 新口令），差别全在后端走哪条通道：
+   * 虚拟机是 Guest Agent / cloud-init，容器是宿主机 SSH 上的 pct exec。
+   * 先调 `passwordMethods` 看这台机器现在能走哪条 —— 关机、没装 agent、
+   * 没挂 cloud-init 盘的机器情况各不相同。
+   */
+  passwordMethods: (g: GuestRef): Promise<GuestPasswordMethods> =>
+    isLxc(g)
+      ? lxcApi.passwordMethods(g.node, g.vmid, g.connection_id)
+      : vmsApi.passwordMethods(g.node, g.vmid, g.connection_id),
+
+  resetPassword: (
+    g: GuestRef,
+    body: GuestPasswordRequest,
+  ): Promise<GuestPasswordResult> =>
+    isLxc(g)
+      ? lxcApi.resetPassword(g.node, g.vmid, body, g.connection_id)
+      : vmsApi.resetPassword(g.node, g.vmid, body, g.connection_id),
 
   vncWsUrl: (g: GuestRef, port: number, ticket: string): string =>
     isLxc(g)

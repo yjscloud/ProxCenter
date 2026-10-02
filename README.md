@@ -358,6 +358,12 @@ nginx -t && systemctl reload nginx         # 改完配置后校验并重载
 - **配置修改**：在线改 CPU / 内存 / 名称 / 标签 / 描述 / 开机自启 / 保护模式；
   磁盘扩容（含在线扩容）、磁盘迁移到其他存储池、跨节点迁移（支持在线迁移）。
 - **删除**：检测运行状态，运行中会拒绝并提示先关机。
+- **重置客户机内的用户口令**：列表行操作 →「重置用户口令」。虚拟机优先走 **Guest
+  Agent**（`guest-set-user-password`，即时生效、不重启；老 agent 不认这条命令时
+  退回在客户机内执行 `chpasswd`）；没装 agent 或已关机则改走 **cloud-init** ——
+  写入 `cipassword` 并**重新生成 config drive**，重启后生效。少了「重新生成」这
+  一步，cloud-init 不会重跑 per-instance 模块，表现就是「改了密码却登不进去」。
+  两条路都不可用时，弹窗会直接列出缺什么（而不是让用户猜）。
 - **批量操作**：列表勾选多台后，一次执行开机 / 关机 / 重启 / 强制停止 / 删除，
   以及需要填参数的**打标签**、**迁移到指定节点**、**创建快照**。见下节。
 
@@ -412,6 +418,13 @@ PVE 上容器与虚拟机是**两套 API 端点**（`/nodes/{node}/lxc/{vmid}/..
 - **快照**：创建 / 回滚 / 删除。**容器快照不含内存状态**（`vmstate` 不适用）。
 - **控制台**：串口终端（xterm.js）是容器的常用入口，图形控制台入口同样保留。
 - **迁移 / 克隆**：跨节点迁移、克隆出新容器（**只有全量克隆**，PVE 不支持容器的链接克隆）。
+- **重置用户口令**：容器没有 Guest Agent，PVE 的 API 里也没有「在容器里执行命令」的
+  端点（对 PVE 9.2 的 API schema 逐条核对过：`/nodes/{node}/lxc/{vmid}` 下既没有
+  `exec` 也没有 `set-password`，`termproxy` 只接 `node` / `vmid`，容器配置项里同样
+  没有 `ci*` 那一套）。所以面板借「SSH → 受管主机」里该宿主机的凭据执行
+  `pct exec <vmid> -- chpasswd`：口令走 **base64 的 stdin**，不拼进命令行 ——
+  带引号 / 反斜杠 / `$` 的口令用拼接写法几乎必错。该宿主机没配凭据时，弹窗会说明
+  这一条并给出替代做法（进容器控制台自己 `passwd`）。
 
 几处与虚拟机的本质差别，改动时别照抄 `qemu` 的实现：
 
@@ -887,7 +900,7 @@ proxcenter/
 ```bash
 cd backend
 ../.venv/bin/python -m pip install -r requirements-dev.txt   # 装 pytest
-../.venv/bin/python -m pytest                                # 625 个测试
+../.venv/bin/python -m pytest                                # 1020 个测试
 ```
 
 测试分三层，**全部不需要真实 Proxmox 环境**：
@@ -905,6 +918,7 @@ cd backend
 | `tests/test_baseline.py` | 安全基线：`login.defs` 解析与就地合并、sshd 配置解析（首个值生效、Include 展开、`sshd -T` 输出）、空口令 / UID 0 识别、评分加权与等级、**一份快照跑完整套判定**（本机与远程同构）、**远程探测命令的分节解析与 sudo / 权限判定**、防火墙与时间同步的远程回退分支、**「别把登录关死」守卫**（root+口令 / 口令认证时拒绝相应加固）、总览排序与摘要、加固「写前备份 + 校验不过自动回滚」、接口链路（总览与主机详情鉴权审计、`host_id` 分发、viewer 可看不可加固、修复失败映射 400） |
 | `tests/test_bulk.py` | 批量操作：动作白名单与各动作的必填参数、标签合并（追加去重 / 覆盖 / 清空）、**容器走 lxc 端点而不是 qemu**、目标没带 `type` 时探测、**单台失败只进结果不炸整批**（部分失败仍跑完全部）、删除时「运行中拒绝」、普通用户操作他人机器被拒且**不发出任何 PVE 请求**、管理员不受归属限制、`delete` 要求二次确认、容器快照忽略 `vmstate`、请求模型拒绝空目标与重复目标 |
 | `tests/test_lxc.py` | LXC 容器：网卡行（`name=ethN` 按序号分配、静态 IP 带网关、`ip=dhcp` 时不写 `gw=`）、挂载点 `mpN`、创建配置必带 PVE 所需键（rootfs 写「存储:GiB」）、**无网卡时至少补一张 net0**、`features` 白名单过滤、口令与多行 SSH 公钥、`rootfs`/`netN`/`mpN` 的解析不混入 `memory`/`cores`，以及 `name` → `hostname` 的字段别名 |
+| `tests/test_guestpasswd.py` | 重置客户机内用户口令：用户名白名单（危险字符在发出任何 PVE 请求**之前**就被拒）、通道探测（运行中 + agent → 推荐 agent；关机 → 推荐 cloud-init 并写明原因；没挂 cloud-init 盘 → 一条都不可用；容器没配受管主机 / 没运行各自的说明）、口令强度与方式可用性校验（400 / 409）、Agent 通道（直接成功就不再往客户机里跑命令；老 agent 退回客户机内 `chpasswd`，口令经 base64 的 stdin 送达）、cloud-init 通道（写 `cipassword` + `ciuser` → **必须重新生成 config drive** → 运行中才重启并回传 UPID；关机则下次开机生效）、宿主机 SSH 通道（命令形状、`sudo` 只加在 `pct` 上而不是管道左边、带引号 / 反斜杠 / `$` 的口令原样送达、五类远端报错各自翻译成人话、连接失败单独报）、返回体**不含口令** |
 | `tests/test_portguard.py` | 端口/进程/隔离/备份防护：`ss` 与 `netstat` 双格式解析（含 IPv6、表头过滤）、进程表保留带空格命令行、`/proc/*/exe` 的「已删除」标记、策略收敛（冷却区间 + **非法正则丢弃**）、预期端口的三种写法、**回环监听不算暴露**、敏感端口 / 明文老协议的分级、**反弹 shell 各类特征**（`/dev/tcp`、`nc -e`、`socat exec`、`curl\|sh`、Web 服务派生 shell、`/tmp` 可执行文件、已删除可执行文件、shell 持有对外连接、后门端口）、**误报防护**（`bash -c "curl -i"` 不算交互式 shell、登录会话的 22 端口连接不算反弹、进程白名单生效、非 root 不把「看不到进程」当问题）、`evaluate()` 经 HTTP 走通告警落库与冷却去重、`set_link_down` **属性保留且往返一致**、`net_keys` 数值排序、快照名对 PVE 合法、备份指纹稳定性与大小敏感性、**删除受保护备份被面板拦截**、接口鉴权与审计 |
 
 > 面板只支持 MySQL，`test_api_routes.py` 会连一个**独立的测试库**（默认

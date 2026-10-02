@@ -41,6 +41,10 @@ backend/data/
 # 本地备份（含旧 dist 快照与图片，体积大且无版本价值）
 backup/
 
+# 对外投放文案与执行清单（awesome 列表 PR / 论坛 / Reddit / 中文社区）：
+# 属于本地工作文档 —— 放进公开仓库等于把推广计划摊开给人看
+outreach/
+
 # 浏览器自动化 / 调试留下的产物：
 #   .playwright-cli/   playwright-cli 的会话目录
 #   login.yaml         登录页的无障碍快照（调样式时抓的）

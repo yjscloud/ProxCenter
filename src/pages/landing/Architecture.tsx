@@ -17,7 +17,7 @@ const ENTRY_ICONS = [<IconMonitor size={15} />, <IconActivity size={15} />, <Ico
 
 const NOTES = [
   '面板与 Proxmox 之间只走内网出站请求，PVE 的 8006 端口不必对公网开放',
-  '控制台的 VNC / 串口是 WebSocket 双向透传，同样经面板转发，不直连 PVE',
+  '控制台的 VNC 是 WebSocket 双向透传，同样经面板转发，不直连 PVE',
   '任一连接不可达只影响它自己的节点与存储，不会让整块页面报错',
 ];
 

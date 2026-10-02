@@ -840,7 +840,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
             </div>
 
             <Notice tone="info">
-              Proxmox 的 VNC / 串口控制台只接受账号密码，不接受 API Token；留空则控制台不可用。
+              Proxmox 的 VNC 控制台只接受账号密码，不接受 API Token；留空则控制台不可用。
             </Notice>
 
             <div className="dyn-row">

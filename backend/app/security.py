@@ -126,7 +126,7 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
             {"key": "vm.delete", "label": "删除", "desc": "删除自己创建的虚拟机"},
             {"key": "vm.assign", "label": "指派归属", "desc": "把虚拟机指派给指定用户（含存量无主机）"},
             {"key": "vm.power", "label": "电源操作", "desc": "开机 / 关机 / 重启 / 挂起"},
-            {"key": "vm.console", "label": "控制台", "desc": "打开 VNC / 串口控制台"},
+            {"key": "vm.console", "label": "控制台", "desc": "打开 VNC 控制台"},
             {"key": "vm.config", "label": "修改配置", "desc": "改 CPU / 内存 / 磁盘 / 网卡 / 迁移"},
             {"key": "vm.snapshot", "label": "快照", "desc": "创建 / 回滚 / 删除快照"},
             {"key": "vm.backup", "label": "备份", "desc": "备份与恢复"},

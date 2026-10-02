@@ -406,7 +406,7 @@ class HttpsEnforcementMiddleware:
     是否 https 只信 uvicorn 改写过的 ``scope["scheme"]``：``X-Forwarded-Proto``
     仅对 ``FORWARDED_ALLOW_IPS`` 内的对端生效，公网请求自称「我是 https」无效。
     唯一放行的是**本机回环且不带转发头**的请求（健康检查、运维脚本）—— 否则
-    ``curl 127.0.0.1:8080`` 只会拿到 308。WebSocket 同样拦：VNC/串口控制台的
+    ``curl 127.0.0.1:8080`` 只会拿到 308。WebSocket 同样拦：VNC 控制台的
     连接串里带 JWT，明文跑等于把登录态摊在链路上。
     """
 
@@ -585,8 +585,8 @@ async def version() -> Dict[str, Any]:
 
 # ------------------------------------------------------------ front-end UI
 # 生产部署：后端直接托管前端构建产物 dist/。前端与 API 同源，既不需要
-# 额外的静态服务器 / Nginx，也避免了反向代理 WebSocket 的配置——VNC 与
-# 串口控制台因此可以开箱即用。
+# 额外的静态服务器 / Nginx，也避免了反向代理 WebSocket 的配置——VNC
+# 控制台因此可以开箱即用。
 DIST_DIR = BASE_DIR.parent / "dist"
 
 if (DIST_DIR / "index.html").is_file():

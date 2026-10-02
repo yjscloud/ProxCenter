@@ -41,7 +41,7 @@ def _require_console_account() -> None:
         raise HTTPException(
             status_code=428,
             detail=(
-                "未配置控制台账号，无法打开控制台：PVE 的 VNC/串口 WebSocket 不接受 "
+                "未配置控制台账号，无法打开控制台：PVE 的 VNC WebSocket 不接受 "
                 "API Token。请在「设置 → 连接配置」中填写 Proxmox 控制台账号与密码"
                 "（例如 root@pam）。"
             ),

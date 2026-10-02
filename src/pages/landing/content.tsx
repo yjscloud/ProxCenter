@@ -143,7 +143,7 @@ export const DOMAINS: Domain[] = [
       },
       {
         name: '容器（LXC）',
-        desc: '与虚拟机同面板管理，网卡、挂载点、快照与串口终端独立成套',
+        desc: '与虚拟机同面板管理，网卡、挂载点与快照独立成套',
         icon: <IconBox size={15} />,
       },
       {
@@ -163,7 +163,7 @@ export const DOMAINS: Domain[] = [
       },
       {
         name: '浏览器控制台',
-        desc: 'noVNC 图形控制台与 xterm 串口终端，PVE 无需暴露公网',
+        desc: 'noVNC 图形控制台，PVE 无需暴露公网',
         icon: <IconConsole size={15} />,
       },
       {
@@ -474,7 +474,7 @@ export const TOPO_CLUSTERS: { name: string; nodes: string; meta: string }[] = [
 /** 左侧入口 */
 export const TOPO_ENTRIES: TopoNode[] = [
   { name: '浏览器控制台', desc: '虚拟机 / 容器 / 存储 / 安全' },
-  { name: 'noVNC 与串口', desc: 'WebSocket 双向透传' },
+  { name: 'noVNC 控制台', desc: 'WebSocket 双向透传' },
   { name: '飞书机器人', desc: '群内指令与确认卡片' },
 ];
 
@@ -663,7 +663,7 @@ export const STACK: { icon: ReactNode; title: string; items: string[] }[] = [
   {
     icon: <IconCpu size={16} />,
     title: '前端',
-    items: ['React 18 + TypeScript', 'Vite', 'TanStack Query', 'Recharts', 'noVNC / xterm.js'],
+    items: ['React 18 + TypeScript', 'Vite', 'TanStack Query', 'Recharts', 'noVNC'],
   },
   {
     icon: <IconServer size={16} />,

@@ -22,7 +22,7 @@ export const DEFAULT_FAQS: FaqItem[] = [
   },
   {
     q: '为什么浏览器控制台还需要额外填一个 Proxmox 账号？',
-    a: 'Proxmox 不允许 API Token 调用 vncproxy / termproxy，控制台只认用户名密码换取的 ticket。该功能可选，不填不影响其它功能。',
+    a: 'Proxmox 不允许 API Token 调用 vncproxy，控制台只认用户名密码换取的 ticket。该功能可选，不填不影响其它功能。',
   },
   {
     q: 'SSL 证书「自动续期」是怎么工作的？',

@@ -1,2 +1,2 @@
 """ProxCenter — Proxmox VE 8.x / 9.x web management panel."""
-__version__ = "0.1.2"
+__version__ = "0.1.3"

@@ -39,6 +39,12 @@ jobs:
       contents: read
       packages: write      # 推 GHCR 必需
 
+    # 注意：secrets 上下文**不能**直接用在 if 条件里 —— 写 `if: secrets.X != ''`
+    # 会让 GitHub 判定整个 workflow 文件不合法，表现为「运行里一个 job 都没有」。
+    # 所以先映射成 job 级 env，再用 env 判断（env 上下文在 if 里是允许的）。
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -51,8 +57,6 @@ jobs:
       # 时会生成 `/proxcenter` 这种非法镜像名，导致整个构建失败。
       - name: 组装推送目标
         id: targets
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           {
             echo "list<<EOF"
@@ -72,10 +76,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 登录 Docker Hub（配了密钥才执行）
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 生成标签与元数据

@@ -322,7 +322,14 @@ class TestLoginCaptchaMode:
         assert resp.status_code == 400
         assert "验证码" in resp.json()["detail"]
 
-    def test_slider_mode_checks_position(self, api) -> None:
+    def test_slider_mode_requires_dragging_to_end(self, api) -> None:
+        """滑块判的是「有没有拖到底」，不是「有没有对上某个位置」。
+
+        这条用例曾经按旧语义（拖到目标附近才算过）写成 `captcha_x = target + 40`
+        并断言 400 —— 但改版后判据是 `x >= target - tolerance`，那个值反而**超过**
+        阈值被判成「已拖到底」，于是登录成功、断言炸成 `assert 200 == 400`。
+        这里按现在的语义重写，并把容差边界一起钉住。
+        """
         from app import captcha as captcha_mod
 
         self._set_mode(api, "slider")
@@ -342,14 +349,30 @@ class TestLoginCaptchaMode:
 
         target = captcha_mod._sliders[ch["id"]][0]
 
-        # 位置差得远 → 400，且提示与图形码区分开，前端才知道该标红滑块
+        # 压根没拖（x=0）→ 400，且提示与图形码区分开，前端才知道该标红滑块
         bad = api.post(
             "/api/auth/login",
-            json={**ADMIN, "captcha_id": ch["id"], "captcha_x": target + 40},
+            json={**ADMIN, "captcha_id": ch["id"], "captcha_x": 0},
             headers=csrf_headers(api),
         )
         assert bad.status_code == 400
         assert "滑块" in bad.json()["detail"]
+
+        # 差一点点也算没到底：target - tolerance - 1 必须被拒。这条是边界——
+        # 把「差这么多 px 以内也算拖到底」的余量钉死，避免判定被悄悄放宽。
+        short_of_end = captcha_mod.SLIDER_TOLERANCE + 1
+        near = api.get("/api/auth/captcha").json()
+        near_target = captcha_mod._sliders[near["id"]][0]
+        short = api.post(
+            "/api/auth/login",
+            json={
+                **ADMIN,
+                "captcha_id": near["id"],
+                "captcha_x": near_target - short_of_end,
+            },
+            headers=csrf_headers(api),
+        )
+        assert short.status_code == 400
 
         # 换一道题、拖到位 → 正常登录
         fresh = api.get("/api/auth/captcha").json()

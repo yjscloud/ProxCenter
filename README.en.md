@@ -153,6 +153,12 @@ PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d
 
 Upgrading is `docker compose pull && docker compose up -d`.
 
+> **Is `mysql:8.0` slow or stuck?** That is Docker Hub's network, not the panel. Configure a
+> registry mirror on the host once and every Docker Hub image benefits: write
+> `/etc/docker/daemon.json` (`{"registry-mirrors": ["https://docker.m.daocloud.io"]}`) and
+> `systemctl restart docker`. If you would rather not touch the daemon, just point the database
+> image elsewhere: `DB_IMAGE=docker.m.daocloud.io/library/mysql:8.0 docker compose up -d`.
+
 ### 4. Bare metal deployment
 
 If you would rather not run containers:

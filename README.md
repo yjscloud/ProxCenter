@@ -139,6 +139,12 @@ PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d
 
 升级就是 `docker compose pull && docker compose up -d`。
 
+> **拉 `mysql:8.0` 很慢或卡住？** 那是 Docker Hub 的网络问题，跟面板无关。给宿主机配个
+> 镜像加速一次解决全部 Docker Hub 镜像：写 `/etc/docker/daemon.json`
+> （`{"registry-mirrors": ["https://docker.m.daocloud.io"]}`）后 `systemctl restart docker`。
+> 不想动 daemon 配置，也可以只换数据库镜像：
+> `DB_IMAGE=docker.m.daocloud.io/library/mysql:8.0 docker compose up -d`。
+
 ### 裸机部署
 
 不想用容器，就直接装在机器上：

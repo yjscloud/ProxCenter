@@ -64,7 +64,7 @@ and **Token Secret**.
 ### 2. Grant permissions
 
 ```bash
-pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUser
+pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUser,PVEAuditor,PVEVMUser
 ```
 
 Or split them for least privilege:

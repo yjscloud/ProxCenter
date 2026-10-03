@@ -62,7 +62,7 @@ pveum user token add panel@pve panel --privsep 0
 ### 授权
 
 ```bash
-pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUser
+pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUser,PVEAuditor,PVEVMUser
 ```
 
 要按最小权限给，就按需拆开：

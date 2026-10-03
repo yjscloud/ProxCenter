@@ -15,7 +15,10 @@
 # ============================================================================
 
 # ------------------------------------------------------------- ① 前端构建 ----
-FROM node:20-alpine AS frontend
+# --platform=$BUILDPLATFORM 是刻意加的：多架构构建时 buildx 会给**每个目标平台**
+# 各跑一遍所有阶段，而 dist/ 是与架构无关的静态产物。不加这一行，arm64 那次会在
+# QEMU 模拟下重跑一遍 npm ci + tsc + vite，白白多花十几分钟且结果完全一样。
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend
 WORKDIR /build/web
 
 # 依赖清单与镜像源先落地：这两样不变时这一层命中缓存，docker 不会重装依赖。

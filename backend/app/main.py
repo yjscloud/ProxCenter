@@ -104,6 +104,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await alerting.init_table()
     await cert_manager.init_table()
     await ownership.init_table()
+    # 受管主机表：本次升级给它加了「来源虚拟机」三列（node / vmid / conn_id）。
+    # 迁移必须在这里跑完，不能等第一次打开「SSH 安全」页才做 —— 删除虚拟机的
+    # 清理逻辑（sshremote.purge_vm_hosts）可能先于那次访问被触发，届时找不到列。
+    await sshremote.init_table()
     # 受保护备份登记表（防删 / 防篡改核对）
     await backupguard.init_table()
     # 面板发起的建机 / 克隆 / 恢复记录（创建时间字段的准确来源，见 app.guest_created）
@@ -177,7 +181,7 @@ app = FastAPI(
         "Provides VM lifecycle, template building, networking, "
         "monitoring, backup and console access."
     ),
-    version="0.1.3",
+    version="0.1.4",
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -585,7 +589,7 @@ app.include_router(search.router)
 @app.get("/api/version", tags=["meta"])
 async def version() -> Dict[str, Any]:
     info = await site.get_site_info()
-    return {"name": info["name"], "version": "0.1.3", "api": "v1"}
+    return {"name": info["name"], "version": "0.1.4", "api": "v1"}
 
 
 # ------------------------------------------------------------ front-end UI
@@ -643,6 +647,9 @@ PORTS_INTERVAL = 5 * ALERT_INTERVAL
 BACKUP_CHECK_INTERVAL = PORTS_INTERVAL
 # 主机登录审计：登录历史变化慢，5 分钟汇入一次足够
 HOST_AUDIT_INTERVAL = 300
+# 受管主机核对：虚拟机可能在 PVE 上被直接删掉（不走面板的删除接口），
+# 每 5 分钟拿一次 PVE 的虚拟机清单比对，清掉这类残留（见 sshremote.reconcile_panel_hosts）
+HOST_SYNC_INTERVAL = 300
 # 证书续期检查：免费证书只有 90 天，6 小时查一次足够；首次延迟 2 分钟，
 # 让启动流程先跑完再去发外部网络请求
 CERT_INTERVAL = 6 * 3600
@@ -735,6 +742,14 @@ def _purge_summary(result: Any) -> str:
     except (TypeError, ValueError):
         return ""
     return f"清理 {removed} 行" if removed else "无需清理"
+
+
+def _host_sync_summary(result: Any) -> str:
+    """受管主机核对回的是 ``{checked, removed, hosts}``，只报清掉了几台。"""
+    if not isinstance(result, dict):
+        return ""
+    removed = int(result.get("removed") or 0)
+    return f"清理 {removed} 台已删除主机" if removed else "无变化"
 
 
 def _cert_summary(result: Any) -> str:
@@ -848,6 +863,17 @@ scheduler.register(
         FRP_WATCHDOG_INTERVAL,
         summarize=_frp_summary,
         first_delay=FRP_WATCHDOG_FIRST_DELAY,
+    )
+)
+scheduler.register(
+    _job(
+        "host_sync",
+        "受管主机核对",
+        "数据清理",
+        "核对「面板下发」的受管主机与 PVE 上的虚拟机是否一致，清掉已删除机器留下的安全数据",
+        sshremote.reconcile_panel_hosts,
+        HOST_SYNC_INTERVAL,
+        summarize=_host_sync_summary,
     )
 )
 scheduler.register(

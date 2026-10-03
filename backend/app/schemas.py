@@ -357,6 +357,11 @@ class VmCreateRequest(BaseModel):
     description: Optional[str] = None
     cloudinit: Optional[CloudInitSpec] = None
     clone_from: Optional[CloneSpec] = None
+    #: 是否把新建的这台机器自动接入安全管控：把面板公钥追加进 cloud-init 的
+    #: ``sshkeys``，创建成功后登记成一台受管主机（origin=panel，首连自动信任）。
+    #: 只在「cloud-init + 静态 IP」下有意义 —— 面板得先知道它的地址才连得上去，
+    #: 所以没给静态 IP 时后端会直接拒绝，而不是登记一台永远连不上的空主机。
+    manage: bool = False
 
     # ---- 高级硬件（都可选）-------------------------------------------------
     # 开启 NUMA（对应 PVE 的 numa=1）。只开这个 = 给客户机呈现 NUMA 拓扑，

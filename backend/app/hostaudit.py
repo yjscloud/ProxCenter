@@ -21,7 +21,7 @@ import subprocess
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import alerting, database, sshguard, sshremote, store
+from . import alerting, database, localhost, sshguard, sshremote, store
 
 logger = logging.getLogger(__name__)
 
@@ -362,10 +362,11 @@ async def remote_sudo_events(row: Dict[str, Any], hours: int = 24) -> List[Dict[
 async def host_rows(
     host_ids: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """可审计的主机：受管远程主机 + 本机（本机永远在最后）。
+    """可审计的主机：受管远程主机 + 本机（本机在最后）。
 
-    ``host_ids=None`` = 不限（后台汇入任务用全量）；给了集合则只列集合里的
-    受管主机，且只有集合含 ``"local"`` 时才带本机。
+    受管主机部分：``host_ids=None`` = 不限（后台汇入任务用全量）；给了集合则
+    只列集合里的。本机额外要满足集合含 ``"local"`` **且用户已显式导入本机**
+    （``localhost.enabled()``）—— 本机默认不管控。
     """
     wanted = {str(item) for item in host_ids} if host_ids is not None else None
     rows: List[Dict[str, Any]] = []
@@ -375,7 +376,7 @@ async def host_rows(
         if wanted is not None and str(row.get("id")) not in wanted:
             continue
         rows.append(row)
-    if wanted is None or "local" in wanted:
+    if (wanted is None or "local" in wanted) and await localhost.enabled():
         rows.append({"id": "local", "name": "本机（面板）", "host": "localhost"})
     return rows
 
@@ -448,6 +449,23 @@ async def get_cursor(host_id: str) -> float:
         )
         row = await cursor.fetchone()
     return float(row["last_ts"] or 0) if row else 0.0
+
+
+async def forget_host(host_id: str) -> int:
+    """删掉某台主机的导入游标（主机被移除 / 它的虚拟机被删时调），返回删掉的行数。
+
+    游标只是「下次从哪儿继续导入」的进度指针，主机没了就没有意义；**留着还会
+    有害**：同一个 ``host_id`` 被复用时，新机器会从旧进度开始导入，最近的登录
+    记录反而漏掉。
+    """
+    await init_table()
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "DELETE FROM host_audit_cursor WHERE host_id = ?", (str(host_id),)
+        )
+        removed = cursor.rowcount or 0
+        await db.commit()
+    return removed
 
 
 async def set_cursor(host_id: str, last_ts: float, detail: str = "") -> None:

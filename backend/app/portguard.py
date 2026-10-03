@@ -25,7 +25,7 @@ import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import alerting, baseline, i18n, store
+from . import alerting, baseline, i18n, localhost, store
 from .formatters import short_hostname
 
 logger = logging.getLogger(__name__)
@@ -557,6 +557,24 @@ async def apply_disposition(
     return {"record": record, "policy": policy}
 
 
+async def forget_host(host_id: str) -> bool:
+    """删掉某台主机的**全部**人工处置记录（主机被移除 / 它的虚拟机被删时调）。
+
+    处置记录按 ``host_id`` 分键存在 settings 里（见 :data:`DISPOSITION_KEY`）；
+    主机没了，这些「人认定过的例外」既不会再被读到，也会把这份 JSON 一直撑着。
+    返回是否真的删掉了东西。
+    """
+    import json
+
+    data = await load_dispositions()
+    if str(host_id) not in data:
+        return False
+    data.pop(str(host_id), None)
+    # 顺带把写回的时机对齐 load_dispositions：过期的「忽略」不会在这里复活
+    await store.set_setting(DISPOSITION_KEY, json.dumps(data, ensure_ascii=False))
+    return True
+
+
 async def clear_disposition(host_id: str, key: str) -> bool:
     """撤销一条处置（下一轮巡检它就会重新出现在待处理里）。"""
     import json
@@ -1080,7 +1098,7 @@ async def fleet_reports(
     rows = await baseline.managed_hosts()
     if wanted is not None:
         rows = [row for row in rows if row["id"] in wanted]
-    include_local = wanted is None or "local" in wanted
+    include_local = (wanted is None or "local" in wanted) and await localhost.enabled()
 
     results = (
         await parallel(

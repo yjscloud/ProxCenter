@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { hostAuditApi, vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { LocalHostNotice, useLocalHost } from '../components/LocalHostNotice';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -56,6 +57,8 @@ export function HostAudit() {
   const qc = useQueryClient();
   const canManage = hasPermission('ssh.manage');
 
+  /* 面板本机是否已导入 —— 未导入时下拉里不出现本机，默认落到受管主机上 */
+  const localHostInfo = useLocalHost();
   const [hostId, setHostId] = useState('local');
   const [view, setView] = useState<View>('success');
   const [hours, setHours] = useState(24);
@@ -105,14 +108,16 @@ export function HostAudit() {
 
   const hosts = hostsQuery.data ?? [];
 
-  /* 面板本机只有管理员能看；普通用户进来时把默认主机改到第一台自己的机器上，
-     否则会拿着 'local' 去请求而直接 403（下拉里也不再出现本机）。 */
+  /* 默认主机的落点。本机要**已导入**且是管理员才可用（默认不管控本机）：
+     * 状态还没拿到先不动，否则会先跳走、等本机状态回来又不跳回来；
+     * 本机不可用就落到第一台受管主机上，下拉里也不再出现本机。 */
   useEffect(() => {
-    if (isAdmin) return;
+    if (isAdmin && !localHostInfo.state) return;
     if (hostId !== 'local') return;
+    if (isAdmin && localHostInfo.enabled) return;
     if (hostsQuery.isLoading) return;
     setHostId(hosts[0]?.id ?? '');
-  }, [isAdmin, hostId, hosts, hostsQuery.isLoading]);
+  }, [isAdmin, localHostInfo.state, localHostInfo.enabled, hostId, hosts, hostsQuery.isLoading]);
   const hostOptions = hosts.map((item) => ({ label: item.name, value: item.id }));
   const vms = (vmsQuery.data ?? []).filter((vm) => !vm.template);
   const vmOptions = vms.map((vm) => ({
@@ -277,6 +282,9 @@ export function HostAudit() {
         </Notice>
       ) : null}
 
+      {/* 面板本机默认不管控；未导入时提示一次（已导入 / 非管理员不渲染） */}
+      <LocalHostNotice />
+
       <Card collapsible={false}>
         <CardHeader
           title={t('hostAudit.scopeTitle')}
@@ -289,8 +297,8 @@ export function HostAudit() {
               options={
                 hostOptions.length
                   ? hostOptions
-                  : /* 兜底只给管理员：普通用户看不到本机，选了必 403 */
-                    isAdmin
+                  : /* 兜底只给「已导入本机」的管理员：本机默认不管控，未导入时选了必 409 */
+                    isAdmin && localHostInfo.enabled
                     ? [{ label: t('hostAudit.localHost'), value: 'local' }]
                     : []
               }

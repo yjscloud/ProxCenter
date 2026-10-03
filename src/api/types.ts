@@ -1994,6 +1994,12 @@ export interface VmCreateRequest {
    */
   balloon?: number;
   cloudinit?: CloudInitConfig;
+  /**
+   * 接入安全管控：把面板公钥追加进 cloud-init 的 `sshkeys`，创建成功后把这台
+   * 机器登记成受管主机（凭据是面板统一密钥对，首次连接自动信任指纹）。
+   * 只在「全新创建 + cloud-init + 静态 IP」下有意义 —— DHCP 时后端直接拒绝。
+   */
+  manage?: boolean;
   clone_from?: {
     vmid: number;
     node: string;
@@ -2808,6 +2814,53 @@ export interface SshCheckResult {
    多机 SSH 安全（受管主机）
    --------------------------------------------------------------------------- */
 
+/**
+ * 面板本机的管控状态（`GET /api/ssh/local`）。
+ *
+ * 「SSH 安全 / 安全基线 / 端口与进程 / 登录审计」四个功能都能管面板自己所在
+ * 那台服务器，但它**默认不管控** —— 读宿主机日志与 /proc、改 sshd 与 fail2ban
+ * 都需要相当高的权限，要由管理员在「受管主机」里显式导入。
+ */
+export interface LocalHostState {
+  id: string;
+  /** 展示名，形如 `pve01（面板本机）` */
+  name: string;
+  hostname: string;
+  /** 是否已导入；false 时这四个功能里不会出现本机 */
+  enabled: boolean;
+  /** 导入者用户名，未导入时为空 */
+  by: string;
+  /** 导入时间（epoch 秒），未导入时为 0 */
+  at: number;
+  /**
+   * 面板是否跑在容器里（后端自检，见 `app/localhost.in_container`）。
+   * 容器里「本机管控」读到的是容器自身的数据而非宿主机的，所以前端据此
+   * **不再提示导入本机** —— 不把一个用不起来的开关摆在用不了的场景里。
+   */
+  container: boolean;
+}
+
+/**
+ * 面板 SSH 公钥的状态（`GET /api/ssh/panel-key`）。
+ *
+ * 面板下发虚拟机时把公钥写进 cloud-init，之后自己 SSH 进去做安全采集（见
+ * `app/panelkey.py`）。私钥加密落库、**永不回传前端**，所以这里只有公钥。
+ */
+export interface PanelKeyState {
+  /** 是否已生成。false = 从没用过「接入安全管控」，没有多余的密钥存在 */
+  present: boolean;
+  /** 公钥单行，形如 `ssh-ed25519 AAAAC3...`；未生成时为空 */
+  public: string;
+  /** 生成时间（epoch 秒），未生成时为 0 */
+  created: number;
+  /** 生成者用户名 */
+  by: string;
+  /** 靠这把钥匙接入的受管主机数 */
+  in_use: number;
+  /** 受管主机总数（只有 state 接口返回，rotate 的返回值没有） */
+  host_total?: number;
+}
+
 export interface SshHost {
   id: string;
   name: string;
@@ -2820,6 +2873,11 @@ export interface SshHost {
   /** auto | journalctl | secure | auth.log */
   log_source: string;
   enabled: boolean;
+  /**
+   * 主机来源：`manual` = 用户手工添加；`panel` = 面板下发虚拟机时自动登记
+   * （凭据是面板统一密钥对，首次连接自动信任指纹）。
+   */
+  origin: 'manual' | 'panel' | string;
   /** 已确认的 SSH 主机指纹；为空表示首次连接还没信任 */
   known_host: string;
   /** 凭据是否设置（私钥 / 口令永不回传前端） */

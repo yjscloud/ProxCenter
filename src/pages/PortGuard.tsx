@@ -16,6 +16,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { portsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { LocalHostNotice, useLocalHost } from '../components/LocalHostNotice';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -347,6 +348,9 @@ export function PortGuard() {
     组件 state 会原样保留 —— 从详情点菜单就回不到总览。URL 一变即可回到列表。
   */
   const [searchParams, setSearchParams] = useSearchParams();
+  /* 面板本机是否已导入 —— 本机默认不管控，未导入时选项里不出现、也不回落过去 */
+  const localHostInfo = useLocalHost();
+  const localUsable = isAdmin && localHostInfo.enabled;
   const hostParam = searchParams.get('host') ?? '';
   const view: 'fleet' | 'host' = hostParam ? 'host' : 'fleet';
   const hostId = hostParam || 'local';
@@ -936,6 +940,9 @@ export function PortGuard() {
         </div>
       }
     >
+      {/* 面板本机默认不管控；未导入时提示一次（已导入 / 非管理员不渲染） */}
+      <LocalHostNotice />
+
       <Notice tone="info" title={t('ports.heuristicTitle')}>
         {t('ports.heuristicPre')}<b>{t('ports.heuristicBold')}</b>
         {t('ports.heuristicPost')}
@@ -972,8 +979,8 @@ export function PortGuard() {
               options={
                 hostOptions.length
                   ? hostOptions
-                  : /* 兜底只给管理员：普通用户看不到本机 */
-                    isAdmin
+                  : /* 兜底只给「已导入本机」的管理员：本机默认不管控，未导入时点了必 409 */
+                    localUsable
                     ? [{ label: t('baseline.localOption'), value: 'local' }]
                     : []
               }

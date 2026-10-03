@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -10,10 +13,13 @@ from .. import (
     bulk,
     defaults,
     guest_created,
+    guestip,
     guestpasswd,
     ownership,
+    panelkey,
     quota,
     security,
+    sshremote,
     store,
     vmconfig,
 )
@@ -27,6 +33,7 @@ from ..vm_scope import bind_vm_connection
 from ..pve import (
     ProxmoxError,
     all_connection_clients,
+    client_for_connection,
     connection_label,
     explain_clone_error,
     get_client,
@@ -34,8 +41,6 @@ from ..pve import (
     parallel,
     requested_connection,
 )
-# 复用告警模块里「Guest Agent → 静态配置」的 IP 解析逻辑
-from ..alerting import _pick_ip, _static_ip_from_config
 from ..schemas import (
     BulkRequest,
     CloneRequest,
@@ -75,6 +80,20 @@ def _is_disk_key(key: str) -> bool:
 def _op_connection() -> str:
     """本次操作作用在哪条连接上（与 get_client() 的解析保持一致）。"""
     return requested_connection() or str(store.get_active_connection_id() or "")
+
+
+def _managed_conn_id() -> str:
+    """受管主机归属的连接 id（登记与清理都用它，两边必须是同一个值）。
+
+    与 :func:`_op_connection` 同源，差别只在兜底：老库只有一份 PVE 配置、
+    ``ACTIVE_ID_KEY`` 还没写过时，``get_active_connection_id()`` 是空串，而
+    真正生效的是 ``get_connections()[0]``。登记时存了空串，删机器时就再也
+    找不到那台主机，所以这里退回生效连接的 id。
+    """
+    cid = _op_connection()
+    if cid:
+        return cid
+    return str((store.get_active_connection() or {}).get("id") or "")
 
 
 async def require_vm_access(
@@ -131,65 +150,8 @@ async def _storage_type_map(node: str) -> Dict[str, str]:
 
 
 # =============================================================== read paths
-async def _resolve_vm_ip(client: Any, vm: Dict[str, Any]) -> str:
-    """列表用：尽力解析 IP。运行中先问 Guest Agent（短超时），否则退回静态配置。"""
-    node = vm.get("node")
-    vmid = vm.get("vmid")
-    status = vm.get("status")
-    if not node or not vmid:
-        return ""
-    if status == "running":
-        try:
-            interfaces = await asyncio.wait_for(
-                client.qemu_agent_network(node, int(vmid)), timeout=2.0
-            )
-            ip = _pick_ip(interfaces or [])
-            if ip:
-                return ip
-        except Exception:  # noqa: BLE001 - agent 未装/无响应都不影响列表
-            pass
-    try:
-        cfg = await asyncio.wait_for(
-            client.qemu_config(node, int(vmid)), timeout=2.0
-        )
-    except Exception:  # noqa: BLE001
-        return ""
-    return _static_ip_from_config(cfg or {})
-
-
-async def _resolve_ct_ip(client: Any, ct: Dict[str, Any]) -> str:
-    """容器没有 Guest Agent，IP 只能读网卡配置里的静态地址。
-
-    ``ip=dhcp`` 拿不到地址不是错误，返回空串即可 —— 列表里就显示为空。
-    """
-    node = ct.get("node")
-    vmid = ct.get("vmid")
-    if not node or vmid is None:
-        return ""
-    try:
-        cfg = await asyncio.wait_for(
-            client.lxc_config(node, int(vmid)), timeout=2.0
-        )
-    except Exception:  # noqa: BLE001
-        return ""
-    for key in sorted(k for k in (cfg or {}) if str(k).startswith("net")):
-        raw = (cfg or {}).get(key)
-        if not isinstance(raw, str):
-            continue
-        for segment in raw.split(","):
-            segment = segment.strip()
-            if segment.startswith("ip="):
-                value = segment[3:].strip()
-                if value and value not in ("dhcp", "manual"):
-                    return value.split("/")[0]
-    return ""
-
-
-async def _resolve_guest_ip(client: Any, guest: Dict[str, Any]) -> str:
-    """按类型分派 IP 解析：虚拟机问 Guest Agent，容器读网卡配置。"""
-    if guest.get("type") == "lxc":
-        return await _resolve_ct_ip(client, guest)
-    return await _resolve_vm_ip(client, guest)
+# 列表里的「IP 地址」一列统一由 app.guestip 解析（虚拟机的 Guest Agent、容器的
+# PVE 网卡接口、配置里的静态地址三条来源按序尝试），这里不再各留一份实现。
 
 
 async def collect_vms(
@@ -283,7 +245,7 @@ async def collect_vms(
         if with_ip and items:
             # 并发解析，限制并发数避免拖垮 PVE；失败不影响列表返回。
             resolved = await parallel(
-                (_resolve_guest_ip(client, vm) for vm in items), limit=12
+                (guestip.resolve(client, vm) for vm in items), limit=12
             )
             for item, ip in zip(items, resolved):
                 item["ip"] = ip if isinstance(ip, str) else ""
@@ -698,6 +660,141 @@ async def get_vm_quota(
     return await quota.usage(user, "vm")
 
 
+#: 勾了「接入安全管控」的 DHCP 机器：等它自报地址的节奏。机器从创建到 Guest
+#: Agent 能应答通常要 1-3 分钟，给足 10 分钟；超过就放弃（见 _await_managed_registration）
+MANAGED_IP_TRIES = 30
+MANAGED_IP_DELAY = 20.0
+
+
+def _managed_ip(payload: VmCreateRequest) -> str:
+    """「接入安全管控」可以直接用的静态地址；DHCP 或没配时返回空串。
+
+    只取第一个非 DHCP 的地址：有静态地址就当场登记（地址是确定的），
+    多网卡时按网卡顺序取第一个静态的 —— 与 cloud-init 里 ``ipconfig0`` 的
+    优先顺序一致。返回空串表示这台机器是 DHCP、要等它自己报地址。
+    """
+    ci = payload.cloudinit
+    if not ci:
+        return ""
+    for item in ci.ip_configs or []:
+        raw = str(getattr(item, "ip", "") or "").strip()
+        if raw and raw.lower() != "dhcp":
+            return raw.split("/")[0]
+    return ""
+
+
+def _managed_ssh_user(payload: VmCreateRequest) -> str:
+    return str((payload.cloudinit.user if payload.cloudinit else "") or "root")
+
+
+def _managed_host_name(payload: VmCreateRequest, vmid: int) -> str:
+    """受管主机的显示名，形如 ``web01（pve/107）``。
+
+    创建时与「等地址」时（后台任务 / 周期兜底）都要用到，所以抽出来 ——
+    两处拼得不一样的话，界面上同一台机器会换个名字出现。
+    """
+    return f"{payload.name}（{payload.node}/{vmid}）"
+
+
+async def _register_managed(
+    payload: VmCreateRequest, vmid: int, user: Dict[str, Any], ip: str
+) -> None:
+    """把刚下发的机器登记成受管主机（凭据 = 面板统一密钥对）。
+
+    失败**不影响**创建结果：机器已经建好了，登记失败只是少一台被管控的机器，
+    记 warning 让用户能从日志里查到。指纹留空 —— 机器这时还在 cloud-init 阶段，
+    等后台巡检连上后由 ``sshremote.adopt_panel_hosts`` 自动采纳。
+    """
+    try:
+        await sshremote.register_managed_host(
+            name=_managed_host_name(payload, vmid),
+            host=ip,
+            ssh_username=_managed_ssh_user(payload),
+            conn_id=_managed_conn_id(),
+            node=str(payload.node or ""),
+            vmid=int(vmid),
+            owner=str(user.get("username") or ""),
+        )
+    except Exception:  # noqa: BLE001 - 登记失败不该让创建接口报错
+        logger.exception("登记面板下发主机失败：%s（%s/%s）", ip, payload.node, vmid)
+
+
+async def _await_managed_registration(
+    payload: VmCreateRequest, vmid: int, user: Dict[str, Any]
+) -> None:
+    """DHCP 机器：等它自己报出地址，再登记成受管主机（后台任务）。
+
+    为什么必须等：DHCP 的地址在创建那一刻并不存在（cloud-init 里只有 ``ip=dhcp``），
+    面板唯一的来源是**客户机自报** —— 虚拟机走 Guest Agent（见 :mod:`app.guestip`），
+    所以**镜像里得有 qemu-guest-agent**。等不到就记一条 warning 并且不登记：
+    宁可这台机器不进受管主机列表，也不要留一条永远连不上的记录。
+
+    这个任务只覆盖创建后的这十分钟。面板若在这期间重启，它会丢 —— 所以创建时
+    已经把意图写进 sshremote 的待登记队列，由周期作业 ``host_sync`` 兜底。
+    """
+    node = str(payload.node or "")
+    conn_id = _managed_conn_id()
+    for _ in range(MANAGED_IP_TRIES):
+        ip = ""
+        try:
+            client = client_for_connection(conn_id)
+            ip = await guestip.resolve(
+                client,
+                {"node": node, "vmid": int(vmid), "type": "qemu", "status": "running"},
+            )
+        except Exception:  # noqa: BLE001 - 机器还没起来 / 连接抖动都很正常
+            ip = ""
+        if ip:
+            try:
+                await _register_managed(payload, vmid, user, ip)
+                await sshremote.forget_pending_registration(conn_id, node, vmid)
+                logger.info("机器 %s/%s 已自报地址 %s，登记为受管主机", node, vmid, ip)
+            except Exception:  # noqa: BLE001
+                logger.warning("登记 DHCP 机器 %s/%s 失败", node, vmid, exc_info=True)
+            return
+        await asyncio.sleep(MANAGED_IP_DELAY)
+    logger.warning(
+        "机器 %s/%s 在 %d 秒内没有自报地址（镜像里没有 qemu-guest-agent？），"
+        "未登记为受管主机 —— 可在「SSH 安全 → 受管主机」里手工添加",
+        node,
+        vmid,
+        int(MANAGED_IP_TRIES * MANAGED_IP_DELAY),
+    )
+
+
+async def _enqueue_managed_registration(
+    payload: VmCreateRequest, vmid: int, user: Dict[str, Any]
+) -> None:
+    """勾了「接入安全管控」的机器：地址已定就立刻登记，DHCP 则排队等地址。"""
+    if not (payload.cloudinit and payload.cloudinit.enabled):
+        # 没有 cloud-init 就没有注入公钥的入口，面板拿不到登录凭据 —— 这类机器
+        # 等下去也不会有结果（最多等到队列超期），不如当场说清
+        logger.warning(
+            "接入安全管控需要 cloud-init（面板公钥要写进去），%s/%s 未登记为受管主机",
+            payload.node,
+            vmid,
+        )
+        return
+    ip = _managed_ip(payload)
+    if ip:
+        # 静态地址确定，立刻登记（机器还没起来也没关系，指纹由巡检逐轮采纳）
+        await _register_managed(payload, vmid, user, ip)
+        return
+    # DHCP：先把意图记进队列（面板中途重启也不会忘），再起个后台任务盯紧这十分钟
+    conn_id = _managed_conn_id()
+    await sshremote.remember_pending_registration(
+        {
+            "conn_id": conn_id,
+            "node": str(payload.node or ""),
+            "vmid": int(vmid),
+            "name": _managed_host_name(payload, vmid),
+            "ssh_username": _managed_ssh_user(payload),
+            "owner": str(user.get("username") or ""),
+        }
+    )
+    asyncio.create_task(_await_managed_registration(payload, vmid, user))
+
+
 @router.post("/vms")
 async def create_vm(
     payload: VmCreateRequest,
@@ -719,6 +816,16 @@ async def create_vm(
         payload.cloudinit.nameserver = await defaults.effective_dns(
             payload.cloudinit.nameserver
         )
+        # 「接入安全管控」要先把面板公钥写进 cloud-init，机器起来后面板才连得上它
+        # 做采集。前提是地址确定：DHCP 的机器面板无从得知 IP，登记了也是一台永远
+        # 连不上的空主机，所以这里当场拦住，别等用户以后发现它一直「未确认」。
+        # 公钥注入不依赖地址（cloud-init 里写好，机器起来就生效），所以静态与
+        # DHCP 都一样注入。地址哪来的见 _enqueue_managed_registration 的说明 ——
+        # DHCP 的机器等它自己报出地址才登记。
+        if payload.manage:
+            payload.cloudinit.ssh_keys = await panelkey.with_public_key(
+                payload.cloudinit.ssh_keys
+            )
 
     # --- resolve VMID -------------------------------------------------
     vmid = payload.vmid
@@ -730,7 +837,13 @@ async def create_vm(
 
     # --- clone path ---------------------------------------------------
     if payload.clone_from:
-        return await _create_from_clone(payload, vmid, request, user)
+        result = await _create_from_clone(payload, vmid, request, user)
+        # 克隆也要登记 —— 快速部署走的正是这条路（链接克隆模板）。公钥在上面
+        # 的 cloud-init 块里已经注入过了（那块在克隆委派之前），这里只差把主机
+        # 记下来。少了这一步，勾了「接入安全管控」的快速部署会静默失效。
+        if payload.manage:
+            await _enqueue_managed_registration(payload, vmid, user)
+        return result
 
     # --- build config -------------------------------------------------
     storage_types = await _storage_type_map(payload.node)
@@ -807,6 +920,11 @@ async def create_vm(
         ownership.vm_ref(_op_connection(), payload.node, vmid),
         str(user.get("username") or ""),
     )
+
+    # 勾了「接入安全管控」：登记成受管主机。此刻只写一条记录、指纹留空 ——
+    # 机器还在 cloud-init 阶段，等后台巡检连上后自动采纳（见 adopt_panel_hosts）。
+    if payload.manage:
+        await _enqueue_managed_registration(payload, vmid, user)
 
     return {
         "task": upid,
@@ -1061,6 +1179,22 @@ async def vm_power(
     return {"task": task}
 
 
+async def _purge_managed_vm(vmid: int) -> None:
+    """删机后清掉面板为它登记的受管主机及其安全数据（失败只记日志）。
+
+    机器已经删掉了，这一步失败不该让删除接口报错 —— 残留会由周期作业
+    ``sshremote.reconcile_panel_hosts`` 的下一轮核对清掉（那边拿 PVE 的虚拟机
+    清单比对），只是晚几分钟。
+    """
+    try:
+        removed = await sshremote.purge_vm_hosts(vmid, _managed_conn_id())
+    except Exception:  # noqa: BLE001 - 清理失败不影响删除结果
+        logger.warning("清理虚拟机 %s 的受管主机登记失败", vmid, exc_info=True)
+        return
+    if removed:
+        logger.info("虚拟机 %s 已删除，其受管主机登记一并移除：%s", vmid, ", ".join(removed))
+
+
 @router.delete("/vms/{node}/{vmid}")
 async def delete_vm(
     node: str,
@@ -1099,6 +1233,10 @@ async def delete_vm(
     # 连同创建时间记录一起删掉：VMID 会被回收，旧记录贴到重建的同号机器上
     # 比「显示 —」更难发现。
     await guest_created.drop_record(_op_connection(), node, vmid, "qemu")
+    # 面板为这台机器登记的受管主机（勾了「接入安全管控」才会有）也一并清掉，
+    # 连同它在「SSH 安全 / 登录审计 / 端口与进程 / 安全基线」里的数据 ——
+    # 机器都没了，再留着只会每轮巡检白拨一条 SSH。
+    await _purge_managed_vm(vmid)
     return {"task": task}
 
 

@@ -57,7 +57,7 @@ async def health() -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "status": "ok",
         "pve_connected": False,
-        "version": "0.1.3",
+        "version": "0.1.4",
         "pve_version": None,
         "node_count": 0,
         "error": None,

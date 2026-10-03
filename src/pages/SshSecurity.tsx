@@ -21,7 +21,7 @@ import { PageShell } from '../components/Layout';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge, TagList } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
-import { Field, Input } from '../components/ui/Input';
+import { Field, Input, Select, type SelectOptionItem } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
 import { Notice } from '../components/ui/EmptyState';
 import {
@@ -39,7 +39,8 @@ import { formatDateTime, formatNumber, formatRelative } from '../utils/format';
 import { PagerBar, usePaged } from '../hooks/usePaged';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
-import { useT, type TFunc } from '../i18n';
+import { LocalHostNotice, useLocalHost } from '../components/LocalHostNotice';
+import { useT } from '../i18n';
 import type {
   Fail2banJail,
   FleetHost,
@@ -48,40 +49,6 @@ import type {
   SshLoginRow,
 } from '../api/types';
 
-/**
- * 作用域药丸的悬浮说明。
- *
- * 原来这些指标（失败 / 来源 IP / 成功登录 / fail2ban 状态）摊在一张「多机汇总」
- * 表格里，占了半屏却只是给人扫一眼。收进药丸的 title 后，页面短了，信息也没丢。
- */
-function hostTooltip(
-  t: TFunc,
-  name: string,
-  subtitle: string,
-  state?: FleetHost,
-): string {
-  const parts = [name, subtitle];
-  if (!state) return [...parts, t('ssh.tipNoData')].join(' · ');
-
-  const { summary, fail2ban } = state;
-  parts.push(
-    t('ssh.tipSummary', {
-      failures: summary.failures,
-      ips: summary.distinct_ips,
-      logins: summary.logins,
-    }),
-  );
-  parts.push(
-    fail2ban?.installed
-      ? fail2ban.running
-        ? t('ssh.tipJails', { n: fail2ban.jails.length })
-        : t('ssh.tipFail2banDown')
-      : t('ssh.tipFail2banMissing'),
-  );
-  if (!state.ok) parts.push(t('ssh.tipConnectFailed'));
-  return parts.join(' · ');
-}
-
 export function SshSecurity() {
   const t = useT();
   const { hasPermission, isAdmin } = useAuth();
@@ -89,6 +56,8 @@ export function SshSecurity() {
   const qc = useQueryClient();
   const canManage = hasPermission('ssh.manage');
 
+  /* 面板本机是否已导入 —— 未导入时作用域里不出现本机，默认落到受管主机上 */
+  const localHostInfo = useLocalHost();
   /* 作用域：'local' = 面板本机，其它 = 受管主机 id */
   const [scopeId, setScopeId] = useState('local');
   const [busy, setBusy] = useState(false);
@@ -103,25 +72,26 @@ export function SshSecurity() {
   const [showJailForm, setShowJailForm] = useState(false);
 
   /* ---- 本机 ----
-     面板本机的数据只有管理员能读（后端按归属隔离），所以这里直接按身份关掉，
-     免得普通用户一进页面就吃三个 403。 */
+     本机数据只有管理员能读（后端按归属隔离），而且**必须已导入**（未导入是 409）。
+     两个条件不满足就不发请求，免得一进页面就吃三个错误。 */
+  const localReady = isAdmin && localHostInfo.enabled;
   const overviewQuery = useQuery({
     queryKey: ['ssh', 'overview'],
     queryFn: () => sshApi.overview(),
-    enabled: isAdmin,
+    enabled: localReady,
     refetchInterval: 60_000,
     retry: false,
   });
   const loginsQuery = useQuery({
     queryKey: ['ssh', 'logins'],
     queryFn: () => sshApi.logins(100),
-    enabled: isAdmin,
+    enabled: localReady,
     retry: false,
   });
   const knownQuery = useQuery({
     queryKey: ['ssh', 'known-ips'],
     queryFn: sshApi.knownIps,
-    enabled: isAdmin,
+    enabled: localReady,
     retry: false,
   });
 
@@ -157,14 +127,16 @@ export function SshSecurity() {
       }
     : null;
 
-  /* 普通用户看不到本机：作用域默认落到第一台自己的受管主机上。
-     （本机那一项只有管理员才有，见下面的 scopePills。） */
+  /* 作用域的落点。本机要**已导入**才可用（默认不管控本机，见 LocalHostNotice）：
+     * 状态还没拿到先不动 —— 否则会先跳到受管主机、等本机状态回来又不跳回去；
+     * 本机可用就保持用户的选择；不可用则落到第一台已启用的受管主机上。 */
   useEffect(() => {
-    if (isAdmin) return;
+    if (isAdmin && !localHostInfo.state) return;
     if (scopeId !== 'local') return;
+    if (isAdmin && localHostInfo.enabled) return;
     const first = hosts.find((row) => row.enabled);
-    if (first) setScopeId(first.id);
-  }, [isAdmin, hosts, scopeId]);
+    setScopeId(first ? first.id : '');
+  }, [isAdmin, localHostInfo.state, localHostInfo.enabled, hosts, scopeId]);
 
   const fleetById = new Map((fleet?.hosts ?? []).map((item) => [item.id, item]));
 
@@ -183,43 +155,18 @@ export function SshSecurity() {
   const bannedNow = jails.reduce((sum, item) => sum + item.currently_banned, 0);
   const bannedTotal = jails.reduce((sum, item) => sum + item.total_banned, 0);
 
-  /* 作用域切换条：本机固定排第一，其余只列「已启用」的主机
-     （与旧的下拉框可选范围一致），状态与失败数取多机汇总里的最新值 */
-  const scopePills = [
-    /* 本机只有管理员能看：后端按归属隔离，普通用户拿到 'local' 只会 403 */
-    ...(isAdmin
-      ? [
-          {
-            id: 'local',
-            name: t('ssh.localName'),
-            title: hostTooltip(
-              t,
-              localHost?.name ?? t('ssh.localName'),
-              t('ssh.panelHost'),
-              localHost ?? undefined,
-            ),
-            ok: localHost?.ok ?? null,
-            failures: local ? local.report.summary.failures : null,
-          },
-        ]
+  /* 作用域下拉的选项：本机固定排第一，其余只列「已启用」的主机 ——
+     与「端口与进程 / 安全基线 / 登录审计」三页的主机选择器同一个口径，
+     几台主机时下拉比一排药丸更省地方，也不会把标题挤到第二行。 */
+  const scopeOptions: SelectOptionItem[] = [
+    /* 本机要**已导入**且是管理员才出现：普通用户拿到 'local' 只会 403，
+       未导入时更是 409 */
+    ...(isAdmin && localHostInfo.enabled
+      ? [{ value: 'local', label: t('ssh.localName') }]
       : []),
     ...hosts
       .filter((row) => row.enabled)
-      .map((row) => {
-        const state = fleetById.get(row.id);
-        return {
-          id: row.id,
-          name: row.name || row.host,
-          title: hostTooltip(
-            t,
-            row.name || row.host,
-            `${row.username}@${row.host}:${row.port}`,
-            state,
-          ),
-          ok: state?.ok ?? null,
-          failures: state?.summary.failures ?? null,
-        };
-      }),
+      .map((row) => ({ value: row.id, label: row.name || row.host })),
   ];
 
   useEffect(() => {
@@ -567,6 +514,9 @@ export function SshSecurity() {
         </span>
       </div>
 
+      {/* 面板本机默认不管控；未导入时提示一次（已导入 / 非管理员不渲染） */}
+      <LocalHostNotice />
+
       {/* ---------------- 当前主机监测 ---------------- */}
       <div className="section-block">
         <div className="section-title">
@@ -577,29 +527,13 @@ export function SshSecurity() {
 
         <div className="ssh-scope-bar">
           <span className="ssh-scope-label">{t('ssh.scopeLabel')}</span>
-          <div className="ssh-pills">
-            {scopePills.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`ssh-pill ${scopeId === item.id ? 'is-active' : ''}`}
-                title={item.title}
-                aria-pressed={scopeId === item.id}
-                onClick={() => setScopeId(item.id)}
-              >
-                <span
-                  className={`ssh-pill-dot ${item.ok === false ? 'is-down' : ''}`}
-                  aria-hidden="true"
-                />
-                <span className="ssh-pill-name">{item.name}</span>
-                {item.failures ? (
-                  <span className="ssh-pill-count">
-                    {formatNumber(item.failures)}
-                  </span>
-                ) : null}
-              </button>
-            ))}
-          </div>
+          <Select
+            aria-label={t('ssh.scopeLabel')}
+            value={scopeId}
+            onChange={(event) => setScopeId(event.target.value)}
+            options={scopeOptions}
+            style={{ maxWidth: 280 }}
+          />
           <span className="ssh-scope-meta">
             {fleet ? (
               <Badge

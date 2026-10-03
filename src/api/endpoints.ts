@@ -176,6 +176,8 @@ import type {
   CertOptions,
   RemoteCertificate,
   TencentCertConfig,
+  LocalHostState,
+  PanelKeyState,
   NotificationListResult,
   SearchResult,
 } from './types';
@@ -1728,6 +1730,32 @@ export const sshFleetApi = {
       `/ssh/fleet/${hostId}/fail2ban/jail`,
       body,
     ),
+};
+
+/* ---- 面板 SSH 密钥对 ----
+   面板下发虚拟机时用它把公钥写进 cloud-init。私钥加密落库、永不回传，
+   所以只有两个动作：看公钥、轮换。 */
+export const sshPanelKeyApi = {
+  state: () => get<PanelKeyState>('/ssh/panel-key'),
+  /**
+   * 轮换密钥对。**旧公钥立即失效** —— 已用它接入的机器会连不上，
+   * 返回里的 `affected` 就是这些机器的数量。
+   */
+  rotate: () =>
+    post<{ ok: boolean; key: PanelKeyState; affected: number }>(
+      '/ssh/panel-key/rotate',
+    ),
+};
+
+/* ---- 面板本机（导入 / 移出）----
+   本机默认不在管控范围内。state() 特意**不要求已导入** —— 否则未导入时前端
+   连「该不该显示导入按钮」都问不出来。 */
+export const sshLocalApi = {
+  state: () => get<LocalHostState>('/ssh/local'),
+  /** 导入本机（需要二次确认，后端会校验 step-up） */
+  importLocal: () => post<{ ok: boolean; local: LocalHostState }>('/ssh/local'),
+  /** 移出本机；不删已有数据，只是不再采集 */
+  removeLocal: () => del<{ ok: boolean; local: LocalHostState }>('/ssh/local'),
 };
 
 /* ---------------------------------------------------------------------------

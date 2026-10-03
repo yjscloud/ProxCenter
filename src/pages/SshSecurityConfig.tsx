@@ -18,6 +18,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { sshApi, sshFleetApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { PageShell } from '../components/Layout';
+import { LocalHostCard } from '../components/LocalHostNotice';
+import { PanelKeyCard } from '../components/PanelKeyCard';
 import { Card, CardHeader } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -220,7 +222,16 @@ export function SshSecurityConfig() {
       header: t('sshConfig.colHost'),
       render: (row) => (
         <div>
-          <div className="fw-600 fs-sm">{row.name}</div>
+          <div className="fw-600 fs-sm">
+            {row.name}
+            {/* 面板下发虚拟机时自动登记的主机：凭据是面板统一密钥对、首连自动
+                信任指纹，和用户手工添加的那几台不是一回事，标出来免得混淆。 */}
+            {row.origin === 'panel' ? (
+              <Badge variant="neutral" size="sm">
+                {t('sshConfig.originPanel')}
+              </Badge>
+            ) : null}
+          </div>
           <div className="fs-xs text-muted mono">
             {row.username}@{row.host}:{row.port}
           </div>
@@ -460,6 +471,14 @@ export function SshSecurityConfig() {
           )}
         </Card>
       </div>
+
+      {/* 面板本机：已导入时才渲染。它不是受管主机（没有凭据、不走 SSH），
+          所以单独一张卡片，只提供「移出」；容器部署下本机没有意义，不渲染。 */}
+      <LocalHostCard />
+
+      {/* 面板 SSH 公钥：下发虚拟机时用它注入公钥，之后面板自己 SSH 进去采集。
+          做成独立组件，避免把这一页再撑长。 */}
+      <PanelKeyCard />
 
       <Modal
         open={Boolean(ownerTarget)}

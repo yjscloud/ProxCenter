@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -592,3 +593,84 @@ class TestNotifySourcesApi:
         resp = api.put("/api/alerts/notify-sources", json={}, headers=headers)
         assert resp.status_code == 200
         assert resp.json()["notify_enabled"] == alerting.default_notify_sources()
+
+
+class TestForgetHost:
+    """主机被移除（手工删除，或它的虚拟机被删掉）后，它**还挂着的**告警要一起清掉。
+
+    主机都没了，巡检再也不会跑到它，这些告警永远等不到「恢复」那几轮 ——
+    不清掉就会在告警页的「当前告警」里一直挂着，看着像一直没修好。
+    """
+
+    def _mark(self, key: str, source: str, node: str, target: str) -> None:
+        _run(
+            alerting.mark_active(
+                key,
+                {
+                    "username": "admin",
+                    "rule_id": "ssh-fail",
+                    "rule_name": "SSH 登录失败次数",
+                    "target_type": "ssh",
+                    "target": target,
+                    "metric": "ssh_fail",
+                    "value": 5.0,
+                    "threshold": 3.0,
+                    "node": node,
+                    "ip": "1.2.3.4",
+                    "vmid": None,
+                    "ts": int(time.time()),
+                    "notify_source": source,
+                },
+            )
+        )
+
+    def test_clears_only_that_hosts_active_alerts(self, db) -> None:
+        name = "web1（pve/100）"
+        # 远程 SSH 告警：主机名写在 node，target 是「主机名:IP」
+        self._mark("k1", alerting.SOURCE_SSHREMOTE, name, f"{name}:1.2.3.4")
+        # 端口告警：主机名直接就是 target，node 是空的
+        self._mark("k2", alerting.SOURCE_PORTGUARD, "", name)
+        # 别的主机
+        self._mark(
+            "k3", alerting.SOURCE_SSHREMOTE, "web2（pve/101）", "web2（pve/101）:5.5.5.5"
+        )
+        # 名字撞上了，但来源不在名单里 → 不动
+        self._mark("k4", alerting.SOURCE_RESOURCE, name, "node/pve")
+
+        removed = _run(
+            alerting.forget_host(
+                name, (alerting.SOURCE_SSHREMOTE, alerting.SOURCE_PORTGUARD)
+            )
+        )
+
+        assert removed == 2
+        assert set(_run(alerting.load_active())) == {"k3", "k4"}
+
+    def test_history_survives(self, db) -> None:
+        """告警历史是「这台机器当时出过什么事」的痕迹，不随主机一起消失。"""
+        name = "web1（pve/100）"
+        _run(
+            alerting.record(
+                {
+                    "username": "admin",
+                    "rule_id": "ssh-fail",
+                    "rule_name": "SSH 登录失败次数",
+                    "target_type": "ssh",
+                    "target": f"{name}:1.2.3.4",
+                    "metric": "ssh_fail",
+                    "result": "sent",
+                    "kind": "alarm",
+                },
+                source=alerting.SOURCE_SSHREMOTE,
+            )
+        )
+        self._mark("k1", alerting.SOURCE_SSHREMOTE, name, f"{name}:1.2.3.4")
+
+        _run(alerting.forget_host(name, (alerting.SOURCE_SSHREMOTE,)))
+
+        assert _run(alerting.load_active()) == {}
+        assert len(_run(alerting.history(limit=10))) == 1
+
+    def test_empty_input_is_a_noop(self, db) -> None:
+        assert _run(alerting.forget_host("", (alerting.SOURCE_SSHREMOTE,))) == 0
+        assert _run(alerting.forget_host("web1", ())) == 0

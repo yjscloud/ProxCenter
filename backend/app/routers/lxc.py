@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from .. import (
     defaults,
     guest_created,
+    guestip,
     guestpasswd,
     ownership,
     quota,
@@ -85,32 +86,12 @@ router = APIRouter(
 
 # =============================================================== read paths
 async def _resolve_ct_ip(client: Any, ct: Dict[str, Any]) -> str:
-    """容器没有 Guest Agent，IP 只能从网卡配置里读静态地址。
+    """容器 IP：配置里的静态地址优先，DHCP 的去问运行中的容器。
 
-    ``ip=dhcp`` 时确实拿不到 —— 那不是失败，返回空串即可。
+    实现在 :mod:`app.guestip`（容器与虚拟机的列表共用一份；DHCP 容器要读
+    ``/lxc/{vmid}/interfaces`` 才拿得到地址，那部分以前只在虚拟机侧有）。
     """
-    node = ct.get("node")
-    vmid = ct.get("vmid")
-    if not node or vmid is None:
-        return ""
-    try:
-        cfg = await asyncio.wait_for(
-            client.lxc_config(node, int(vmid)), timeout=2.0
-        )
-    except Exception:  # noqa: BLE001 - 单台取不到 IP 不该让整个列表失败
-        return ""
-    for key in sorted(k for k in (cfg or {}) if k.startswith("net")):
-        raw = (cfg or {}).get(key) or ""
-        if not isinstance(raw, str):
-            continue
-        for segment in raw.split(","):
-            segment = segment.strip()
-            if segment.startswith("ip="):
-                value = segment[3:].strip()
-                if value and value not in ("dhcp", "manual"):
-                    # 可能是 192.168.1.5/24，也可能是 ip=dhcp,ip6=auto
-                    return value.split("/")[0]
-    return ""
+    return await guestip.resolve(client, ct)
 
 
 @router.get("/lxc")

@@ -653,6 +653,19 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     [queryClient, isLxc],
   );
 
+  /* 勾了「接入安全管控」的虚拟机在**创建那一刻**就登记成了受管主机（见
+     backend/app/routers/vms._register_managed），于是「端口与进程 / 安全基线 /
+     SSH 安全」三页的主机清单与全平台总览都会多出一台。
+
+     但那两页的总览不是现成数据：前端有 5 分钟 staleTime、后端还有 2 分钟巡检
+     缓存（见 app.reportcache），不失效的话，刚纳管的机器会「看不见」几分钟 ——
+     用户只会以为面板下发的虚拟机没被纳管。这里一并作废，让它们重新取一次。 */
+  const invalidateSecurityViews = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['ports'] });
+    void queryClient.invalidateQueries({ queryKey: ['baseline'] });
+    void queryClient.invalidateQueries({ queryKey: ['ssh'] });
+  }, [queryClient]);
+
   const doPower = useCallback(
     async (vm: VmSummary, action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
       if (!canWrite) {
@@ -1637,7 +1650,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         <VmCreateWizard
           open={createOpen}
           onClose={() => setCreateOpen(false)}
-          onCreated={() => invalidateGuests()}
+          onCreated={() => {
+            invalidateGuests();
+            invalidateSecurityViews();
+          }}
         />
       )}
 

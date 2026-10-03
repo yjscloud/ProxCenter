@@ -10,13 +10,16 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
 
 from . import crypto, database, i18n, mailer, notifications, prefs, site, store
 from .pve import get_client
+# 客户机 IP 的解析（Guest Agent / 容器网卡 / 静态配置）统一在 app.guestip，
+# 这里只是把「只按 node+vmid 解析虚拟机 IP」那个入口再导出一份用
+from .guestip import resolve_vm_ip
 
 logger = logging.getLogger(__name__)
 
@@ -1436,6 +1439,40 @@ async def clear_active(key: str) -> None:
         await db.commit()
 
 
+async def forget_host(name: str, sources: Iterable[str]) -> int:
+    """清掉某台主机**还挂着的活动告警**（主机被移除时调用），返回清掉几条。
+
+    主机都没了，巡检再也不会跑到它，这些告警永远等不到「恢复」那几轮 ——
+    留着就会在告警页的「当前告警」里一直挂着，看着像一直没修好。
+
+    ``name`` 是主机显示名（``ssh_hosts.name``，形如 ``web01（pve/100）``）：
+    远程 SSH 告警把它写在 ``node``、把 ``name:ip`` 写在 ``target``；端口告警
+    直接把它写在 ``target`` 上。这里三种写法都覆盖。
+
+    只清 ``alert_active``，**不动 ``alert_history``** —— 历史回答的是
+    「这台机器当时出过什么事」，是痕迹，不该因为机器被删就一起消失。
+    """
+    target = str(name or "")
+    wanted = {str(item) for item in sources or ()}
+    if not target or not wanted:
+        return 0
+    removed = 0
+    for key, row in (await load_active()).items():
+        if str(row.get("notify_source") or "") not in wanted:
+            continue
+        state_target = str(row.get("target") or "")
+        node = str(row.get("node") or "")
+        if (
+            node != target
+            and state_target != target
+            and not state_target.startswith(target + ":")
+        ):
+            continue
+        await clear_active(key)
+        removed += 1
+    return removed
+
+
 async def recovery_confirmed(key: str, row: Dict[str, Any]) -> bool:
     """该对象现在可以判定为「已恢复」了吗。
 
@@ -1564,73 +1601,6 @@ def _label(res: Dict[str, Any], target_type: str) -> str:
     if target_type == "node":
         return str(res.get("node") or "")
     return str(res.get("name") or res.get("vmid") or "")
-
-
-# ---------------------------------------------------------------- IP 解析
-IPCONFIG_RE = re.compile(r"(?:^|,)\s*ip=([^,]+)")
-
-
-def _pick_ip(interfaces: List[Dict[str, Any]]) -> str:
-    """从 Guest Agent 的网卡列表里挑一个可用的业务地址（优先 IPv4）。"""
-    candidates: List[str] = []
-    for item in interfaces or []:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("name") or "") == "lo":
-            continue
-        for addr in item.get("ip-addresses") or []:
-            if not isinstance(addr, dict):
-                continue
-            value = str(addr.get("ip-address") or "").strip()
-            if not value:
-                continue
-            if value.startswith("127.") or value.startswith("169.254."):
-                continue
-            if value in ("::1",) or value.lower().startswith("fe80"):
-                continue
-            candidates.append(value)
-    for value in candidates:
-        if ":" not in value:
-            return value
-    return candidates[0] if candidates else ""
-
-
-def _static_ip_from_config(cfg: Dict[str, Any]) -> str:
-    """从 VM 配置的 cloud-init / 网卡参数里取静态 IP（DHCP 返回空）。"""
-    for key in ("ipconfig0", "net0", "net1", "net2"):
-        raw = str((cfg or {}).get(key) or "")
-        if not raw:
-            continue
-        match = IPCONFIG_RE.search(raw)
-        if not match:
-            continue
-        value = match.group(1).split("/")[0].strip()
-        if not value or value.lower() in ("dhcp", "auto", "manual", "none"):
-            continue
-        return value
-    return ""
-
-
-async def resolve_vm_ip(client: Any, node: str, vmid: Any) -> str:
-    """尽力解析虚拟机 IP：先问 Guest Agent，再退回配置里的静态地址。"""
-    if not node or not vmid:
-        return ""
-    try:
-        interfaces = await asyncio.wait_for(
-            client.qemu_agent_network(node, int(vmid)), timeout=5.0
-        )
-    except Exception:  # agent 未装 / 无响应都不影响告警本身
-        interfaces = []
-    ip = _pick_ip(interfaces or [])
-    if ip:
-        return ip
-    try:
-        cfg = await asyncio.wait_for(
-            client.qemu_config(node, int(vmid)), timeout=5.0
-        )
-    except Exception:
-        return ""
-    return _static_ip_from_config(cfg or {})
 
 
 def host_address(client: Any) -> str:

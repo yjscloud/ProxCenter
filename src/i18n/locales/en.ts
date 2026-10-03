@@ -4266,6 +4266,54 @@ export const en: Partial<Record<MessageKey, string>> = {
   'ssh.subtitle':
     'Panel host log statistics plus managed remote hosts (SSH) in one place: collection, bans and alerts',
   'ssh.localName': 'This host',
+  'panelKey.title': 'Panel SSH public key',
+  'panelKey.subtitle': 'Used to bring provisioned VMs under security monitoring',
+  'panelKey.body':
+    'When you tick “Add to security monitoring” while creating a VM, the panel writes the key below into that machine’s cloud-init and registers it as a managed host once it boots. The private key is stored encrypted and is never displayed or sent to the browser.',
+  'panelKey.absent':
+    'Not generated yet. It is created automatically the first time you provision a VM with “Add to security monitoring” — a deployment that never used the feature does not get a stray key. You can also create one now with “Rotate key”.',
+  'panelKey.inUse': '{n} in use',
+  'panelKey.copy': 'Copy public key',
+  'panelKey.copied': 'Public key copied',
+  'panelKey.copiedHint': 'Paste it into any machine’s authorized_keys',
+  'panelKey.rotate': 'Rotate key',
+  'panelKey.rotateConfirm': 'Confirm rotation ({n} affected)',
+  'panelKey.rotateWarn':
+    'The old public key stops working immediately: the {n} machine(s) above will no longer be reachable — you must provision them again or add the new key to their authorized_keys by hand. Click the button once more to proceed.',
+  'panelKey.rotated': 'Key rotated',
+  'panelKey.rotatedHint': '{n} host(s) affected and must be re-onboarded',
+  'panelKey.rotateFailed': 'Rotation failed',
+  'panelKey.rotateFailedHint': 'Try again in a moment; check the backend log if it keeps failing',
+  'vmCreate.ciManage': 'Add to security monitoring',
+  'vmCreate.ciManageHint':
+    'Writes the panel public key into cloud-init and registers the VM as a managed host once it boots (the panel’s shared key pair is used, and the host key is trusted on first connect). The address is known, so it is registered right away. You can skip it — hosts can always be added by hand later.',
+  'vmCreate.ciManageNeedIp':
+    'DHCP works too: once the machine boots, the panel waits for it to report its address (via the guest agent) and registers it then — the image must include qemu-guest-agent. Without it, use a static IP or add the host by hand after it is created.',
+  'sshConfig.originPanel': 'Provisioned',
+  'managedSources.hint':
+    'Hosts come from two places: the ones you add by hand, and machines auto-onboarded by ticking “Add to security monitoring” while provisioning (needs cloud-init; a static IP is registered immediately, a DHCP one waits for the machine to report its address and needs an image with qemu-guest-agent; the key is under SSH security → Config). The server running the panel has to be imported separately with the switch above.',
+  'managedSources.hintContainer':
+    'Hosts come from two places: the ones you add by hand, and machines auto-onboarded by ticking “Add to security monitoring” while provisioning (needs cloud-init and a static IP). The panel is running in a container, so the “this host” scope is not offered — a container reads its own data, not the host’s.',
+  'localHost.removed': 'Panel host removed',
+  'localHost.removedHint': 'The “this host” scope is gone from all four features; collected data is kept',
+  'localHost.removeFailed': 'Removal failed',
+  'localHost.removeFailedHint': 'Try again in a moment; check the backend log if it keeps failing',
+  'sshConfig.localPanelName': 'Panel host',
+  'sshConfig.localSubtitle':
+    'The server running the panel: no SSH, it reads its own logs and /proc directly',
+  'sshConfig.localActive': 'Under management',
+  'sshConfig.localImportedBy':
+    'Imported by {by} on {when}. This is not a managed host — it has no credentials and is not reached over SSH, so it does not appear in the list below. Removing it drops the “this host” scope from all four features; collected data is kept.',
+  'sshConfig.localRemove': 'Remove this host',
+  'sshConfig.localRemoveConfirm': 'Click again to confirm removal',
+  'localHost.noticeTitle': 'The panel host is not under management yet',
+  'localHost.noticeBody':
+    'SSH security, the security baseline, the port and process scan and the login audit only cover the managed hosts you added — they do not touch the server running the panel by default. Reading its logs and /proc, or changing sshd and fail2ban, needs elevated privileges, so importing it is an explicit step. Importing only flips a switch; no credentials are involved.',
+  'localHost.importAction': 'Import this host',
+  'localHost.imported': 'Panel host imported',
+  'localHost.importedHint': 'The “this host” scope is now available in all four features',
+  'localHost.importFailed': 'Import failed',
+  'localHost.importFailedHint': 'Try again in a moment; check the backend log if it keeps failing',
   'ssh.localPanelName': 'This host (panel)',
   'ssh.panelHost': 'The host running the panel',
   'ssh.tipNoData': 'No data',

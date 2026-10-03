@@ -50,6 +50,7 @@ import {
   Input,
   SegmentedControl,
   Select,
+  Switch,
 } from './ui/Input';
 import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
@@ -115,6 +116,9 @@ export function QuickDeployForm({
   const [gateway, setGateway] = useState('');
   const [ciUser, setCiUser] = useState('root');
   const [password, setPassword] = useState('');
+  /* 接入安全管控：把面板公钥写进 cloud-init，机器起来后自动登记为受管主机。
+     与「自定义部署」向导里的那个开关同一套后端能力。 */
+  const [manage, setManage] = useState(false);
   const [busy, setBusy] = useState(false);
 
   /** 用户自己点过 IP 获取方式：之后不再被「有没有可用网段」的自动判断覆盖 */
@@ -142,6 +146,7 @@ export function QuickDeployForm({
     setGateway('');
     setCiUser('root');
     setPassword('');
+    setManage(false);
     ipModeTouchedRef.current = false;
     /* targetConn 不清：保留上次选的主机（多台 PVE 时省一次选择），下面那个
        effect 只在它为空时兜底选当前连接 */
@@ -476,6 +481,7 @@ export function QuickDeployForm({
             password: password || undefined,
             ip_configs: [ipConfig],
           },
+          manage,
           clone_from: {
             node: tplNode,
             vmid: Number(tplVmid),
@@ -791,6 +797,27 @@ export function QuickDeployForm({
               />
             </Field>
           </div>
+
+          {/* 接入安全管控：**只有虚拟机有这条能力**（与「自定义部署」向导里同一个
+              开关）。快速部署走链接克隆，公钥由后端注入 cloud-init，机器起来后自动
+              登记为受管主机。容器没有 cloud-init，后端 /api/lxc 也不接受这个字段 ——
+              给容器露出这个开关只会让人白勾一下，所以这里按 kind 收掉。
+              包在与相邻字段一致的网格里 —— 否则它夹在两段 form-grid-2 之间既没有
+              上边距也不参与列对齐，看起来像浮在页面上。 */}
+          {isVm ? (
+            <div className="form-grid-2 mt-12">
+              <Switch
+                label={t('vmCreate.ciManage')}
+                checked={manage}
+                onChange={setManage}
+                hint={
+                  ipMode === 'static'
+                    ? t('vmCreate.ciManageHint')
+                    : t('vmCreate.ciManageNeedIp')
+                }
+              />
+            </div>
+          ) : null}
 
           {ipMode === 'static' ? (
             <div className="form-grid-2 mt-12">

@@ -1,7 +1,9 @@
 """SSH 登录安全接口：日志统计、fail2ban 管控、异常登录策略。
 
-读的是**面板所在主机**的 SSH 日志（见 :mod:`app.sshguard`）：这是唯一不需要
-额外凭据就能拿到真实数据的来源。集群里其它宿主机的 SSH 日志面板读不到。
+本机部分读的是**面板所在主机**的 SSH 日志（见 :mod:`app.sshguard`）：这是唯一
+不需要额外凭据就能拿到真实数据的来源，集群里其它宿主机的 SSH 日志面板读不到。
+但**本机默认不在管控范围内**，要用户显式导入（见 :mod:`app.localhost`）——
+读宿主机日志、改 sshd 与 fail2ban 策略都需要相当高的权限，不该默认打开。
 """
 from __future__ import annotations
 
@@ -9,7 +11,8 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import hostscope, security, sshguard, sshremote, store
+from .. import hostscope, localhost, panelkey, security, sshguard, sshremote, store
+from ..formatters import short_hostname
 from ..schemas import (
     SshHostIn,
     SshHostOwnerIn,
@@ -97,7 +100,10 @@ async def remove_host(
     user: Dict[str, Any] = Depends(SSH_MANAGE),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
-    removed = await sshremote.delete_host(host_id)
+    # 走 purge_host 而不是 delete_host：这台主机在「登录审计 / 端口与进程 /
+    # 安全基线」里的数据（导入游标、人工处置、报告缓存与活动告警）一并清掉，
+    # 否则挪到别页还能看到一台已经不存在的机器。
+    removed = await sshremote.purge_host(host_id)
     await security.audit(request, user, "ssh.host_delete", host_id, "success", f"移除 {removed} 台")
     return {"ok": True, "removed": removed}
 
@@ -303,6 +309,131 @@ async def _remote_action(host_id: str, action: str, jail: str, ip: str) -> Dict[
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ------------------------------------------------------------ 面板 SSH 密钥对
+# 「面板下发」虚拟机会用它把公钥写进 cloud-init，之后面板自己 SSH 进去做安全
+# 采集（见 :mod:`app.panelkey`）。私钥加密落库、永不回传，所以这里只有两个接口：
+# 看公钥、轮换密钥。
+
+@router.get("/panel-key")
+async def panel_key_state(
+    user: Dict[str, Any] = Depends(SSH_VIEW),
+) -> Dict[str, Any]:
+    """当前面板公钥，以及有多少台主机靠它接入。
+
+    特意**不**顺手生成：密钥只在真正要用的那一刻（下发一台勾了「接入安全管控」
+    的机器）才产生 —— 一个从没用过这功能的部署不该平白多出一把钥匙。
+    """
+    hostscope.assert_admin(user)
+    state = await panelkey.state()
+    try:
+        rows = await sshremote.list_hosts(include_disabled=True)
+    except Exception:  # noqa: BLE001 - 统计不到不影响看公钥
+        logger.exception("统计面板下发主机失败")
+        rows = []
+    return {
+        **state,
+        "in_use": sum(1 for row in rows if sshremote.is_panel_managed(row)),
+        "host_total": len(rows),
+    }
+
+
+@router.post("/panel-key/rotate", dependencies=[Depends(hostscope.require_admin)])
+async def rotate_panel_key(
+    request: Request,
+    user: Dict[str, Any] = Depends(SSH_MANAGE),
+    _step_up: Dict[str, Any] = Depends(security.require_step_up()),
+) -> Dict[str, Any]:
+    """轮换面板密钥对（需要二次确认）。
+
+    ⚠️ **旧公钥立即失效** —— 已经用旧公钥接入过的机器，面板再也连不上去，必须
+    重新下发或手工把新公钥追加进对应账号的 ``authorized_keys``。所以把受影响
+    的主机数一并回给前端，让用户在点之前就看到代价。
+    """
+    hostscope.assert_admin(user)
+    try:
+        rows = await sshremote.list_hosts(include_disabled=True)
+        affected = sum(1 for row in rows if sshremote.is_panel_managed(row))
+    except Exception:  # noqa: BLE001
+        logger.exception("统计面板下发主机失败")
+        affected = 0
+    state = await panelkey.rotate(str(user.get("username") or ""))
+    await security.audit(
+        request,
+        user,
+        "ssh.panel_key_rotate",
+        "panel-key",
+        "success",
+        f"轮换面板 SSH 密钥对，受影响主机 {affected} 台",
+    )
+    return {"ok": True, "key": {**state, "in_use": affected}, "affected": affected}
+
+
+# ------------------------------------------------------ 面板本机（导入 / 移出）
+# 本机默认**不在**管控范围内，要用户显式导入：它意味着面板进程去读宿主机的
+# /var/log 与 /proc、改 sshd 配置与 fail2ban 策略，权限相当大；而且容器化部署
+# 下根本读不到宿主机，默认开着只会给出一堆「取不到数据」的假象。
+# 导入不涉及任何凭据 —— 本机不走 SSH，直接读文件。
+
+@router.get("/local")
+async def local_host_state(
+    user: Dict[str, Any] = Depends(SSH_VIEW),
+) -> Dict[str, Any]:
+    """面板本机的管控状态。
+
+    特意**不要求已导入**（组件用 ``require_admin`` 而非 ``require_local_admin``）——
+    否则未导入时前端连「该不该显示导入按钮」都问不出来。
+    """
+    hostscope.assert_admin(user)
+    hostname = short_hostname()
+    return {
+        "id": hostscope.LOCAL_HOST_ID,
+        "name": f"{hostname}（面板本机）",
+        "hostname": hostname,
+        **(await localhost.state()),
+    }
+
+
+@router.post("/local", dependencies=[Depends(hostscope.require_admin)])
+async def import_local_host(
+    request: Request,
+    user: Dict[str, Any] = Depends(SSH_MANAGE),
+    _step_up: Dict[str, Any] = Depends(security.require_step_up()),
+) -> Dict[str, Any]:
+    """把面板本机纳入安全管控（幂等，需要二次确认）。"""
+    state = await localhost.enable(by=str(user.get("username") or ""))
+    await security.audit(
+        request,
+        user,
+        "ssh.local_import",
+        short_hostname(),
+        "success",
+        "面板本机纳入安全管控",
+    )
+    return {"ok": True, "local": {"id": hostscope.LOCAL_HOST_ID, **state}}
+
+
+@router.delete("/local", dependencies=[Depends(hostscope.require_admin)])
+async def remove_local_host(
+    request: Request,
+    user: Dict[str, Any] = Depends(SSH_MANAGE),
+    _step_up: Dict[str, Any] = Depends(security.require_step_up()),
+) -> Dict[str, Any]:
+    """把面板本机移出安全管控（幂等）。
+
+    **不删除任何已有数据** —— 已入库的登录审计事件留着，只是不再采集本机。
+    """
+    state = await localhost.disable()
+    await security.audit(
+        request,
+        user,
+        "ssh.local_remove",
+        short_hostname(),
+        "success",
+        "面板本机移出安全管控",
+    )
+    return {"ok": True, "local": {"id": hostscope.LOCAL_HOST_ID, **state}}
 
 
 @router.get("/overview", dependencies=[Depends(hostscope.require_local_admin)])

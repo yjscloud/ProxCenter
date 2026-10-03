@@ -4222,6 +4222,54 @@ export const zhCN = {
   'ssh.title': 'SSH 登录安全',
   'ssh.subtitle': '本机日志统计 + 受管远程主机（SSH）统一采集、封禁与告警',
   'ssh.localName': '本机',
+  'panelKey.title': '面板 SSH 公钥',
+  'panelKey.subtitle': '下发虚拟机时用它把面板接进安全管控',
+  'panelKey.body':
+    '在「虚拟机 → 新建」里勾选「接入安全管控」时，面板会把下面这把公钥写进那台机器的 cloud-init，机器起来后自动登记为受管主机。私钥在面板里加密保存，不显示、也不回传。',
+  'panelKey.absent':
+    '尚未生成。第一次勾选「接入安全管控」下发虚拟机时会自动生成 —— 没用过这个功能的部署不会平白多出一把钥匙。也可以现在用下面的「轮换密钥」先造一把。',
+  'panelKey.inUse': '{n} 台在用',
+  'panelKey.copy': '复制公钥',
+  'panelKey.copied': '公钥已复制',
+  'panelKey.copiedHint': '可以贴进任意机器的 authorized_keys',
+  'panelKey.rotate': '轮换密钥',
+  'panelKey.rotateConfirm': '确认轮换（影响 {n} 台）',
+  'panelKey.rotateWarn':
+    '轮换后旧公钥立即失效：上面这 {n} 台机器会连不上，必须重新下发、或手工把新公钥追加进它们的 authorized_keys。再点一次按钮即执行。',
+  'panelKey.rotated': '密钥已轮换',
+  'panelKey.rotatedHint': '受影响主机 {n} 台，需要重新接入',
+  'panelKey.rotateFailed': '轮换失败',
+  'panelKey.rotateFailedHint': '请稍后重试；若一直失败请查看后端日志',
+  'vmCreate.ciManage': '接入安全管控',
+  'vmCreate.ciManageHint':
+    '把面板公钥写进 cloud-init，机器起来后自动登记为受管主机（凭据是面板统一密钥对，首次连接自动信任指纹）。不勾也可以，随时能在受管主机里手工添加。',
+  'vmCreate.ciManageNeedIp':
+    '需要给这台机器指定静态 IP：面板要 SSH 进去做采集，DHCP 模式下面板无从得知它的地址。',
+  'sshConfig.originPanel': '面板下发',
+  'managedSources.hint':
+    '主机来自两处：手工添加的受管主机，以及在下发虚拟机时勾选「接入安全管控」自动纳管的机器（需要 cloud-init；静态 IP 创建后立即登记，DHCP 则等机器自报地址、镜像需带 qemu-guest-agent。公钥见「SSH 安全 → 配置」）。运行面板的这台服务器要用上面的开关单独导入。',
+  'managedSources.hintContainer':
+    '主机来自两处：手工添加的受管主机，以及在下发虚拟机时勾选「接入安全管控」自动纳管的机器（需要 cloud-init + 静态 IP）。检测到面板跑在容器里，因此不提供「本机」——容器内读到的是容器自身的数据，不是宿主机的。',
+  'localHost.removed': '已移出面板本机',
+  'localHost.removedHint': '这四个功能里不再出现「本机」作用域，已采集的数据保留',
+  'localHost.removeFailed': '移出失败',
+  'localHost.removeFailedHint': '请稍后重试；若一直失败请查看后端日志',
+  'sshConfig.localPanelName': '面板本机',
+  'sshConfig.localSubtitle':
+    '运行面板的这台服务器：不走 SSH，直接读本机日志与 /proc',
+  'sshConfig.localActive': '已纳入管控',
+  'sshConfig.localImportedBy':
+    '由 {by} 于 {when} 导入。本机不是受管主机 —— 它没有凭据、不走 SSH，所以不出现在下面的列表里。移出后这四个功能里不再出现「本机」，已采集的数据会保留。',
+  'sshConfig.localRemove': '移出本机',
+  'sshConfig.localRemoveConfirm': '再点一次确认移出',
+  'localHost.noticeTitle': '面板本机尚未纳入安全管控',
+  'localHost.noticeBody':
+    '「SSH 安全 / 安全基线 / 端口与进程 / 登录审计」默认只覆盖你添加的受管主机，不碰运行面板的这台服务器 —— 读取它的日志与 /proc、修改 sshd 与 fail2ban 都需要较高权限，所以要你明确导入一次。导入只是打开开关，不需要填任何凭据。',
+  'localHost.importAction': '导入本机',
+  'localHost.imported': '已导入面板本机',
+  'localHost.importedHint': '这四个功能的「本机」作用域现在可以用了',
+  'localHost.importFailed': '导入失败',
+  'localHost.importFailedHint': '请稍后重试；若一直失败请查看后端日志',
   'ssh.localPanelName': '本机（面板）',
   'ssh.panelHost': '面板所在主机',
   'ssh.tipNoData': '暂无数据',

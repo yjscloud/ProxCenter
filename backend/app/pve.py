@@ -768,6 +768,17 @@ class ProxmoxClient:
     async def lxc_status(self, node: str, vmid: int) -> Dict[str, Any]:
         return await self.get(f"/nodes/{node}/lxc/{vmid}/status/current")
 
+    async def lxc_interfaces(self, node: str, vmid: int) -> List[Dict[str, Any]]:
+        """容器内网卡的**实际**地址（``{name, hwaddr, inet, inet6}``）。
+
+        容器没有 Guest Agent，这是唯一能读到它真实地址的接口 —— **DHCP 下发的
+        容器只有从这里才拿得到地址**（配置里只有 ``ip=dhcp``）。前提是容器在运行：
+        已停止的容器 PVE 会直接报错，调用方（见 :mod:`app.guestip`）把它当
+        「拿不到」处理即可。
+        """
+        data = await self.get(f"/nodes/{node}/lxc/{vmid}/interfaces")
+        return data or []
+
     async def lxc_pending(self, node: str, vmid: int) -> List[Dict[str, Any]]:
         data = await self.get(f"/nodes/{node}/lxc/{vmid}/pending")
         return data or []

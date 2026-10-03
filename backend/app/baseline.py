@@ -41,6 +41,7 @@ import shutil
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from . import localhost
 from .formatters import short_hostname
 from .i18n import pick, tr
 
@@ -1635,16 +1636,16 @@ def host_card(row: Dict[str, Any]) -> Dict[str, Any]:
 async def targets(host_ids: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
     """体检目标清单（展示用）：本机在前，受管主机在后。
 
-    ``host_ids=None`` = 不限（含本机）；给了集合则只列集合里的受管主机，
-    且只有集合含 ``"local"`` 时才带上本机 —— 普通用户的集合里没有 ``local``，
-    所以面板本机对他们不可见。
+    ``host_ids=None`` = **受管主机**不限；给了集合则只列集合里的受管主机。
+    本机额外要满足两件事：集合含 ``"local"``（普通用户的集合里没有它），
+    且**用户已显式导入本机**（``localhost.enabled()``）—— 本机默认不管控。
     """
     wanted = {str(item) for item in host_ids} if host_ids is not None else None
     rows = await managed_hosts()
     if wanted is not None:
         rows = [row for row in rows if str(row.get("id")) in wanted]
     cards = [host_card(row) for row in rows]
-    include_local = wanted is None or "local" in wanted
+    include_local = (wanted is None or "local" in wanted) and await localhost.enabled()
     return ([local_host_row()] if include_local else []) + cards
 
 
@@ -1715,7 +1716,7 @@ async def fleet_reports(
     rows = await managed_hosts()
     if wanted is not None:
         rows = [row for row in rows if row["id"] in wanted]
-    include_local = wanted is None or "local" in wanted
+    include_local = (wanted is None or "local" in wanted) and await localhost.enabled()
 
     results = await parallel([collect_remote(row) for row in rows], limit=8) if rows else []
 

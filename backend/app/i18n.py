@@ -360,6 +360,7 @@ PATTERNS: List[Tuple["re.Pattern[str]", str, Tuple[str, ...]]] = [
     (re.compile(r"^落库 (\d+) 个点$"), "{n} points stored", ("n",)),
     (re.compile(r"^退避中（已连续失败 (\d+) 次）$"), "Backing off ({n} consecutive failures)", ("n",)),
     (re.compile(r"^清理 (\d+) 行$"), "{n} rows purged", ("n",)),
+    (re.compile(r"^清理 (\d+) 台已删除主机$"), "{n} deleted hosts purged", ("n",)),
     (re.compile(r"^续期 (\d+) 张、失败 (\d+) 张$"), "{n} renewed, {m} failed", ("n", "m")),
     (re.compile(r"^续期 (\d+) 张$"), "{n} renewed", ("n",)),
     (re.compile(r"^(\d+) 项$"), "{n} items", ("n",)),
@@ -540,6 +541,7 @@ ZH_EN: Dict[str, str] = {
     "监控历史采样": "Metrics history sampling",
     "证书状态同步与续期": "Certificate sync & renewal",
     "内网穿透看护": "Tunnel watchdog",
+    "受管主机核对": "Managed host reconciliation",
     "监控历史保留清理": "Metrics history retention purge",
     "站内通知保留清理": "Notification retention purge",
     "API Token 残留清理": "API token residue purge",
@@ -564,6 +566,9 @@ ZH_EN: Dict[str, str] = {
         "Restart frpc when the process is gone (only when auto-restart is enabled)",
     "按 METRICS_RETENTION_DAYS 清理超期的指标采样行":
         "Purge metrics sample rows older than METRICS_RETENTION_DAYS",
+    "核对「面板下发」的受管主机与 PVE 上的虚拟机是否一致，清掉已删除机器留下的安全数据":
+        "Reconcile panel-provisioned managed hosts against PVE VMs and drop the security data "
+        "left behind by deleted machines",
     "清理已读且超期的站内消息": "Purge read notifications past their retention",
     "清理过期 / 已吊销超过 30 天的 API Token 记录":
         "Purge API tokens expired or revoked more than 30 days ago",

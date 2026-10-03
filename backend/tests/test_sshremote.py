@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -20,7 +21,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
-from app import sshguard, sshremote  # noqa: E402
+from app import guestip, pve, reportcache, sshguard, sshremote, store  # noqa: E402
 from test_api_routes import api, auth_headers, user_with_permissions  # noqa: E402,F401
 
 NOW = time.time()
@@ -436,3 +437,290 @@ class TestFingerprintCapture:
         assert result["ok"] is True
         assert result["fingerprint"] == "SHA256:abcdef"
         assert saved["known_host"] == "SHA256:abcdef"
+
+
+# --------------------------------------------- 移除主机：连带清掉四套安全数据
+class TestManagedHostPurge:
+    """虚拟机删除之后（或它在 PVE 上被直接删掉之后），受管主机登记的清理规则。
+
+    用例不碰数据库：``list_hosts`` / ``purge_host`` 换成桩，验证的是「哪些行
+    该被清」这个判断 —— 判错了才是真正的风险：漏清理会让界面一直挂着一台
+    连不上的机器，误清理会把用户手工添加的主机也一起删掉。
+    """
+
+    def _row(self, **kwargs: Any) -> Dict[str, Any]:
+        row = {
+            "id": "h1",
+            "name": "web1（pve/100）",
+            "host": "10.0.0.1",
+            "origin": sshremote.ORIGIN_PANEL,
+            "node": "pve",
+            "vmid": 100,
+            "conn_id": "c1",
+        }
+        row.update(kwargs)
+        return row
+
+    @pytest.fixture()
+    def purged(self, monkeypatch) -> List[str]:
+        """把真正的清理换成记录：断言「清了哪几台」即可。"""
+        seen: List[str] = []
+
+        async def fake_purge(host_id: str) -> int:
+            seen.append(host_id)
+            return 1
+
+        monkeypatch.setattr(sshremote, "purge_host", fake_purge)
+        return seen
+
+    def _stub_hosts(self, monkeypatch, rows: List[Dict[str, Any]]) -> None:
+        async def fake_list(include_disabled: bool = True) -> List[Dict[str, Any]]:
+            return rows
+
+        monkeypatch.setattr(sshremote, "list_hosts", fake_list)
+
+    # ---- 匹配规则
+    def test_matches_by_vmid_not_by_node(self) -> None:
+        assert sshremote._is_vm_host(self._row(), 100, "c1")
+        # 迁移之后节点名就过时了：按节点匹配会把迁移过的机器当成「已删除」
+        assert sshremote._is_vm_host(self._row(node="pve-2"), 100, "c1")
+
+    def test_ignores_other_vmid_and_other_connection(self) -> None:
+        assert not sshremote._is_vm_host(self._row(), 101, "c1")
+        assert not sshremote._is_vm_host(self._row(), 100, "c2")
+
+    def test_manual_hosts_are_never_touched(self) -> None:
+        """手工添加的主机与虚拟机的生命周期无关。"""
+        assert not sshremote._is_vm_host(self._row(origin="manual"), 100, "c1")
+
+    def test_empty_connection_id_on_either_side_still_matches(self) -> None:
+        """老数据 / 未指定连接时不能因为连接 id 是空串就把该清的主机漏掉。"""
+        assert sshremote._is_vm_host(self._row(conn_id=""), 100, "c1")
+        assert sshremote._is_vm_host(self._row(conn_id="c1"), 100, "")
+
+    def test_edit_keeps_the_vm_link(self) -> None:
+        """编辑主机（改端口）不能把来源虚拟机弄丢，否则那台机器再也清不掉。"""
+        first = sshremote.normalise_host(
+            {
+                "host": "10.0.0.1",
+                "origin": sshremote.ORIGIN_PANEL,
+                "node": "pve",
+                "vmid": 100,
+                "conn_id": "c1",
+            }
+        )
+        second = sshremote.normalise_host({"host": "10.0.0.1", "port": 2222}, first)
+        assert (second["node"], second["vmid"], second["conn_id"]) == ("pve", 100, "c1")
+        assert sshremote.public_host(second)["vmid"] == 100
+
+    def test_vmid_is_normalised(self) -> None:
+        assert sshremote.normalise_host({"host": "10.0.0.1", "vmid": ""})["vmid"] is None
+        assert sshremote.normalise_host({"host": "10.0.0.1", "vmid": "100"})["vmid"] == 100
+
+    # ---- 删机器时清理
+    def test_purge_vm_hosts_only_drops_that_vm(self, monkeypatch, purged) -> None:
+        self._stub_hosts(
+            monkeypatch,
+            [
+                self._row(),
+                self._row(id="h2", vmid=101),
+                self._row(id="h3", origin="manual"),
+                self._row(id="h4", conn_id="c2"),
+            ],
+        )
+        assert run(sshremote.purge_vm_hosts(100, "c1")) == ["h1"]
+        assert purged == ["h1"]
+
+    # ---- 周期核对（虚拟机在 PVE 上被直接删掉）
+    def test_reconcile_drops_hosts_whose_vm_is_gone(self, monkeypatch, purged) -> None:
+        self._stub_hosts(monkeypatch, [self._row(), self._row(id="h2", vmid=101)])
+
+        class FakeClient:
+            async def cluster_resources(self, rtype=None):  # noqa: ANN001
+                return [{"node": "pve", "vmid": 100}]  # 101 已经不存在了
+
+        monkeypatch.setattr(
+            pve, "all_connection_clients", lambda: [({"id": "c1"}, FakeClient())]
+        )
+        monkeypatch.setattr(store, "get_connections", lambda: [{"id": "c1"}])
+
+        result = run(sshremote.reconcile_panel_hosts())
+
+        assert result["removed"] == 1
+        assert purged == ["h2"]
+
+    def test_reconcile_keeps_hosts_when_inventory_unavailable(
+        self, monkeypatch, purged
+    ) -> None:
+        """PVE 读不到清单（挂了 / 网络抖动）时一台都不能删。"""
+        self._stub_hosts(monkeypatch, [self._row()])
+
+        class BrokenClient:
+            async def cluster_resources(self, rtype=None):  # noqa: ANN001
+                raise RuntimeError("PVE 不可达")
+
+        monkeypatch.setattr(
+            pve, "all_connection_clients", lambda: [({"id": "c1"}, BrokenClient())]
+        )
+        monkeypatch.setattr(store, "get_connections", lambda: [{"id": "c1"}])
+
+        assert run(sshremote.reconcile_panel_hosts())["removed"] == 0
+        assert purged == []
+
+    def test_reconcile_drops_hosts_of_a_deleted_connection(
+        self, monkeypatch, purged
+    ) -> None:
+        """PVE 连接被删掉后，它名下登记的主机再也连不上，一并清掉。"""
+        self._stub_hosts(monkeypatch, [self._row()])
+        monkeypatch.setattr(pve, "all_connection_clients", lambda: [])
+        monkeypatch.setattr(store, "get_connections", lambda: [{"id": "c2"}])
+
+        result = run(sshremote.reconcile_panel_hosts())
+
+        assert result["removed"] == 1
+        assert purged == ["h1"]
+
+    def test_reconcile_without_any_connection_touches_nothing(
+        self, monkeypatch, purged
+    ) -> None:
+        self._stub_hosts(monkeypatch, [self._row()])
+        monkeypatch.setattr(pve, "all_connection_clients", lambda: [])
+        monkeypatch.setattr(store, "get_connections", lambda: [])
+
+        assert run(sshremote.reconcile_panel_hosts())["removed"] == 0
+        assert purged == []
+
+    def test_reconcile_skips_hosts_without_a_connection_id(
+        self, monkeypatch, purged
+    ) -> None:
+        """没记连接 id 的老数据不猜：宁可留着，也不要凭 VMID 猜错集群。"""
+        self._stub_hosts(monkeypatch, [self._row(conn_id="")])
+        monkeypatch.setattr(pve, "all_connection_clients", lambda: [])
+        monkeypatch.setattr(store, "get_connections", lambda: [{"id": "c1"}])
+
+        assert run(sshremote.reconcile_panel_hosts())["removed"] == 0
+        assert purged == []
+
+
+class TestPendingRegistration:
+    """DHCP 下发的机器：登记要等它自己报出地址。
+
+    创建那一刻地址并不存在（cloud-init 里只有 ``ip=dhcp``），所以先记进待登记
+    队列（``sshremote.remember_pending_registration``），再由后台任务与周期作业
+    ``host_sync`` 拿这份队列去解析地址。这里验证队列这一层的编排：解析到就登记
+    并出队，没解析到就留着，脏数据与超期项会被丢掉。
+    """
+
+    ITEM = {
+        "conn_id": "c1",
+        "node": "pve",
+        "vmid": 107,
+        "name": "test（pve/107）",
+        "ssh_username": "root",
+        "owner": "admin",
+    }
+
+    @pytest.fixture()
+    def settings(self, monkeypatch) -> Dict[str, str]:
+        """把 settings 换成内存里的一个 dict。"""
+        box: Dict[str, str] = {}
+
+        async def get(key: str, default: Any = None) -> Any:
+            return box.get(key, default)
+
+        async def set(key: str, value: str) -> None:
+            box[key] = str(value)
+
+        monkeypatch.setattr(store, "get_setting", get)
+        monkeypatch.setattr(store, "set_setting", set)
+        return box
+
+    def _stub_pve(self, monkeypatch, ip: str) -> None:
+        async def fake_resolve(client: Any, guest: Dict[str, Any]) -> str:
+            return ip
+
+        monkeypatch.setattr(guestip, "resolve", fake_resolve)
+        monkeypatch.setattr(pve, "client_for_connection", lambda cid: object())
+
+    def test_registers_once_the_machine_reports_an_address(self, settings, monkeypatch) -> None:
+        run(sshremote.remember_pending_registration(dict(self.ITEM)))
+        assert "c1|pve|107" in run(sshremote._load_pending())
+
+        registered: List[Dict[str, Any]] = []
+
+        async def fake_register(**kwargs: Any) -> Dict[str, Any]:
+            registered.append(kwargs)
+            return {"id": "h1"}
+
+        monkeypatch.setattr(sshremote, "register_managed_host", fake_register)
+        self._stub_pve(monkeypatch, "172.16.149.20")
+
+        result = run(sshremote.process_pending_registrations())
+
+        assert result["registered"] == 1
+        assert registered[0]["host"] == "172.16.149.20"
+        assert registered[0]["name"] == "test（pve/107）"
+        assert registered[0]["node"] == "pve" and registered[0]["vmid"] == 107
+        # 出队：下一轮不该再登记同一台（否则每 5 分钟多一台重复主机）
+        assert run(sshremote._load_pending()) == {}
+
+    def test_keeps_waiting_while_there_is_no_address(self, settings, monkeypatch) -> None:
+        """没装 Guest Agent 的镜像会在队列里待到超期，而不是被反复重试登记。"""
+        run(sshremote.remember_pending_registration(dict(self.ITEM)))
+        self._stub_pve(monkeypatch, "")
+
+        result = run(sshremote.process_pending_registrations())
+
+        assert result == {"checked": 1, "registered": 0, "pending": 1}
+        assert "c1|pve|107" in run(sshremote._load_pending())
+
+    def test_forget_removes_the_item(self, settings) -> None:
+        run(sshremote.remember_pending_registration(dict(self.ITEM)))
+        run(sshremote.forget_pending_registration("c1", "pve", 107))
+        assert run(sshremote._load_pending()) == {}
+
+    def test_stale_items_are_dropped(self, settings) -> None:
+        """超过保鲜期就丢：那台机器多半已被删除，或永远报不出地址。"""
+        settings[sshremote.PENDING_KEY] = json.dumps(
+            {
+                "c1|pve|107": {
+                    **self.ITEM,
+                    "since": int(time.time()) - sshremote.PENDING_TTL - 60,
+                }
+            }
+        )
+        assert run(sshremote._load_pending()) == {}
+
+    def test_malformed_items_are_dropped(self, settings, monkeypatch) -> None:
+        settings[sshremote.PENDING_KEY] = json.dumps({"junk": {"since": int(time.time())}})
+        self._stub_pve(monkeypatch, "")
+        assert run(sshremote.process_pending_registrations()) == {
+            "checked": 1,
+            "registered": 0,
+            "pending": 0,
+        }
+
+    def test_empty_queue_is_a_noop(self) -> None:
+        assert run(sshremote.process_pending_registrations()) == {
+            "checked": 0,
+            "registered": 0,
+            "pending": 0,
+        }
+
+
+class TestReportCacheInvalidation:
+    """受管主机集合变了，就要让「端口与进程 / 安全基线」的总览缓存作废。
+
+    缓存的 key 只有「功能名 + 可见主机集合 + 语言」，**不含主机数量** ——
+    不清的话，刚登记（或刚接入）的机器会命中那份还不含它的旧报告，最长 2 分钟
+    不出现在全平台总览里，看着正像「面板下发的虚拟机没被纳管」。
+    """
+
+    def test_saving_a_host_drops_cached_reports(self) -> None:
+        key = reportcache.scope_key("ports", None)
+        reportcache.store(key, {"sentinel": True})
+        assert reportcache.peek(key) is not None
+
+        run(sshremote._invalidate_report_cache())
+
+        assert reportcache.peek(key) is None

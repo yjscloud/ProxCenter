@@ -193,6 +193,8 @@ interface FormState {
   ciUser: string;
   ciPassword: string;
   ciSshKeys: string;
+  /** 接入安全管控：把面板公钥写进 cloud-init，机器起来后自动登记为受管主机 */
+  ciManage: boolean;
   ciDns: string;
   ciIps: IpRow[];
 }
@@ -254,6 +256,7 @@ const initialState: FormState = {
   ciUser: 'ubuntu',
   ciPassword: '',
   ciSshKeys: '',
+  ciManage: false,
   ciDns: '',
   ciIps: [{ key: uid(), ip: 'dhcp', gateway: '' }],
 };
@@ -1013,6 +1016,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         boot_order: form.bootOrder || undefined,
         start_on_boot: form.startOnBoot,
         cloudinit,
+        /* 接入安全管控只在「全新创建 + cloud-init + 静态 IP」下有意义：
+           克隆走的是后端另一条路径（原样复制源机配置），不看这个开关。 */
+        manage: form.ciManage,
         tags: form.tags || undefined,
         description: form.description || undefined,
       };
@@ -2275,6 +2281,19 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     windowsGuest
                       ? t('vmCreate.ciSshKeysWinHint')
                       : t('vmCreate.ciSshKeysHint')
+                  }
+                />
+
+                <Switch
+                  label={t('vmCreate.ciManage')}
+                  checked={form.ciManage}
+                  onChange={(v) => update('ciManage', v)}
+                  hint={
+                    /* 面板得先知道地址才连得上去，所以只对静态 IP 有意义；
+                       DHCP 时后端会直接拒绝，这里提前说明免得用户白勾一下。 */
+                    hasStaticIpOnNics(form)
+                      ? t('vmCreate.ciManageHint')
+                      : t('vmCreate.ciManageNeedIp')
                   }
                 />
 

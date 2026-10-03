@@ -8,15 +8,16 @@
 cloud-init 模板流水线、网络与防火墙、监控大盘、快照备份、浏览器里直接开 VNC 控制台，加上
 多用户权限、操作审计，以及几项安全运维能力（SSH 防爆破、端口异常检测、基线加固）。
 
-宿主上装了 Docker 就能跑：
+一条命令装完（**推荐**，装成 systemd 服务，机器重启自己起来）：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
-docker compose up -d
+git clone https://github.com/yjscloud/ProxCenter.git
+cd ProxCenter
+sudo ./deploy.sh
 ```
 
-打开 `http://你的服务器IP:8080`，账号 `admin`，口令 `ProxCenter@2026`（怎么改见
-[Docker 部署](#docker-部署推荐)）。不想用容器就 `sudo ./deploy.sh`，见 [裸机部署](#裸机部署)。
+最后一屏会打印面板地址和初始口令（**只显示这一次**）。想用容器也行，见
+[Docker 部署](#docker-部署)；两种方式都写在 [一、部署](#一部署) 里。
 
 > 关键词：Proxmox VE 管理面板 · PVE 面板 · LXC 容器管理 · cloud-init 模板 ·
 > 自托管虚拟化平台 · Proxmox alternative UI
@@ -37,7 +38,7 @@ docker compose up -d
 ## 目录
 
 - [一、部署](#一部署)：[准备 Token](#准备-proxmox-api-token) · [授权](#授权) ·
-  [Docker 部署](#docker-部署推荐) · [裸机部署](#裸机部署) · [上 HTTPS](#上-https) ·
+  [裸机部署](#裸机部署推荐) · [Docker 部署](#docker-部署) · [上 HTTPS](#上-https) ·
   [服务管理](#服务管理)
 - [二、功能](#二功能) · [三、配置项](#三配置项) · [四、项目结构](#四项目结构) ·
   [五、测试](#五测试) · [六、排查问题](#六排查问题) · [七、安全说明](#七安全说明) ·
@@ -78,9 +79,41 @@ pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUs
 > 控制台要另填一个 PVE 账号密码：Proxmox 不允许 API Token 访问 `vncproxy`，只认用户密码
 > 换来的 ticket。不填只是控制台用不了，其他功能都正常。
 
-### Docker 部署（推荐）
+### 裸机部署（推荐）
 
-宿主上只要装了 Docker，不用装 Node、Python 或 MySQL：
+装的是 systemd 服务 —— 机器重启自己起来、进程挂了自动拉起，改完代码
+`systemctl restart` 就生效；面板与数据库都直接跑在宿主机上，长期用这种最省心。
+
+```bash
+git clone https://github.com/yjscloud/ProxCenter.git
+cd ProxCenter
+sudo ./deploy.sh
+```
+
+一次装完 Python 依赖、前端产物、数据库和 systemd 服务，全程不提问：端口 `8080`、库名
+`proxcenter_panel`、账号 `proxcenter`，`SECRET_KEY` 与管理员口令随机生成，最后一屏打印
+面板地址和初始口令（**只显示这一次**）。重复执行不会破坏已有配置。
+
+要自己指定参数就直接传，仍然不提问：
+
+```bash
+sudo ./deploy.sh --port 9000 --mysql-root-password '<root 口令>' \
+                 --db-name proxcenter_panel --db-user proxcenter --db-password '<库口令>'
+```
+
+常用参数：`--port` 换端口 · `--service` 换 systemd 服务名 · `--user` 换运行用户（默认
+`root`）· `--skip-frontend` 复用现有 `dist/`（机器上没 Node 时用）· `--no-systemd` 只准备
+环境不装服务（无需 root）· `--reconfigure` 逐项确认 · `--help` 全部参数。
+
+> `SECRET_KEY` 生成之后别再改，换了它库里已存的 PVE Token、SMTP 口令全都解不开。所以
+> `.env` 已存在时，脚本只覆盖命令行上显式给出的键。
+
+想前台跑着看日志（不装服务）：`npm run build && ./start-prod.sh`。`dist/` 存在时 FastAPI
+会在 8080 上同时提供前端页面和 `/api`，前后端同源，VNC 控制台的 WebSocket 直接可用。
+
+### Docker 部署
+
+不想在宿主机上装 Python / Node / MySQL 就走容器，宿主上只要有 Docker：
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
@@ -118,35 +151,6 @@ ADMIN_PASSWORD: ${ADMIN_PASSWORD:-MyPassw0rd2026}
 镜像默认构建 amd64（Proxmox VE 本身只有 x86_64），从 GHCR 拉。换 Docker Hub：
 `PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`。
 升级：`docker compose pull && docker compose up -d`。
-
-### 裸机部署
-
-```bash
-git clone https://github.com/yjscloud/ProxCenter.git
-cd ProxCenter
-sudo ./deploy.sh
-```
-
-一次装完 Python 依赖、前端产物、数据库和 systemd 服务，全程不提问：端口 `8080`、库名
-`proxcenter_panel`、账号 `proxcenter`，`SECRET_KEY` 与管理员口令随机生成，最后一屏打印
-面板地址和初始口令（**只显示这一次**）。重复执行不会破坏已有配置。
-
-要自己指定参数就直接传，仍然不提问：
-
-```bash
-sudo ./deploy.sh --port 9000 --mysql-root-password '<root 口令>' \
-                 --db-name proxcenter_panel --db-user proxcenter --db-password '<库口令>'
-```
-
-常用参数：`--port` 换端口 · `--service` 换 systemd 服务名 · `--user` 换运行用户（默认
-`root`）· `--skip-frontend` 复用现有 `dist/`（机器上没 Node 时用）· `--no-systemd` 只准备
-环境不装服务（无需 root）· `--reconfigure` 逐项确认 · `--help` 全部参数。
-
-> `SECRET_KEY` 生成之后别再改，换了它库里已存的 PVE Token、SMTP 口令全都解不开。所以
-> `.env` 已存在时，脚本只覆盖命令行上显式给出的键。
-
-想前台跑着看日志（不装服务）：`npm run build && ./start-prod.sh`。`dist/` 存在时 FastAPI
-会在 8080 上同时提供前端页面和 `/api`，前后端同源，VNC 控制台的 WebSocket 直接可用。
 
 ### 上 HTTPS
 
@@ -464,7 +468,7 @@ pveum acl modify / --tokens 'root@pam!panel' --roles PVEAuditor   # 节点指标
 失败时面板会自动清理临时虚拟机。
 
 **Docker 部署，容器起不来或反复重启**：多半是数据库口令对不上。`docker compose logs panel |
-tail -30` 找 `Access denied` / `Can't connect`，改法见 [Docker 部署](#docker-部署推荐) 里那两条
+tail -30` 找 `Access denied` / `Can't connect`，改法见 [Docker 部署](#docker-部署) 里那两条
 注意事项。
 
 **主机安全页面读不到数据**：容器里 `/var/log`、`/proc` 属于容器而不是宿主机，页面会说明，

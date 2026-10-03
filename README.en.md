@@ -10,17 +10,17 @@ dashboards, snapshots and backups, an in-browser VNC console, multi-user RBAC wi
 plus a few security operations features (SSH brute-force protection, port and process anomaly
 detection, security baseline hardening).
 
-The host only needs Docker:
+One command does it all (**recommended** — it installs a systemd unit, so the panel comes back
+after a reboot):
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
-docker compose up -d
+git clone https://github.com/yjscloud/ProxCenter.git
+cd ProxCenter
+sudo ./deploy.sh
 ```
 
-Then open `http://<server-ip>:8080` and sign in as `admin` with the password `ProxCenter@2026`
-(how to change it: [Docker deployment](#3-docker-recommended)). Prefer bare metal instead?
-`sudo ./deploy.sh` installs it as a system service — see
-[bare-metal deployment](#4-bare-metal-deployment).
+The last screen prints the panel URL and the initial password (**shown only once**). Prefer
+containers? See [Docker deployment](#4-docker). Both ways are under [Deployment](#deployment).
 
 > **Keywords**: Proxmox VE panel · Proxmox web panel · PVE management UI · LXC manager ·
 > cloud-init templates · self-hosted virtualization console · Proxmox alternative UI
@@ -37,8 +37,8 @@ Live demo: <https://prox.yjscloud.com>
 ## Contents
 
 - [Deployment](#deployment): [API token](#1-create-a-proxmox-api-token) ·
-  [permissions](#2-grant-permissions) · [Docker](#3-docker-recommended) ·
-  [bare metal](#4-bare-metal-deployment) · [HTTPS](#5-put-it-behind-https) ·
+  [permissions](#2-grant-permissions) · [bare metal](#3-bare-metal-deployment-recommended) ·
+  [Docker](#4-docker) · [HTTPS](#5-put-it-behind-https) ·
   [service management](#6-service-management)
 - [Features](#features) · [Configuration](#configuration) · [Project layout](#project-layout) ·
   [Tests](#tests) · [Troubleshooting](#troubleshooting) · [Security notes](#security-notes) ·
@@ -82,9 +82,45 @@ Or split them for least privilege:
 > and password under **Settings**. Without it the console is unavailable; everything else keeps
 > working.
 
-### 3. Docker (recommended)
+### 3. Bare-metal deployment (recommended)
 
-The host only needs Docker — no Node, Python or MySQL:
+It installs a systemd unit — the panel comes back after a reboot and restarts if the process dies,
+and `systemctl restart` is all it takes after a code change. The panel and the database run on the
+host itself, which is what you want for a long-lived installation.
+
+```bash
+git clone https://github.com/yjscloud/ProxCenter.git
+cd ProxCenter
+sudo ./deploy.sh
+```
+
+The script installs the Python dependencies, builds the frontend, creates the database and installs
+a systemd unit, without asking anything. Port `8080`, database `proxcenter_panel`, user
+`proxcenter`; `SECRET_KEY` and the admin password are generated randomly and the last screen prints
+the panel URL and the initial password (**shown only once**). Re-running it will not damage an
+existing installation. Pass your own values if you want — it still will not ask:
+
+```bash
+sudo ./deploy.sh --port 9000 --mysql-root-password '<root password>' \
+                 --db-name proxcenter_panel --db-user proxcenter --db-password '<db password>'
+```
+
+Useful flags: `--port` · `--service` (systemd unit name) · `--user` (default `root`) ·
+`--skip-frontend` (reuse an existing `dist/`, no Node needed) · `--no-systemd` (prepare only, no
+root) · `--reconfigure` (ask for each value) · `--help`.
+
+> `SECRET_KEY` must not change after it is generated — every stored PVE token and SMTP password was
+> encrypted with it. That is why the script only overwrites keys you pass explicitly when `.env`
+> already exists.
+
+To watch the logs in the foreground instead of installing a service:
+`npm run build && ./start-prod.sh`. When `dist/` exists, FastAPI serves both the frontend and `/api`
+on port 8080, so the two are same-origin and the console's WebSocket works without an extra proxy.
+
+### 4. Docker
+
+Prefer not to install Python, Node or MySQL on the host? Then run it in a container — the host only
+needs Docker:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
@@ -129,37 +165,6 @@ Images are built for amd64 (Proxmox VE itself is x86_64-only) and pulled from GH
 use Docker Hub instead:
 `PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`. Upgrading is
 `docker compose pull && docker compose up -d`.
-
-### 4. Bare-metal deployment
-
-```bash
-git clone https://github.com/yjscloud/ProxCenter.git
-cd ProxCenter
-sudo ./deploy.sh
-```
-
-The script installs the Python dependencies, builds the frontend, creates the database and installs
-a systemd unit, without asking anything. Port `8080`, database `proxcenter_panel`, user
-`proxcenter`; `SECRET_KEY` and the admin password are generated randomly and the last screen prints
-the panel URL and the initial password (**shown only once**). Re-running it will not damage an
-existing installation. Pass your own values if you want — it still will not ask:
-
-```bash
-sudo ./deploy.sh --port 9000 --mysql-root-password '<root password>' \
-                 --db-name proxcenter_panel --db-user proxcenter --db-password '<db password>'
-```
-
-Useful flags: `--port` · `--service` (systemd unit name) · `--user` (default `root`) ·
-`--skip-frontend` (reuse an existing `dist/`, no Node needed) · `--no-systemd` (prepare only, no
-root) · `--reconfigure` (ask for each value) · `--help`.
-
-> `SECRET_KEY` must not change after it is generated — every stored PVE token and SMTP password was
-> encrypted with it. That is why the script only overwrites keys you pass explicitly when `.env`
-> already exists.
-
-To watch the logs in the foreground instead of installing a service:
-`npm run build && ./start-prod.sh`. When `dist/` exists, FastAPI serves both the frontend and `/api`
-on port 8080, so the two are same-origin and the console's WebSocket works without an extra proxy.
 
 ### 5. Put it behind HTTPS
 
@@ -376,7 +381,7 @@ because cloud images do not write boot output to the graphical console — the p
 
 **Docker: the container will not start or keeps restarting.** Almost always the database password:
 `docker compose logs panel | tail -30`, looking for `Access denied` / `Can't connect`. See the two
-notes under [Docker deployment](#3-docker-recommended).
+notes under [Docker deployment](#4-docker).
 
 **The host-security pages read nothing** — inside a container, `/var/log` and `/proc` belong to the
 container rather than the host. Mount them read-only as the comments in `docker-compose.yml`

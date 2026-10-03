@@ -322,7 +322,26 @@ docker compose up -d
 
 **方式一 · 直接改 `docker-compose.yml`**（不用额外建文件）
 
-在文件里搜 `★ 改这里`，一共 3 处，把等号右边的默认值换成自己的：
+口令在文件里长这样：
+
+```yaml
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
+```
+
+`:-` 是 compose 的「取默认值」记号，整句读作：「`.env` 或环境变量里给了
+`ADMIN_PASSWORD` 就用那里的，没给才用后面这段」。**`-`、`$`、`{`、`}` 都只是
+语法符号，真正的口令是 `ProxCenter@2026` 那一段。**
+
+改法是**只动 `:-` 后面、`}` 前面那一段**。比如要改成 `MyPassw0rd2026`：
+
+```yaml
+# 改之前
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
+# 改之后（只换掉那一段，其余原样保留）
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-MyPassw0rd2026}
+```
+
+文件里一共 3 处需要改，改法完全一样：
 
 | 变量 | 作用 | 要求 |
 |---|---|---|
@@ -332,6 +351,9 @@ docker compose up -d
 
 改完执行 `docker compose up -d` 生效。
 
+> 如果觉得 `${...}` 太绕，也可以把整行写成纯值：`ADMIN_PASSWORD: MyPassw0rd2026`，
+> 效果一样，代价是不再支持用 `.env` 覆盖。两种写法二选一，别混着用。
+
 **方式二 · 用 `.env` 覆盖**（完全不改 `docker-compose.yml`）
 
 ```bash
@@ -340,6 +362,9 @@ mv .env.docker.example .env
 # 按文件里「★ 改这里」的提示填好口令，然后：
 docker compose up -d
 ```
+
+在 `.env` 里**等号后面直接写口令本身**，例如 `ADMIN_PASSWORD=MyPassw0rd2026`
+（不要写成 `${...:-...}` —— 那是 `docker-compose.yml` 里的语法）。
 
 > **优先级**：环境变量 / `.env` **高于** `docker-compose.yml` 里的默认值。
 > 文件里凡写成 `${名字:-默认值}` 的地方都遵循这条规则，两种方式可以混用。

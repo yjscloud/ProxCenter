@@ -215,8 +215,27 @@ Open `http://<server-ip>:8080` and sign in as `admin` with the `ADMIN_PASSWORD` 
 
 **Setting your own passwords.** All three passwords live in `docker-compose.yml`. Pick either way:
 
-*Way 1 — edit `docker-compose.yml`.* Search the file for `★ 改这里` (*change here*); there are
-three of them. Replace the default on the right-hand side:
+*Way 1 — edit `docker-compose.yml`.* The password lines look like this:
+
+```yaml
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
+```
+
+The `:-` is compose's "use this default" marker: *"if `.env` or the environment provides
+`ADMIN_PASSWORD`, use that; otherwise use what follows"*. The `-`, `$`, `{` and `}` are
+**syntax only** — the actual password is the `ProxCenter@2026` part.
+
+So to change it, **replace only the segment between `:-` and the closing `}`**. For example,
+to use `MyPassw0rd2026`:
+
+```yaml
+# before
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
+# after — only that one segment changed, everything else untouched
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-MyPassw0rd2026}
+```
+
+Three lines need changing, all in exactly the same way:
 
 | Variable | Purpose | Requirement |
 |---|---|---|
@@ -226,6 +245,10 @@ three of them. Replace the default on the right-hand side:
 
 Then run `docker compose up -d` again.
 
+> If the `${...}` syntax bothers you, write a plain value instead:
+> `ADMIN_PASSWORD: MyPassw0rd2026`. Same effect; the only thing you lose is the ability to
+> override it from `.env`. Pick one style — do not mix them.
+
 *Way 2 — override with `.env`, leaving `docker-compose.yml` untouched:*
 
 ```bash
@@ -234,6 +257,10 @@ mv .env.docker.example .env
 # fill in the values marked "★ 改这里", then:
 docker compose up -d
 ```
+
+In a `.env` file you write **the password itself**, with nothing around it —
+`ADMIN_PASSWORD=MyPassw0rd2026`. Do *not* use `${...:-...}` there; that syntax belongs to
+`docker-compose.yml`.
 
 > **Precedence**: environment variables / `.env` win over the defaults in `docker-compose.yml`.
 > Every `${NAME:-default}` in the file follows that rule, and the two ways can be mixed.

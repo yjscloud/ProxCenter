@@ -1,0 +1,21 @@
+# ============================================================================
+#  ProxCenter — 从源码本地构建（开发者 / 自建镜像用）
+#
+#  本文件是 docker-compose.yml 的**覆盖文件**：只往 panel 服务上加 `build`，
+#  其余（数据库、环境变量、卷）全部复用基础文件，避免两份配置各自漂移。
+#
+#  用法：
+#    docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#    # 想给本地构建的镜像起个正式名字：
+#    PROXCENTER_IMAGE=proxcenter:dev \
+#      docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+#  只想构建、不想启动：
+#    docker build -t proxcenter:dev .
+# ============================================================================
+
+services:
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile

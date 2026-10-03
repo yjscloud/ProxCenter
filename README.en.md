@@ -17,7 +17,8 @@ RBAC with an audit log — and goes beyond the basics with SSH brute-force prote
 process anomaly detection and security baseline hardening.
 
 ```bash
-sudo ./deploy.sh      # backend + frontend + database + systemd service, prints the login
+sudo ./deploy.sh           # bare metal: backend + frontend + database + systemd service
+docker compose up -d       # Docker: panel + MySQL — the host only needs Docker
 ```
 
 > **Keywords**: Proxmox VE panel · Proxmox web panel · PVE management UI · LXC manager ·
@@ -200,6 +201,30 @@ start, so there is no default password. Then do two things: fill in host / token
 secret under **Settings → Proxmox connection**, and change the admin password.
 
 The generated API documentation is at <http://localhost:8080/api/docs>.
+
+**Option C — Docker.** Published image, so the host only needs Docker — no Node, Python or MySQL.
+One file, one command:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
+docker compose up -d
+```
+
+Open `http://<server-ip>:8080` and sign in as `admin` with the `ADMIN_PASSWORD` default from
+`docker-compose.yml`. The database password is in that file too, so no `.env` is required — put
+one next to it to override either. Images are built for **linux/amd64** and **linux/arm64**;
+switch registry with `PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`.
+
+`SECRET_KEY` is deliberately **not** written into the file: it signs login JWTs *and* is the
+encryption root for the secrets stored in the database, so a value committed to a public
+repository would be a published key. The container generates one on first start and keeps it in
+the `panel_data` volume — still zero-configuration, but every deployment gets its own key.
+
+Two things differ from a bare-metal install, both noted in `docker-compose.yml`: the passwords
+only take effect on **first initialisation** (change them and you must recreate the database
+volumes, or edit the database by hand), and the host-security screens (security baseline, SSH
+brute-force, port and process scan) read the **host's** logs and `/proc`, which a container
+cannot see by default — mount `/var/log`, `/etc/fail2ban` and `/proc` read-only if you need them.
 
 ## Languages
 

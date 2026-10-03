@@ -13,10 +13,17 @@
 对接 **Proxmox VE 8.x / 9.x** 的**自托管** Web 管理面板：虚拟机与 **LXC 容器**的全生命周期
 管理、cloud-init 模板流水线、网络与防火墙、监控大盘、快照与备份、浏览器内 VNC 控制台、
 多用户权限与操作审计，另含 SSH 防暴力破解、端口与进程异常检测、安全基线加固。
-一条命令即可部署：
+部署方式二选一：
 
 ```bash
-sudo ./deploy.sh      # 后端 + 前端 + 数据库 + systemd 服务，装完打印登录账号与口令
+# 裸机：后端 + 前端 + 数据库 + systemd 服务，装完打印登录账号与口令
+sudo ./deploy.sh
+```
+
+```bash
+# Docker：宿主上只需要 Docker，一条命令拉起面板 + MySQL（详见「方式四」）
+curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
+docker compose up -d
 ```
 
 > **关键词**：Proxmox VE 管理面板 · PVE 面板 · Proxmox web panel · LXC 容器管理 ·
@@ -296,6 +303,59 @@ server {
 FORCE_HTTPS=true
 FORWARDED_ALLOW_IPS=127.0.0.1   # 不要放宽，否则公网可伪造 X-Forwarded-Proto 绕过
 ```
+
+#### 方式四：Docker / docker compose（宿主上不想装 Node、Python、MySQL 时用）
+
+官方镜像已发布在公共仓库。宿主上**只需要 Docker**，一个文件、一条命令：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
+docker compose up -d
+```
+
+打开 `http://<服务器IP>:8080`，账号 `admin`，口令取 `docker-compose.yml` 里
+`ADMIN_PASSWORD` 的默认值。
+
+**口令就写在 `docker-compose.yml` 里**（`ADMIN_PASSWORD` / `DB_PASSWORD` /
+`MYSQL_ROOT_PASSWORD`），因此不需要另外准备 `.env`。要换成自己的口令，二选一：
+
+* 直接改 `docker-compose.yml` 里的默认值；或
+* 在同目录放一个 `.env`（`cp .env.docker.example .env`）—— compose 会自动读取，
+  优先级高于文件里的默认值。
+
+> `SECRET_KEY` 是唯一的例外，它**不**在文件里写死：它是登录 JWT 的签名密钥，同时是
+> 库里密文的加密根，写进公开仓库等于把钥匙公示给所有人。容器首次启动时会随机生成并
+> 保存到 `panel_data` 卷（见 `docker-entrypoint.sh`），同样是零配置，但每个部署各有
+> 各的密钥。要自己指定就设 `SECRET_KEY`。
+
+镜像同时构建了 **linux/amd64** 与 **linux/arm64**：
+
+| 仓库 | 镜像 | 说明 |
+|---|---|---|
+| GHCR（默认） | `ghcr.io/yjscloud/proxcenter:latest` | 无需账号即可拉取 |
+| Docker Hub | `yjscloud/proxcenter:latest` | 切来源：`PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d` |
+
+**和裸机部署的几处差别**（改配置前先读）：
+
+1. **口令只在「第一次」生效**。`ADMIN_PASSWORD` 只在库里还没有管理员时用来建号，
+   之后改它不影响已有登录（要改请登录后在「个人中心 → 修改密码」改）；同理 MySQL 只在
+   数据目录为空时按 `MYSQL_PASSWORD` 初始化，**改了口令要么 `docker compose down -v`
+   重建（会清空数据）、要么进库手动改**，否则面板连不上库。
+2. **`SECRET_KEY` 与数据卷必须留好**。自动生成的密钥存在 `panel_data` 卷里，丢了或改掉，
+   已存的 PVE Token / SMTP 口令全部解不开；`panel_data`（运行期数据）与 `db_data`
+   （MySQL）都是具名卷，`docker compose down` 不删数据，`down -v` 才会 ——
+   备份数据卷时把密钥文件一起备份。
+3. **「主机安全」类功能受限**。「安全基线 / SSH 防爆破 / 端口与进程巡检」读的是
+   **面板所在主机**的日志与 `/proc`，容器内默认看不到。需要时按 `docker-compose.yml`
+   里已注释的挂载项把 `/var/log`、`/etc/fail2ban`、`/proc` 以**只读**方式挂进去。
+4. **HTTPS 仍在反代上终结**。容器内保持 `FORCE_HTTPS=false`，由前面的 Nginx/Caddy 上
+   443 后再置 `true`；反代不在面板容器里时，`FORWARDED_ALLOW_IPS` 要填**反代的实际
+   来源地址**（默认给的 `*` 只在反代自身可控的内网环境用）。
+5. **升级**：`docker compose pull && docker compose up -d`。
+
+从源码本地构建（不改镜像仓库）：`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`；
+发布新版本镜像：推一个 `v*` tag 即可，GitHub Actions 会自动完成多架构构建与推送
+（见 `.github/workflows/docker.yml`），也可以本地手动跑 `scripts/docker-build-push.sh`。
 
 ### 5. 开机自启与服务管理（systemd）
 
@@ -892,6 +952,12 @@ SMTP 密码用 `SECRET_KEY` 加密后落库，接口只回 `password_set`，明�
 ```
 proxcenter/
 ├── docs/screenshots/              README「在线演示」用到的界面截图
+├── Dockerfile                     多阶段构建：Node 构建前端 → Python 装依赖 → 精简运行时
+├── docker-entrypoint.sh           容器入口：未提供 SECRET_KEY 时随机生成并落盘到数据卷
+├── docker-compose.yml             用户部署：口令内联 + 拉取已发布镜像 + MySQL，一条命令启动
+├── docker-compose.build.yml       开发者本地构建（复用上面的 compose，仅追加 build）
+├── .env.docker.example            可选的变量覆盖模板（不改口令就不需要它）
+├── .github/workflows/             CI（pytest + 前端构建）与 Docker 多架构构建推送
 ├── deploy.sh                      一键部署：建虚拟环境 + 装依赖 + 生成 .env + 构建前端
 │                                  + 装 systemd 服务 + 健康自检（幂等，可重复执行）
 ├── start.sh                       开发模式：后端 + Vite 开发服务器一起拉起

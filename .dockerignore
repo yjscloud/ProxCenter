@@ -1,0 +1,49 @@
+# ============================================================================
+#  构建上下文剔除清单：这些内容要么由镜像内重新生成，要么根本不该进镜像。
+#  上下文越小，docker build 的传输与分层越快。
+# ============================================================================
+
+# --- 由镜像内重新构建 / 安装 ---
+node_modules
+dist
+dist-ssr
+.venv
+
+# --- 版本控制与本地工具目录 ---
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# --- Python 缓存 ---
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+*.tsbuildinfo
+
+# --- 运行期数据与日志（不能打进镜像）---
+logs
+*.log
+backend/data
+
+# --- 含明文口令的配置：只经环境变量 / 挂载注入，绝不烘进镜像 ---
+backend/.env
+.env
+.env.local
+
+# --- 测试与文档：运行镜像不需要 ---
+backend/tests
+docs
+
+# --- 本地备份 / 投放文案 / 浏览器调试产物 ---
+backup
+outreach
+.playwright-cli
+/login.yaml
+
+# --- 容器化自身的说明文件不必进构建上下文 ---
+Dockerfile
+docker-compose.yml
+.dockerignore

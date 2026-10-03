@@ -1,0 +1,114 @@
+# ============================================================================
+#  ProxCenter — 一键部署文件
+#
+#  宿主上**只需要 Docker**（不用装 Node / Python / MySQL），一条命令即可启动：
+#
+#      docker compose up -d
+#
+#  然后浏览器打开  http://<服务器IP>:8080
+#  登录账号 admin ／ 口令就是下面 ADMIN_PASSWORD 的默认值。
+#
+#  ── 口令在哪 ────────────────────────────────────────────────────────────────
+#  数据库口令与面板登录口令都**直接写在本文件里**（见 DB_PASSWORD /
+#  ADMIN_PASSWORD / MYSQL_ROOT_PASSWORD），开箱即用，不需要另外建 .env。
+#  想换成自己的口令，二选一：
+#    * 直接改本文件里的默认值；或
+#    * 在同目录放一个 .env（compose 会自动读取，优先级高于这里的默认值），例如
+#        DB_PASSWORD=我的库口令
+#        ADMIN_PASSWORD=我的面板口令
+#
+#  ⚠️ 对外网开放前**务必**先改掉口令，并按 README「方式三」用 Nginx/Caddy 上 HTTPS
+#     （容器内保持 FORCE_HTTPS=false，由反代置 true）。
+#
+#  ── SECRET_KEY 为什么不写在这里 ─────────────────────────────────────────────
+#  它是登录 JWT 的签名密钥，同时也是库里密文的加密根。写进公开仓库 = 把钥匙公示，
+#  任何人都能用它伪造管理员登录态。所以由容器首次启动时**随机生成并保存到数据卷**
+#  （见 docker-entrypoint.sh），对用户同样是零配置。想自己指定就设 SECRET_KEY。
+# ============================================================================
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ProxCenter-Root-2026}
+      MYSQL_DATABASE: ${DB_NAME:-proxcenter_panel}
+      MYSQL_USER: ${DB_USER:-proxcenter}
+      # 与下面 panel 的 DB_PASSWORD 是**同一个变量**，改一处两边同步，不会对不上
+      MYSQL_PASSWORD: ${DB_PASSWORD:-ProxCenter-Db-2026}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      # 等 MySQL 真正能接受连接，面板才启动，避免首启时反复重连
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  panel:
+    # 镜像来源可用 PROXCENTER_IMAGE 覆盖（例如换成 Docker Hub 或固定版本号）
+    image: ${PROXCENTER_IMAGE:-ghcr.io/yjscloud/proxcenter:latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # --- 面板登录账号 -----------------------------------------------------
+      # 初始管理员口令：至少 12 位。**只在数据库里还没有管理员时生效**（首次启动建号），
+      # 之后改这里不影响已有登录 —— 请登录后在「个人中心 → 修改密码」里改。
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
+
+      # --- 密钥 -------------------------------------------------------------
+      # 留空 = 容器首次启动随机生成并保存到 panel_data 卷（推荐）。
+      # 已有数据后**绝不要**修改：改了会让库里已存的 PVE Token / SMTP 口令全部解不开。
+      SECRET_KEY: ${SECRET_KEY:-}
+
+      # --- 数据库 -----------------------------------------------------------
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: ${DB_USER:-proxcenter}
+      DB_PASSWORD: ${DB_PASSWORD:-ProxCenter-Db-2026}
+      DB_NAME: ${DB_NAME:-proxcenter_panel}
+
+      # --- 监听与反代 -------------------------------------------------------
+      PORT: "8080"
+      # 由 Nginx/Caddy 终结 TLS 时置 true：明文一律 308 跳 https，并加 HSTS
+      FORCE_HTTPS: ${FORCE_HTTPS:-false}
+      # uvicorn 信任哪些来源的 X-Forwarded-Proto。反代若跑在宿主机 / 另一容器，
+      # 来源不是 127.0.0.1 —— 需按实际网关地址填写；* 表示信任全部（仅内网反代时用）。
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-*}
+
+      # --- 可选：Proxmox 连接初始值（登录后也能在「设置」页在线修改）---------
+      PVE_HOST: ${PVE_HOST:-}
+      PVE_PORT: ${PVE_PORT:-8006}
+      PVE_TOKEN_ID: ${PVE_TOKEN_ID:-}
+      PVE_TOKEN_SECRET: ${PVE_TOKEN_SECRET:-}
+      PVE_VERIFY_SSL: ${PVE_VERIFY_SSL:-true}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${PANEL_PORT:-8080}:8080"
+    volumes:
+      # 面板运行期数据 + 自动生成的 SECRET_KEY：必须持久化
+      - panel_data:/app/backend/data
+      # --- 可选：把宿主机目录挂进来，才能使用「主机安全」类功能 --------------
+      # 安全基线 / SSH 防爆破 / 端口进程巡检读的是**面板所在主机**的日志与 /proc。
+      # 容器里默认看不到宿主机的这些数据，相关页面会提示「读取不到」。需要时按
+      # 注释挂载（只读挂载，面板不会写宿主机系统文件）：
+      # - /var/log:/var/log:ro
+      # - /etc/fail2ban:/etc/fail2ban:ro
+      # - /proc:/host/proc:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  db_data:
+  panel_data:

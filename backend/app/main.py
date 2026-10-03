@@ -177,7 +177,7 @@ app = FastAPI(
         "Provides VM lifecycle, template building, networking, "
         "monitoring, backup and console access."
     ),
-    version="0.1.1",
+    version="0.1.2",
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -585,7 +585,7 @@ app.include_router(search.router)
 @app.get("/api/version", tags=["meta"])
 async def version() -> Dict[str, Any]:
     info = await site.get_site_info()
-    return {"name": info["name"], "version": "0.1.1", "api": "v1"}
+    return {"name": info["name"], "version": "0.1.2", "api": "v1"}
 
 
 # ------------------------------------------------------------ front-end UI

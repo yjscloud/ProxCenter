@@ -10,122 +10,68 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776ab)
 ![React](https://img.shields.io/badge/react-18-61dafb)
 
-A **self-hosted** web panel for **Proxmox VE 8.x / 9.x**. It manages QEMU virtual machines and
-**LXC containers** end to end — a cloud-init template pipeline, networking and firewall,
-monitoring dashboards, snapshots and backups, an in-browser VNC console, multi-user
-RBAC with an audit log — and goes beyond the basics with SSH brute-force protection, port and
-process anomaly detection and security baseline hardening.
+A self-hosted web panel for Proxmox VE 8.x / 9.x. It manages QEMU virtual machines and LXC
+containers end to end: a cloud-init template pipeline, networking and firewall, monitoring
+dashboards, snapshots and backups, an in-browser VNC console, multi-user RBAC with an audit log,
+plus a few security operations features (SSH brute-force protection, port and process anomaly
+detection, security baseline hardening).
+
+The host only needs Docker:
 
 ```bash
-sudo ./deploy.sh           # bare metal: backend + frontend + database + systemd service
-docker compose up -d       # Docker: panel + MySQL — the host only needs Docker
+curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
+docker compose up -d
 ```
+
+Then open `http://<server-ip>:8080` and sign in as `admin` with the password `ProxCenter@2026`
+(how to change it: [Docker deployment](#3-docker-recommended)). Prefer bare metal instead?
+`sudo ./deploy.sh` installs it as a system service — see
+[bare-metal deployment](#4-bare-metal-deployment).
 
 > **Keywords**: Proxmox VE panel · Proxmox web panel · PVE management UI · LXC manager ·
 > cloud-init templates · self-hosted virtualization console · Proxmox alternative UI
 
-**Stack**: Python 3.11+ / FastAPI / httpx (async) · React 18 + TypeScript + Vite +
-TanStack Query + Recharts · MySQL 8 (panel users, audit log, connection settings)
+**Stack**: Python 3.11+ / FastAPI / httpx · React 18 + TypeScript + Vite · MySQL 8
 
 ![ProxCenter dashboard](docs/screenshots/dashboard.png)
 
-> The [Chinese README](README.md) is the primary document and covers every screen in detail.
-> This page is a condensed English version: quick start, configuration essentials and
-> security notes.
+> [README.md](README.md) (Chinese) is the primary document. This page mirrors it in a condensed
+> form.
 
 ## Contents
 
-- [Highlights](#highlights)
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-  - [1. Create a Proxmox API token](#1-create-a-proxmox-api-token)
-  - [2. Grant permissions](#2-grant-permissions)
-  - [3. Run ProxCenter](#3-run-proxcenter)
-- [Languages](#languages)
-- [Configuration](#configuration)
-- [Security notes](#security-notes)
-- [Development and tests](#development-and-tests)
-- [Proxmox VE compatibility](#proxmox-ve-compatibility)
-- [License](#license)
+- [Deployment](#deployment): [API token](#1-create-a-proxmox-api-token) ·
+  [permissions](#2-grant-permissions) · [Docker](#3-docker-recommended) ·
+  [bare metal](#4-bare-metal-deployment) · [HTTPS](#5-put-it-behind-https) ·
+  [service management](#6-service-management)
+- [Features](#features) · [Configuration](#configuration) · [Project layout](#project-layout) ·
+  [Tests](#tests) · [Troubleshooting](#troubleshooting) · [Security notes](#security-notes) ·
+  [Compatibility](#proxmox-ve-compatibility) · [License](#license)
 
-## Highlights
+---
 
-- **Virtual machines** — create (blank / clone a template / import a cloud image), power
-  operations with graceful shutdown and force-stop fallback, edit CPU / memory / name / tags,
-  disk resize, move disks between storages, live migration across nodes, batch operations.
-- **LXC containers** — dedicated wizard, rootfs and mount points (`mpN`), resize, snapshots,
-  clone and migrate. Containers are matched to their own API endpoints, not
-  treated as VMs.
-- **cloud-init template pipeline** — build a template from a cloud image step by step (download,
-  import, configure, convert, seal) with per-step task waiting, then clone from it.
-- **Resources and quotas** — reusable *resource specs* (cores / memory / disk) and per-user
-  issuance quotas, so a self-service deployment cannot exceed what you allow.
-- **Networking** — bridges, VLAN tags, static or DHCP addressing per interface, IP pools with
-  automatic free-address allocation, and manual IP binding shown in the VM list.
-- **Firewall / security groups** — datacenter, node, VM and container scopes, rule templates
-  pushed to many guests at once, aliases and IP sets.
-- **SSH login security** — log parsing for accepted / failed logins, fail2ban integration,
-  per-host ban and unban, attack notifications and a known-IP allow list.
-- **Security baseline** — audit and harden SSH, password policy, firewall, time sync and
-  kernel parameters across the panel host and managed hosts, with automatic rollback when a
-  change would lock you out.
-- **Port and process anomaly detection** — unexpected listeners, sensitive ports, reverse-shell
-  signatures, deleted executables still holding sockets, with a whitelist and cooldown to keep
-  false positives down.
-- **Emergency response** — isolate a suspected VM (link down + firewall) and protect backups
-  from deletion, in one guarded action.
-- **Monitoring** — node, VM and container metrics with history, alerts, notification channels
-  (mail / webhook / bots) and per-user isolation of integrations.
-- **Snapshots and backups** — create, roll back and delete snapshots; browse node backups.
-- **Console** — VNC, embedded in the panel.
-- **Users and audit** — roles and fine-grained permissions, two-factor authentication,
-  self-registration with admin approval, login lockout, rate limiting, and an audit log of
-  every write operation.
-- **Reset a guest's user password** — from the guest list, via the QEMU guest agent (instant),
-  cloud-init (on next boot) or the host over SSH for containers. See [Security notes](#security-notes).
-- **Bilingual interface** — every screen ships in Chinese and English, switchable at any time
-  from the login page or the top bar. The panel also localizes the *structural* text the backend
-  returns (permission catalogue, built-in role names and descriptions, FAQ defaults, error
-  messages) and renders notification emails in the recipient's own language.
-  See [Languages](#languages).
-
-## Requirements
-
-| Component | Version |
-|---|---|
-| Proxmox VE | 8.x or 9.x |
-| Python | 3.11 or newer |
-| Node.js | 18 or newer (only needed to build the frontend) |
-| MySQL | 8.x (MariaDB also works) |
-
-## Quick start
+## Deployment
 
 ### 1. Create a Proxmox API token
 
-Run this on a Proxmox node. Create a dedicated user rather than using `root` directly:
+The panel talks to Proxmox with an API token. Run this on a PVE node:
 
 ```bash
 pveum user add panel@pve --comment "ProxCenter panel"
 pveum user token add panel@pve panel --privsep 0
 ```
 
-`--privsep 0` means the token inherits the user's permissions. The command prints
-`full-tokenid` (for example `panel@pve!panel`) and the token secret — put them into the panel
-as **Token ID** and **Token Secret**.
-
-> If you keep privilege separation enabled (the Proxmox default when creating a token in the
-> web UI), the token starts with **no** permissions. Reading then returns `403`, or worse,
-> `200` with an empty list. The panel's **Settings → Environment self-check** asks Proxmox for
-> the effective permissions and tells you what to grant.
+`--privsep 0` means the token inherits the user's permissions. The output gives `full-tokenid`
+(for example `panel@pve!panel`) and the token secret — these go into the panel as **Token ID**
+and **Token Secret**.
 
 ### 2. Grant permissions
 
 ```bash
-# Manage VMs: create, start/stop, snapshot, console
 pveum acl modify / --user panel@pve --roles PVEVMAdmin,PVEDatastoreUser,PVESDNUser
 ```
 
-Split the roles if you prefer least privilege:
+Or split them for least privilege:
 
 | Capability | Role |
 |---|---|
@@ -135,15 +81,75 @@ Split the roles if you prefer least privilege:
 | Backups, ISO and template storage | `PVEDatastoreUser` (`PVEDatastoreAdmin` to write) |
 | Bridges and VLANs | `PVESDNUser` |
 
-> **Important**: Proxmox does not allow an API token to open a VNC console — this
-> endpoint only accepts a ticket derived from a user password. To use the console in the
-> browser, also fill in a PVE **user name and password** in the panel settings
-> (`console_user` / `console_password`). Without it the console is disabled; everything else
-> keeps working.
+> Proxmox does not let an API token open a VNC console — that endpoint only accepts a ticket
+> derived from a user password. To use the console in the browser, also fill in a PVE user name
+> and password under **Settings**. Without it the console is unavailable; everything else keeps
+> working.
 
-### 3. Run ProxCenter
+### 3. Docker (recommended)
 
-**Option A — one command (recommended).** On the machine that will host the panel:
+The host only needs Docker — no Node, Python or MySQL:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
+docker compose up -d
+```
+
+Open `http://<server-ip>:8080` and sign in as `admin` with the password `ProxCenter@2026`.
+
+**Changing the passwords.** All three of them live in `docker-compose.yml`; search the file for
+`★ 改这里`. The password lines look like this:
+
+```yaml
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
+```
+
+`:-` is compose's "use this default" marker: *"if `.env` or the environment provides
+`ADMIN_PASSWORD`, use that; otherwise use what follows"*. The `-`, `$`, `{` and `}` are **syntax
+only** — the actual password is the `ProxCenter@2026` part. So change only the segment between
+`:-` and the closing `}`:
+
+```yaml
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-MyPassw0rd2026}
+```
+
+Three lines need changing, all the same way: `ADMIN_PASSWORD` (panel login), `DB_PASSWORD`
+(database), `MYSQL_ROOT_PASSWORD` (MySQL administrator). Then rerun `docker compose up -d`.
+
+If you would rather not touch the compose file, create a `.env` next to it instead and write the
+password itself after the equals sign:
+
+```
+ADMIN_PASSWORD=MyPassw0rd2026
+DB_PASSWORD=MyPassw0rd2026-db
+MYSQL_ROOT_PASSWORD=MyPassw0rd2026-root
+```
+
+Environment variables and `.env` win over the defaults in `docker-compose.yml`.
+
+Two things worth knowing up front:
+
+- **Passwords only take effect on first initialisation.** `ADMIN_PASSWORD` is used only while the
+  database has no administrator yet, and MySQL reads `MYSQL_PASSWORD` only when its data directory
+  is empty. Changing them later means either `docker compose down -v` (**which wipes the data**) or
+  an `ALTER USER` by hand — the commands are at the bottom of `docker-compose.yml`. To change your
+  *login* password afterwards, use Profile → Change password.
+- **Leave `SECRET_KEY` alone.** It signs login JWTs *and* is the encryption root for the secrets in
+  the database (PVE tokens, SMTP password). A value committed to a public repository would be a
+  published key, so the container generates one on first start and keeps it in the `panel_data`
+  volume. Changing it after you have data makes every stored secret undecryptable.
+
+Images are built for amd64 and arm64, pulled from GHCR by default. To use Docker Hub instead:
+
+```bash
+PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d
+```
+
+Upgrading is `docker compose pull && docker compose up -d`.
+
+### 4. Bare metal deployment
+
+If you would rather not run containers:
 
 ```bash
 git clone https://github.com/yjscloud/ProxCenter.git
@@ -151,239 +157,380 @@ cd ProxCenter
 sudo ./deploy.sh
 ```
 
-`deploy.sh` first asks which language to use, then installs everything without asking anything
-else:
+The script installs the Python dependencies, builds the frontend, creates the database and
+installs a systemd service, without asking anything. Port `8080`, database `proxcenter_panel`,
+user `proxcenter`; `SECRET_KEY` and the admin password are generated randomly and the final
+screen prints the panel URL and the initial password (shown only once). Re-running it does not
+damage an existing installation.
 
-```
-  请选择界面语言 / Choose the interface language:
-    1) 中文
-    2) English
-  序号（直接回车 = 按系统语言判定）/ Number (Enter = the system-locale default) [1]: 2
-```
-
-Press Enter to accept the system locale, or type `1` / `2`. The question is skipped — and the
-system locale decides silently — when `--lang` or `PROXCENTER_LANG` is set, or when there is no
-interactive terminal (`cron` / CI / a pipe), so it can never wedge an unattended run.
-
-After that the script is idempotent and non-interactive: it checks and installs system
-dependencies, creates `.venv`, generates `backend/.env` with a random `SECRET_KEY`, database
-password and initial admin password, creates the database and its MySQL user, builds the
-frontend, installs a systemd service and finally prints the panel URL together with the
-**one-time initial admin password** — change it right after your first login
-(user menu → **Profile** → change password).
-
-Useful flags: `--lang zh|en` (skip the language question and use this language),
-`--reconfigure` (ask for port / database / passwords instead of using defaults),
-`--skip-frontend` (reuse an existing `dist/`), `--no-systemd` (prepare everything, install no
-service), `--help` (all options).
-
-**Option B — manual, for development:**
+Pass your own values on the command line if you want — it still will not ask:
 
 ```bash
-# backend
-cd backend
-python -m venv ../.venv && source ../.venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python -c "import secrets; print('SECRET_KEY=' + secrets.token_urlsafe(48))"
-python -c "import secrets; print('ADMIN_PASSWORD=' + secrets.token_urlsafe(16))"
-# put both values into backend/.env — the backend refuses to start without them
-python run.py                      # listens on 0.0.0.0:8080
-
-# frontend (second terminal)
-npm install
-npm run dev                        # http://localhost:5173, /api proxied to 8080
+sudo ./deploy.sh --port 9000 --mysql-root-password '<root password>' \
+                 --db-name proxcenter_panel --db-user proxcenter --db-password '<db password>'
 ```
 
-Open <http://localhost:5173> and sign in as `admin` with the `ADMIN_PASSWORD` you set. On first
-start the panel creates the administrator account; a weak or empty password makes it refuse to
-start, so there is no default password. Then do two things: fill in host / token ID / token
-secret under **Settings → Proxmox connection**, and change the admin password.
+Useful flags:
 
-The generated API documentation is at <http://localhost:8080/api/docs>.
+| Flag | What it does |
+|---|---|
+| `--port 9000` | Change the port, written back to `.env` |
+| `--service pc-panel` | Change the systemd unit name (several instances on one host) |
+| `--user deploy` | User the service runs as, default `root` |
+| `--skip-frontend` | Skip the frontend build and reuse the existing `dist/` (no Node on the host) |
+| `--no-systemd` | Prepare the environment and dependencies only, install no service, no root needed |
+| `--reconfigure` | Ask for each value; pressing Enter keeps the current one |
+| `--lang zh\|en` | Interface language for the script itself |
+| `--help` | Every option |
 
-**Option C — Docker.** Published image, so the host only needs Docker — no Node, Python or MySQL.
-One file, one command:
+> `SECRET_KEY` must not be changed after it is generated: every stored PVE token and SMTP password
+> was encrypted with it. That is why the script only overwrites the keys you pass explicitly when
+> `.env` already exists.
+
+To watch the logs in the foreground instead of installing a service:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-compose.yml
-docker compose up -d
+npm run build && ./start-prod.sh
 ```
 
-Open `http://<server-ip>:8080` and sign in as `admin` with the `ADMIN_PASSWORD` value from
-`docker-compose.yml` (default `ProxCenter@2026`).
+When `dist/` exists, FastAPI serves both the frontend and `/api` on port 8080, so the two are
+same-origin and the VNC console's WebSocket works without any extra proxy.
 
-**Setting your own passwords.** All three passwords live in `docker-compose.yml`. Pick either way:
+### 5. Put it behind HTTPS
 
-*Way 1 — edit `docker-compose.yml`.* The password lines look like this:
+The panel does not speak TLS itself. Terminate it on 443 in Nginx or Caddy and proxy to 8080.
+Proxy the WebSocket too, or the console will not connect:
 
-```yaml
-ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name panel.example.com;
+    ssl_certificate     /etc/letsencrypt/live/panel.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/panel.example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;   # the console is a long-lived connection
+        proxy_buffering off;
+    }
+}
 ```
 
-The `:-` is compose's "use this default" marker: *"if `.env` or the environment provides
-`ADMIN_PASSWORD`, use that; otherwise use what follows"*. The `-`, `$`, `{` and `}` are
-**syntax only** — the actual password is the `ProxCenter@2026` part.
+Turn on forced HTTPS on the panel side as well, otherwise hitting 8080 directly is still plain
+HTTP:
 
-So to change it, **replace only the segment between `:-` and the closing `}`**. For example,
-to use `MyPassw0rd2026`:
-
-```yaml
-# before
-ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ProxCenter@2026}
-# after — only that one segment changed, everything else untouched
-ADMIN_PASSWORD: ${ADMIN_PASSWORD:-MyPassw0rd2026}
+```
+FORCE_HTTPS=true
+FORWARDED_ALLOW_IPS=127.0.0.1
 ```
 
-Three lines need changing, all in exactly the same way:
-
-| Variable | Purpose | Requirement |
-|---|---|---|
-| `ADMIN_PASSWORD` | Panel login password (user `admin`) | 12+ chars and not a weak password, or the backend refuses to start |
-| `DB_PASSWORD` | Password the panel uses to reach the database | Anything; `db` and `panel` share this one variable, so both stay in sync |
-| `MYSQL_ROOT_PASSWORD` | MySQL administrator password | Anything; only used when the database is first initialised |
-
-Then run `docker compose up -d` again.
-
-> If the `${...}` syntax bothers you, write a plain value instead:
-> `ADMIN_PASSWORD: MyPassw0rd2026`. Same effect; the only thing you lose is the ability to
-> override it from `.env`. Pick one style — do not mix them.
-
-*Way 2 — override with `.env`, leaving `docker-compose.yml` untouched:*
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/.env.docker.example
-mv .env.docker.example .env
-# fill in the values marked "★ 改这里", then:
-docker compose up -d
-```
-
-In a `.env` file you write **the password itself**, with nothing around it —
-`ADMIN_PASSWORD=MyPassw0rd2026`. Do *not* use `${...:-...}` there; that syntax belongs to
+Keep `FORWARDED_ALLOW_IPS` at your proxy's address. Widening it lets anyone claim
+`X-Forwarded-Proto: https` and bypass the redirect. With Docker, put both into `.env` or
 `docker-compose.yml`.
 
-> **Precedence**: environment variables / `.env` win over the defaults in `docker-compose.yml`.
-> Every `${NAME:-default}` in the file follows that rule, and the two ways can be mixed.
+### 6. Service management
 
-**Two things to know:**
+`./deploy.sh` installs a systemd unit, so the panel comes back after a reboot and restarts if the
+process dies:
 
-1. **Passwords only take effect on first initialisation.** `ADMIN_PASSWORD` is used only while
-   the database has no administrator yet, and MySQL reads `MYSQL_PASSWORD` only when its data
-   directory is empty. Changing them later means either `docker compose down -v` (which **wipes
-   the data**) or an `ALTER USER` by hand — the ready-made commands are at the bottom of
-   `docker-compose.yml`. To change your *login* password afterwards, use Profile → Change password.
-2. **Leave `SECRET_KEY` alone.** It signs login JWTs *and* is the encryption root for the secrets
-   stored in the database, so a value committed to a public repository would be a published key.
-   The container generates one on first start and keeps it in the `panel_data` volume — still
-   zero-configuration, but every deployment gets its own key. Changing it after you have data
-   makes every stored PVE token and SMTP password undecryptable.
+| Action | Command |
+|---|---|
+| Status | `systemctl status proxcenter` |
+| Start / stop / restart | `systemctl start\|stop\|restart proxcenter` |
+| Enable at boot | `systemctl enable proxcenter` |
+| Follow the logs | `journalctl -u proxcenter -f` |
 
-Images are built for **linux/amd64** and **linux/arm64**; switch registry with
-`PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`.
+After a code change, a frontend-only edit just needs `npm run build`; a backend edit needs
+`systemctl restart proxcenter`. To confirm it came up:
 
-Also noted in `docker-compose.yml`: the host-security screens (security baseline, SSH
-brute-force, port and process scan) read the **host's** logs and `/proc`, which a container cannot
-see by default — mount `/var/log`, `/etc/fail2ban` and `/proc` read-only if you need them.
+```bash
+curl http://127.0.0.1:8080/api/health
+# {"status":"ok","pve_connected":true,...}
+```
 
-## Languages
+> With Docker this section does not apply — the container already carries
+> `restart: unless-stopped`.
 
-The panel ships in Chinese and English. Pick a language on the login page or from the top bar at
-any time; the choice is stored per browser and sent to the backend on every request.
+---
 
-Three layers are localized, and it is worth knowing which is which:
+## Features
 
-| Layer | Where it lives | Notes |
-|---|---|---|
-| Interface text | `src/i18n/locales/` | 5276 keys per language. Rendered through `t()`. Switching language clears the react-query cache and refetches, so no data from the previous language lingers on screen. |
-| Structural text from the API | `backend/app/i18n.py` | The permission catalogue, built-in role names and descriptions, FAQ defaults, error messages and metric names are returned in the language of the `Accept-Language` header. |
-| Notification emails | `backend/app/i18n.py` | Approval and alert mails render in the **recipient's** language (from their user preferences), not the admin's. |
+**Virtual machines.** Four-step creation wizard (VMID, system, disks and NICs, cloud-init) for blank
+VMs, template clones and cloud-image imports. Start / stop with graceful shutdown, a timeout and a
+force-stop fallback; reboot, suspend, resume; delete is refused while the VM runs. Edit CPU, memory,
+name, tags, on-boot and protection online; resize and move disks; migrate across nodes. Batch
+operations run per target and report per target, so one failure does not stop the rest and you can
+retry only the failures. Resetting a guest's user password goes through the QEMU guest agent when
+available, otherwise cloud-init.
 
-Chinese is the source text: English lives in a lookup table next to it, and **anything missing
-falls back to Chinese** rather than failing. A missing translation therefore degrades to "still
-Chinese" instead of breaking the feature, and an untranslated string is logged as a warning so
-the table can be topped up from the logs.
+**LXC containers.** Containers use different PVE endpoints, so they get their own pages. Three-step
+wizard (templates come from storages whose content type includes `vztmpl`), lifecycle, snapshots
+(no memory state), full-only clones, migration. Resize rootfs and mount points; the IP lives in the
+NIC line, so changing one needs a restart. Resetting the container root password runs `pct exec` on
+the host over SSH, since neither a guest agent nor an API endpoint for running commands inside a
+container exists.
 
-`npm run verify` runs `scripts/check-i18n.mjs`, which fails the build when the two tables drift
-apart, when code references a key that does not exist, or when a backend message is only
-present in one language.
+**cloud-init template pipeline.** One action builds a template from a cloud image, waiting for each
+task before the next step: shell VM, `importdisk`, attach as `scsi0`, cloud-init drive, resize,
+convert. Any failure deletes the temporary VM. Images must live on dir / NFS / CIFS storage
+(`importdisk` needs file-level access); LVM and ZFS can be the destination.
 
-> The public marketing pages under `landing/` ship as bilingual arrays rather than going through
-> `t()`, so a few of their strings are not yet covered by the key check.
+**Networking and firewall.** Node-level bridges, bonds and VLANs, with changes pending until you
+press apply — the same behaviour as Proxmox, so a mis-edit cannot cut a node's network by accident.
+The firewall wraps Proxmox's native one rather than reimplementing it, so the rules here are the
+same data the PVE UI and `pve-firewall` see: three scopes, in/out rules with protocols, ports,
+sources and destinations, PVE macros and ordering, plus security groups, IP sets and rule templates
+pushed to many guests at once. Three permission levels, from view-only to cluster-wide.
+
+**SSH login security.** Reads the SSH log of the **panel host** (other cluster hosts are not
+reachable; the page says where the data came from), falling back from `/var/log/secure` to
+`/var/log/auth.log` to `journalctl`. Only real authentication failures count, de-duplicated by the
+sshd PID, so health checks and port scans do not raise the alarm. Failed sources are aggregated by
+IP and can be banned in one click; fail2ban jails can be inspected, unbanned and configured, and
+alerts reuse the monitoring channels with a recovery notice when an attack stops. Managed hosts let
+you do the same on other machines, after confirming the SSH fingerprint once.
+
+**Security baseline.** Scores the panel host and managed hosts — the same evaluation runs on both,
+so the verdicts match — across SSH configuration, password policy, firewall, time sync, account
+safety and kernel parameters, weighted by severity into an A–D grade. One-click hardening only
+writes files the panel owns and rolls back if `sshd -t` or a `/proc` re-read fails. Changes that can
+lock you out, such as disabling SSH password authentication, are deliberately excluded from it.
+
+**Port and process anomaly detection.** Lists listening ports and flags reverse-shell shapes
+(`/dev/tcp`, `nc -e`, `socat exec:`, `curl|sh`, executables running from `/tmp`). A heuristic, not
+an antivirus: every hit names the rule that matched, and the panel never kills anything itself.
+
+**Emergency response and audit.** Isolating a suspicious VM snapshots it first, then drops the
+network, powers it off and enables protection — reverse that order and the evidence is gone.
+Backups can be registered as protected so the panel refuses to delete them. `last` / `lastb` and
+sudo / su entries are folded into the same audit table as the panel's own operations.
+
+**Monitoring, snapshots, console.** Cluster dashboards, live node metrics over `/ws/metrics`, RRD
+charts, disk capacity forecasting, Feishu webhook and mail notifications with per-user channels.
+Snapshot and backup management including scheduled `vzdump` jobs. An in-browser noVNC console.
+
+**Users, quota and audit.** Three built-in roles (`admin`, `operator`, `viewer`) plus
+self-registration with admin approval. Every write is logged with the user, action, target, result,
+details and source IP, and the last administrator cannot be deleted or demoted. One global VM count
+limit covers both creation and clone, so repeated cloning cannot get around it.
+
+---
 
 ## Configuration
 
-All settings live in `backend/.env` (see `backend/.env.example`) and can afterwards be changed
-at runtime under **Settings**, which takes precedence. The essentials:
+Everything lives in `backend/.env` (Docker takes the same names as environment variables; see
+`backend/.env.example` for the full list). Values can also be changed at runtime under
+**Settings**, which takes precedence. The ones that matter:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `SECRET_KEY` | placeholder | Signs the login JWTs **and** encrypts stored secrets (PVE tokens, SMTP password). A placeholder or fewer than 32 characters refuses to start; changing it later makes existing ciphertext unreadable. |
+| `SECRET_KEY` | placeholder | **Required.** Signs login JWTs and encrypts stored secrets. A placeholder or fewer than 32 characters refuses to start. |
 | `ADMIN_USERNAME` | `admin` | Account created on first start. |
-| `ADMIN_PASSWORD` | empty | Password for that account: empty, shorter than 12 characters or a common one refuses to start. `deploy.sh` generates a random one. |
-| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | — | MySQL connection. Create the database first: `CREATE DATABASE proxcenter_panel CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` — tables are created on startup. |
-| `PVE_HOST` / `PVE_PORT` / `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | — | Initial Proxmox connection (editable in the UI). |
-| `PVE_VERIFY_SSL` | `true` | Keep it on. Set to `false` only for a self-signed or expired PVE certificate — it exposes your API token to a man in the middle. |
-| `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | empty | Needed for the VNC console (see above). |
-| `FORCE_HTTPS` | `false` | Redirect plain HTTP with `308` and send HSTS. Terminate TLS in front of the panel (Nginx / Caddy). |
-| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Which proxies may set `X-Forwarded-Proto`. Widening this to `0.0.0.0` lets anyone claim "I am HTTPS" and bypass `FORCE_HTTPS`. |
-| `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions (delete, change credentials, reset a guest password) ask for your password again. |
-| `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | Login lockout per account and per source IP. |
+| `ADMIN_PASSWORD` | empty | Password for it: empty, shorter than 12 characters or a common one refuses to start. |
+| `FORCE_HTTPS` | `false` | Redirect plain HTTP with `308` and send HSTS. Terminate TLS in front of the panel. |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Which proxies may set `X-Forwarded-Proto`. Keep it at your proxy. |
+| `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | Login lockout, counted per account and per source IP. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `720` | Access token lifetime. |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `14` | Refresh token lifetime — how long a login can last. |
+| `TOTP_REQUIRED_ROLES` | empty | Roles forced to set up two-factor authentication, for example `admin`. |
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | Request rate limits for `/api/*`. |
-| `TOTP_REQUIRED_ROLES` | empty | Roles forced to enable two-factor authentication (for example `admin`). |
+| `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions ask for your password again. |
+| `PVE_HOST` / `PVE_PORT` / `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | — | Initial Proxmox connection, editable in the UI. |
+| `PVE_VERIFY_SSL` | `true` | Keep it on. Turning it off exposes your API token to a man in the middle. |
+| `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | empty | Needed for the VNC console. |
 | `CORS_ORIGINS` | `http://localhost:5173` | Allowed frontend origins, comma separated. |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | — | MySQL connection. Only MySQL is supported. |
 
-Mail (SMTP) settings have no environment variables: configure them under
-**Settings → Mail notifications**. The SMTP password is encrypted with `SECRET_KEY` before it
-is stored and is never sent back to the browser.
+Create the database first — the tables are created on startup:
+
+```sql
+CREATE DATABASE proxcenter_panel CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+Mail (SMTP) has no environment variables: configure it under **Settings → Mail notifications**.
+The password is encrypted with `SECRET_KEY` before it is stored and is never sent back to the
+browser.
+
+---
+
+## Project layout
+
+```
+proxcenter/
+├── Dockerfile                  multi-stage: Node builds the frontend, then a slim runtime
+├── docker-compose.yml          user deployment: passwords inline, image + MySQL, one command
+├── docker-entrypoint.sh        generates SECRET_KEY on first start and keeps it in the volume
+├── deploy.sh                   bare-metal installer, idempotent
+├── backend/
+│   ├── run.py                  entry point
+│   └── app/
+│       ├── main.py             FastAPI app, routes, error handling
+│       ├── pve.py              Proxmox API client (token + ticket auth)
+│       ├── vmconfig.py         builds and parses VM / container configuration
+│       ├── security.py         JWT sessions, RBAC, audit helpers
+│       ├── store.py            MySQL: users, audit log, connection settings
+│       └── routers/            one module per page — vms, lxc, templates, console, tasks,
+│                               network, baseline, portguard, isolation, backups, users, audit
+└── src/
+    ├── api/                    axios client, types, endpoint wrappers
+    ├── hooks/                  auth, toasts, task waiting, WebSocket
+    ├── components/, pages/     layout, shared UI, screens
+    ├── i18n/                   Chinese and English strings
+    └── styles/                 dark theme design system
+```
+
+---
+
+## Tests
+
+```bash
+cd backend
+../.venv/bin/python -m pip install -r requirements-dev.txt
+../.venv/bin/python -m pytest        # roughly 1000 cases
+```
+
+Three layers, none of which needs a real Proxmox host: pure-logic tests for configuration
+building, permission matrices and bulk-operation partial failures; a simulated Proxmox HTTP server
+for auth headers, task polling and error mapping; and full API tests through FastAPI's TestClient
+covering RBAC, audit, firewall, SSH log parsing, the baseline, port heuristics and the
+guest-password channels.
+
+> The API tests use a separate `<DB_NAME>_test` database. Without the right to create it they skip
+> instead of touching your real data.
+
+Frontend:
+
+```bash
+npm run typecheck     # tsc --noEmit
+npm run build         # tsc -b && vite build
+npm run verify        # the three checks above plus i18n consistency
+```
+
+---
+
+## Troubleshooting
+
+**You can sign in, but the VM and storage lists are empty.** Open **Settings → Environment
+self-check** first. This is the most common Proxmox API token trap: a token created in the web UI
+has privilege separation on by default, so it starts with *no* permissions — reads that need
+privileges return `403`, and endpoints like `/storage` return `200` with an empty array instead of
+an error. The self-check asks Proxmox for the token's effective permissions and prints the
+commands to fix it:
+
+```bash
+pveum acl modify / --tokens 'root@pam!panel' --roles PVEVMAdmin
+pveum acl modify / --tokens 'root@pam!panel' --roles PVEDatastoreUser
+pveum acl modify / --tokens 'root@pam!panel' --roles PVEAuditor   # node metrics need Sys.Audit
+```
+
+The tell-tale sign is `privsep: 1` in `pveum token list` together with an empty
+`/access/permissions`.
+
+**Connection fails with 502 although Proxmox answers pings.** Check whether the host running the
+panel has `HTTP_PROXY` / `HTTPS_PROXY` set. The panel does not inherit them by default; set
+`PVE_TRUST_ENV=true` only if it really must reach PVE through a proxy, otherwise add the Proxmox
+address to `NO_PROXY`.
+
+**The configuration looks right but the panel cannot reach the cluster.** Connection settings are
+resolved as *database first, then `.env`*. If an address was saved earlier, the new value in
+`.env` has no effect. Change it under Settings, or delete the `pve_connection` row from the
+`settings` table and restart. An unreachable Proxmox does not stop the panel from starting — it
+only logs a warning, which is what lets you get back in and fix the configuration.
+
+**The console asks for a user name and password.** Proxmox design: an API token cannot access
+`vncproxy`. Add a PVE account and password under Settings — ideally a dedicated account with only
+`PVEVMUser`.
+
+**The console connects but stays black.** Cloud images do not write boot output to the graphical
+console. The panel configures `serial0` and `vga: serial0` when it builds a template; a
+hand-made template needs those two lines added in PVE.
+
+**Template building gets stuck at `importdisk`.** The image must be on dir / NFS / CIFS storage.
+Storing the `.img` on LVM or ZFS fails, and the panel deletes the temporary VM when it does.
+
+**Docker deployment: the container will not start or keeps restarting.** Almost always the
+database password:
+
+```bash
+docker compose logs panel | tail -30     # look for Access denied / Can't connect
+```
+
+See the two notes at the end of [Docker deployment](#3-docker-recommended) for how to change them.
+
+---
 
 ## Security notes
 
-- **Keep the PVE token privileges narrow.** A token with `--privsep 0` on `/` is root-equivalent
-  for the API. Grant roles per path instead.
-- **Backups are not configured by default.** The panel can protect existing backup files from
-  deletion, but it does not schedule `vzdump` jobs for you — use Proxmox's own backup jobs.
-- **HTTPS is expected in production.** Put the panel behind Nginx / Caddy, set `FORCE_HTTPS=true`
-  and keep `FORWARDED_ALLOW_IPS` at your proxy's address.
-- **Two-factor authentication** is available for every account and can be enforced by role.
-- **Reset a guest's user password** uses one of three channels, all audited and behind a
-  step-up confirmation:
-  - the QEMU **guest agent** (instant, no reboot; falls back to running `chpasswd` inside the
-    guest when the agent is too old to set passwords);
-  - **cloud-init** (writes `cipassword`, regenerates the config drive, reboots — applies on the
-    next boot when the guest is stopped);
-  - for containers, **`pct exec … chpasswd` over SSH** on the host, using the credentials from
-    **SSH → managed hosts**. Proxmox's API cannot execute commands inside a container, so this
-    is the only channel; without managed-host credentials the dialog says so and points you at
-    the container console. The password is piped through base64 to avoid any quoting issue.
-- **Nothing runs on the guests by default.** The panel never enables automatic package upgrades
-  in cloud-init unless you ask for it.
+**Keys and passwords.** `SECRET_KEY` signs the login JWTs and is the encryption root for stored
+secrets — a placeholder or fewer than 32 characters refuses to start. `ADMIN_PASSWORD` shorter
+than 12 characters, empty or a common weak password also refuses to start. The backend enforces
+both, so there is no way to ship the defaults by accident.
 
-## Development and tests
+**HTTPS is expected in production.** Credentials and the API token travel in plain text over HTTP.
+Set `FORCE_HTTPS=true` and terminate TLS in Nginx or Caddy. The proxy must send
+`X-Forwarded-Proto`, and `FORWARDED_ALLOW_IPS` must stay at the proxy's address — widening it lets
+a public request claim it is HTTPS and bypass the redirect. Keep `PVE_VERIFY_SSL=true` (the
+default) so nobody can sit between the panel and Proxmox and take the token.
 
-```bash
-# backend — unit and API tests (they create a separate <DB_NAME>_test database)
-cd backend
-../.venv/bin/python -m pytest
+**Keep the Proxmox token narrow.** `--privsep 1` with precise ACLs limits the panel to what it
+should touch. PVE's port 8006 does not need to be reachable from outside either: everything goes
+through the panel's backend.
 
-# frontend — type check, dependency graph check, i18n consistency check, production build
-npm run verify
-```
+**Stored secrets are never sent to the browser.** `GET /api/config/connection` only reports
+`token_secret_set: true/false` and leaves the field untouched when you save with it empty. The
+SMTP password behaves the same. Administrators cannot read other users' webhooks or cloud
+credentials.
 
-The backend suite covers configuration building, the API surface with RBAC and audit, firewall,
-hardening, SSH security, port guarding, bulk operations, containers and the guest-password
-channels. It needs no Proxmox host: the API layer is tested against a simulated Proxmox server.
+**Sign-in has three layers.** A human check on the login page — off, slider (the default) or image
+captcha — runs *before* the password is verified, so scripts cannot use "was the password right?"
+as a signal; a failed captcha deliberately does **not** count towards the lockout, because
+otherwise anyone could lock an account by submitting a wrong image repeatedly. Then failed
+logins are counted per account and per source IP and stored in MySQL, so a restart does not clear
+them. Around all of that sits a per-IP rate limit on `/api/*` with a tighter line for the
+sensitive endpoints, which only trusts `X-Forwarded-For` from the proxies listed in
+`FORWARDED_ALLOW_IPS` — a client cannot forge its way around it.
 
-`npm run verify` also runs `scripts/check-i18n.mjs`, which fails on any drift between the
-Chinese and English tables, on a `t('…')` reference to a key that does not exist, or on a
-backend message that exists in only one language.
+**Sessions can actually be revoked.** Both tokens are set as server-side `HttpOnly` cookies, so
+JavaScript cannot read them and XSS cannot steal them. Logging out revokes the server session and
+invalidates the token immediately rather than only clearing the browser. **Profile → Login
+devices** lists every device and lets you kick them individually; "sign out everywhere" or an
+administrator kicking a user invalidates every token that account ever received. Changing the
+password does the same.
+
+**Writes go through CSRF protection.** The CSRF cookie is readable on purpose so the frontend can
+echo it back in `X-CSRF-Token`; every POST / PUT / PATCH / DELETE must match. A cross-site page
+cannot read it and therefore cannot forge the request. WebSocket handshakes use the cookie and
+check `Origin`, so tokens no longer appear in URLs or logs.
+
+**Two-factor authentication** is available to everyone and can be enforced by role. Binding one
+hands out eight recovery codes, shown once. The TOTP secret is encrypted with `SECRET_KEY` before
+it is stored.
+
+**Sensitive reads are audited and destructive actions need a second confirmation.** Reading the
+connection settings, the mail configuration or the audit log itself all leave a record — "who
+copied the cluster token" can only be answered by the traces of reads. Deleting a VM, changing
+credentials, adding or removing accounts, editing cluster-level firewall rules or writing a
+fail2ban policy all require re-entering your password even with a valid token; the backend answers
+`403 + X-Step-Up: required` and the confirmation is good for `STEP_UP_WINDOW_MINUTES` minutes.
+
+---
 
 ## Proxmox VE compatibility
 
-The panel speaks the Proxmox REST API and uses one code path for **8.x and 9.x** — no
-version branches. Both are exercised against real clusters; a few fields are read
-opportunistically (present → used, absent → fallback). The version string from `/version` is
-only displayed. The one version-sensitive feature is the console: Proxmox's websocket endpoint
-accepts only a `PVEAuthCookie`, not an API token, on both 8.x and 9.x.
+The panel speaks the Proxmox REST API and uses one code path for **8.x and 9.x**, with no version
+branches — a few fields are read opportunistically (present → used, absent → fallback). Both have
+been exercised against real clusters for VM and container creation, start/stop and console. The
+version string from `/version` is only displayed. The one version-sensitive feature is the
+console: Proxmox's websocket endpoint accepts only a `PVEAuthCookie`, never an API token, on both
+8.x and 9.x.
 
 ## License
 
@@ -391,6 +538,7 @@ accepts only a `PVEAuthCookie`, not an API token, on both 8.x and 9.x.
 
 ## Links
 
-- Website and demo: <https://prox.yjscloud.com>
+- Website and live demo: <https://prox.yjscloud.com>
 - Issues and feature requests: <https://github.com/yjscloud/ProxCenter/issues>
 - Full documentation (Chinese): [README.md](README.md)
+

@@ -80,7 +80,12 @@
 
 services:
   db:
-    image: mysql:8.0
+    # 数据库镜像。默认官方 mysql:8.0；Docker Hub 拉取慢（或拉不动）时可以改成本地
+    # 镜像加速地址，或任何你信得过的 registry，例如：
+    #     DB_IMAGE=docker.m.daocloud.io/library/mysql:8.0
+    #     DB_IMAGE=ghcr.io/linuxserver/mariadb:11.4   # MariaDB，注意挂载点是 /config
+    # 也可以直接在本文件里改默认值。换引擎（MySQL → MariaDB）时记得数据卷要重建。
+    image: ${DB_IMAGE:-mysql:8.0}
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4

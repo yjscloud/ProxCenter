@@ -27,6 +27,13 @@ docker compose up -d
 
 ![控制台仪表盘](docs/screenshots/dashboard.png)
 
+## 联系与反馈
+
+<img src="docs/screenshots/wechat.png" alt="微信联系方式" width="240">
+
+需要帮助、发现功能有问题、或者想提新需求，都欢迎扫码加微信找我。部分功能还没经过充分测试，
+可能无法正常使用，遇到问题直接说。
+
 ## 目录
 
 - [一、部署](#一部署)：[准备 Token](#准备-proxmox-api-token) · [授权](#授权) ·
@@ -520,12 +527,7 @@ Cookie），跨站页面读不到它、伪造不出来；WebSocket 握手同样�
 
 ---
 
-## 联系与反馈
-
-<img src="docs/screenshots/wechat.png" alt="微信联系方式" width="240">
-
-需要帮助、发现功能有问题、或者想提新需求，都欢迎扫码加微信找我。部分功能还没经过充分测试，
-可能无法正常使用，遇到问题直接说。
+## 许可证
 
 本项目以 [Apache-2.0](LICENSE) 许可发布。
 

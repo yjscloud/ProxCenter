@@ -158,6 +158,9 @@ Upgrading is `docker compose pull && docker compose up -d`.
 > `/etc/docker/daemon.json` (`{"registry-mirrors": ["https://docker.m.daocloud.io"]}`) and
 > `systemctl restart docker`. If you would rather not touch the daemon, just point the database
 > image elsewhere: `DB_IMAGE=docker.m.daocloud.io/library/mysql:8.0 docker compose up -d`.
+> `DB_IMAGE=...` has to be on the same line as the command, or exported, or written into a `.env`
+> next to the compose file — typing it on its own line only sets a shell variable that compose
+> cannot see.
 
 ### 4. Bare metal deployment
 

@@ -82,13 +82,6 @@ docker compose up -d
 
 打开 `http://你的服务器IP:8080`，账号 `admin`，口令 `ProxCenter@2026`。
 
-> **拉镜像报 `denied`？** GHCR 的包默认私有，维护者首次发布后要到
-> <https://github.com/users/yjscloud/packages/container/proxcenter/settings> 把可见性改成
-> **Public**（一次性）。拉 `mysql:8.0` 慢则是 Docker Hub 的网络问题，给宿主机配
-> `registry-mirrors` 即可；不想动 daemon 就换数据库镜像：
-> `DB_IMAGE=docker.m.daocloud.io/library/mysql:8.0 docker compose up -d`（`DB_IMAGE=...`
-> 必须与命令同行、或先 `export`、或写进同目录 `.env` —— 单独敲一行只是个 shell 变量）。
-
 **改口令。** 三个口令都在 `docker-compose.yml` 里，搜 `★ 改这里`。口令行长这样：
 
 ```yaml

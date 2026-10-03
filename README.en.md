@@ -93,15 +93,6 @@ docker compose up -d
 
 Open `http://<server-ip>:8080` and sign in as `admin` / `ProxCenter@2026`.
 
-> **Pull fails with `denied`?** GHCR packages are **private** by default, so an anonymous pull
-> fails until the maintainer flips the visibility to **Public** once, at
-> <https://github.com/users/yjscloud/packages/container/proxcenter/settings>.
-> **Is `mysql:8.0` slow?** That is Docker Hub's network — configure a registry mirror on the host,
-> or point the database image elsewhere:
-> `DB_IMAGE=docker.m.daocloud.io/library/mysql:8.0 docker compose up -d`. `DB_IMAGE=...` must be on
-> the same line as the command, or exported, or written into a `.env` — typing it on its own line
-> only sets a shell variable that compose cannot see.
-
 **Changing the passwords.** All three live in `docker-compose.yml`; search for `★ 改这里`. The
 lines look like this:
 

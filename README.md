@@ -313,45 +313,71 @@ curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-co
 docker compose up -d
 ```
 
-打开 `http://<服务器IP>:8080`，账号 `admin`，口令取 `docker-compose.yml` 里
-`ADMIN_PASSWORD` 的默认值。
+打开 `http://<服务器IP>:8080`，账号 `admin`，口令 = `docker-compose.yml` 里
+`ADMIN_PASSWORD` 的值（默认 `ProxCenter@2026`）。
 
-**口令就写在 `docker-compose.yml` 里**（`ADMIN_PASSWORD` / `DB_PASSWORD` /
-`MYSQL_ROOT_PASSWORD`），因此不需要另外准备 `.env`。要换成自己的口令，二选一：
+##### 一、怎么改成自己的口令
 
-* 直接改 `docker-compose.yml` 里的默认值；或
-* 在同目录放一个 `.env`（`cp .env.docker.example .env`）—— compose 会自动读取，
-  优先级高于文件里的默认值。
+三个口令都写在下发下来的 `docker-compose.yml` 里，**两种方式任选**：
 
-> `SECRET_KEY` 是唯一的例外，它**不**在文件里写死：它是登录 JWT 的签名密钥，同时是
-> 库里密文的加密根，写进公开仓库等于把钥匙公示给所有人。容器首次启动时会随机生成并
-> 保存到 `panel_data` 卷（见 `docker-entrypoint.sh`），同样是零配置，但每个部署各有
-> 各的密钥。要自己指定就设 `SECRET_KEY`。
+**方式一 · 直接改 `docker-compose.yml`**（不用额外建文件）
 
-镜像同时构建了 **linux/amd64** 与 **linux/arm64**：
+在文件里搜 `★ 改这里`，一共 3 处，把等号右边的默认值换成自己的：
+
+| 变量 | 作用 | 要求 |
+|---|---|---|
+| `ADMIN_PASSWORD` | 面板登录口令（账号 `admin`） | ≥ 12 位且非弱口令，否则后端拒绝启动 |
+| `DB_PASSWORD` | 面板连接数据库的口令 | 随意；`db` 与 `panel` 共用这个变量，改一处两边同步 |
+| `MYSQL_ROOT_PASSWORD` | MySQL 管理员口令 | 随意；仅数据库首次初始化时使用 |
+
+改完执行 `docker compose up -d` 生效。
+
+**方式二 · 用 `.env` 覆盖**（完全不改 `docker-compose.yml`）
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/.env.docker.example
+mv .env.docker.example .env
+# 按文件里「★ 改这里」的提示填好口令，然后：
+docker compose up -d
+```
+
+> **优先级**：环境变量 / `.env` **高于** `docker-compose.yml` 里的默认值。
+> 文件里凡写成 `${名字:-默认值}` 的地方都遵循这条规则，两种方式可以混用。
+
+##### 二、两个必须知道的前提
+
+1. **口令只在「首次初始化」时生效**。`ADMIN_PASSWORD` 只在库里还没有管理员时用来建号，
+   MySQL 只在数据目录为空时按 `MYSQL_PASSWORD` 初始化。已经跑起来之后再改，要么
+   `docker compose down -v` 重建（**会清空数据**）、要么进库 `ALTER USER` 手动改
+   （`docker-compose.yml` 文件末尾就有现成命令），否则面板会连不上库、容器反复重启。
+   后续要改登录口令，请到「个人中心 → 修改密码」。
+2. **`SECRET_KEY` 不要动**。它既是登录 JWT 的签名密钥，也是库里密文的加密根 ——
+   写进公开仓库等于把钥匙公示给所有人，所以它**不**在文件里写死：容器首次启动随机生成
+   并保存到 `panel_data` 卷（见 `docker-entrypoint.sh`），仍然是零配置，但每个部署各有
+   各的密钥。已有数据后改掉它，已存的 PVE Token / SMTP 口令会全部解不开。
+   想自己指定，就设一个 ≥ 32 位的随机串。
+
+##### 三、镜像来源
+
+同时构建了 **linux/amd64** 与 **linux/arm64**：
 
 | 仓库 | 镜像 | 说明 |
 |---|---|---|
 | GHCR（默认） | `ghcr.io/yjscloud/proxcenter:latest` | 无需账号即可拉取 |
 | Docker Hub | `yjscloud/proxcenter:latest` | 切来源：`PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d` |
 
-**和裸机部署的几处差别**（改配置前先读）：
+##### 四、和裸机部署的几处差别
 
-1. **口令只在「第一次」生效**。`ADMIN_PASSWORD` 只在库里还没有管理员时用来建号，
-   之后改它不影响已有登录（要改请登录后在「个人中心 → 修改密码」改）；同理 MySQL 只在
-   数据目录为空时按 `MYSQL_PASSWORD` 初始化，**改了口令要么 `docker compose down -v`
-   重建（会清空数据）、要么进库手动改**，否则面板连不上库。
-2. **`SECRET_KEY` 与数据卷必须留好**。自动生成的密钥存在 `panel_data` 卷里，丢了或改掉，
-   已存的 PVE Token / SMTP 口令全部解不开；`panel_data`（运行期数据）与 `db_data`
-   （MySQL）都是具名卷，`docker compose down` 不删数据，`down -v` 才会 ——
-   备份数据卷时把密钥文件一起备份。
-3. **「主机安全」类功能受限**。「安全基线 / SSH 防爆破 / 端口与进程巡检」读的是
+1. **数据卷要一起备份**。`panel_data`（运行期数据 + 自动生成的 `SECRET_KEY`）与
+   `db_data`（MySQL）都是具名卷：`docker compose down` 不删数据，`down -v` 才会 ——
+   备份时把密钥文件一起备份，否则已有密文解不开。
+2. **「主机安全」类功能受限**。「安全基线 / SSH 防爆破 / 端口与进程巡检」读的是
    **面板所在主机**的日志与 `/proc`，容器内默认看不到。需要时按 `docker-compose.yml`
    里已注释的挂载项把 `/var/log`、`/etc/fail2ban`、`/proc` 以**只读**方式挂进去。
-4. **HTTPS 仍在反代上终结**。容器内保持 `FORCE_HTTPS=false`，由前面的 Nginx/Caddy 上
+3. **HTTPS 仍在反代上终结**。容器内保持 `FORCE_HTTPS=false`，由前面的 Nginx/Caddy 上
    443 后再置 `true`；反代不在面板容器里时，`FORWARDED_ALLOW_IPS` 要填**反代的实际
    来源地址**（默认给的 `*` 只在反代自身可控的内网环境用）。
-5. **升级**：`docker compose pull && docker compose up -d`。
+4. **升级**：`docker compose pull && docker compose up -d`。
 
 从源码本地构建（不改镜像仓库）：`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`；
 发布新版本镜像：推一个 `v*` tag 即可，GitHub Actions 会自动完成多架构构建与推送

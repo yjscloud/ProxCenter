@@ -210,21 +210,53 @@ curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/docker-co
 docker compose up -d
 ```
 
-Open `http://<server-ip>:8080` and sign in as `admin` with the `ADMIN_PASSWORD` default from
-`docker-compose.yml`. The database password is in that file too, so no `.env` is required — put
-one next to it to override either. Images are built for **linux/amd64** and **linux/arm64**;
-switch registry with `PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`.
+Open `http://<server-ip>:8080` and sign in as `admin` with the `ADMIN_PASSWORD` value from
+`docker-compose.yml` (default `ProxCenter@2026`).
 
-`SECRET_KEY` is deliberately **not** written into the file: it signs login JWTs *and* is the
-encryption root for the secrets stored in the database, so a value committed to a public
-repository would be a published key. The container generates one on first start and keeps it in
-the `panel_data` volume — still zero-configuration, but every deployment gets its own key.
+**Setting your own passwords.** All three passwords live in `docker-compose.yml`. Pick either way:
 
-Two things differ from a bare-metal install, both noted in `docker-compose.yml`: the passwords
-only take effect on **first initialisation** (change them and you must recreate the database
-volumes, or edit the database by hand), and the host-security screens (security baseline, SSH
-brute-force, port and process scan) read the **host's** logs and `/proc`, which a container
-cannot see by default — mount `/var/log`, `/etc/fail2ban` and `/proc` read-only if you need them.
+*Way 1 — edit `docker-compose.yml`.* Search the file for `★ 改这里` (*change here*); there are
+three of them. Replace the default on the right-hand side:
+
+| Variable | Purpose | Requirement |
+|---|---|---|
+| `ADMIN_PASSWORD` | Panel login password (user `admin`) | 12+ chars and not a weak password, or the backend refuses to start |
+| `DB_PASSWORD` | Password the panel uses to reach the database | Anything; `db` and `panel` share this one variable, so both stay in sync |
+| `MYSQL_ROOT_PASSWORD` | MySQL administrator password | Anything; only used when the database is first initialised |
+
+Then run `docker compose up -d` again.
+
+*Way 2 — override with `.env`, leaving `docker-compose.yml` untouched:*
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/yjscloud/ProxCenter/main/.env.docker.example
+mv .env.docker.example .env
+# fill in the values marked "★ 改这里", then:
+docker compose up -d
+```
+
+> **Precedence**: environment variables / `.env` win over the defaults in `docker-compose.yml`.
+> Every `${NAME:-default}` in the file follows that rule, and the two ways can be mixed.
+
+**Two things to know:**
+
+1. **Passwords only take effect on first initialisation.** `ADMIN_PASSWORD` is used only while
+   the database has no administrator yet, and MySQL reads `MYSQL_PASSWORD` only when its data
+   directory is empty. Changing them later means either `docker compose down -v` (which **wipes
+   the data**) or an `ALTER USER` by hand — the ready-made commands are at the bottom of
+   `docker-compose.yml`. To change your *login* password afterwards, use Profile → Change password.
+2. **Leave `SECRET_KEY` alone.** It signs login JWTs *and* is the encryption root for the secrets
+   stored in the database, so a value committed to a public repository would be a published key.
+   The container generates one on first start and keeps it in the `panel_data` volume — still
+   zero-configuration, but every deployment gets its own key. Changing it after you have data
+   makes every stored PVE token and SMTP password undecryptable.
+
+Images are built for **linux/amd64** and **linux/arm64**; switch registry with
+`PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`.
+
+Also noted in `docker-compose.yml`: the host-security screens (security baseline, SSH
+brute-force, port and process scan) read the **host's** logs and `/proc`, which a container cannot
+see by default — mount `/var/log`, `/etc/fail2ban` and `/proc` read-only if you need them.
 
 ## Languages
 

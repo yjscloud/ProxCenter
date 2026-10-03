@@ -145,7 +145,7 @@ Two things worth knowing up front:
   published key, so the container generates one on first start and keeps it in the `panel_data`
   volume. Changing it after you have data makes every stored secret undecryptable.
 
-Images are built for amd64 and arm64, pulled from GHCR by default. To use Docker Hub instead:
+Images are built for amd64 (Proxmox VE itself is x86_64-only) and pulled from GHCR by default. To use Docker Hub instead:
 
 ```bash
 PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d

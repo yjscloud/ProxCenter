@@ -131,7 +131,7 @@ MYSQL_ROOT_PASSWORD=MyPassw0rd2026-root
   口令）的加密根。写死在公开仓库等于把钥匙公示，所以容器第一次启动会随机生成一份，
   存进 `panel_data` 卷。已有数据之后改掉它，那些密文就都解不开了。
 
-镜像有 amd64 和 arm64 两种架构，默认从 GHCR 拉。想换 Docker Hub：
+镜像默认构建 amd64（Proxmox VE 本身只有 x86_64），从 GHCR 拉。想换 Docker Hub：
 
 ```bash
 PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d

@@ -5,6 +5,40 @@
 充分测试。每次发布都会在这里按「新增 / 变更 / 修复 / 安全」分类记录，安全修复会额外
 标注。
 
+## [0.1.2] — 2026-10-03
+
+容器化部署。新增 Dockerfile 与 docker compose 栈，宿主上**只需要 Docker** 就能把
+面板 + MySQL 一起拉起来，不必再装 Node / Python / MySQL，也不必执行 `deploy.sh`。
+
+### 新增
+
+- **一体化镜像**（`Dockerfile`）：三阶段构建 —— Node 构建前端 → Python 依赖装进
+  独立 venv（编译工具留在中间层，不进最终镜像）→ 精简运行时。前端 `dist/` 仍由
+  FastAPI 同源托管，与裸机部署形态一致，因此控制台的 WebSocket 同样无需额外反代。
+- **docker compose 部署**（`docker-compose.yml`）：面板 + MySQL 8 一条命令启动。
+  数据库口令与面板初始口令**内联在该文件里**，不建 `.env` 也能跑；想换口令可以改
+  文件里的值，也可以放一个 `.env` 覆盖（优先级更高）。
+- **`SECRET_KEY` 自动生成**（`docker-entrypoint.sh`）：它是 JWT 的签名密钥，同时是
+  库里密文的加密根，写死在公开仓库等于把钥匙公示，因此改为首次启动随机生成、落盘到
+  `panel_data` 卷，重启与升级复用同一把（要自己指定仍可设 `SECRET_KEY`）。
+- **多架构发布流水线**（`.github/workflows/docker.yml`）：推 `v*` tag 自动构建
+  linux/amd64 + linux/arm64 并推送到 GHCR；配了 Docker Hub 密钥时一并推送。
+  另提供 `scripts/docker-build-push.sh` 手动构建推送（没有 buildx 时自动回退单架构）。
+- **`docker-compose.build.yml`**：开发者从源码本地构建的 compose 覆盖文件。
+
+### 变更
+
+- README 新增「方式四：Docker / docker compose」一节，顶部部署方式改为裸机 / Docker
+  二选一，项目结构补充容器化相关文件。
+
+### 已知限制
+
+- 容器内读不到**宿主机**的 SSH 日志、fail2ban 状态与 `/proc`，因此「安全基线 /
+  SSH 防爆破 / 端口与进程巡检」默认取不到数据；需要时按 `docker-compose.yml` 里
+  已注释的挂载项，把 `/var/log`、`/etc/fail2ban`、`/proc` 以只读方式挂进去。
+- 数据库口令与管理员口令只在**首次初始化**时生效：改了 compose / `.env` 里的值，
+  要么 `docker compose down -v` 重建（会清空数据），要么进库手动改。
+
 ## [0.1.1] — 2026-10-02
 
 中英文双语的第一个版本。界面、接口返回的结构性文案、邮件与通知、以及部署脚本

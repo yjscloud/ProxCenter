@@ -21,6 +21,10 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "构建目标平台；需要 arm64 时填 linux/amd64,linux/arm64"
+        default: linux/amd64
 
 # 同一分支连推时取消未完成的旧构建
 concurrency:
@@ -28,8 +32,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 多架构：amd64 覆盖绝大多数服务器；arm64 覆盖 ARM 云主机 / 树莓派 / Apple Silicon
-  PLATFORMS: linux/amd64,linux/arm64
+  # 只构建 amd64。Proxmox VE 本身只有 x86_64（官方没有 arm64 版本），面板不可能跑在
+  # arm64 的 PVE 宿主机上；而 GHA 上 arm64 要走 QEMU 模拟，实测一次多架构构建 24 分钟
+  # 都跑不完 —— 为用不上的架构付这个代价不划算。
+  # 确实需要 arm64（例如只想在 ARM 机器上管理远程 PVE），用 workflow_dispatch 手动触发
+  # 并把 platforms 填成 linux/amd64,linux/arm64 即可。
+  PLATFORMS: linux/amd64
 
 jobs:
   build:
@@ -100,7 +108,8 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          platforms: ${{ env.PLATFORMS }}
+          # 手动触发时可以覆盖（push 事件下 inputs 为空，回落到 env.PLATFORMS）
+          platforms: ${{ inputs.platforms || env.PLATFORMS }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

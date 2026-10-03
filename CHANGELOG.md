@@ -15,9 +15,12 @@
 - **一体化镜像**（`Dockerfile`）：三阶段构建 —— Node 构建前端 → Python 依赖装进
   独立 venv（编译工具留在中间层，不进最终镜像）→ 精简运行时。前端 `dist/` 仍由
   FastAPI 同源托管，与裸机部署形态一致，因此控制台的 WebSocket 同样无需额外反代。
-- **docker compose 部署**（`docker-compose.yml`）：面板 + MySQL 8 一条命令启动。
-  数据库口令与面板初始口令**内联在该文件里**，不建 `.env` 也能跑；想换口令可以改
-  文件里的值，也可以放一个 `.env` 覆盖（优先级更高）。
+- **docker compose 部署**（`docker-compose.yml`）：面板 + MySQL 8 一条命令启动，
+  数据库口令与面板初始口令**内联在该文件里**，不建 `.env` 也能跑。
+- **口令自定义指引**：`docker-compose.yml` 顶部给出「方式一改文件 / 方式二用 `.env`」
+  的双路径说明与优先级规则，三处口令逐一标注 `★ 改这里`；文件末尾附「改完怎么确认
+  生效」与「数据库口令对不上时怎么补救」（含可直接粘贴的 `ALTER USER` 命令）；
+  `.env.docker.example` 改成照着填即可的模板。
 - **`SECRET_KEY` 自动生成**（`docker-entrypoint.sh`）：它是 JWT 的签名密钥，同时是
   库里密文的加密根，写死在公开仓库等于把钥匙公示，因此改为首次启动随机生成、落盘到
   `panel_data` 卷，重启与升级复用同一把（要自己指定仍可设 `SECRET_KEY`）。
@@ -28,8 +31,15 @@
 
 ### 变更
 
-- README 新增「方式四：Docker / docker compose」一节，顶部部署方式改为裸机 / Docker
-  二选一，项目结构补充容器化相关文件。
+- README 新增「方式四：Docker / docker compose」一节，并把「怎么改成自己的口令」
+  拆成独立小节前置；顶部部署方式改为裸机 / Docker 二选一，项目结构补充容器化文件。
+
+### 修复
+
+- **Docker 工作流在 GitHub 上校验失败**：`if: ${{ secrets.X != '' }}` 里的 `secrets`
+  不是合法的条件上下文，整个 workflow 文件被判为不合法 —— 表现为「运行里一个 job 都
+  没有」、workflow 名显示成文件路径，镜像因此完全没有被推送。改为先把密钥映射到
+  job 级 `env`，再用 `env.X != ''` 判断。
 
 ### 已知限制
 

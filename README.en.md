@@ -97,6 +97,12 @@ docker compose up -d
 
 Open `http://<server-ip>:8080` and sign in as `admin` with the password `ProxCenter@2026`.
 
+> **Pull fails with `denied`?** GHCR packages are **private** by default, so nobody can pull them.
+> The maintainer has to change the visibility to **Public** once, at
+> <https://github.com/users/yjscloud/packages/container/proxcenter/settings>. To avoid GHCR
+> entirely, use Docker Hub, where images are public by default:
+> `PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`.
+
 **Changing the passwords.** All three of them live in `docker-compose.yml`; search the file for
 `★ 改这里`. The password lines look like this:
 

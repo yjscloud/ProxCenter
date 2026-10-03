@@ -89,6 +89,11 @@ docker compose up -d
 
 打开 `http://你的服务器IP:8080`，账号 `admin`，口令 `ProxCenter@2026`。
 
+> **拉镜像报 `denied`？** GHCR 的包默认是**私有**的，任何人都拉不到。维护者首次发布后要到
+> <https://github.com/users/yjscloud/packages/container/proxcenter/settings>
+> 把可见性改成 **Public**（一次性，之后所有版本都公开）。不想用 GHCR 就换 Docker Hub ——
+> 那边的镜像默认公开：`PROXCENTER_IMAGE=docker.io/yjscloud/proxcenter:latest docker compose up -d`。
+
 **改口令。** 三个口令都在 `docker-compose.yml` 里，搜 `★ 改这里` 就能找到。口令行长这样：
 
 ```yaml

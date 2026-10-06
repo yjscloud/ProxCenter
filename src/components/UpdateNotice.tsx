@@ -9,20 +9,24 @@
    2. 更新进行中 → 提示条换成进度说明，每 5 秒问一次状态；
    3. 面板重启回来、版本号变了 → 自动刷新页面（不然用户看到的还是旧前端）。
 
-   弹窗里既有一键更新，也有该部署形态下的**手工命令** —— 容器、非 systemd 托管、
-   没装 Node 这些情况下后端会明确拒绝一键更新，并给出为什么。
+   弹窗正文与设置页那张卡片复用同一批内容块（见 UpdateInfo），两边不会各说各话。
    ========================================================================== */
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { useToast } from '../hooks/useToast';
 import { useApplyUpdate, useSaveUpdateSettings, useUpdateStatus } from '../hooks/useUpdate';
 import { useT } from '../i18n';
 import { Notice } from './ui/EmptyState';
 import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
-import { IconCopy, IconDownload } from './Icons';
+import { IconDownload } from './Icons';
+import {
+  UpdateManualCommands,
+  UpdateNotes,
+  UpdateNoticeLine,
+  UpdateVersionGrid,
+} from './UpdateInfo';
 
 /** 「以后再说」记到本地：只跳过**这一个**版本，下个版本照旧提醒。 */
 const DISMISS_KEY = 'pve_update_dismissed';
@@ -39,7 +43,6 @@ export function UpdateNotice() {
   const t = useT();
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
-  const toast = useToast();
   const allowed = hasPermission('settings.manage');
 
   const query = useUpdateStatus(allowed);
@@ -48,14 +51,10 @@ export function UpdateNotice() {
 
   const [dismissed, setDismissed] = useState<string>(readDismissed);
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const data = query.data;
   const applyingTag = data?.applying?.tag ?? '';
   const latest = data?.latest ?? '';
-
-  /* 更新进行中的轮询与「重启后自动刷新」都在 useUpdateStatus 里（两个组件共用一份，
-     否则提示条与设置页同时挂载时会各起一个定时器、各刷一次页面） */
 
   if (!allowed || !data) return null;
 
@@ -69,16 +68,6 @@ export function UpdateNotice() {
     }
   };
 
-  const copyManual = async () => {
-    try {
-      await navigator.clipboard.writeText((data.manual ?? []).join('\n'));
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      toast.warning(t('update.copyFailed'));
-    }
-  };
-
   /* 更新进行中：不弹窗也让人知道发生了什么（面板随时会重启） */
   if (applyingTag && !open) {
     return (
@@ -88,6 +77,16 @@ export function UpdateNotice() {
       </Notice>
     );
   }
+
+  /* 弹窗正文：三块内容 + 可折叠的长文本（弹窗里默认展开说明，命令默认收起） */
+  const body = (
+    <>
+      <UpdateVersionGrid status={data} />
+      <UpdateNoticeLine status={data} />
+      <UpdateNotes status={data} defaultOpen />
+      <UpdateManualCommands status={data} />
+    </>
+  );
 
   if (!data.update_available || dismissed === latest || !latest) {
     return (
@@ -122,11 +121,21 @@ export function UpdateNotice() {
               >
                 {t('update.apply')}
               </Button>
+            ) : data.can_apply_dirty ? (
+              /* 只差工作区干净：更新脚本会先把本地改动 stash 起来（可恢复），所以允许继续 */
+              <Button
+                variant="secondary"
+                icon={<IconDownload size={14} />}
+                loading={apply.isPending}
+                onClick={() => apply.mutate({ tag: data.tag, allow_dirty: true })}
+              >
+                {t('update.applyDirty', { n: data.dirty_files ?? 0 })}
+              </Button>
             ) : null}
           </>
         }
       >
-        <UpdateDetails status={data} copied={copied} onCopy={copyManual} />
+        {body}
       </Modal>
     );
   }
@@ -137,7 +146,7 @@ export function UpdateNotice() {
         tone="info"
         title={t('update.bannerTitle')}
         action={
-          <div className="row gap-8">
+          <div className="flex items-center gap-8">
             <Button size="sm" variant="ghost" onClick={dismiss}>
               {t('update.later')}
             </Button>
@@ -179,118 +188,22 @@ export function UpdateNotice() {
               >
                 {t('update.apply')}
               </Button>
+            ) : data.can_apply_dirty ? (
+              /* 只差工作区干净：更新脚本会先把本地改动 stash 起来（可恢复），所以允许继续 */
+              <Button
+                variant="secondary"
+                icon={<IconDownload size={14} />}
+                loading={apply.isPending}
+                onClick={() => apply.mutate({ tag: data.tag, allow_dirty: true })}
+              >
+                {t('update.applyDirty', { n: data.dirty_files ?? 0 })}
+              </Button>
             ) : null}
           </>
         }
       >
-        <UpdateDetails status={data} copied={copied} onCopy={copyManual} />
+        {body}
       </Modal>
     </>
   );
 }
-
-/* ---------------------------------------------------------------------------
-   详情正文：版本对照 + 更新说明 + 能不能一键更新（不能则给命令）
-   --------------------------------------------------------------------------- */
-
-function UpdateDetails({
-  status,
-  copied,
-  onCopy,
-}: {
-  status: {
-    current: string;
-    latest: string;
-    published_at: string;
-    checked_at: number;
-    notes: string;
-    release_url: string;
-    error: string;
-    can_apply: boolean;
-    reason: string;
-    manual: string[];
-  };
-  copied: boolean;
-  onCopy: () => void;
-}) {
-  const t = useT();
-  const notes = (status.notes || '').trim();
-  return (
-    <>
-      <div className="set-info-grid">
-        <div className="set-info-tile">
-          <span className="set-info-label">{t('update.current')}</span>
-          <span className="set-info-value mono">{status.current}</span>
-        </div>
-        <div className="set-info-tile">
-          <span className="set-info-label">{t('update.latest')}</span>
-          <span className="set-info-value mono">{status.latest || '—'}</span>
-        </div>
-        <div className="set-info-tile">
-          <span className="set-info-label">{t('update.published')}</span>
-          <span className="set-info-value fs-sm">
-            {status.published_at
-              ? new Date(status.published_at).toLocaleString()
-              : t('update.unknown')}
-          </span>
-        </div>
-        <div className="set-info-tile">
-          <span className="set-info-label">{t('update.checked')}</span>
-          <span className="set-info-value fs-sm">
-            {status.checked_at
-              ? new Date(status.checked_at * 1000).toLocaleString()
-              : t('update.never')}
-          </span>
-        </div>
-      </div>
-
-      {status.error ? (
-        <Notice tone="warning" title={t('update.checkFailed')}>
-          {status.error}
-        </Notice>
-      ) : null}
-
-      {notes ? (
-        <div className="mt-16">
-          <div className="set-info-label">{t('update.notes')}</div>
-          <div className="fs-sm" style={{ whiteSpace: 'pre-wrap' }}>
-            {notes}
-          </div>
-        </div>
-      ) : null}
-
-      {status.can_apply ? (
-        <Notice tone="info">{t('update.applyHint')}</Notice>
-      ) : (
-        <Notice tone="warning" title={t('update.reasonTitle')}>
-          {status.reason}
-        </Notice>
-      )}
-
-      <div className="mt-16">
-        <div className="set-info-label">{t('update.manualTitle')}</div>
-        <pre className="mono fs-xs" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-          {(status.manual ?? []).join('\n')}
-        </pre>
-        <div className="row gap-8 mt-8">
-          <Button size="sm" variant="secondary" icon={<IconCopy size={14} />} onClick={onCopy}>
-            {copied ? t('update.copied') : t('update.copy')}
-          </Button>
-          {status.release_url ? (
-            <a
-              className="link fs-sm"
-              href={status.release_url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {t('update.release')}
-            </a>
-          ) : null}
-        </div>
-      </div>
-    </>
-  );
-}
-
-/* 设置页里那一段（版本对照 / 更新说明 / 手工命令）复用同一个正文组件 */
-export { UpdateDetails };

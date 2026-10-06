@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -341,12 +342,32 @@ def deployment() -> Dict[str, Any]:
     }
 
 
+def _read_result(applying: Dict[str, Any]) -> Dict[str, str]:
+    """读更新脚本留下的结果文件（``code=0/1``、``at=<epoch>``）。读不到就返回空字典。"""
+    path = str(applying.get("result") or "")
+    if not path:
+        return {}
+    try:
+        raw = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {}
+    fields: Dict[str, str] = {}
+    for line in raw.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip():
+            fields[key.strip()] = value.strip()
+    return fields
+
+
 def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
     """把「更新中」这个状态收干净。
 
     面板自己重启后没人会去回写结果，所以这里**惰性判定**：
     * 版本已经等于目标 tag → 成功，清掉标记并记一笔；
-    * 超过 :data:`APPLYING_TIMEOUT` 还没换过来 → 视为失败（脚本卡住 / 命令报错）；
+    * 脚本写下的结果文件说 ``code != 0`` → **立刻**算失败 —— 这是最常见的失败路径
+      （脚本几秒内就退出），界面不该为此干等 :data:`APPLYING_TIMEOUT` 那么久还显示
+      「正在更新中」（实测踩过：deploy.sh 在环境检查那一步就退了，界面卡住不动）；
+    * 超过 :data:`APPLYING_TIMEOUT` 还没换过来 → 视为失败（脚本卡住 / 机器断电）；
     * 其余情况照实返回，界面上显示「更新进行中」。
     """
     applying = state.get("applying")
@@ -360,6 +381,16 @@ def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
             "tag": tag,
             "ok": True,
             "at": int(time.time()),
+            "log": str(applying.get("log") or ""),
+        }
+        state.pop("applying", None)
+        return {}
+    outcome = _read_result(applying)
+    if outcome and outcome.get("code") not in (None, "0"):
+        state["last_update"] = {
+            "tag": tag,
+            "ok": False,
+            "at": int(outcome.get("at") or time.time()),
             "log": str(applying.get("log") or ""),
         }
         state.pop("applying", None)
@@ -442,7 +473,32 @@ def _apply_ready(
     return True, ""
 
 
-def _script_text(dep: Dict[str, Any], tag: str, log: Path) -> str:
+def _launch_env() -> Dict[str, str]:
+    """更新脚本运行时的最小环境。
+
+    ``HOME`` 必须有：``deploy.sh`` 开了 ``set -u``，而它用 ``$HOME`` 拼候选 Python
+    路径（实测报 ``line 775: HOME: unbound variable``），缺了它整次更新会在「检查环境」
+    那一步直接退出 —— 依赖没装、服务没重启，而界面还停在「正在更新中」。一次性
+    systemd 单元的环境是干净的，**不会**继承面板进程的 ``HOME``，所以这里显式给。
+    ``PATH`` 也给全，免得 ``git`` / ``node`` / ``npm`` 找不到。
+    """
+    try:
+        record = pwd.getpwuid(os.geteuid())
+        home, user = record.pw_dir, record.pw_name
+    except (KeyError, OSError):
+        home, user = os.environ.get("HOME", "/root"), os.environ.get("USER", "root")
+    return {
+        "HOME": home,
+        "USER": user,
+        "LOGNAME": user,
+        "PATH": os.environ.get("PATH")
+        or "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    }
+
+
+def _script_text(
+    dep: Dict[str, Any], tag: str, log: Path, result: Optional[Path] = None
+) -> str:
     """生成更新脚本。
 
     刻意做成**独立进程**：脚本最后要 ``systemctl restart`` 面板自己，若在面板进程里
@@ -452,10 +508,19 @@ def _script_text(dep: Dict[str, Any], tag: str, log: Path) -> str:
     root = dep.get("root") or str(ROOT)
     service = str(dep.get("service") or "proxcenter")
     pip = str(ROOT / ".venv" / "bin" / "pip")
+    outcome = result or log.with_suffix(".result")
     return f"""#!/usr/bin/env bash
 # 由 ProxCenter 生成：把面板从 {__version__} 更新到 {tag}。
 # 每一步都显式判断退出码（不用 set -e）：失败时要把原因留在日志里，而不是静默退出。
 set -uo pipefail
+# 一次性单元（systemd-run）的环境极简：没有 HOME、PATH 也可能不全，而 deploy.sh 开了
+# set -u —— 它第一件事就是拿 $HOME 拼候选 Python 路径，未定义就直接退出。这里补默认值，
+# 不依赖启动方的环境（脚本被手工执行时同样成立）。
+export HOME="${{HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}}"
+export PATH="${{PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}}"
+# 结果文件：面板靠它区分「还在跑」与「已经死了」。没有它的话，脚本 5 秒就失败时界面
+# 会一直显示「正在更新中」，直到 30 分钟超时。
+trap 'rc=$?; printf "code=%s\\nat=%s\\n" "$rc" "$(date +%s)" > "{outcome}"' EXIT
 exec >>"{log}" 2>&1
 echo "[$(date -Is)] 更新开始：{__version__} → {tag}"
 cd "{root}" || {{ echo "安装目录不存在"; exit 1; }}
@@ -506,21 +571,25 @@ async def apply_update(tag: str, *, allow_dirty: bool = False) -> Dict[str, Any]
     stamp = time.strftime("%Y%m%d-%H%M%S")
     log = LOG_DIR / f"update-{stamp}.log"
     script = LOG_DIR / f"update-{stamp}.sh"
+    outcome = LOG_DIR / f"update-{stamp}.result"
     try:
-        script.write_text(_script_text(dep, target, log), encoding="utf-8")
+        script.write_text(_script_text(dep, target, log, outcome), encoding="utf-8")
         script.chmod(0o700)
     except OSError as exc:
         raise UpdateError(
             i18n.pick(f"写更新脚本失败：{exc}", f"Could not write the update script: {exc}")
         ) from exc
 
+    env = _launch_env()
     if dep.get("systemd_run"):
-        # --collect：跑完自动回收，不在系统里留一堆一次性 unit
+        # --collect：跑完自动回收，不在系统里留一堆一次性 unit。
+        # --setenv：一次性单元**不继承**面板进程的环境，而 deploy.sh 要用 HOME（见 _launch_env）。
         cmd = [
             "systemd-run",
             f"--unit=proxcenter-update-{stamp}",
             "--collect",
             "--description=ProxCenter 面板更新",
+            *(f"--setenv={key}={value}" for key, value in env.items()),
             "/bin/bash",
             str(script),
         ]
@@ -537,6 +606,7 @@ async def apply_update(tag: str, *, allow_dirty: bool = False) -> Dict[str, Any]
                 cmd,
                 cwd=str(ROOT),
                 start_new_session=True,
+                env={**os.environ, **env},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -549,6 +619,9 @@ async def apply_update(tag: str, *, allow_dirty: bool = False) -> Dict[str, Any]
         "tag": target,
         "started_at": int(time.time()),
         "log": str(log),
+        "script": str(script),
+        # 脚本退出时（成功或失败）都会写它：界面据此立刻定性，而不是干等超时
+        "result": str(outcome),
         "from": __version__,
     }
     await save_state(state)

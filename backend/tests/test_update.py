@@ -248,6 +248,22 @@ class TestUpdateScript:
         # 关键：不再用 checkout --force（它会把本地改动直接覆盖掉）
         assert "checkout --force" not in text
 
+    def test_home_and_path_are_defaulted_inside_the_script(self) -> None:
+        """一次性 unit（systemd-run）里没有 HOME，而 deploy.sh 开了 set -u。
+
+        实测报的是 ``deploy.sh: line 775: HOME: unbound variable``：脚本一进去就退出，
+        依赖没装、服务没重启，界面却还显示「正在更新中」。所以脚本自己兜底，不依赖启动方。
+        """
+        text = update._script_text(_dep(), "v0.1.5", Path("/tmp/x.log"))
+        assert 'export HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"' in text
+        assert 'export PATH="${PATH:-/usr/local/sbin:' in text
+
+    def test_result_file_defaults_to_the_log_name(self) -> None:
+        """结果文件让面板能立刻区分「还在跑」和「已经死了」，路径要能推出来。"""
+        text = update._script_text(_dep(), "v0.1.5", Path("/srv/logs/update-x.log"))
+        assert 'trap \'rc=$?; printf "code=%s' in text
+        assert "/srv/logs/update-x.result" in text
+
     def test_tag_is_validated_before_it_reaches_shell(self) -> None:
         assert update._TAG_RE.match("v0.1.5")
         assert update._TAG_RE.match("v0.2.0-rc1")
@@ -287,6 +303,45 @@ class TestApplyingState:
 
     def test_no_applying_field_is_empty(self) -> None:
         assert update._applying_state({}) == {}
+
+    def test_failed_script_is_reported_at_once(self, tmp_path: Path) -> None:
+        """脚本失败要立刻定性 —— 界面不该为此干等 30 分钟超时还显示「正在更新中」。"""
+        result = tmp_path / "update.result"
+        result.write_text("code=1\nat=1760000000\n", encoding="utf-8")
+        state: Dict[str, Any] = {
+            "applying": {
+                "tag": "v9.9.9",
+                "started_at": int(time.time()),
+                "result": str(result),
+            }
+        }
+        assert update._applying_state(state) == {}
+        assert state["last_update"]["ok"] is False
+        assert "applying" not in state
+
+    def test_result_code_zero_does_not_fake_success(self, tmp_path: Path) -> None:
+        """``code=0`` 只说明脚本跑完了：版本没换过来就还不能算成功。"""
+        result = tmp_path / "update.result"
+        result.write_text("code=0\nat=1760000000\n", encoding="utf-8")
+        state: Dict[str, Any] = {
+            "applying": {
+                "tag": "v9.9.9",
+                "started_at": int(time.time()),
+                "result": str(result),
+            }
+        }
+        assert update._applying_state(state)["tag"] == "v9.9.9"
+
+    def test_missing_result_file_is_not_a_failure(self) -> None:
+        """脚本刚启动、还没写结果文件 —— 不能当成失败。"""
+        state: Dict[str, Any] = {
+            "applying": {
+                "tag": "v9.9.9",
+                "started_at": int(time.time()),
+                "result": "/nonexistent/update.result",
+            }
+        }
+        assert update._applying_state(state)["tag"] == "v9.9.9"
 
 
 # ------------------------------------------------------------------ 接口

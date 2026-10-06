@@ -4824,6 +4824,82 @@
   color: var(--text-muted);
 }
 
+/* --- 消息工具栏：筛选 + 全部已读（见 NotificationPanel.tsx） --- */
+.notif-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.notif-feed {
+  display: flex;
+  flex-direction: column;
+}
+
+.notif-feed-item {
+  padding: 11px 2px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.notif-feed-item:last-child {
+  border-bottom: 0;
+}
+
+.notif-feed-item.is-unread {
+  background: var(--accent-dim);
+}
+
+.notif-feed-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notif-feed-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-base);
+  font-weight: 500;
+}
+
+/* 折叠时只给一行预览：消息一多，逐条铺满全文会翻不到底 */
+.notif-feed-preview {
+  margin: 4px 0 0 16px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notif-feed-body {
+  margin: 8px 0 0 16px;
+  padding: 9px 11px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.notif-feed-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 0 16px;
+}
+
 .notif-footer {
   padding: 6px;
   border-top: 1px solid var(--border-muted);

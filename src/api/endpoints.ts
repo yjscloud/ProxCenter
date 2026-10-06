@@ -35,6 +35,15 @@ import type {
   ResourceSpec,
   VmMetaEntry,
   VmMetaListResult,
+  ExportJob,
+  ImportMetadata,
+  ReinstallJob,
+  ReinstallNetwork,
+  ReinstallTemplate,
+  VmReinstallBody,
+  ImportSource,
+  ImportStorage,
+  ImportWarning,
   FrpEffective,
   FrpRule,
   FrpRuleInput,
@@ -99,6 +108,8 @@ import type {
   TwoFactorStatus,
   MailConfig,
   MailConfigInput,
+  UpdateApplyResult,
+  UpdateStatus,
   MyPermissions,
   NetworkInterface,
   NetworkInterfaceInput,
@@ -958,6 +969,8 @@ export const notificationsApi = {
   /** 标记已读：给 ids 或 all=true */
   markRead: (body: { ids?: number[]; all?: boolean }) =>
     post<{ marked: number; unread: number }>('/notifications/read', body),
+  /** 一键清空消息中心（不可撤销，界面上必须二次确认） */
+  clear: () => del<{ removed: number; unread: number }>('/notifications'),
 };
 
 export const searchApi = {
@@ -996,6 +1009,32 @@ export const schedulerApi = {
   runNow: (id: string) => post<SchedulerJob>(`/scheduler/${id}/run`, {}),
   /** 恢复该作业的代码默认间隔与启用状态 */
   reset: (id: string) => post<SchedulerJob>(`/scheduler/${id}/reset`, {}),
+};
+
+/* ---------------------------------------------------------------------------
+   面板自身的更新（见后端 app/update.py）
+
+   全部只对「设置管理」权限开放：更新面板等于换掉面板自己运行的代码，
+   普通用户少一个需要理解的按钮。
+   --------------------------------------------------------------------------- */
+
+export const updateApi = {
+  /** 当前版本 / 最新版本 / 能否一键更新 / 该形态下的手工命令 */
+  status: () => get<UpdateStatus>('/update/status'),
+  /** 立刻查一次（失败不报错，原因在返回的 error 字段里） */
+  check: () => post<UpdateStatus>('/update/check', {}),
+  /** 自动检查开关 / 跳过版本 / 发布仓库（换仓库需要二次确认） */
+  saveSettings: (body: {
+    auto_check?: boolean;
+    repo?: string;
+    skipped_version?: string;
+  }) => put<UpdateStatus>('/update/settings', body),
+  /**
+   * 一键更新。立刻返回，更新在后台跑（面板随后会重启）——
+   * 进度看 `log`，状态变化看 status 的 applying / last_update。
+   */
+  apply: (body: { tag?: string; allow_dirty?: boolean } = {}) =>
+    post<UpdateApplyResult>('/update/apply', body),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1681,6 +1720,142 @@ export const sshApi = {
 };
 
 /* ---- 受管主机 + 多机聚合 ---- */
+/* ---- 虚拟机重装系统（用 Cloud-Init 模板重建系统盘）---- */
+export const vmReinstallApi = {
+  /** 同节点上可作为重装来源的模板 */
+  templates: (node: string) =>
+    get<{ templates: ReinstallTemplate[] }>(`/vms/${node}/reinstall-templates`),
+  /**
+   * 这台机器当前在用的网络配置。重装默认沿用它而不是掉回 DHCP —— 原地址写在
+   * PVE 的 `ipconfigN` 里，只有后端读得到（列表接口不带 config）。
+   */
+  network: (node: string, vmid: number) =>
+    get<ReinstallNetwork>(`/vms/${node}/${vmid}/reinstall/network`),
+  /**
+   * 提交重装。**立即返回作业** —— 复制系统盘那几分钟在服务端后台跑，
+   * 进度与结果从 `jobs()` 拿，所以这里不需要长超时。
+   */
+  run: (node: string, vmid: number, body: VmReinstallBody) =>
+    post<{ job: ReinstallJob }>(`/vms/${node}/${vmid}/reinstall`, body),
+  /**
+   * 重装作业列表（管理员看全部，其他人只看自己提交的）。
+   * 全局通知器轮询它来决定要不要弹「成功 / 失败」提示。
+   */
+  jobs: () => get<{ jobs: ReinstallJob[] }>('/vms/reinstall-jobs'),
+};
+
+/* ---- 虚拟机导入 / 导出（VMware 互操作）---- */
+export const vmTransferApi = {
+  /** 可导入的文件 + 可作为导入源的存储 */
+  importSources: (node: string) =>
+    get<{ storages: ImportStorage[]; sources: ImportSource[] }>('/vms/import/sources', {
+      params: { node },
+    }),
+  /** 上传 OVA / OVF / VMDK / QCOW2 到存储的 import 内容 */
+  uploadImport: (
+    params: { node: string; storage: string },
+    file: File,
+    onProgress?: (percent: number) => void,
+  ) => {
+    const fd = new FormData();
+    fd.append('node', params.node);
+    fd.append('storage', params.storage);
+    fd.append('file', file);
+    return upload<{ volume: string; name: string; storage: string }>(
+      '/vms/import/upload',
+      fd,
+      onProgress,
+    );
+  },
+  /** 读 OVF/OVA 元数据（PVE 解析，面板只透传） */
+  inspectImport: (body: {
+    node: string;
+    storage: string;
+    volume: string;
+  }) => post<ImportMetadata>('/vms/import/inspect', body),
+  /** 按元数据建机（磁盘用 import-from 拉进来） */
+  createImport: (body: {
+    node: string;
+    storage: string;
+    volume: string;
+    target_storage: string;
+    name?: string;
+    vmid?: number | null;
+    memory?: number | null;
+    cores?: number | null;
+    bridge?: string;
+    /** 留空 = 沿用 OVF 里的型号（裸磁盘镜像则用 virtio） */
+    net_model?: string;
+    /** 留空 = 跟随 OVF（PVE 元数据里磁盘键的前缀：ide / scsi / sata） */
+    bus?: string;
+    /** 留空 = 跟随 OVF：PVE 只给总线、给不出控制器型号，后端按「BIOS → lsi、
+        UEFI → virtio-scsi」选最可能的那个；也可以显式写具体型号覆盖 */
+    scsihw?: string;
+    /** 目标磁盘格式；ZFS 存储要用 raw */
+    disk_format?: string;
+    /** '' = 跟随 OVF（PVE 从 `vmw:Config firmware` 解析，UEFI 会给 bios=ovmf）；
+        也可以显式写 seabios（传统 BIOS）/ ovmf（UEFI）覆盖它 */
+    firmware?: string;
+    /** 不设会退回 qemu64（缺 x86-64-v2），新发行版起不来 */
+    cpu?: string;
+    /** '' = 保持镜像原有配置；dhcp / static */
+    ip_mode?: string;
+    ip?: string;
+    gateway?: string;
+    dns?: string;
+    ci_user?: string;
+    ci_password?: string;
+    ssh_keys?: string;
+    /** 导入完成后是否立即启动（前端在建机任务结束后调电源接口） */
+    start?: boolean;
+  }) =>
+    post<{
+      task: string;
+      vmid: number;
+      node: string;
+      warnings: ImportWarning[];
+      disks: Record<string, string>;
+    }>('/vms/import', body),
+
+  /**
+   * 删掉一个已上传的导入文件。参数走 query —— 有些代理会剥掉 DELETE 的请求体。
+   * 普通用户只能删自己上传的（后端按归属判定），管理员不受限。
+   */
+  /** 导入任务的真实进度（从 PVE 任务日志里解析） */
+  importProgress: (upid: string, node: string, connectionId?: string) =>
+    get<{ percent: number; transferred: string; total: string; lines: number }>(
+      `/vms/import/progress?upid=${encodeURIComponent(upid)}&node=${encodeURIComponent(node)}`,
+      scoped(connectionId),
+    ),
+
+  deleteImportSource: (node: string, storage: string, volume: string, connectionId?: string) =>
+    del<{ ok: boolean }>(
+      `/vms/import/source?node=${encodeURIComponent(node)}&storage=${encodeURIComponent(storage)}&volume=${encodeURIComponent(volume)}`,
+      scoped(connectionId),
+    ),
+
+  /** 启动导出作业（仅关机可导出） */
+  startExport: (
+    node: string,
+    vmid: number,
+    body: { format: string; storage: string; name?: string },
+    connectionId?: string,
+  ) =>
+    post<{ job: ExportJob }>(
+      `/vms/${node}/${vmid}/export`,
+      body,
+      scoped(connectionId),
+    ),
+  exports: () => get<{ jobs: ExportJob[] }>('/vms/exports'),
+  getExport: (id: string) => get<{ job: ExportJob }>(`/vms/exports/${id}`),
+  deleteExport: (id: string) => del<{ ok: boolean }>(`/vms/exports/${id}`),
+  /** 产物下载直链（浏览器直接打开，鉴权走 Cookie） */
+  exportDownloadUrl: (id: string, file: string) =>
+    `/api/vms/exports/${id}/download?file=${encodeURIComponent(file)}`,
+  /** 全部产物打成一个压缩包的直链（同一次导出不止一个文件时用） */
+  exportArchiveUrl: (id: string) => `/api/vms/exports/${id}/archive`,
+};
+
 export const sshFleetApi = {
   hosts: () => get<SshHost[]>('/ssh/hosts'),
   createHost: (body: Record<string, unknown>) =>
@@ -1698,11 +1873,23 @@ export const sshFleetApi = {
     put<{ ok: boolean; host_id: string; owner: string }>(`/ssh/hosts/${id}/owner`, {
       username,
     }),
-  /** 确认并记住主机指纹（首次连接后必须做一次） */
-  trustHost: (id: string) =>
-    post<{ host: SshHost; ok: boolean; fingerprint: string; detail?: string }>(
-      `/ssh/hosts/${id}/trust`,
-    ),
+  /**
+   * 确认并记住主机指纹（首次连接后必须做一次）。
+   *
+   * `force = true` 是「重新信任」：实际指纹与库里记录不一致时（主机重装 / 轮换过
+   * SSH 主机密钥），管理员确认无误后用实际指纹覆盖记录；返回值里带被覆盖的旧指纹。
+   */
+  trustHost: (id: string, force = false) =>
+    post<{
+      host: SshHost;
+      ok: boolean;
+      fingerprint: string;
+      /** 被覆盖的旧指纹（首次信任时为空） */
+      previous?: string;
+      /** 是否真的更新了记录（指纹本来就一致时为 false） */
+      changed?: boolean;
+      detail?: string;
+    }>(`/ssh/hosts/${id}/trust`, undefined, force ? { params: { force: true } } : undefined),
 
   overview: (hours?: number) =>
     get<FleetOverview>('/ssh/fleet', hours ? { params: { hours } } : undefined),

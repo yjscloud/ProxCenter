@@ -19,7 +19,7 @@ import {
   storagesApi,
   vmsApi,
 } from '../api/endpoints';
-import { errorMessage, isNotImplemented } from '../api/client';
+import { setPageConnection, errorMessage, isNotImplemented } from '../api/client';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import { Breadcrumb } from '../components/Topbar';
 import {
@@ -74,6 +74,8 @@ import {
   IconPlus,
   IconAlert,
 } from '../components/Icons';
+/* 详情页的「更多操作」：克隆 / 转模板 / 迁移 / 指派归属 / 重置口令 / 导出镜像 / 删除 */
+import { VmMoreMenu } from '../components/VmMoreMenu';
 import {
   formatBytes,
   formatDateTime,
@@ -153,6 +155,15 @@ export function VmDetail() {
   const { canWrite } = useAuth();
 
   const [searchParams, setSearchParams] = useSearchParams();
+
+  /* 这台机器属于哪条 PVE 连接（列表页跳转时带上）。设成页面级默认后，
+     详情页里所有请求都会自动跟随 —— 否则请求会打到「当前连接」，
+     而那台 PVE 上没有这个节点时会报 hostname lookup 失败。 */
+  const pageConnection = searchParams.get('connection') ?? '';
+  useEffect(() => {
+    setPageConnection(pageConnection);
+    return () => setPageConnection('');
+  }, [pageConnection]);
   const tabParam = (searchParams.get('tab') as TabKey | null) ?? 'overview';
   const tab: TabKey = TABS.some((t) => t.key === tabParam) ? tabParam : 'overview';
 
@@ -234,6 +245,23 @@ export function VmDetail() {
   }, [tasksQuery.data, vmid]);
 
   const vm: VmDetailType | undefined = vmQuery.data;
+
+  /* 「更多操作」菜单按 VmSummary 的形态工作（同一套菜单也会用在别处）。
+     这里 useMemo 缓一份：详情页每次轮询都会重渲染，若传对象字面量进子组件，
+     子组件的表单初始化 effect 会跟着重启，用户填到一半的克隆表单会被清空。 */
+  const moreVm = useMemo(
+    () =>
+      vm
+        ? {
+            node: vm.node,
+            vmid: vm.vmid,
+            name: vm.name,
+            status: vm.status,
+            template: vm.template,
+          }
+        : null,
+    [vm?.node, vm?.vmid, vm?.name, vm?.status, vm?.template],
+  );
 
   /* 进页面自动探测一次客户机磁盘用量，KPI 一打开就是真实使用率。
      只探一次（ref 保证），不会跟着 10 秒轮询反复在客户机里起进程；
@@ -538,14 +566,15 @@ export function VmDetail() {
           >
             <IconRefresh size={16} />
           </IconButton>
-          <IconButton
-            label={t('vmDetail.deleteTitle')}
-            variant="danger"
-            onClick={() => setDeleteOpen(true)}
-            disabled={!canWrite}
-          >
-            <IconTrash size={16} />
-          </IconButton>
+          {/* 低频操作（克隆 / 转模板 / 迁移 / 归属 / 重置口令 / 导出 / 删除）
+              收进「更多操作」：它们都该在「看清这台机器之后」才动手，但常驻在
+              标题栏只会把开机 / 关机 / 控制台这几个主操作挤散。
+              删除也从这里走 —— 危险操作收进菜单比摆在最显眼处更合适。 */}
+          <VmMoreMenu
+            vm={moreVm}
+            onDelete={() => setDeleteOpen(true)}
+            onChanged={invalidate}
+          />
         </div>
       </div>
 
@@ -908,6 +937,18 @@ function OverviewTab({
             <InfoRow
               label={t('vmDetail.tag')}
               value={<TagList tags={parseTags(vm.tags)} max={5} />}
+            />
+            {/* 来源模板：链接克隆的机器靠这一行才知道「删掉哪个模板会让这台起不来」 */}
+            <InfoRow
+              label={t('vmDetail.sourceTemplate')}
+              title={t('vmDetail.sourceTemplateTitle')}
+              value={
+                vm.source_template
+                  ? vm.source_template.name
+                    ? `${vm.source_template.name}（#${vm.source_template.vmid}）`
+                    : `#${vm.source_template.vmid}`
+                  : '—'
+              }
             />
           </InfoGrid>
         </Card>

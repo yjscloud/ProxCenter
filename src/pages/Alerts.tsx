@@ -31,6 +31,7 @@ import {
   IconMail,
 } from "../components/Icons";
 import { useSectionSpy } from "../hooks/useSectionSpy";
+import { useToast } from "../hooks/useToast";
 import { useSiteInfo } from "../hooks/useSiteInfo";
 import { tStatic, useT, type TFunc } from "../i18n";
 import { formatRelative, usageColor } from "../utils/format";
@@ -90,20 +91,9 @@ function newRule(): AlertRule {
   };
 }
 
-function toText(note: unknown, fallback: string): string {
-  if (typeof note === "string" && note) return note;
-  if (note && typeof note === "object") {
-    try {
-      return JSON.stringify(note);
-    } catch {
-      return fallback;
-    }
-  }
-  return fallback;
-}
-
 export function Alerts() {
   const t = useT();
+  const toast = useToast();
   const qc = useQueryClient();
 
   /* 区块导航、分组说明与指标定义：文案随语言走，所以在组件内构造 */
@@ -243,17 +233,33 @@ export function Alerts() {
     }
   }, [query.data, rules, feishu, emailCfg, hook]);
 
+  /**
+   * 跑一次保存 / 测试类的操作，只报「成没成」。
+   *
+   * 这一层是**动作的反馈**，不是结果展示：后端返回的往往是配置对象、统计数字、
+   * 一串布尔，把它们塞进提示里，用户看到的就是「保存成功：{"enabled":true,…}」——
+   * 除了添堵没有别的用处。成功就报成功（带上「哪个设置保存了」，见 ok 文案），
+   * 失败才把原因留在页面顶端那条内联提示里：那是唯一能拿到的诊断线索。
+   *
+   * 提示走 toast 而不只是顶部那条内联提示：告警页很长，邮件通道那张卡在页面
+   * 下半截，用户点完保存人还停在原处，写在顶部的提示在屏幕之外 —— 看起来就是
+   * 「点了保存，什么也没发生」。
+   */
   async function run(key: string, fn: () => Promise<unknown>, ok: string): Promise<boolean> {
     setBusy(key);
     setMsg(null);
     try {
-      const note = await fn();
+      await fn();
       await qc.invalidateQueries({ queryKey: ["alerts"] });
-      setMsg({ tone: "success", text: toText(note, ok) });
+      toast.success(ok);
       return true;
     } catch (err) {
       const detail = (err as any)?.response?.data?.detail;
-      setMsg({ tone: "danger", text: detail ? String(detail) : String(err) });
+      setMsg({
+        tone: "danger",
+        text: detail ? String(detail) : t("common.opFailed"),
+      });
+      toast.error(t("common.opFailed"));
       return false;
     } finally {
       setBusy("");

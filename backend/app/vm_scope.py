@@ -115,6 +115,26 @@ def _known_connection_ids() -> set:
     return ids
 
 
+async def bind_node_connection(node: str) -> None:
+    """请求没显式指定连接时，按节点名把这次请求绑到正确的那条 PVE 连接上。
+
+    多连接部署里前端常常只发来节点名（详情页、存储页、备份下载链接…）：
+    请求落到「当前连接」而那台机器上没有这个节点时，PVE 会把这个名字当主机名
+    去解析，回一句 ``hostname lookup 'x' failed`` —— 看起来像 PVE 的 DNS 坏了，
+    实际是请求打错了机器。这里就地纠正，调用方不必自己判断。
+    """
+    from . import pve
+
+    if pve.requested_connection():
+        return
+    try:
+        cid = await resolve_node_connection(node)
+    except Exception:  # noqa: BLE001 - 定位不了就沿用当前连接，让上层报真实错误
+        return
+    if cid:
+        pve.set_request_connection(cid)
+
+
 async def resolve_node_connection(node: str) -> str:
     """节点名 → 拥有该节点的连接 id；无法确定时返回空串（沿用当前连接）。
 

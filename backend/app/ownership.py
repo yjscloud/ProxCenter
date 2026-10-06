@@ -28,6 +28,9 @@ KIND_ALERT_RULE = "alert_rule"
 # 受管主机（ssh_hosts 的一行）。ref 就是主机 id —— 主机本身没有连接/节点那层
 # 复合主键，用它自己的 id 就够了。
 KIND_SSH_HOST = "ssh_host"
+#: 已上传到存储 import 目录里的导入文件。导入文件是**共享目录里的普通文件**，
+#: 不像虚拟机那样天然带 vmid；不记归属就是「谁都能看见、谁都能删」。
+KIND_IMPORT = "import"
 
 
 # 复合主键与索引涉及 TEXT 列，必须是定长 VARCHAR
@@ -47,6 +50,15 @@ async def init_table() -> None:
     async with database.connect() as db:
         await db.executescript(SCHEMA)
         await db.commit()
+
+
+def import_ref(connection_id: str, storage: str, volume: str) -> str:
+    """导入文件的归属标识。
+
+    ``volume`` 是**相对卷名**（``import/xx.ova``，与 :func:`import_metadata` 收的
+    同一个值），所以 ref 里带 ``/`` 是正常的；列宽 191 足够。
+    """
+    return f"{connection_id or '-'}:{storage}:{volume}"
 
 
 def vm_ref(connection_id: str, node: str, vmid: Any) -> str:

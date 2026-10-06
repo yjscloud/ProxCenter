@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from .. import (
+    # 面板版本：唯一来源在 app/__init__.py（package.json 与 CHANGELOG 跟着它走）
+    __version__,
     captcha,
     defaults,
     faq,
@@ -57,7 +59,7 @@ async def health() -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "status": "ok",
         "pve_connected": False,
-        "version": "0.1.4",
+        "version": __version__,
         "pve_version": None,
         "node_count": 0,
         "error": None,

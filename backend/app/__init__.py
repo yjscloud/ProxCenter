@@ -1,2 +1,2 @@
 """pvecenter — Proxmox VE 8.x / 9.x web management panel."""
-__version__ = "0.1.4"
+__version__ = "0.1.5"

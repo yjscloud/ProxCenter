@@ -63,8 +63,14 @@ from .routers import (
     templates,
     # 个人 API Token 管理（/api/tokens/*）。实现与鉴权在 app.apitokens
     tokens as tokens_router,
+    # 面板自身的更新（检查新版本 / 一键更新）：与 app.update 模块同名，取别名
+    update as update_router,
     users,
     vm_meta,
+    # 虚拟机导入 / 导出：OVF/OVA 导入与 VMDK/QCOW2/RAW/OVA 导出
+    vmtransfer as vmtransfer_router,
+    # 虚拟机重装系统：用 Cloud-Init 模板重建系统盘
+    reinstall as reinstall_router,
     vms,
 )
 from . import alerting
@@ -82,6 +88,9 @@ from . import site
 from . import sshguard
 from . import sshremote
 from . import throttle
+from . import update
+# 面板版本的唯一来源（package.json 与 CHANGELOG 跟着它走）
+from . import __version__
 # 与 routers.hostaudit 同名，取个别名避免混淆
 from . import hostaudit as host_audit
 from . import i18n
@@ -181,7 +190,7 @@ app = FastAPI(
         "Provides VM lifecycle, template building, networking, "
         "monitoring, backup and console access."
     ),
-    version="0.1.4",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -548,9 +557,20 @@ app.include_router(metrics_router.router)
 app.include_router(tokens_router.router)
 # 后台作业：/api/scheduler（状态 / 改间隔 / 立即执行 / 恢复默认）
 app.include_router(scheduler_router.router)
+# 面板自身的更新：/api/update/status|check|settings|apply（仅管理员）
+app.include_router(update_router.router)
 # 每用户界面偏好：/api/prefs（仪表盘布局等）
 app.include_router(prefs_router.router)
 app.include_router(cluster.router)
+# 虚拟机导入 / 导出（VMware 互操作）：OVF/OVA 导入与 VMDK/QCOW2/RAW/OVA 导出。
+# **必须注册在 vms.router 之前**：vms 里有 ``GET /vms/{node}/{vmid}`` 这条两段动态
+# 路由，它会把 ``/vms/import/sources``、``/vms/exports/{id}`` 这种「静态前缀 + 两段」
+# 的路径先匹配走（node=import、vmid=sources），接口于是返回 422 —— 逐个路由都对、
+# 但永远进不来，属于最难看出来的那一类问题。静态段优先于动态段。
+app.include_router(vmtransfer_router.router)
+# 重装系统（路径形如 /vms/{node}/reinstall-templates 与 /vms/{node}/{vmid}/reinstall，
+# 段数与 vms 的动态路由不同形，不依赖注册顺序）
+app.include_router(reinstall_router.router)
 app.include_router(vms.router)
 # 容器与虚拟机是两套 PVE 端点，走自己的路由；归属与权限仍与 vms 共用
 app.include_router(lxc.router)
@@ -589,7 +609,7 @@ app.include_router(search.router)
 @app.get("/api/version", tags=["meta"])
 async def version() -> Dict[str, Any]:
     info = await site.get_site_info()
-    return {"name": info["name"], "version": "0.1.4", "api": "v1"}
+    return {"name": info["name"], "version": __version__, "api": "v1"}
 
 
 # ------------------------------------------------------------ front-end UI
@@ -661,6 +681,11 @@ METRICS_INTERVAL = max(int(settings.metrics_sample_interval), 1)
 PURGE_INTERVAL = 3600
 # API Token 的过期行清理：一天一次
 TOKEN_PURGE_INTERVAL = 86_400
+# 面板自身的版本检查：一天一次足够（Release 不会一天变两次）。首次延迟 15 分钟 ——
+# 启动时先把 PVE 连接、数据库迁移、调度器都跑稳，再谈出网。间隔与首次延迟的默认值
+# 放在 app/update.py 里（那里还管着「手动检查的最小间隔」等同类常量）。
+UPDATE_CHECK_INTERVAL = update.CHECK_INTERVAL
+UPDATE_CHECK_FIRST_DELAY = update.FIRST_DELAY
 # 内网穿透看护：一分钟看一次。frpc 断掉意味着所有穿透一起断，等太久没意义；
 # 一次检查只是读一个 pid 文件，代价可以忽略（拉起失败另有退避，见 app/frp.py）
 FRP_WATCHDOG_INTERVAL = 60
@@ -907,6 +932,20 @@ scheduler.register(
         apitokens.purge_expired,
         TOKEN_PURGE_INTERVAL,
         summarize=_purge_summary,
+    )
+)
+scheduler.register(
+    _job(
+        "update_check",
+        "面板版本检查",
+        "面板维护",
+        "定期查 GitHub 上有没有新版本，有就给管理员发一条站内消息"
+        "（默认一天一次，可在「设置 → 面板更新」里关掉自动检查）",
+        update.run_check,
+        UPDATE_CHECK_INTERVAL,
+        # 摘要直接复用「命中 N 项 / 无变化」那套：run_check 返回发现的新版本列表
+        summarize=_count("发现新版"),
+        first_delay=UPDATE_CHECK_FIRST_DELAY,
     )
 )
 

@@ -51,6 +51,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -97,6 +98,15 @@ CREATE TABLE IF NOT EXISTS guest_created_record (
 # 「同节点同 VMID」的建机记录可能是**上一台**机器的（实测 pve9/101 今天新建的
 # 容器被回填成了昨天那台虚拟机的建机时间）。
 _AUDIT_ACTIONS = ("vm.clone", "ct.clone")
+
+#: 会留下「来源 -> 目标」的审计动作：克隆，以及**重装**。
+#:
+#: 重装虽然在 PVE 那边不叫克隆，但它换掉的是整块系统盘 —— 换了模板，这台机器的
+#: 来源就变了，概览里的「来源模板」必须跟着变，否则用户会拿着一行过期的信息去
+#: 判断「删掉这个模板会不会把机器弄坏」。
+#:
+#: 与 _AUDIT_ACTIONS 刻意分开：重装不是「建机」，它的时间不能拿去回填创建时间。
+_SOURCE_ACTIONS = ("vm.clone", "ct.clone", "vm.reinstall")
 
 # 回填出来的时间必须**比继承来的 meta 晚**这么久，才算「这台的 meta 是继承的」。
 # 用同一秒创建时不该被误判（克隆的 meta 来自几天前甚至几个月前的模板）。
@@ -378,6 +388,86 @@ async def _backfill_from_audit(
         # 与 meta 同一时间量级：这台机器就是那时候建的，meta 本来就是准的
         return None
     return await record(conn_id, node, vmid, guest_type, when=stamp, source="backfill")
+
+
+# ------------------------------------------------------------------ 克隆来源
+#: 磁盘键（与 vmconfig / reinstall 里同一套命名）
+_DISK_KEY_RE = re.compile(r"^(scsi|virtio|sata|ide)\d+$")
+#: 链接克隆的盘名：``local:102/base-102-disk-0.qcow2``
+_BASE_VOLID_RE = re.compile(r"(?:^|/)base-(\d+)-disk-")
+
+
+def base_template_vmid(value: Any) -> int:
+    """从磁盘卷名里反推链接克隆的来源模板 VMID，取不到返回 0。
+
+    链接克隆的盘名长这样：``local:102/base-102-disk-0.qcow2`` —— 中间那个 102
+    就是模板 VMID。整盘克隆没有 ``base-`` 前缀（那是一块复制出来的独立盘），所以
+    这条只能覆盖链接克隆；面板的「快速部署」与「重装」默认都走链接克隆，覆盖到的
+    正是最常见的那批机器。
+    """
+    match = _BASE_VOLID_RE.search(str(value or ""))
+    return int(match.group(1)) if match else 0
+
+
+def config_source(config: Dict[str, Any], node: Any) -> Dict[str, Any]:
+    """从机器配置里反推克隆来源（只认链接克隆的 base 卷）。
+
+    返回 ``{"node", "vmid"}``；认不出来返回空 dict。
+    """
+    for key, value in (config or {}).items():
+        if not _DISK_KEY_RE.match(str(key)):
+            continue
+        vmid = base_template_vmid(value)
+        if vmid:
+            return {"node": str(node or ""), "vmid": vmid}
+    return {}
+
+
+async def source_of(
+    conn_id: Any, node: Any, vmid: Any, guest_type: Any
+) -> Dict[str, Any]:
+    """这台机器是从哪个模板克隆来的：``{"node", "vmid"}``；取不到返回空 dict。
+
+    数据来自面板自己的审计日志 —— 会写下 ``源节点/VMID -> 目标节点/VMID`` 的动作
+    有克隆（``vm.clone`` / ``ct.clone``）与**重装**（``vm.reinstall``：换模板就等于
+    换来源）。PVE 那边问不出来：克隆只是把 config 整体复制一份，来源信息根本不会
+    被保留。
+
+    取**最近**的一条：同一台机器可能最初克隆自某个模板、后来又重装成另一个模板，
+    当前这块系统盘来自最后那一次。
+
+    与创建时间回填同一条前提：节点名必须全局唯一（审计的 target 里没有连接信息，
+    多台 PVE 上的同名节点分不清是哪一台）。拿不准时**宁可空着**也不猜 ——
+    用户看到「来源：ubuntu-2204」是会去信它的，然后据此决定删不删那个模板。
+    """
+    if not node or vmid is None:
+        return {}
+    counts = await _node_names_are_unique()
+    if counts.get(str(node), 0) != 1:
+        return {}
+
+    actions = ", ".join("?" for _ in _SOURCE_ACTIONS)
+    try:
+        async with database.connect() as db:
+            # 只看成功的：失败的那次重装没动过系统盘，来源仍然是上一个模板
+            cursor = await db.execute(
+                f"SELECT target FROM audit_log WHERE action IN ({actions}) "
+                "AND result = 'success' AND target LIKE ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (*_SOURCE_ACTIONS, f"%-> {node}/{vmid}"),
+            )
+            row = await cursor.fetchone()
+    except Exception:  # noqa: BLE001 - 查不到就当「没有来源」，不影响详情页
+        logger.debug("查询克隆来源失败（%s/%s）", node, vmid, exc_info=True)
+        return {}
+
+    if not row or not row[0]:
+        return {}
+    origin = str(row[0]).split("->", 1)[0].strip()
+    src_node, _, src_vmid = origin.rpartition("/")
+    if not src_vmid.isdigit():
+        return {}
+    return {"node": src_node or str(node), "vmid": int(src_vmid)}
 
 
 # ------------------------------------------------------------------ 取数

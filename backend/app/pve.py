@@ -570,15 +570,10 @@ class ProxmoxClient:
     async def qemu_to_template(self, node: str, vmid: int) -> Any:
         return await self.post(f"/nodes/{node}/qemu/{vmid}/template")
 
-    async def qemu_importdisk(
-        self, node: str, vmid: int, image_path: str, storage: str
-    ) -> Any:
-        """Import a disk image into a VM. Requires the file to be reachable
-        from the node (normally inside an ISO/content storage)."""
-        return await self.post(
-            f"/nodes/{node}/qemu/{vmid}/importdisk",
-            data={"filename": image_path, "storage": storage},
-        )
+    # 注意：这里刻意**没有** qemu_importdisk。PVE 9.2 已经移除了
+    # ``POST /nodes/{node}/qemu/{vmid}/importdisk``（实测返回 501），
+    # 磁盘导入统一改用配置里的 ``import-from=<源卷|路径>`` 语法
+    # ——见 app/vmconfig.py 的 build_vm_config 与 app/vmtransfer.py。
 
     async def qemu_resize(self, node: str, vmid: int, disk: str, size: str) -> Any:
         return await self.put(

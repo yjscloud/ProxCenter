@@ -676,6 +676,14 @@ def decrypt_secret(row: Dict[str, Any]) -> str:
 class FingerprintMismatch(RuntimeError):
     """主机指纹与库里记录的不一致 —— 可能是中间人。"""
 
+    def __init__(self, message: str, expected: str = "", actual: str = "") -> None:
+        super().__init__(message)
+        # 结构化带上两个指纹：自检接口要把「记录值 / 实际值」原样交给界面，
+        # 让用户对着这两串字自己判断，而不是去解析异常消息里的文本
+        #（消息随时可能改措辞或被翻译，解析它等于把界面绑死在文案上）。
+        self.expected = expected
+        self.actual = actual
+
 
 class _CapturePolicy(paramiko.MissingHostKeyPolicy):
     """记录对端指纹：库里有就比对，没有就先记下来让调用方决定。"""
@@ -689,8 +697,13 @@ class _CapturePolicy(paramiko.MissingHostKeyPolicy):
         self.seen = fingerprint
         if self.expected and self.expected != fingerprint:
             raise FingerprintMismatch(
-                f"主机指纹与记录不一致（记录 {self.expected}，实际 {fingerprint}）："
-                "可能遭遇中间人攻击；确认是换过 SSH 主机密钥后再重新信任。"
+                i18n.t(
+                    "ssh.fingerprintMismatch",
+                    expected=self.expected,
+                    actual=fingerprint,
+                ),
+                expected=self.expected,
+                actual=fingerprint,
             )
 
 
@@ -965,6 +978,18 @@ async def test_host(row: Dict[str, Any], trust_first: bool = False) -> Dict[str,
     """连通性自检：能连上吗、是谁、有没有 fail2ban、日志源是什么。"""
     try:
         client, fingerprint = await asyncio.to_thread(_connect, row, trust_first)
+    except FingerprintMismatch as exc:
+        # 指纹不一致要单独成一类结果：界面据此把「重新信任」按钮亮出来
+        #（普通连接失败可没什么可信任的）。两个指纹一并返回，用户要的就是
+        # 拿它们跟自己的记录比对。
+        return {
+            "ok": False,
+            "detail": str(exc),
+            "fingerprint": exc.actual,
+            "mismatch": True,
+            "expected": exc.expected,
+            "actual": exc.actual,
+        }
     except Exception as exc:  # noqa: BLE001 - 各种网络/认证错误都要给成人话
         return {"ok": False, "detail": str(exc), "fingerprint": ""}
     try:
@@ -986,12 +1011,29 @@ async def test_host(row: Dict[str, Any], trust_first: bool = False) -> Dict[str,
         client.close()
 
 
-async def trust_fingerprint(row: Dict[str, Any]) -> Dict[str, Any]:
-    """显式确认并记住指纹（首次连接后调用一次）。"""
+async def trust_fingerprint(row: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
+    """显式确认并记住指纹。
+
+    ``force=False``：首次信任 —— 库里还没有指纹（或本来就与实际一致）时用。
+    ``force=True``：**重新信任** —— 实际指纹与库里记录的不一致时，管理员排查
+    （确认是重装系统 / 轮换过 SSH 主机密钥，而不是中间人）后用实际指纹覆盖记录。
+
+    为什么非要一个显式开关、不让它「不一致就自己覆盖」：主机密钥变了正是中间人
+    攻击的特征。默认拒绝、由人来按这个确认，这个确认才有分量。
+    """
+    previous = str(row.get("known_host") or "")
+    # 重新信任时必须先把旧指纹摘掉再连：_CapturePolicy 拿它做比对，留着就会
+    # 当场再抛一次 FingerprintMismatch —— 按钮点了等于没点。
+    target = {**row, "known_host": ""} if force else row
     try:
-        client, fingerprint = await asyncio.to_thread(_connect, row, True)
+        client, fingerprint = await asyncio.to_thread(_connect, target, True)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "detail": str(exc), "fingerprint": ""}
+        return {
+            "ok": False,
+            "detail": str(exc),
+            "fingerprint": "",
+            "previous": previous,
+        }
     client.close()
     if not fingerprint:
         # 宁可报错也不能「成功但没记下」：那会让界面上的「未确认」永远消不掉，
@@ -999,12 +1041,27 @@ async def trust_fingerprint(row: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "ok": False,
             "fingerprint": "",
+            "previous": previous,
             "detail": i18n.tr(
                 "没能从这台主机取到 SSH 指纹：请确认地址、端口与 SSH 服务正常后重试"
             ),
         }
+    if previous == fingerprint:
+        return {
+            "ok": True,
+            "fingerprint": fingerprint,
+            "previous": previous,
+            "changed": False,
+            "detail": i18n.tr("主机指纹与记录一致，无需更新"),
+        }
     await save_host({**row, "known_host": fingerprint}, row.get("updated_by") or "")
-    return {"ok": True, "fingerprint": fingerprint, "detail": i18n.tr("已记录主机指纹")}
+    return {
+        "ok": True,
+        "fingerprint": fingerprint,
+        "previous": previous,
+        "changed": bool(previous),
+        "detail": i18n.tr("已更新主机指纹") if previous else i18n.tr("已记录主机指纹"),
+    }
 
 
 # ------------------------------------------------------------- 远程日志与统计

@@ -395,7 +395,20 @@ def build_vm_config(
         config["tags"] = req.tags
 
     # ---- disks ----
-    if not import_disk:
+    if import_disk:
+        # 云镜像导入：PVE 在**配置阶段**就把镜像搬成这台机器的系统盘，写法固定是
+        # ``<目标存储>:0,import-from=<源镜像>`` —— 0 表示大小交给源镜像决定。
+        # 早先是「先建空壳机、再 qm importdisk」，但那个端点在 PVE 9.2 已被移除
+        # （实测 POST /nodes/{node}/qemu/{vmid}/importdisk 返回 501），
+        # 现在统一走 import-from —— 它同时接受卷 ID 与宿主机文件路径。
+        if not req.disks or not req.cloud_image:
+            raise ValueError("导入云镜像必须指定目标存储")
+        for idx, disk in enumerate(req.disks):
+            interface = disk.interface or f"scsi{idx}"
+            config[interface] = (
+                f"{disk.storage}:0,import-from={req.cloud_image},discard=on"
+            )
+    else:
         for idx, disk in enumerate(req.disks):
             interface = disk.interface or f"scsi{idx}"
             storage_type = storage_types.get(disk.storage, "")
@@ -432,8 +445,10 @@ def build_vm_config(
         # legacy 值而报格式错，见 normalize_boot_order 的说明）。
         config["boot"] = normalize_boot_order(req.boot_order)
     elif import_disk:
-        # 导入的云镜像本身就是系统盘，没有安装介质可言
-        config["boot"] = "order=scsi0"
+        # 导入的云镜像本身就是系统盘，没有安装介质可言；盘位按调用方给的来
+        # （默认 scsi0，向导也可能选 virtio）
+        primary = (req.disks[0].interface if req.disks else None) or "scsi0"
+        config["boot"] = f"order={primary}"
     elif req.disks:
         devices = [req.disks[0].interface or "scsi0"]
         if cd_key:
@@ -446,13 +461,12 @@ def build_vm_config(
     ci = req.cloudinit
     if ci and ci.enabled:
         # Cloud-init needs a small serial device so the console shows output.
-        if not import_disk:
-            # ide2 must stay free for the cloud-init drive; skip if ISO took it.
-            for slot in range(4):
-                key = f"ide{slot}"
-                if key not in config:
-                    config[key] = "cloudinit"
-                    break
+        # ide2 must stay free for the cloud-init drive; skip if ISO took it.
+        for slot in range(4):
+            key = f"ide{slot}"
+            if key not in config:
+                config[key] = "cloudinit"
+                break
         config.update(build_cloudinit_config(ci, network_count=len(req.networks)))
         # 这段配置是给 Linux 云镜像看的：它们把内核日志打到 ttyS0，把 vga 指到
         # serial0 才能在 VNC 控制台里看到启动过程。**Windows 不往串口输出**，对它

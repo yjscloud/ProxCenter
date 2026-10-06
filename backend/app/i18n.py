@@ -330,6 +330,14 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "fail2ban-client failed on the remote host: {output}",
     },
     "ssh.noLocalLog": {"zh-CN": "本机日志不可用", "en": "Panel host logs unavailable"},
+    # 指纹不一致：界面（自检结果）会原样显示这句，两种语言都要给全
+    "ssh.fingerprintMismatch": {
+        "zh-CN": "主机指纹与记录不一致（记录 {expected}，实际 {actual}）："
+        "可能遭遇中间人攻击；确认是换过 SSH 主机密钥后再重新信任。",
+        "en": "The host fingerprint does not match the recorded one "
+        "(recorded {expected}, actual {actual}). A man-in-the-middle attack is possible; "
+        "re-trust it only after confirming the SSH host key really was rotated.",
+    },
 }
 
 
@@ -399,6 +407,9 @@ ZH_EN: Dict[str, str] = {
     "快照": "Snapshots",
     "备份": "Backups",
     "克隆": "Clone",
+    "重装系统": "Reinstall",
+    "用 Cloud-Init 模板重建虚拟机的系统盘（替换并删除原系统盘）":
+        "Rebuild a machine\u2019s system disk from a Cloud-Init template (the old system disk is replaced and deleted)",
     "应急隔离": "Emergency isolation",
     "克隆模板": "Clone template",
     "管理模板": "Manage templates",
@@ -585,6 +596,8 @@ ZH_EN: Dict[str, str] = {
     "没能从这台主机取到 SSH 指纹：请确认地址、端口与 SSH 服务正常后重试":
         "Could not fetch the SSH fingerprint from this host: check the address, port and SSH service, then try again",
     "已记录主机指纹": "Host fingerprint recorded",
+    "已更新主机指纹": "Host fingerprint updated",
+    "主机指纹与记录一致，无需更新": "The host fingerprint matches the stored one; nothing to update",
     # ---- 应急响应：处置能力边界（隔离结果里的 caveats） ----
     "快照是崩溃一致性的磁盘副本，无法提取内存镜像；对运行中的机器做快照不等于内存取证。":
         "A snapshot is a crash-consistent disk copy and cannot capture a memory image; snapshotting a running machine is not memory forensics.",

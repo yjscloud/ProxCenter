@@ -105,12 +105,23 @@ export function Modal({
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    // 聚焦第一个可交互元素，否则聚焦容器
+    /* 兜底聚焦：只有在「弹窗里还没有任何东西拿到焦点」时才动手。
+       这一条判断是必需的：确认框里的输入框自己声明了 autoFocus，挂载那一刻就已经
+       聚焦了，20ms 后再抢一次会把它顶掉 —— 于是用户敲进去的头一两个字符留在框里、
+       后面的全部落到页面上（列表页的搜索框就在后面，接着整张表跟着重新过滤），
+       而这时按回车命中的是右上角那个「关闭」按钮，弹窗直接消失，只能从头再来。
+       优先取弹窗正文里的第一个控件：没有输入框的确认框也不该一上来就把焦点
+       落在「关闭」上。 */
     const timer = window.setTimeout(() => {
       const dialog = dialogRef.current;
       if (!dialog) return;
-      const first = dialog.querySelector<HTMLElement>(FOCUSABLE);
-      (first ?? dialog).focus();
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active !== dialog && dialog.contains(active)) return;
+      const scope = dialog.querySelector<HTMLElement>('.modal-body') ?? dialog;
+      const target =
+        scope.querySelector<HTMLElement>(FOCUSABLE) ??
+        dialog.querySelector<HTMLElement>(FOCUSABLE);
+      (target ?? dialog).focus();
     }, 20);
 
     return () => {

@@ -292,6 +292,18 @@
   flex-shrink: 0;
 }
 
+/* 无内边距的表格卡（padded={false}，见 NodeDetail 的网络接口卡）：
+   表格靠 .table-flush 给首尾单元格留了 18px 缩进，标题栏却直接贴在卡片
+   描边上 —— 同一张卡片里两套边距，右侧的「新增网卡」按钮会压住边框，
+   看起来像跑到了卡片外面。这里把标题栏的缩进补齐、与表格对齐。
+   只作用于直接子元素：标题栏被自己的 padding 壳包住时（VmDetail /
+   Dashboard 的最近任务卡）不重复缩进；上下留白沿用 .card-header 的值。 */
+.card:not(.card-padded) > .card-header {
+  padding-top: 18px;
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
 /* --- 可折叠卡片 --- */
 
 /* 整条标题栏都是开关：给出明确的手型，并禁止连点时选中文字 */
@@ -1008,6 +1020,256 @@
   display: inline-flex;
 }
 
+/* --- UserSelect（可搜索的用户选择器，见 ui/UserSelect.tsx） --- */
+/* 展开时输入框保持高亮：此时框里的文字是「搜索词」而不是「已选值」，
+   不给个持续的状态提示，用户会以为自己把归属改掉了。 */
+.user-select.is-open .input-wrap {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* 内联展开（不用绝对定位）：这个控件几乎都在 Modal 里，而 .modal-body 是
+   overflow-y:auto —— 浮层会被裁掉一半。顶多把弹窗撑高，交给它自己滚。 */
+.user-select-menu {
+  margin-top: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.user-select-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+/* 键盘高亮优先于鼠标悬停：两边同时命中时，方向键刚按下，意图比鼠标停留更新 */
+.user-select-option.is-active {
+  background: var(--bg-hover);
+}
+
+.user-select-option.is-selected .user-select-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.user-select-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-select-hint {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.user-select-empty {
+  padding: 8px;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+/* --- 虚拟机导入 / 导出（VmImportWizard、VmExportDialog） --- */
+/* 三步指示：当前步加粗 + 序号染色，完成步用实心序号 —— 只是提示走到哪了，
+   不占一整条进度条的位置（真正的进度在导入任务里） */
+.import-steps {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.import-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.import-step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: var(--font-size-xs);
+}
+
+.import-step.is-active {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.import-step.is-active .import-step-no {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.import-step.is-done .import-step-no {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.import-upload {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.import-upload input[type='file'] {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.import-disks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.import-disk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 源卷名很长（local:import/xxx.ova/disk.vmdk），截断显示、完整值放 title */
+.import-disk .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-warnings {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 导入进度：提交后参数页顶部实时显示 */
+.import-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-base);
+}
+
+/* 导入页的「选择文件 + 删除」一行：下拉本身列的就是 import 目录里的全部文件，
+   选中即操作，所以删除按钮紧挨着它，而不是另列一份清单。 */
+.import-pick-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.import-pick-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 已导出的镜像列表：多份产物之间要拉开距离，否则看起来像同一个作业的两半 */
+.export-history {
+  display: grid;
+  gap: 10px;
+}
+
+.export-job {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.export-job-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.export-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.export-job-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* --- 详情页「更多操作」菜单（VmMoreMenu） --- */
+.vm-more {
+  position: relative;
+  display: inline-flex;
+}
+
+/* 表单里的小节标题（重装向导的「初始化账号」「网络」「旧系统盘」）。
+   比 Field 的 label 更轻：它划分的是几组字段，不是单个字段的名字。 */
+.section-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* 绝对定位贴着按钮右下角。刻意不做表格行菜单那套 fixed + 视口翻转：
+   行菜单挂在会滚动的表格里，而这里挂在详情页标题栏 —— 它不滚动，
+   只要保证不被父级的 overflow 裁掉就行（.detail-actions 是普通 flex）。 */
+.vm-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 208px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+
 /* --- Switch --- */
 .switch-field {
   display: flex;
@@ -1420,6 +1682,33 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* 「重新信任主机指纹」弹窗里的指纹对照。
+   指纹是 43 字符的定长串，用户就是来逐个字符核对的 —— 不截断、不许溢出，
+   按小号等宽字排，允许在任意位置折行。 */
+.fp-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fp-compare-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fp-compare-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.fp-compare-value {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  word-break: break-all;
 }
 
 .confirm-message {

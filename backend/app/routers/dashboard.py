@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from .. import metrics, security
+from .. import __version__, metrics, security
 from ..formatters import normalize_storage, pve_flag
 from ..pve import ProxmoxError, all_connection_clients, get_client
 
@@ -90,7 +90,7 @@ async def dashboard_summary(
         "version": {
             "pve": version.get("version"),
             "release": version.get("release"),
-            "panel": "0.1.4",
+            "panel": __version__,
         },
         "vms": {
             "total": len(vms),

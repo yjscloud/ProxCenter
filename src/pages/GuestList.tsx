@@ -30,7 +30,6 @@ import {
   exportUrl,
   lxcApi,
   nodesApi,
-  usersApi,
   vmMetaApi,
   vmMetaKey,
   vmsApi,
@@ -43,7 +42,6 @@ import { Badge, TagList } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
 import {
   Checkbox,
-  Field,
   Input,
   RadioGroup,
   Select,
@@ -54,8 +52,12 @@ import { useColumnSettings } from '../components/ui/ColumnSettings';
 import { InlineMeter } from '../components/ui/ProgressBar';
 import { ErrorState, Notice } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { UserSelect } from '../components/ui/UserSelect';
 import { VmCreateWizard } from '../components/VmCreateWizard';
 import { LxcCreateWizard } from '../components/LxcCreateWizard';
+/* VMware 互操作：OVF/OVA 导入与镜像导出（只有虚拟机有这两件事，容器不参与） */
+import { VmImportWizard } from '../components/VmImportWizard';
+import { VmExportDialog } from '../components/VmExportDialog';
 import { ResetGuestPasswordDialog } from '../components/ResetGuestPasswordDialog';
 import {
   IconBox,
@@ -78,6 +80,7 @@ import {
   IconDownload,
   IconEdit,
   IconKey,
+  IconUpload,
 } from '../components/Icons';
 import {
   formatBytes,
@@ -184,14 +187,6 @@ function AssignOwnerDialog({
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const usersQuery = useQuery({
-    queryKey: ['users'],
-    queryFn: () => usersApi.list(),
-    enabled: Boolean(vm),
-    staleTime: 60_000,
-    retry: false,
-  });
-
   /* 打开时读取当前归属 */
   useEffect(() => {
     if (!vm) return;
@@ -203,14 +198,6 @@ function AssignOwnerDialog({
       .catch(() => setUsername(''))
       .finally(() => setLoading(false));
   }, [vm]);
-
-  const options = [
-    { label: t('guestList.assignNone'), value: '' },
-    ...(usersQuery.data ?? [])
-      // 待审批 / 已拒绝的账号还登不进来，指派给他没有意义
-      .filter((u) => u.enabled !== false && (u.status ?? 'active') === 'active')
-      .map((u) => ({ label: `${u.username}（${u.role}）`, value: u.username })),
-  ];
 
   const submit = async () => {
     if (!vm) return;
@@ -253,16 +240,15 @@ function AssignOwnerDialog({
         </>
       }
     >
-      <Field
+      {/* 可搜索的用户下拉：账号一多，原生下拉靠按键逐项跳根本找不到人；
+          归属在库里就是用户名字符串，手打拼错一个字母等于「指派给一个不存在的人」 */}
+      <UserSelect
         label={t('guestList.assignField')}
         hint={loading ? t('guestList.assignLoading') : undefined}
-      >
-        <Select
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          options={options}
-        />
-      </Field>
+        value={username}
+        onChange={setUsername}
+        disabled={loading}
+      />
     </Modal>
   );
 }
@@ -276,12 +262,15 @@ interface RowMenuProps {
   onMigrate: () => void;
   onAssign: () => void;
   onResetPassword: () => void;
+  onExport: () => void;
   onDelete: () => void;
   disabled: boolean;
   /** 是否显示「指派归属」（仅管理员可用该操作） */
   canAssign: boolean;
   /** 是否显示「重置用户口令」（需要 vm.config） */
   canResetPassword: boolean;
+  /** 是否显示「导出」（仅虚拟机，且需要 vm.backup） */
+  canExport: boolean;
 }
 
 function RowMenu({
@@ -293,10 +282,12 @@ function RowMenu({
   onMigrate,
   onAssign,
   onResetPassword,
+  onExport,
   onDelete,
   disabled,
   canAssign,
   canResetPassword,
+  canExport,
 }: RowMenuProps) {
   const t = useT();
   const L = useKindLabels(kind);
@@ -403,6 +394,10 @@ function RowMenu({
             ? item(t('guestList.toTemplate'), <IconTemplate size={15} />, onTemplate)
             : null}
           {item(t('guestList.newSnapshot'), <IconSnapshot size={15} />, onSnapshot)}
+          {/* 导出：导的是磁盘镜像（VMDK/QCOW2/RAW/OVA），只有虚拟机有这个概念 */}
+          {canExport
+            ? item(t('vmExport.menuItem'), <IconDownload size={15} />, onExport)
+            : null}
           {item(t('guestList.migrate'), <IconLayers size={15} />, onMigrate)}
           {canAssign
             ? item(t('guestList.assign'), <IconUser size={15} />, onAssign)
@@ -435,6 +430,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const { canWrite, isAdmin, hasPermission } = useAuth();
   /* 后端的重置口令接口要 vm.config；没这个权限就别把入口摆出来（点进去只会 403） */
   const canConfig = hasPermission('vm.config');
+  /* 导出会把整块磁盘镜像交出去，与备份同一口径（vm.backup） */
+  const canExport = kind === 'qemu' && hasPermission('vm.backup');
 
   const copyText = async (text: string) => {
     try {
@@ -448,11 +445,16 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   /* ---- 筛选状态 ---- */
   const [search, setSearch] = useState('');
   const [nodeFilter, setNodeFilter] = useState('');
-  // 默认只看运行中的机器，与日常使用场景一致
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('running');
+  // 默认显示全部状态。只看运行中会把「刚建完没起来」「关机待排查」「关机待维护」
+  // 这些恰恰需要被看见的机器一起藏掉，而页面看着像个空列表 —— 用户的第一反应是
+  // 「我的机器呢」，要去猜还有状态筛选这回事。想安静的可以自己筛。
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [sort, setSort] = useState<SortState | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
+  /* 导入 / 导出都是虚拟机专有：容器没有 OVF、也没有「导出磁盘镜像」这回事 */
+  const [importOpen, setImportOpen] = useState(false);
+  const [exportTarget, setExportTarget] = useState<VmSummary | null>(null);
 
   /* 快捷入口深链：仪表盘工作台的「创建虚拟机 / 创建容器」跳到 ?new=1，
      直接拉开创建向导，省掉「进列表 → 找按钮」两步。
@@ -1245,6 +1247,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               canAssign={isAdmin}
               onResetPassword={() => setPasswordTarget(vm)}
               canResetPassword={canConfig}
+              onExport={() => setExportTarget(vm)}
+              canExport={canExport}
               onDelete={() => setDeleteTarget(vm)}
             />
           </span>
@@ -1302,6 +1306,18 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           >
             {t('common.refresh')}
           </Button>
+          {/* 从 OVF/OVA 导入（VMware 互操作）：与「新建」并列摆在创建区 ——
+              对用户来说这两件事的意图是同一个（我要多一台机器），只是来源不同 */}
+          {canWrite && kind === 'qemu' ? (
+            <Button
+              variant="secondary"
+              icon={<IconUpload size={15} />}
+              onClick={() => setImportOpen(true)}
+              title={t('vmImport.entryTitle')}
+            >
+              {t('vmImport.entry')}
+            </Button>
+          ) : null}
           {canWrite ? (
             <Button
               variant="primary"
@@ -1431,6 +1447,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               prefix={<IconSearch size={15} />}
               block={false}
               aria-label={t('guestList.searchAria', { noun: L.noun })}
+              /* 这格是页面里第一个纯文本框，浏览器的自动填充（尤其登录过面板之后）
+                 有时会把保存的用户名塞进来 —— 表现为「搜索框自己多了一串字符」，
+                 列表跟着被过滤成空。显式关掉自动填充与拼写检查。 */
+              autoComplete="off"
+              spellCheck={false}
             />
             <Select
               value={nodeFilter}
@@ -1656,6 +1677,26 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           }}
         />
       )}
+
+      {/* OVF/OVA 导入 与 镜像导出：两件事都只有虚拟机有（容器既没有 OVF，
+          也没有「把磁盘导成 VMDK」这回事），所以整块按 kind 收口 */}
+      {kind === 'qemu' ? (
+        <>
+          <VmImportWizard
+            open={importOpen}
+            onClose={() => setImportOpen(false)}
+            onCreated={() => {
+              invalidateGuests();
+              invalidateSecurityViews();
+            }}
+          />
+          <VmExportDialog
+            open={Boolean(exportTarget)}
+            vm={exportTarget}
+            onClose={() => setExportTarget(null)}
+          />
+        </>
+      ) : null}
 
       {/* ---- 删除确认 ---- */}
       <ConfirmDialog

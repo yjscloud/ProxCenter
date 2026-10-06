@@ -16,7 +16,18 @@
 读已读的口径
 ------------
 ``read_at = 0`` 表示未读（而不是用一个布尔列）：既能判未读，又留了「什么时候
-读的」这个信息，成本相同。归属按 ``username`` 列隔离，接口永远只操作自己的行。
+读的」这个信息，成本相同。
+
+用户隔离
+--------
+归属按 ``username`` 列隔离，**每一个读写函数都自己带上这个条件**（见
+:func:`_owner`），而不是指望调用方记得过滤。接口层从登录态取用户名传进来，
+前端没有任何途径指定「操作谁的消息」—— 一旦它变成一个请求参数，越权就只剩
+改一个字段的工作量。
+
+这条线格外要紧，因为消息正文里会出现下发的机器口令、地址与账号：串号不是
+「看到一条无关通知」，而是直接泄露凭据。空用户名一律当作「没有归属」处理，
+读返回空、写返回 0，绝不退化成「查 username = '' 恰好查不到」这种碰巧的安全。
 """
 from __future__ import annotations
 
@@ -65,6 +76,15 @@ async def init_table() -> None:
 
 
 # --------------------------------------------------------------------- 写入
+def _owner(username: Any) -> str:
+    """消息归属的唯一来源：所有读写都用它，空值即「没有归属」。
+
+    只做规范化，不做权限判断 —— 权限判断在接口层（见 routers/notifications.py
+    的 ``_own``，那里取不到用户名会直接 403）。
+    """
+    return str(username or "").strip()
+
+
 async def push(
     username: str,
     *,
@@ -80,7 +100,7 @@ async def push(
     没有归属（``username`` 为空）时直接丢弃：消息中心是按用户看未读的，
     无主消息永远不会有人看到，写进去只会白占空间。
     """
-    owner = str(username or "").strip()
+    owner = _owner(username)
     if not owner:
         return
     async with database.connect() as db:
@@ -117,10 +137,13 @@ def _row_to_item(row: Any) -> Dict[str, Any]:
 
 async def unread_count(username: str) -> int:
     """未读数。铃铛轮询只取这个值，走 ``(username, read_at)`` 索引。"""
+    owner = _owner(username)
+    if not owner:
+        return 0
     async with database.connect() as db:
         cursor = await db.execute(
             "SELECT COUNT(*) FROM notifications WHERE username = ? AND read_at = 0",
-            (str(username or ""),),
+            (owner,),
         )
         row = await cursor.fetchone()
     return int(row[0]) if row else 0
@@ -132,10 +155,13 @@ async def list_for(
     limit: int = DEFAULT_LIMIT,
     unread_only: bool = False,
 ) -> List[Dict[str, Any]]:
-    """按时间倒序取消息。全部只针对自己的行。"""
+    """按时间倒序取消息。永远只针对自己的行。"""
+    owner = _owner(username)
+    if not owner:
+        return []
     size = max(1, min(int(limit), MAX_LIMIT))
     sql = "SELECT * FROM notifications WHERE username = ?"
-    params: List[Any] = [str(username or "")]
+    params: List[Any] = [owner]
     if unread_only:
         sql += " AND read_at = 0"
     sql += " ORDER BY id DESC LIMIT ?"
@@ -156,10 +182,13 @@ async def mark_read(
 ) -> int:
     """把某些消息（或全部）标记为已读，返回本次影响的行数。
 
-    ``username`` 条件永远带上：只靠 id 更新的话，改一个数字就能把别人的消息
-    标成已读（这本身不严重，但说明这些 id 没被当成受保护资源）。
+    ``username`` 条件永远带上：``ids`` 是**不可信输入**，只靠 id 更新的话，
+    改一个数字就能把别人的消息标成已读 —— 这本身危害不大，但它说明这些 id
+    被当成了受保护资源，而同一个模式放到「删除」上就是致命的。
     """
-    owner = str(username or "")
+    owner = _owner(username)
+    if not owner:
+        return 0
     async with database.connect() as db:
         if all_items:
             cursor = await db.execute(
@@ -179,6 +208,25 @@ async def mark_read(
         affected = cursor.rowcount
         await db.commit()
     return max(affected, 0)
+
+
+# --------------------------------------------------------------------- 清空
+async def clear(username: str) -> int:
+    """清空某个用户的消息中心，返回删掉的条数。
+
+    ``username`` 条件由本函数自己拼进 SQL（与其它函数一致）：让人「随手改一个
+    参数就能清掉别人的消息」不是权限问题，是设计问题。
+    """
+    owner = _owner(username)
+    if not owner:
+        return 0
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "DELETE FROM notifications WHERE username = ?", (owner,)
+        )
+        removed = cursor.rowcount
+        await db.commit()
+    return max(removed, 0)
 
 
 # --------------------------------------------------------------------- 保留

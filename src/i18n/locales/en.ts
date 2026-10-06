@@ -108,6 +108,289 @@ export const en: Partial<Record<MessageKey, string>> = {
   'confirm.understand': 'Please make sure you understand the impact of this action.',
   'confirm.typeToConfirm': 'Type "{text}" to confirm',
 
+  /* ---------------------------------------------- User picker (searchable) */
+  'userSelect.placeholder': 'Search by username / role / email',
+  'userSelect.none': '(unassigned)',
+  'userSelect.noMatch': 'No matching user',
+  'userSelect.listAria': 'Users you can pick',
+
+  /* ------------------------------------------ Import a VM (OVF/OVA, VMware) */
+  'vmImport.entry': 'Import VM',
+  'vmImport.entryTitle': 'Import a VM from OVA / OVF or a disk image',
+  'vmImport.title': 'Import a virtual machine',
+  'vmImport.loadFailed': 'Could not load the import sources',
+  'vmImport.subtitle':
+    'Import from an OVA / OVF file or a disk image: the panel reads the configuration written inside it, Proxmox moves the disks.',
+  'vmImport.stepSource': 'Pick a file',
+  'vmImport.stepOptions': 'Review settings',
+  'vmImport.stepCreate': 'Import',
+  'vmImport.node': 'Node',
+  'vmImport.sourceStorage': 'Storage holding the file',
+  'vmImport.sourceStorageHint':
+    'Only storages with the "import" content type can serve as an import source.',
+  'vmImport.noImportStorage': 'No import source storage',
+  'vmImport.noImportStorageBody':
+    'Enable the "Import" content on a directory-backed storage (for example "local") and retry.',
+  'vmImport.file': 'Upload an import file',
+  'vmImport.fileHint':
+    'Uploads take OVA / QCOW2 / RAW / VMDK and stream straight into Proxmox. A loose .ovf cannot be uploaded — put it into the host\u2019s import directory first (see the notes below).',
+  'vmImport.upload': 'Upload',
+  'vmImport.uploading': 'Uploading {percent}%',
+  'vmImport.uploadDone': 'Upload finished',
+  'vmImport.uploadDoneCount': '{n} files placed into the import directory',
+  'vmImport.uploadFailed': 'Upload failed',
+  'vmImport.selectedFiles': '{n} file(s) selected',
+  'vmImport.skipCompanions':
+    'Skipped {n} file(s) that are not needed (.mf manifest / .nvram variables)',
+  'vmImport.pickUnsupported':
+    'Those files cannot be uploaded (only OVA / QCOW2 / RAW / VMDK) and were ignored',
+  'vmImport.ovfNeedsCopy': 'A .ovf cannot be uploaded directly',
+  'vmImport.ovfNeedsCopyBody':
+    'Proxmox\u2019s upload endpoint does not take a .ovf (it is only a descriptor; the disk data sits in the matching -diskN.vmdk). Use scp to put both files into {dir}, then refresh and pick that .ovf below — or pack them into an .ova and upload that.',
+  'vmImport.importDirUnknown': 'the storage\u2019s import directory on the PVE host',
+  'vmImport.pickExisting': 'Or pick a file already there',
+  'vmImport.preferOvfTitle': 'Use this .ovf as well',
+  'vmImport.preferOvf':
+    'The same directory also holds "{name}". Pick that one instead: memory, controller and firmware are all described in the .ovf, while -diskN.vmdk alone means a bare-disk import with everything guessed.',
+  'vmImport.pickExistingHint': 'Files already present in the storage\u2019s import directory',
+  'vmImport.pickPlaceholder': 'Pick a file',
+  'vmImport.needFile': 'Pick or upload an import file first',
+  'vmImport.howItWorks':
+    'Leave enough free space on the target storage (an OVA is unpacked too and needs extra room). For a loose OVF, put the .ovf and the -diskN.vmdk into {dir}, then refresh and pick that .ovf below.',
+  'vmImport.bareTitle': 'Machine settings need your input',
+  'vmImport.bareNotice':
+    'This is a bare disk image with no memory / CPU / network description — fill the settings in to match the original machine. The disk bus must match the controller the source machine used: pick the wrong one and the kernel boots but never finds its root disk.',
+  'vmImport.inspectFailed': 'Could not read the import information',
+  'vmImport.warnings': 'Before you import',
+  'vmImport.warnOvaExtract': 'An OVA is unpacked first, so the target storage needs extra space',
+  'vmImport.warnOvmfLsi': 'The controller found in the OVF cannot boot under UEFI — pick virtio-scsi below',
+  'vmImport.warnFirmwareUnknown':
+    'The OVF declares no firmware type, so legacy BIOS is used. If booting stops at Booting from Hard Disk, switch the firmware to UEFI (a source with an .nvram file is usually UEFI).',
+  'vmImport.warnEfiLost':
+    'UEFI boot: OVMF was taken from the OVF and an EFI variable disk is added. Boot entries live in .nvram and are not migrated, so the first boot may need one recreated.',
+  'vmImport.warnScsiUnderOvmf':
+    'The SCSI controller the source declares cannot boot under UEFI (lsi and pvscsi only carry BIOS-side boot support), so virtio-scsi was chosen with OVMF. **A VMware guest usually has no virtio driver in its initramfs** — if the first boot hangs waiting for the root disk (dracut cannot find /dev/… or root), switch the disk bus to SATA or IDE (guests normally carry ahci / ata_piix), or switch the firmware back to BIOS and pick lsi / pvscsi.',
+  'vmImport.warnCdrom':
+    'The CD-ROM is dropped (the ISO it referenced does not exist on the target).',
+  'vmImport.warnNvme':
+    'The source used an NVMe controller, which Proxmox does not support; the selected bus controller is used instead.',
+  'vmImport.warnSerial': 'Serial ports only support socket mode; adjusted to Proxmox syntax.',
+  'vmImport.warnGuestRunning':
+    'The source virtual machine was still running when exported, so the imported data may be inconsistent.',
+  'vmImport.warnUnknown': 'Unknown warning: {type}',
+  'vmImport.vmid': 'VMID',
+  'vmImport.vmidHint': 'Leave empty and Proxmox picks one',
+  'vmImport.vmidAuto': 'Automatic',
+  'vmImport.targetStorage': 'Storage for the disks',
+  'vmImport.targetStorageHint': 'The imported disks are written into this storage',
+  'vmImport.memory': 'Memory (MiB)',
+  'vmImport.cores': 'CPU cores',
+  'vmImport.bridge': 'Bridge',
+  'vmImport.firmware': 'Firmware',
+  'vmImport.firmwareHint':
+    'Keep Follow the OVF (the OVF records the firmware type). Only a bare .vmdk forces you to decide; the wrong pick hangs at Booting from Hard Disk. UEFI also gets an EFI variable disk.',
+  'vmImport.firmwareAuto': 'Follow the OVF (recommended)',
+  'vmImport.firmwareBios': 'BIOS (legacy boot)',
+  'vmImport.firmwareUefi': 'UEFI (OVMF)',
+  'vmImport.cpu': 'CPU model',
+  'vmImport.cpuHint':
+    'Keep the default. Avoid qemu64 (baseline x86-64 only — openEuler 24 / Debian 12 will not boot); host performs best but disables live migration.',
+  'vmImport.diskFormat': 'Target disk format',
+  'vmImport.diskFormatHint': 'qcow2 is usually right; ZFS storages do not support it, so pick raw there.',
+  'vmImport.bus': 'Disk bus',
+  'vmImport.busAuto': 'Follow the OVF (recommended)',
+  'vmImport.busHint':
+    'When the source names a SCSI controller (almost every VMware OVA/OVF) the default has already been switched to **IDE** — that is the one combination where following the source cannot work: Proxmox only resolves the bus, never the controller model (LSI Logic or PVSCSI), so the panel would fall back to virtio-scsi, which a migrated guest almost never carries in its initramfs — the kernel comes up and then waits forever for its root disk, while the same disk boots at once on IDE. A source that says IDE or SATA is still followed as-is (those guests carry ata_piix / ahci). For more performance switch explicitly: SCSI (and pick the matching controller) if the source used LSI/PVSCSI, SATA if it used SATA.',
+  'vmImport.scsihw': 'SCSI controller',
+  'vmImport.scsihwAuto': 'Follow the OVF (recommended)',
+  'vmImport.scsihwHint':
+    'Keep the default: when the source puts its disk on a SCSI controller (on VMware that is LSI Logic or PVSCSI — Proxmox cannot tell which), the panel picks the most likely one: lsi for BIOS, virtio-scsi for UEFI. If the first boot hangs waiting for the root disk (the kernel comes up but cannot see its disk), change this field first, then the disk bus (SATA / IDE are the most universal).',
+  'vmImport.netModel': 'NIC model',
+  'vmImport.netModelHint': 'Auto keeps whatever the image records; the wrong model can leave the guest without a NIC.',
+  'vmImport.netModelAuto': 'Auto (from the image)',
+  'vmImport.credentials': 'First login',
+  'vmImport.ciTitle': 'Injected through cloud-init',
+  'vmImport.ciHint': 'Only works if the guest has cloud-init installed. The password is stored in clear text in the VM config.',
+  'vmImport.ciUser': 'Username',
+  'vmImport.ciPassword': 'Initial password',
+  'vmImport.sshKeys': 'SSH public keys',
+  'vmImport.sshKeysHint': 'One per line, e.g. ssh-ed25519 AAAA... user@host',
+  'vmImport.misc': 'Other',
+  'vmImport.startAfter': 'Start the machine once the import finishes',
+  'vmImport.startAfterHint': 'Starts only after the disks are fully moved. Automatic start on every boot is set on the detail page.',
+  'vmImport.startAfterFailed': 'The VM was imported but failed to start',
+  'vmImport.progressLabel': 'Transferred',
+  'vmImport.progressPending': 'Reading transfer progress…',
+  'vmImport.ipSection': 'IP addressing',
+  'vmImport.ipMode': 'How to assign the IP',
+  'vmImport.ipModeHint': 'Injected through cloud-init as well — the guest needs cloud-init installed.',
+  'vmImport.ipKeep': 'Keep whatever the image has',
+  'vmImport.ipHint': 'CIDR format, mask required',
+  'vmImport.deleteSource': 'Delete this file',
+  'vmImport.deleteSourceTitle': 'Delete the import file',
+  'vmImport.deleteSourceMessage':
+    'Permanently deletes "{name}" from the Proxmox storage; it cannot be recovered.',
+  'vmImport.deleteSourceConfirm': 'Delete',
+  'vmImport.deleteSourceDone': 'Import file deleted',
+  'vmImport.deleteSourceFailed': 'Could not delete the import file',
+  'vmImport.disks': 'Disks to import',
+  'vmImport.createHintTitle': 'What happens next',
+  'vmImport.createHint':
+    'The panel creates the VM and attaches the disks with import-from; Proxmox does the moving. Watch big disks on the Tasks page.',
+  'vmImport.taskTitle': 'Importing {name}',
+  'vmImport.created': 'Import started, VMID {vmid}',
+  'vmImport.createFailed': 'Import failed',
+  'vmImport.back': 'Back',
+  'vmImport.next': 'Next',
+  'vmImport.start': 'Start import',
+
+  /* ------------------------------------------ Export a VM (image / OVA) */
+  'vmExport.menuItem': 'Export image',
+  'vmExport.title': 'Export {name}',
+  'vmExport.subtitle':
+    'Export the disks as image files or an OVA archive; the files stay on the host until you delete them',
+  'vmExport.format': 'Format',
+  'vmExport.formatHint':
+    'VMDK for VMware, QCOW2 for KVM, RAW is the most universal, OVA can be imported by vSphere directly',
+  'vmExport.fmtVmdk': 'VMDK (VMware)',
+  'vmExport.fmtQcow2': 'QCOW2 (KVM)',
+  'vmExport.fmtRaw': 'RAW (bare image)',
+  'vmExport.fmtOva': 'OVA (importable by vSphere)',
+  'vmExport.targetStorage': 'Storage for the output',
+  'vmExport.targetStorageHint':
+    'Only directory-backed (dir) storages let the host write plain files',
+  'vmExport.noDirStorage':
+    'There is no directory-backed (dir) storage to hold the export. Add a dir / NFS / CIFS storage first.',
+  'vmExport.needStoppedTitle': 'Shut the machine down first',
+  'vmExport.needStoppedBody':
+    'The export reads the disks block by block, and a running machine gives no consistent data. Shut it down (or suspend it) and export afterwards.',
+  'vmExport.imageHint':
+    'This exports disk images only — no other guest configuration. VMDK also comes with a .vmx config file: keep both in the same folder and VMware opens the .vmx as a ready machine. QCOW2 / RAW are a bare disk you have to attach yourself.',
+  'vmExport.ovaHint':
+    'An OVA also carries the OVF description (memory / cores / disk list) and can be imported by vSphere or ESXi directly. Packing large disks takes extra time.',
+  'vmExport.start': 'Start export',
+  'vmExport.started': 'Export started',
+  'vmExport.startFailed': 'Could not start the export',
+  'vmExport.statePreparing': 'Preparing',
+  'vmExport.stateConverting': 'Converting disks',
+  'vmExport.statePacking': 'Packing the OVA',
+  'vmExport.stateDone': 'Finished',
+  'vmExport.stateFailed': 'Failed',
+  'vmExport.existing': 'Exported images',
+  'vmExport.orphan': '(exported before a panel restart; owner unknown)',
+  'vmExport.downloadAll': 'Download all as one archive',
+  'vmExport.imageName': 'Image name',
+  'vmExport.imageNameHint':
+    'Used for the produced file names (.vmdk / .ova / .vmx / the archive). Leave empty to use the VM name. Slashes and quotes are not allowed.',
+  'vmExport.download': 'Download',
+  'vmExport.cleanup': 'Delete the files',
+  'vmExport.cleaned': 'Files deleted',
+  'vmExport.cleanFailed': 'Could not delete the files',
+  'vmExport.cleanupTitle': 'Delete the exported files',
+  'vmExport.cleanupMessage':
+    'This removes the exported files from the host. Anything already downloaded is unaffected; export again if you need them.',
+  'vmExport.cleanupConfirm': 'Delete',
+
+  /* ---------------------------------- VM detail page: "More actions" */
+  'vmMore.menu': 'More actions',
+  'vmMore.noun': 'virtual machine',
+  'vmMore.clone': 'Clone as a new VM',
+  'vmMore.toTemplate': 'Convert to template',
+  'vmMore.toTemplateTitle': 'Convert to template',
+  'vmMore.toTemplateMessage':
+    'Once "{name}" becomes a template it can no longer be started directly, but new virtual machines can be cloned from it quickly. This cannot be undone.',
+  'vmMore.toTemplateConfirm': 'Convert',
+  'vmMore.toTemplateDone': 'Converted to a template',
+  'vmMore.toTemplateFailed': 'Could not convert to a template',
+  'vmMore.migrate': 'Migrate to another node',
+  'vmMore.migrateTitle': 'Migrate to another node',
+  'vmMore.migrateTarget': 'Target node',
+  'vmMore.migratePlaceholder': 'Pick a node',
+  'vmMore.migrateOnline': 'Online migration',
+  'vmMore.migrateOnlineHint':
+    'The virtual machine keeps running; shared storage is required, a local-disk machine must be shut down first',
+  'vmMore.migrateNoTarget':
+    'There is no other online node in this cluster, so there is nothing to migrate to.',
+  'vmMore.migrateStart': 'Start migration',
+  'vmMore.migrateTask': 'Migrating {name}',
+  'vmMore.resetPassword': 'Reset guest password',
+  'vmMore.assignOwner': 'Assign owner',
+  'vmMore.deleteVm': 'Delete virtual machine',
+
+  /* ------------------------------------------------ Reinstall a VM */
+  'vmReinstall.menu': 'Reinstall system',
+  'vmReinstall.title': 'Reinstall system',
+  'vmReinstall.subtitle':
+    'Replace the system disk of this machine from a template: VMID, network adapter and MAC, CPU and memory all stay the same',
+  'vmReinstall.needStoppedTitle': 'Shut the machine down first',
+  'vmReinstall.needStoppedBody':
+    'Reinstalling replaces the whole system disk — a running machine gives no consistent copy and cannot be swapped safely. Shut it down and come back.',
+  'vmReinstall.noTemplate': 'No template available',
+  'vmReinstall.noTemplateBody':
+    'This node has no template yet. Build one from a cloud image on the Templates page (Debian / Ubuntu / CentOS …), then come back.',
+  'vmReinstall.loadFailed': 'Could not load the templates',
+  'vmReinstall.template': 'Source template',
+  'vmReinstall.templateHint':
+    'The new system disk is copied from this template (only templates on this node are listed)',
+  'vmReinstall.templateSize': 'system disk {size}',
+  'vmReinstall.targetStorage': 'Where the new system disk goes',
+  'vmReinstall.storageLinkedHint':
+    'Linked clone: seconds to build and hardly any extra space; the disk is based on the template, so the machine breaks if the template is deleted.',
+  'vmReinstall.storageCopyHint':
+    'Full copy: a linked clone must live on the template\u2019s own storage ({storage}); on another storage the whole disk is copied, which is far slower.',
+  'vmReinstall.targetStorageHint':
+    'Both the old and the new disk exist while copying — make sure there is room',
+  'vmReinstall.hostname': 'Hostname',
+  'vmReinstall.hostnameHint':
+    'Proxmox uses the VM name as the guest hostname, so changing this also renames the virtual machine',
+  'vmReinstall.account': 'Initial account',
+  'vmReinstall.ciUser': 'Username',
+  'vmReinstall.ciPassword': 'Password',
+  'vmReinstall.sshKeys': 'SSH public keys',
+  'vmReinstall.sshKeysHint': 'One per line; with keys installed you can log in by key only',
+  'vmReinstall.network': 'Network',
+  'vmReinstall.ipModeDhcp': 'DHCP (automatic)',
+  'vmReinstall.ipModeStatic': 'Static address',
+  'vmReinstall.ip': 'IP address (CIDR)',
+  'vmReinstall.gateway': 'Gateway',
+  'vmReinstall.dns': 'DNS',
+  'vmReinstall.netFromConfig': 'Keeping the address the machine already uses: {ip}',
+  'vmReinstall.netLeaveStatic':
+    'This machine is configured with the static address {ip}. Switching to DHCP means it will ask the network for an address on boot \u2014 and it may not get the same one back.',
+  'vmReinstall.netFromDhcp':
+    'No static address is configured: this machine takes its address from DHCP after the reinstall.',
+  'vmReinstall.netOverDhcp':
+    'The machine currently uses DHCP; the address below becomes the fixed one after the reinstall.',
+  'vmReinstall.ipFromMeta':
+    'No network config was found in the PVE config, so the manual IP on record is filled in: {ip} (check the prefix length)',
+  'vmReinstall.options': 'Options',
+  'vmReinstall.irreversibleTitle': 'The data cannot be recovered',
+  'vmReinstall.irreversibleBody':
+    'The reinstall deletes this machine and rebuilds it from the template: the old system disk and any data disks are removed together with their volumes, and nothing on them can be recovered. The VMID, network cards (including their MACs), CPU and memory are kept. Back up whatever you still need first.',
+  'vmReinstall.wipeDisks': 'Delete the data disks as well',
+  'vmReinstall.wipeDisksHint':
+    'Ticked: the data disks are cleared as well and the machine is rebuilt as a linked clone (seconds, and the disk depends on the template). Untick to keep the data disks \u2014 that falls back to a full disk copy, which takes minutes.',
+  'vmReinstall.startAfter': 'Start the machine when the reinstall finishes',
+  'vmReinstall.confirmTitle': 'Confirm reinstall',
+  'vmReinstall.confirmMessage':
+    'The system disk of {name} will be rebuilt from template "{template}". The old disk is deleted along with its volume \u2014 the system and the data on it are lost permanently and cannot be recovered. Type the virtual machine name to confirm:',
+  'vmReinstall.confirmText': 'Reinstall now',
+  'vmReinstall.running': 'Submitting…',
+  'vmReinstall.done': 'Reinstall finished',
+  'vmReinstall.failed': 'Reinstall failed',
+  'vmReinstall.steps': 'Steps',
+  'vmReinstall.queued': 'Reinstall submitted',
+  'vmReinstall.queuedBody':
+    'The reinstall of {name} is running in the background; you will be notified when it finishes.',
+  'vmReinstall.backgroundHint':
+    'This runs in the background: you can close this window \u2014 you will be told when the machine is rebuilt, or if it fails.',
+  'vmReinstall.failedTitle': 'Reinstall failed: {name}',
+  'vmReinstall.failedDesc':
+    'The system disk was left untouched and the machine is unchanged. Execution log:',
+  'vmReinstall.failedNoSteps':
+    'It failed before the pipeline started, so there are no steps to show.',
+  'vmReinstall.start': 'Reinstall system',
+
   /* ------------------------------------------------- Empty / error state */
   'state.notImplemented': 'Not available yet',
   'state.loadFailed': 'Failed to load',
@@ -759,7 +1042,22 @@ export const en: Partial<Record<MessageKey, string>> = {
   'notif.markAll': 'Mark all read',
   'notif.loading': 'Loading…',
   'notif.empty': 'No notifications',
-  'notif.viewAll': 'View the full alert history',
+  'notif.noBody': '(this message has no body)',
+  'notif.openTarget': 'Open the related resource',
+  'notif.pageDesc':
+    'Every in-app message in full: open one to read it here instead of chasing a redirect.',
+  'notif.filterAll': 'All',
+  'notif.filterUnread': 'Unread',
+  'notif.emptyUnread': 'No unread messages',
+  'notif.loadFailed': 'Could not load messages',
+  'notif.clearAll': 'Clear all',
+  'notif.clearTitle': 'Clear all messages',
+  'notif.clearMessage':
+    'Every message in the notification centre will be permanently deleted, unread ones included. This cannot be undone.',
+  'notif.clearConfirm': 'Clear now',
+  'notif.cleared': 'Messages cleared',
+  'notif.clearedBody': '{count} deleted.',
+  'notif.clearFailed': 'Could not clear messages',
 
   /* -------------------------------------------- Status / role / type labels */
   'status.unknown': 'Unknown',
@@ -899,6 +1197,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmDetail.noTasks': 'No tasks',
   'vmDetail.noTasksDesc': 'This machine has not run any tasks recently.',
   'vmDetail.tag': 'Tags',
+  'vmDetail.sourceTemplate': 'Source template',
+  'vmDetail.sourceTemplateTitle':
+    'Which template this machine was cloned from. A linked clone keeps its disk based on that template \u2014 delete the template and this machine will no longer start.',
   'vmDetail.selectStorage': 'Select a storage pool',
   'vmDetail.editConfigTask': 'Change {key}',
   'vmDetail.editNicIpTask': 'Change the IP of {nic}',
@@ -3416,6 +3717,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'api.httpFailed': 'Request failed (HTTP {status})',
   'api.sessionExpired': 'Your session has expired; please sign in again',
   'api.notImplemented': 'This feature requires backend support (not implemented)',
+  'api.tooLarge':
+    'The file is too large — the server rejected it (upload size limit). For big images it is more reliable to put the file into a PVE storage import directory and pick it with "Choose a file" instead: that path never goes through the browser, so the limit does not apply.',
+  'api.gatewayDown':
+    'The panel is restarting or temporarily unavailable. Give it a few seconds — the page reconnects on its own.',
   'api.unknown': 'An unknown error occurred',
   /* ------------------------------------------------------------- Site info */
   'site.defaultSubtitle': 'Proxmox management panel',
@@ -4195,6 +4500,18 @@ export const en: Partial<Record<MessageKey, string>> = {
   'sshConfig.disabled': 'Disabled',
   'sshConfig.test': 'Test',
   'sshConfig.trust': 'Trust fingerprint',
+  /* --- Fingerprint differs from the stored one (a MITM, or a reinstall) --- */
+  'sshConfig.fingerprintMismatch': 'Fingerprint changed',
+  'sshConfig.fingerprintPair': 'stored {expected} · actual {actual}',
+  'sshConfig.retrust': 'Re-trust',
+  'sshConfig.retrustTitle': 'Re-trust the host fingerprint: {name}',
+  'sshConfig.retrustMessage':
+    'The fingerprint seen now differs from the one on record. Reinstalling the host or regenerating its SSH host keys does this — but so does a man-in-the-middle attack. Confirm the fingerprint really belongs to this host (check the out-of-band console or your records) before overwriting the record.',
+  'sshConfig.retrustConfirm': 'Re-trust now',
+  'sshConfig.retrustDone': 'Re-trusted the fingerprint of {name}',
+  'sshConfig.retrustFailed': 'Could not re-trust the fingerprint',
+  'sshConfig.fingerprintRecorded': 'Fingerprint on record',
+  'sshConfig.fingerprintActual': 'Fingerprint seen now',
   'sshConfig.ownerBtnTitle':
     'Assign this host to a user (leave empty to clear; it then becomes admin-only)',
   'sshConfig.removeHostBtnTitle': 'Remove this host',
@@ -4205,7 +4522,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'sshConfig.ownerModalDesc': '{name} ({host})',
   'sshConfig.ownerField': 'Owner',
   'sshConfig.ownerHint':
-    'Leave empty to clear the owner; the host then becomes admin-only. The username must match the account on the users page exactly.',
+    'Search and pick a user from the list; choosing "(unassigned)" clears the owner, after which the host is admin-only.',
   'sshConfig.ownerPlaceholder': 'e.g. zhangsan',
   'sshConfig.policySection': 'Anomalous login alert policy',
   'sshConfig.policySectionHint': 'Applies to the hosts currently visible to you',
@@ -5689,7 +6006,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.sigDingtalkStrong': 'DingTalk with “sign” enabled requires the sign in the URL query string',
   'alerts.sigOutro': ', which a request body template cannot express; disable signing on the DingTalk side or relay it yourself.',
   'alerts.emailTitle': 'Alerts (email)',
-  'alerts.emailSubtitle': 'Alert and recovery notifications go to your mailbox; sending uses the SMTP configured by an administrator under “Settings → Email notifications”',
+  'alerts.emailSubtitle':
+    'Alerts and recoveries, plus the machines you deploy (specs, IP, password) and reinstall results, go to this mailbox; sending uses the SMTP configured by an administrator under “Settings → Email notifications”',
   'alerts.smtpReady': 'SMTP ready',
   'alerts.smtpUnset': 'SMTP not configured',
   'alerts.smtpMissingTitle': 'Global SMTP is not configured',
@@ -5737,4 +6055,60 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.clearMessage': 'This will clear the alert history: the {n} records in the list plus older muted records that are no longer shown. This cannot be undone. Objects currently alerting are unaffected and a recovery notice is still sent when the metric recovers.',
   'ports.heurPerm':
     ': without root the panel cannot see other users\u2019 processes, so "owning process" shows unknown and traits such as "executable deleted" are unavailable — the report is marked "read-only inspection"; the problem has not gone away.',
+
+  /* ---- panel update: check for a new version / one-click update (app/update.py) ---- */
+  'update.loading': 'Reading version information…',
+  'update.current': 'Current version',
+  'update.latest': 'Latest version',
+  'update.published': 'Published',
+  'update.checked': 'Last checked',
+  'update.never': 'Never checked',
+  'update.unknown': 'unknown',
+  'update.upToDate': 'Already up to date',
+  'update.check': 'Check for updates',
+  'update.checking': 'Checking…',
+  'update.checkDone': 'Check finished',
+  'update.checkFailed': 'Check failed',
+  'update.bannerTitle': 'A new panel version is available',
+  'update.bannerBody': 'You are running {current}; the latest is {latest}. Update now?',
+  'update.view': 'View and update',
+  'update.later': 'Later',
+  'update.close': 'Close',
+  'update.gotoSettings': 'Open settings',
+  'update.modalTitle': 'Panel update',
+  'update.modalSubtitle': 'Running {current} · latest {latest}',
+  'update.notes': 'Release notes',
+  'update.apply': 'Update now',
+  'update.applyHint':
+    'Updating fetches the new version, rebuilds the frontend and restarts the panel in the background. The panel is briefly unavailable and this page reloads once it is back.',
+  'update.applyStarted': 'Update started',
+  'update.applyFailed': 'Update could not start',
+  'update.reasonTitle': 'Why one-click updating is not available',
+  'update.manualTitle': 'Manual upgrade commands',
+  'update.copy': 'Copy commands',
+  'update.copied': 'Copied',
+  'update.copyFailed': 'Copy failed — select the text and copy it manually',
+  'update.release': 'View on GitHub',
+  'update.skip': 'Skip this version',
+  'update.unskip': 'Stop skipping {version}',
+  'update.autoCheck': 'Check for updates automatically',
+  'update.autoCheckHint':
+    'Asks GitHub Releases once a day and leaves a notification for admins when a new version shows up (the interval can be changed under Settings → Background jobs).',
+  'update.repo': 'Release repository',
+  'update.repoHint':
+    'owner/name. Changing this changes where the panel fetches new code from, so it asks for confirmation.',
+  'update.save': 'Save',
+  'update.settingsSaved': 'Saved',
+  'update.settingsFailed': 'Could not save',
+  'update.applyingTitle': 'Updating the panel',
+  'update.applyingBody':
+    'Updating to {tag}; the panel will restart shortly and this page reloads once it is back. Log:',
+  'update.doneOkTitle': 'Last update succeeded',
+  'update.doneOk': 'Updated to {tag}',
+  'update.doneFailTitle': 'Last update did not finish',
+  'update.doneFail': 'Updating to {tag} did not succeed — check the log:',
+  'update.deployForm': 'Deployment',
+  'update.form.git': 'Source + systemd',
+  'update.form.docker': 'Docker container',
+  'update.form.other': 'Other (see manual commands)',
 };

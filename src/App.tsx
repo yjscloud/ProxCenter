@@ -37,6 +37,7 @@ import { Backups } from './pages/Backups';
 import { Tasks } from './pages/Tasks';
 import { Frp } from './pages/Frp';
 import { Alerts } from './pages/Alerts';
+import { Notifications } from './pages/Notifications';
 import { Certificates } from './pages/Certificates';
 import { Users } from './pages/Users';
 import { AuditLog } from './pages/AuditLog';
@@ -268,6 +269,10 @@ export function App() {
         />
         <Route path="/frp" element={<Frp />} />
         <Route path="/alerts" element={<Alerts />} />
+        {/* 消息中心：站内消息的完整列表 —— 顶栏铃铛的「查看全部」落在这里。
+            与 /alerts 分开：下发的配置通知没有对应的「告警历史」，把它们引到
+            监控告警页只会让人以为消息丢了。 */}
+        <Route path="/notifications" element={<Notifications />} />
         <Route
           path="/certificates"
           element={

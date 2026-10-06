@@ -223,6 +223,36 @@ A frontend-only code change just needs `npm run build`; a backend change needs
 > With Docker this section does not apply — the container already carries
 > `restart: unless-stopped`.
 
+### 7. Upgrading
+
+The panel checks for new versions itself: **Settings → System information → Panel version and
+update** shows the current and latest version plus *Check for updates* and *Update now*, and a
+banner appears in the top bar when a new release exists (only for accounts holding
+`settings.manage`). It asks GitHub Releases once a day by default; that can be turned off in the
+same place, and the interval changed under *Background jobs*.
+
+Updating in the panel does exactly what the manual route does: fetch the new tag, then run
+`./deploy.sh` (install dependencies + build the frontend + restart the service). It is therefore
+only offered when it can actually work: the install directory is a git checkout, the process is
+managed by systemd, the user is root, Node.js 18+ is installed (without it the frontend cannot be
+rebuilt, and replacing only the backend would leave UI and API out of sync), and the work tree has
+no uncommitted changes. Whenever one of those fails, the panel explains why and shows these
+commands instead:
+
+```bash
+cd /data/proxcenter
+sudo git fetch --tags --prune origin
+sudo git checkout v0.1.5      # the tag shown as the latest version in the panel
+sudo ./deploy.sh              # idempotent: safe to re-run
+```
+
+On a host without Node.js, build on a machine that has it, copy `dist/` back and run
+`sudo ./deploy.sh --skip-frontend`.
+
+> An instance started by hand (`python backend/run.py`) is not managed by systemd, so one-click
+> updating is refused: the script restarts the *service*, which is a different process, and the
+> new code would never run. Stop the manual instance first, or use the commands above.
+
 ---
 
 ## Features

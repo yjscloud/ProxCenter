@@ -65,7 +65,11 @@ export { guestTypeOf };
 /** 容器走 /lxc/:node/:vmid，虚拟机走 /vms/:node/:vmid */
 export function guestPath(guest: GuestRef): string {
   const family = isLxc(guest) ? 'lxc' : 'vms';
-  return `/${family}/${encodeURIComponent(guest.node)}/${guest.vmid}`;
+  const base = `/${family}/${encodeURIComponent(guest.node)}/${guest.vmid}`;
+  /* 把连接 id 一起带到详情页：详情页里的接口只拿得到节点名，多连接部署下
+     不带这个参数就可能把请求发到没有该节点的另一台 PVE 上。 */
+  const conn = guest.connection_id || '';
+  return conn ? `${base}?connection=${encodeURIComponent(conn)}` : base;
 }
 
 export function isContainer(guest: GuestRef): boolean {

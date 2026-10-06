@@ -1175,6 +1175,97 @@ class RoleIn(BaseModel):
     permissions: List[str] = Field(default_factory=list)
 
 
+# ----------------------------------------------------- import / export
+class VmImportRequest(BaseModel):
+    """从 OVF / OVA 导入虚拟机（VMware 互操作）。
+
+    ``volume`` 是**不带存储前缀**的相对卷名（``import/xx.ova``）：PVE 的
+    import-metadata handler 内部就是 ``$volid = "$storage:$volume"``，
+    多写一个前缀会被当成卷名的一部分去解析并报错。
+    """
+
+    node: str
+    storage: str                      # 导入文件所在的存储（import 内容）
+    volume: str = ""                  # import/xx.ova
+    target_storage: str = ""          # 磁盘落地的存储；inspect 阶段可为空
+    name: str = ""
+    vmid: Optional[int] = None
+    memory: Optional[int] = None
+    cores: Optional[int] = None
+    bridge: str = "vmbr0"
+    # 网卡型号；留空 = 沿用 OVF 里写的型号（裸磁盘镜像则用 virtio）。
+    # 换错型号的后果很直接：原系统没装这个型号的驱动，网卡在系统里就是认不出来。
+    net_model: str = ""
+    # 磁盘总线：auto（跟随 OVF，默认）/ scsi / virtio / sata / ide。
+    # 默认跟随文件里写的控制器 —— 装系统时用的是什么，客户机 initramfs 里就只有
+    # 那个驱动，换了就「内核起来了、停在那里等根盘」。
+    bus: str = "auto"
+    # 目标磁盘格式（与源卷格式无关）：qcow2 / raw / vmdk。ZFS 存储要用 raw
+    disk_format: str = "qcow2"
+    # 固件：auto（跟随 OVF，默认）/ seabios（传统 BIOS）/ ovmf（UEFI）。
+    # ``auto`` 用 PVE 从 OVF 里解析出的 ``bios``：VMware 导出的 OVF 会带
+    # ``<vmw:Config vmw:key="firmware" vmw:value="efi"/>``，PVE 据此在 create_args
+    # 里给出 bios=ovmf。裸磁盘镜像没有这份描述，auto 会落到 BIOS。
+    # 显式选错（UEFI 装出来的系统被当成 BIOS 启动）的后果是机器停在
+    # 「Booting from Hard Disk...」然后黑屏。
+    firmware: str = "auto"
+    # CPU 型号。不设会退回 qemu64（x86-64 基线），装新发行版会因缺 x86-64-v2
+    # 指令集而启动失败，所以默认给 PVE 8+ 的默认值。
+    cpu: str = "x86-64-v2-AES"
+    # SCSI 控制器：auto（默认，按源文件总线 + 固件解析）/ 具体型号（见
+    # vmtransfer.resolve_scsihw）。以前写死 virtio-scsi-single —— 对 VMware 搬过来的
+    # 客户机那是最不可能有驱动的那个（它的 initramfs 里通常只有 LSI/PVSCSI 驱动），
+    # 表现是「内核起来了却找不到根盘」。
+    scsihw: str = "auto"
+    ostype: Optional[str] = None
+    # ---- IP 分配（经 cloud-init 注入）----
+    # 留空 = 不动，保持 OVF / 镜像里原有的网络配置
+    ip_mode: str = ""                  # dhcp / static
+    ip: str = ""
+    gateway: str = ""
+    dns: str = ""
+    # ---- 首次登录凭据（经 cloud-init 注入，需要目标系统里装了 cloud-init）----
+    ci_user: str = ""
+    ci_password: str = ""
+    ssh_keys: str = ""
+    # ---- 其它 ----
+    # 导入完成后是否立即启动这台机器（由前端在建机任务结束后调电源接口）
+    start: bool = True
+
+
+class VmExportRequest(BaseModel):
+    """把**已关机**的虚拟机导出成镜像文件或 OVA 包。"""
+
+    format: str = "vmdk"              # vmdk / qcow2 / raw / ova
+    storage: str                      # 产物落地的目录型存储
+    name: Optional[str] = None        # 产物名称；留空则用虚拟机名
+
+
+class VmReinstallRequest(BaseModel):
+    """用 Cloud-Init 模板重建虚拟机的系统盘。
+
+    保留机器身份（VMID / 网卡与 MAC / CPU 内存 / 磁盘拓扑），只替换系统盘内容 ——
+    这是「重装」与「删了重建」的区别所在。
+    """
+
+    template_node: str
+    template_vmid: int
+    target_storage: str               # 新系统盘落在哪个存储
+    # PVE 的 cloud-init 用**虚拟机名**当客户机 hostname，所以填了它就会改虚拟机名
+    hostname: str = ""
+    ci_user: str = ""
+    ci_password: str = ""
+    ssh_keys: str = ""
+    ip_mode: str = "dhcp"             # dhcp | static
+    ip: str = ""
+    gateway: str = ""
+    dns: str = ""
+    start: bool = False               # 重装完成后是否启动
+    # 连数据盘一起删（默认开：重装的语义就是让这台机器回到干净状态）。
+    # 要保留数据盘的用户在向导里取消勾选即可。
+    wipe_data_disks: bool = True
+
+
 # ----------------------------------------------------------------- template
 class TemplateFromImage(BaseModel):
     """Build a cloud-init template from an uploaded/downloaded cloud image."""

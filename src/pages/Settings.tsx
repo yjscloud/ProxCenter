@@ -29,6 +29,7 @@ import {
   saveSettings,
 } from '../api/endpoints';
 import { PageShell } from '../components/Layout';
+import { PanelUpdateCard } from '../components/PanelUpdateCard';
 import {
   ALWAYS_OPEN_PATHS,
   FOOTER_NAV_ITEMS,
@@ -2477,6 +2478,9 @@ function SystemSection({
           loading={fleet.isLoading}
         />
       </div>
+
+      {/* 面板自身的版本与更新（检查新版本 / 一键更新 / 手工命令） */}
+      <PanelUpdateCard />
 
       <div className="set-info-grid mt-16">
         <div className="set-info-tile">

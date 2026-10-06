@@ -8,6 +8,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
 import { ToastProvider } from './hooks/useToast';
+import { ReinstallWatcher } from './components/ReinstallWatcher';
 import { AuthProvider } from './hooks/useAuth';
 import { StepUpProvider } from './hooks/useStepUp';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -46,6 +47,12 @@ const queryClient = new QueryClient({
         if (error && typeof error === 'object' && 'status' in error) {
           const status = (error as { status: number }).status;
           if (status === 401 || status === 403 || status === 501) return false;
+          // 502 / 503 / 504 来自 nginx：面板正在重启，或后端暂时不可用。
+          // 重启通常十几秒，多试几次就能自己接上 —— 用户不必看到报错、
+          // 更不必手动刷新（默认那 2 次、1s+2s 的退避是盖不住重启的）
+          if (status === 502 || status === 503 || status === 504) {
+            return failureCount < 5;
+          }
         }
         return failureCount < 2;
       },
@@ -81,6 +88,9 @@ createRoot(container).render(
                 {/* 必须在 AuthProvider 内层：二次确认要按当前用户判断有没有开 2FA */}
                 <StepUpProvider>
                   <App />
+                  {/* 后台重装作业的通知器（没有界面）：只负责在作业结束 / 失败时
+                      弹出提示与日志。挂在这里而不是向导里 —— 向导早被关掉了。 */}
+                  <ReinstallWatcher />
                 </StepUpProvider>
               </AuthProvider>
             </ToastProvider>

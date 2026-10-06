@@ -165,21 +165,33 @@ async def test_host(
 async def trust_host(
     host_id: str,
     request: Request,
+    force: bool = Query(
+        default=False,
+        description="指纹与库中记录不一致时，用实际指纹覆盖记录（重新信任）",
+    ),
     user: Dict[str, Any] = Depends(SSH_MANAGE),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
-    """确认并记住该主机的 SSH 指纹（首次连接后必须做一次）。"""
+    """确认并记住该主机的 SSH 指纹（首次连接后必须做一次）。
+
+    ``force=true`` 即「重新信任」：主机重装系统或轮换过 SSH 主机密钥后，实际
+    指纹会与库里的记录不符 —— 此时普通信任会以「可能遭遇中间人」失败。管理员
+    排查无误后用这个开关以实际指纹覆盖记录；被覆盖的旧指纹一并写进审计日志，
+    日后回看能分清「正常轮换」和「被人换掉了」。
+    """
     row = await sshremote.get_host(host_id)
     if not row:
         raise HTTPException(status_code=404, detail="主机不存在")
-    result = await sshremote.trust_fingerprint(row)
+    result = await sshremote.trust_fingerprint(row, force=force)
+    previous = str(result.get("previous") or "")
+    fingerprint = str(result.get("fingerprint") or "")
     await security.audit(
         request,
         user,
-        "ssh.host_trust",
+        "ssh.host_retrust" if force else "ssh.host_trust",
         row["host"],
         "success" if result.get("ok") else "failed",
-        str(result.get("fingerprint") or result.get("detail") or "")[:200],
+        f"{previous or '（首次）'} → {fingerprint or result.get('detail') or ''}"[:200],
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("detail") or "确认指纹失败")

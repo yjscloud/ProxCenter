@@ -132,6 +132,11 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
             {"key": "vm.backup", "label": "备份", "desc": "备份与恢复"},
             {"key": "vm.clone", "label": "克隆", "desc": "从模板或虚拟机克隆"},
             {
+                "key": "vm.reinstall",
+                "label": "重装系统",
+                "desc": "用 Cloud-Init 模板重建虚拟机的系统盘（替换并删除原系统盘）",
+            },
+            {
                 "key": "vm.isolate",
                 "label": "应急隔离",
                 "desc": "一键隔离可疑虚拟机（取证快照 + 断网 + 关机）与解除隔离",
@@ -955,8 +960,14 @@ def client_ip_from_scope(scope: Dict[str, Any]) -> str:
     return peer
 
 
-def client_ip(request: Request) -> str:
-    """Best-effort client IP, honouring a reverse proxy's X-Forwarded-For."""
+def client_ip(request: Optional[Request]) -> str:
+    """Best-effort client IP, honouring a reverse proxy's X-Forwarded-For.
+
+    ``request`` 允许为 None：后台作业（导出 / 重装）跑在 HTTP 请求之外，结束时也要
+    写一条审计，但那时根本没有客户端地址 —— 记空串，别让任务栽在最后一步。
+    """
+    if request is None:
+        return ""
     return client_ip_from_scope(
         {
             "client": (request.client.host, request.client.port)
@@ -968,7 +979,7 @@ def client_ip(request: Request) -> str:
 
 
 async def audit(
-    request: Request,
+    request: Optional[Request],
     user: Dict[str, Any],
     action: str,
     target: str = "",

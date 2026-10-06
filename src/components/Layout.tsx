@@ -11,6 +11,7 @@ import {
   isPathDisabled,
 } from './Sidebar';
 import { Topbar } from './Topbar';
+import { UpdateNotice } from './UpdateNotice';
 import { CommandPalette } from './CommandPalette';
 import { ErrorBoundary } from './ErrorBoundary';
 import { useAuth } from '../hooks/useAuth';
@@ -123,6 +124,9 @@ export function Layout() {
           onOpenMobileNav={() => setMobileOpen(true)}
           onOpenSearch={() => setSearchOpen(true)}
         />
+
+        {/* 有面板新版本时的提示条（只对管理员出现，见组件内部判断） */}
+        <UpdateNotice />
 
         <main className="app-content" id="main-content">
           {pathBlocked ? (

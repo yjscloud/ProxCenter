@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .. import notifications, security
@@ -24,7 +24,18 @@ class MarkReadRequest(BaseModel):
 
 
 def _own(user: Dict[str, Any]) -> str:
-    return str(user.get("username") or "")
+    """当前登录者的用户名 —— 消息归属的**唯一**来源。
+
+    前端不传、也不允许传用户名：一旦「操作谁的消息」成了请求参数，越权就只是改
+    一个字段的事。取不到用户名时直接 403（fail closed），而不是退化成查一个空
+    字符串 —— 后者能不能挡住越权，取决于表里恰好没有空归属的行。
+    """
+    owner = str(user.get("username") or "").strip()
+    if not owner:
+        raise HTTPException(
+            status_code=403, detail="当前账号没有用户名，无法访问消息中心"
+        )
+    return owner
 
 
 @router.get("")
@@ -57,6 +68,28 @@ async def unread(
     极轻的接口，命中 ``(username, read_at)`` 索引。
     """
     return {"unread": await notifications.unread_count(_own(user))}
+
+
+@router.delete("")
+async def clear_notifications(
+    request: Request,
+    user: Dict[str, Any] = Depends(security.get_current_user),
+) -> Dict[str, Any]:
+    """一键清空自己的消息中心，返回删掉的条数。
+
+    这是**不可撤销**的，所以进审计：事后有人问「我那条带口令的下发通知怎么没了」，
+    至少查得到是本人清的、什么时候清的 —— 条数进审计，消息正文不进。
+    """
+    owner = _own(user)
+    removed = await notifications.clear(owner)
+    await security.audit(
+        request,
+        user,
+        "notifications.clear",
+        target=owner,
+        detail=f"清空站内消息 {removed} 条",
+    )
+    return {"removed": removed, "unread": 0}
 
 
 @router.post("/read")

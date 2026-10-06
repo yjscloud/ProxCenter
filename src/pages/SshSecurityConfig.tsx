@@ -28,6 +28,7 @@ import { Table, type Column } from '../components/ui/Table';
 import { Notice } from '../components/ui/EmptyState';
 import { Modal } from '../components/ui/Modal';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { UserSelect } from '../components/ui/UserSelect';
 import { PagerBar, usePaged } from '../hooks/usePaged';
 import {
   IconAlert,
@@ -69,7 +70,20 @@ export function SshSecurityConfig() {
   const [editingHost, setEditingHost] = useState<SshHost | null>(null);
   const [hostDraft, setHostDraft] = useState<Record<string, unknown> | null>(null);
   const [deleteHost, setDeleteHost] = useState<SshHost | null>(null);
-  const [testResult, setTestResult] = useState<{ name: string; text: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    name: string;
+    text: string;
+    host: SshHost;
+    /** 本次自检发现指纹与记录不一致 → 提示里直接给出「重新信任」入口 */
+    mismatch: boolean;
+  } | null>(null);
+  /* 指纹不一致的主机（id → 记录值 / 实际值）。
+     只能靠自检发现：列表接口不连主机，判断不了当前指纹是什么。这里把结果留在
+     页面上，用户看完审计、翻完记录回来，入口还在，不必再点一次测试。 */
+  const [mismatch, setMismatch] = useState<
+    Record<string, { expected: string; actual: string }>
+  >({});
+  const [retrustTarget, setRetrustTarget] = useState<SshHost | null>(null);
   /* 指派归属（管理员）：把存量主机交还给真正维护它的人 */
   const [ownerTarget, setOwnerTarget] = useState<SshHost | null>(null);
   const [ownerValue, setOwnerValue] = useState('');
@@ -183,6 +197,8 @@ export function SshSecurityConfig() {
             : t('sshConfig.notFound');
       setTestResult({
         name: host.name,
+        host,
+        mismatch: Boolean(r.mismatch),
         text: r.ok
           ? t('sshConfig.testOk', {
               host: r.hostname || host.host,
@@ -195,6 +211,16 @@ export function SshSecurityConfig() {
             + (r.fingerprint ? t('sshConfig.testFingerprint', { fp: r.fingerprint }) : '')
           : r.detail,
       });
+      setMismatch((prev) => {
+        const next = { ...prev };
+        if (r.mismatch) {
+          next[host.id] = { expected: r.expected ?? '', actual: r.actual ?? '' };
+        } else {
+          /* 这次连得上、指纹也对上了 → 之前那条不一致记录已经过期，清掉 */
+          delete next[host.id];
+        }
+        return next;
+      });
       await hostsQuery.refetch();
     } catch (err) {
       toast.error(t('sshConfig.testFailed'), errorMessage(err));
@@ -203,14 +229,35 @@ export function SshSecurityConfig() {
     }
   };
 
-  const trustHost = async (host: SshHost) => {
+  /**
+   * 信任指纹。
+   *
+   * ``force = true`` 是「重新信任」：实际指纹与库里记录不一致时，用它把记录
+   * 覆盖成当前实际值（后端会带上被覆盖的旧指纹，一并进审计日志）。
+   */
+  const trustHost = async (host: SshHost, force = false) => {
     setBusy(true);
     try {
-      const res = await sshFleetApi.trustHost(host.id);
-      toast.success(t('sshConfig.trustDone', { name: host.name }), res.fingerprint);
+      const res = await sshFleetApi.trustHost(host.id, force);
+      toast.success(
+        force
+          ? t('sshConfig.retrustDone', { name: host.name })
+          : t('sshConfig.trustDone', { name: host.name }),
+        res.fingerprint,
+      );
+      setMismatch((prev) => {
+        const next = { ...prev };
+        delete next[host.id];
+        return next;
+      });
+      setRetrustTarget(null);
+      setTestResult(null);
       await refreshFleet();
     } catch (err) {
-      toast.error(t('sshConfig.trustFailed'), errorMessage(err));
+      toast.error(
+        force ? t('sshConfig.retrustFailed') : t('sshConfig.trustFailed'),
+        errorMessage(err),
+      );
     } finally {
       setBusy(false);
     }
@@ -281,15 +328,39 @@ export function SshSecurityConfig() {
     {
       key: 'fingerprint',
       header: t('sshConfig.colFingerprint'),
-      width: 160,
-      render: (row) =>
-        row.known_host ? (
-          <span className="fs-xs text-muted mono">{row.known_host.slice(0, 16)}…</span>
+      width: 180,
+      render: (row) => {
+        const bad = mismatch[row.id];
+        /* 不一致比「还没确认」更值得占这一格：前者可能有人在中间，
+           后者只是还没点过确认。 */
+        if (bad) {
+          return (
+            <div className="ssh-ip-cell">
+              <Badge variant="danger" size="sm" dot>
+                {t('sshConfig.fingerprintMismatch')}
+              </Badge>
+              <span
+                className="fs-xs text-muted mono"
+                title={t('sshConfig.fingerprintPair', {
+                  expected: bad.expected || '—',
+                  actual: bad.actual || '—',
+                })}
+              >
+                {bad.actual ? `${bad.actual.slice(0, 16)}…` : '—'}
+              </span>
+            </div>
+          );
+        }
+        return row.known_host ? (
+          <span className="fs-xs text-muted mono" title={row.known_host}>
+            {row.known_host.slice(0, 16)}…
+          </span>
         ) : (
           <Badge variant="warning" size="sm">
             {t('sshConfig.unconfirmed')}
           </Badge>
-        ),
+        );
+      },
     },
     {
       key: 'log_source',
@@ -349,6 +420,18 @@ export function SshSecurityConfig() {
                 {t('sshConfig.trust')}
               </Button>
             )}
+            {/* 指纹与记录不一致时才会出现：这时「信任指纹」那条路是走不通的
+                （后端会以「可能遭遇中间人」拒绝），必须显式走重新信任 */}
+            {mismatch[row.id] ? (
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={busy}
+                onClick={() => setRetrustTarget(row)}
+              >
+                {t('sshConfig.retrust')}
+              </Button>
+            ) : null}
             {isAdmin ? (
               <Button
                 size="sm"
@@ -435,12 +518,26 @@ export function SshSecurityConfig() {
           />
           {testResult ? (
             <Notice
-              tone="info"
+              /* 指纹不一致属于「需要你处理」而不是「一份自检报告」：
+                 换成红色提示，并把重新信任的入口直接摆在提示条里 */
+              tone={testResult.mismatch ? 'danger' : 'info'}
               title={t('sshConfig.testTitle', { name: testResult.name })}
               action={
-                <Button size="sm" variant="ghost" onClick={() => setTestResult(null)}>
-                  {t('common.close')}
-                </Button>
+                <span className="row-actions">
+                  {testResult.mismatch ? (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      disabled={busy}
+                      onClick={() => setRetrustTarget(testResult.host)}
+                    >
+                      {t('sshConfig.retrust')}
+                    </Button>
+                  ) : null}
+                  <Button size="sm" variant="ghost" onClick={() => setTestResult(null)}>
+                    {t('common.close')}
+                  </Button>
+                </span>
               }
             >
               {testResult.text}
@@ -512,17 +609,14 @@ export function SshSecurityConfig() {
           </>
         }
       >
-        <Field
+        {/* 可搜索的用户下拉：归属在库里就是用户名字符串，手打拼错一个字母
+            等于「指派给一个不存在的人」—— 接口照收，界面上却谁也看不到这台机器 */}
+        <UserSelect
           label={t('sshConfig.ownerField')}
           hint={t('sshConfig.ownerHint')}
-        >
-          <Input
-            value={ownerValue}
-            onChange={(e) => setOwnerValue(e.target.value)}
-            placeholder={t('sshConfig.ownerPlaceholder')}
-            autoComplete="off"
-          />
-        </Field>
+          value={ownerValue}
+          onChange={setOwnerValue}
+        />
       </Modal>
 
       {policy ? (
@@ -691,6 +785,43 @@ export function SshSecurityConfig() {
         onCancel={() => setDeleteHost(null)}
         onConfirm={() => void removeHost()}
       />
+
+      {/* 「重新信任」：指纹不一致时唯一走得通的路，所以把两个指纹并排摆出来 ——
+          用户要判断的正是「这串新指纹是不是我预期的那把（比如重装后的代码签名）」，
+          只给一个按钮、不给对比，等于让人闭着眼睛点确认。 */}
+      <ConfirmDialog
+        open={Boolean(retrustTarget)}
+        title={t('sshConfig.retrustTitle', { name: retrustTarget?.name ?? '' })}
+        message={t('sshConfig.retrustMessage', { name: retrustTarget?.name ?? '' })}
+        danger
+        loading={busy}
+        confirmText={t('sshConfig.retrustConfirm')}
+        onCancel={() => setRetrustTarget(null)}
+        onConfirm={() => {
+          if (retrustTarget) void trustHost(retrustTarget, true);
+        }}
+      >
+        {retrustTarget ? (
+          <div className="fp-compare">
+            <div className="fp-compare-row">
+              <span className="fp-compare-label">
+                {t('sshConfig.fingerprintRecorded')}
+              </span>
+              <span className="fp-compare-value">
+                {mismatch[retrustTarget.id]?.expected || retrustTarget.known_host || '—'}
+              </span>
+            </div>
+            <div className="fp-compare-row">
+              <span className="fp-compare-label">
+                {t('sshConfig.fingerprintActual')}
+              </span>
+              <span className="fp-compare-value">
+                {mismatch[retrustTarget.id]?.actual || '—'}
+              </span>
+            </div>
+          </div>
+        ) : null}
+      </ConfirmDialog>
     </PageShell>
   );
 }

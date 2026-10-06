@@ -14,6 +14,7 @@ from .. import (
     defaults,
     guest_created,
     guestip,
+    guestnotify,
     guestpasswd,
     ownership,
     panelkey,
@@ -341,6 +342,20 @@ async def get_vm(
             agent_error = getattr(exc, "message", None) or "guest agent 无响应"
     agent_interfaces = normalize_agent_interfaces(agent_info)
 
+    # 来源模板：克隆一定会留审计（target 里带来源 VMID），链接克隆还能从磁盘的
+    # base 卷名反推。拿到 VMID 后再问一次 PVE 要名字 —— PVE 自己是不记克隆来源的。
+    source = await guest_created.source_of(_op_connection(), node, vmid, "qemu")
+    if not source:
+        source = guest_created.config_source(config, node)
+    source_template = None
+    if source.get("vmid"):
+        origin_node = str(source.get("node") or node)
+        source_template = {
+            "node": origin_node,
+            "vmid": int(source["vmid"]),
+            "name": await _guest_name(client, origin_node, int(source["vmid"]), "qemu"),
+        }
+
     return {
         "node": node,
         "vmid": vmid,
@@ -393,7 +408,23 @@ async def get_vm(
                 k: v for k, v in config.items() if k.startswith("ipconfig")
             },
         },
+        # 来源模板；没有（新建 / 导入 / ISO 安装）时为 null
+        "source_template": source_template,
     }
+
+
+async def _guest_name(client: Any, node: str, vmid: int, guest_type: str) -> str:
+    """取一台机器的名字。
+
+    模板已经被删时返回空串：来源仍然成立（VMID 是真的），所以这里只让名字空着，
+    不至于把整条来源一起抹掉 —— 界面会退化成显示 ``#9000``。
+    """
+    family = "lxc" if guest_type == "lxc" else "qemu"
+    try:
+        cfg = await client.get(f"/nodes/{node}/{family}/{vmid}/config") or {}
+    except ProxmoxError:
+        return ""
+    return str(cfg.get("name") or "")
 
 
 async def _fill_disk_sizes(node: str, vmid: int, disks: List[Dict[str, Any]]) -> None:
@@ -870,7 +901,7 @@ async def create_vm(
 
     await security.audit(
         request, user, "vm.create", target=f"{payload.node}/{vmid}",
-        detail=", ".join(f"{k}={v}" for k, v in config.items()),
+        detail=_audit_detail(config),
     )
 
     # 创建时间：面板自己记一份。PVE 的 meta.ctime 在建机瞬间可能还没写好（列表
@@ -926,6 +957,19 @@ async def create_vm(
     if payload.manage:
         await _enqueue_managed_registration(payload, vmid, user)
 
+    # 下发通知：把「怎么连上它」告诉创建者（站内消息 + 他开了邮箱提醒就发邮件）。
+    # 放在**创建请求里**而不是等 PVE 任务跑完：用户要的就是「建完立刻拿到连接
+    # 信息」，等他去任务队列翻到成功、再回来找 IP 与口令，黄花菜都凉了。
+    await guestnotify.notify_deployed(
+        user,
+        guestnotify.from_vm_request(
+            payload,
+            node=payload.node,
+            vmid=vmid,
+            origin=str(payload.cloud_image or ""),
+        ),
+    )
+
     return {
         "task": upid,
         "vmid": vmid,
@@ -933,6 +977,19 @@ async def create_vm(
         "post_steps": post_steps,
         "template": payload.template_mode,
     }
+
+
+def _audit_detail(fields: Dict[str, Any]) -> str:
+    """拼审计明细：口令一律写成 ***。
+
+    审计日志是长期留存、管理员可读的地方，而客户机口令是一次性凭据。这里以前把
+    整份 config 直接拼进去，``cipassword`` 是明文 —— 与容器创建那边的口径
+    （只记「有没有设」）也不一致。
+    """
+    return ", ".join(
+        f"{key}={'***' if 'password' in str(key).lower() else value}"
+        for key, value in fields.items()
+    )
 
 
 async def _create_from_clone(
@@ -1032,7 +1089,7 @@ async def _create_from_clone(
     await security.audit(
         request, user, "vm.clone",
         target=f"{clone.node}/{clone.vmid} -> {target_node}/{vmid}",
-        detail={**overrides, "started": started},
+        detail=_audit_detail({**overrides, "started": started}),
     )
 
     # 创建时间：**必须记面板这一份** —— PVE 克隆是整体复制模板的 config，
@@ -1053,6 +1110,17 @@ async def _create_from_clone(
         str(user.get("username") or ""),
     )
 
+    # 下发通知：快速部署走的正是这条路（链接克隆），通知里必须带上连接信息
+    await guestnotify.notify_deployed(
+        user,
+        guestnotify.from_vm_request(
+            payload,
+            node=target_node,
+            vmid=vmid,
+            origin=guestnotify.template_label(clone.vmid),
+        ),
+    )
+
     return {
         "task": upid,
         "vmid": vmid,
@@ -1071,68 +1139,26 @@ async def _import_cloud_image(
     upid: str,
     post_steps: List[str],
 ) -> None:
-    """Import a cloud image as scsi0 and wire up the boot order.
+    """云镜像建机的收尾：等 PVE 把镜像搬完，再按需扩容。
 
-    Order matters: wait for VM creation, import, attach the imported disk,
-    then set the boot disk. Skipping the wait causes PVE to reject the import
-    because the VM has not finished being created.
+    磁盘本身已经在 ``POST /qemu`` 的配置里用 ``import-from=`` 交代清楚了
+    （见 :func:`vmconfig.build_vm_config`），所以这里没有 importdisk 那一步 ——
+    那个端点在 PVE 9.2 已被移除，早先的实现会让整条路径直接 501。
+
+    为什么还要等：导入是创建任务的一部分，任务没结束就 resize，PVE 会回
+    「卷还没建好」。
     """
     node = payload.node
     if isinstance(upid, str) and upid.startswith("UPID:"):
-        await client.wait_for_task(upid, timeout=300)
+        # 几十 GB 的镜像搬起来要几分钟到十几分钟，窗口给足
+        await client.wait_for_task(upid, timeout=1800)
 
-    # 1. importdisk — PVE names the resulting volume itself
-    await client.qemu_importdisk(node, vmid, payload.cloud_image or "", payload.disks[0].storage if payload.disks else "local-lvm")
-
-    # 2. locate the imported volume by listing the target storage
-    storage = payload.disks[0].storage if payload.disks else "local-lvm"
-    try:
-        content = await client.storage_content(node, storage, content="images")
-    except ProxmoxError:
-        content = []
-
-    volid = ""
-    for item in content or []:
-        if item.get("vmid") == vmid and item.get("volid"):
-            volid = item["volid"]
-            break
-
-    if not volid:
-        # Fall back to PVE's conventional naming scheme.
-        volid = f"{storage}:vm-{vmid}-disk-0"
-
-    attach: Dict[str, Any] = {"scsi0": f"{volid},discard=on"}
-    if payload.disks:
-        attach["scsihw"] = vmconfig.normalize_scsihw(payload.scsihw)
-
-    result = await client.qemu_set_config(node, vmid, attach)
-    if isinstance(result, str):
-        post_steps.append(result)
-
-    # 3. boot from the imported disk + cloud-init prerequisites
-    # 只写 order=：``c=scsi0`` 这种子键不在 PVE 的 boot 格式里（PVE 9 的格式是
-    # [[legacy=]<[acdn]{1,4}>][,order=...]），留着会让 PVE 9 直接拒绝整个请求。
-    boot: Dict[str, Any] = {"boot": "order=scsi0"}
-    if payload.cloudinit and payload.cloudinit.enabled:
-        boot.update(
-            {
-                "serial0": "socket",
-                "vga": "serial0",
-                "agent": 1,
-                # Cloud-init needs its own drive.
-                "ide2": "cloudinit",
-            }
-        )
-    result = await client.qemu_set_config(node, vmid, boot)
-    if isinstance(result, str):
-        post_steps.append(result)
-
-    # 4. optionally grow the imported disk to the requested size
+    disk_key = (payload.disks[0].interface if payload.disks else None) or "scsi0"
     if payload.cloudinit and payload.disks and payload.disks[0].size:
         try:
-            await client.qemu_resize(node, vmid, "scsi0", f"{payload.disks[0].size}G")
+            await client.qemu_resize(node, vmid, disk_key, f"{payload.disks[0].size}G")
         except ProxmoxError:
-            # resizing is best-effort; the disk may already be larger
+            # 扩容是 best-effort：镜像本身可能已经比要求的大
             pass
 
 

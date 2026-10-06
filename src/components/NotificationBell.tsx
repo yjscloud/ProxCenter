@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ProxCenter — 顶部铃铛（站内通知中心）
+   ProxCenter — 顶部铃铛（消息中心入口）
    ==========================================================================
 
    为什么要有站内消息：告警此前只活在「监控告警」页面里。不发生告警的那一刻
@@ -12,31 +12,34 @@
    若以后真要做实时推送，改动点只有这里 —— 换成 WS 后把轮询关掉即可。
 
    这里是顶栏**唯一**的「消息中心」入口：无论以后加任务进度、告警数还是审批
-   提醒，都应汇总成这一颗铃铛上的角标（必要时在面板里分组），而不是在顶栏
-   再平铺一个徽章。顶栏的状态类信息已经收敛进 ConsoleStatus，两边一起守住
-   「顶栏最多一个状态点 + 一个角标」这条线。
+   提醒，都应汇总成这一颗铃铛上的角标，而不是在顶栏再平铺一个徽章。顶栏的状态
+   类信息已经收敛进 ConsoleStatus，两边一起守住「顶栏最多一个状态点 + 一个角标」。
+
+   点击铃铛**弹出一个页面级窗口**，而不是在铃铛下面挂一个小面板：消息的正文动辄
+   七八行（下发的配置、IP、账号、口令），几百像素宽的下拉里只能看到一行摘要，
+   点开一条还得在窄栏里读 —— 那才是「消息中心」最该做好的事。列表与展开逻辑见
+   NotificationPanel，/notifications 页面用的是同一份。
    ========================================================================== */
 
-import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { notificationsApi } from '../api/endpoints';
-import { Button } from './ui/Button';
-import { IconBell, IconCheck } from './Icons';
-import { formatRelative } from '../utils/format';
+import { Modal } from './ui/Modal';
+import { NotificationPanel } from './NotificationPanel';
+import { IconBell } from './Icons';
 import { useT } from '../i18n';
-import type { AppNotification } from '../api/types';
 
 /** 未读数轮询间隔。告警本身有冷却（默认 600s），30 秒足够及时。 */
 const POLL_MS = 30_000;
 
+/** 弹窗里一次拉多少条 */
+const PANEL_LIMIT = 100;
+
 export function NotificationBell() {
   const t = useT();
-  const navigate = useNavigate();
-  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
 
+  /* 只看未读数：那是常驻轮询，没打开窗口也不该把整份消息搬来搬去 */
   const unreadQuery = useQuery({
     queryKey: ['notifications', 'unread'],
     queryFn: notificationsApi.unread,
@@ -45,59 +48,15 @@ export function NotificationBell() {
     retry: false,
   });
 
-  /* 面板打开时才拉列表：没人看的时候不必把 20 条消息搬来搬去 */
-  const listQuery = useQuery({
-    queryKey: ['notifications', 'list'],
-    queryFn: () => notificationsApi.list({ limit: 20 }),
-    enabled: open,
-    staleTime: 5_000,
-  });
-
-  const markRead = useMutation({
-    mutationFn: (body: { ids?: number[]; all?: boolean }) =>
-      notificationsApi.markRead(body),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['notifications'] });
-    },
-  });
-
-  /* 点击外部 / Esc 关闭 */
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   const unread = unreadQuery.data?.unread ?? 0;
-  const items = listQuery.data?.items ?? [];
-
-  const openItem = (item: AppNotification) => {
-    // 点开即已读：用户已经看到这条了，再让他去点「全部已读」是多余的
-    if (!item.read) markRead.mutate({ ids: [item.id] });
-    setOpen(false);
-    if (item.link) navigate(item.link);
-  };
 
   return (
-    <div className="notif-menu" ref={rootRef}>
+    <div className="notif-menu">
       <button
         type="button"
         className="notif-trigger"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-haspopup="menu"
+        onClick={() => setOpen(true)}
+        aria-haspopup="dialog"
         aria-label={
           unread > 0
             ? t('notif.ariaUnread', { count: unread })
@@ -113,77 +72,15 @@ export function NotificationBell() {
         ) : null}
       </button>
 
-      {open ? (
-        <div className="notif-dropdown" role="menu">
-          <div className="notif-header">
-            <span className="notif-title">
-              {t('notif.title')}
-              {unread > 0 ? (
-                <span className="notif-count">
-                  {t('notif.unreadCount', { count: unread })}
-                </span>
-              ) : null}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<IconCheck size={13} />}
-              disabled={unread === 0 || markRead.isPending}
-              onClick={() => markRead.mutate({ all: true })}
-            >
-              {t('notif.markAll')}
-            </Button>
-          </div>
-
-          <div className="notif-list">
-            {listQuery.isLoading ? (
-              <div className="notif-empty">{t('notif.loading')}</div>
-            ) : items.length === 0 ? (
-              <div className="notif-empty">{t('notif.empty')}</div>
-            ) : (
-              items.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="menuitem"
-                  className={`notif-item${item.read ? '' : ' is-unread'}`}
-                  onClick={() => openItem(item)}
-                >
-                  <span
-                    className={`notif-dot notif-dot-${item.level}`}
-                    aria-hidden="true"
-                  />
-                  <span className="notif-item-main">
-                    <span className="notif-item-title">{item.title}</span>
-                    {item.body ? (
-                      // 只展示正文首行：面板里是一行摘要，完整内容在告警历史里
-                      <span className="notif-item-text">
-                        {item.body.split('\n')[0]}
-                      </span>
-                    ) : null}
-                    <span className="notif-item-time">
-                      {formatRelative(item.created)}
-                    </span>
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
-
-          <div className="notif-footer">
-            <button
-              type="button"
-              className="notif-more"
-              onClick={() => {
-                setOpen(false);
-                navigate('/alerts');
-              }}
-            >
-              {t('notif.viewAll')}
-            </button>
-          </div>
-        </div>
-      ) : null}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title={t('notif.title')}
+        description={t('notif.pageDesc')}
+        size="xl"
+      >
+        <NotificationPanel limit={PANEL_LIMIT} onNavigate={() => setOpen(false)} />
+      </Modal>
     </div>
   );
 }

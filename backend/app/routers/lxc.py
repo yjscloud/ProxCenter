@@ -24,6 +24,7 @@ from .. import (
     defaults,
     guest_created,
     guestip,
+    guestnotify,
     guestpasswd,
     ownership,
     quota,
@@ -412,6 +413,18 @@ async def create_container(
         "lxc",
         source="create",
         username=str(user.get("username") or ""),
+    )
+
+    # 下发通知：容器没有 cloud-init，root 口令只在这次创建时存在 ——
+    # 这条消息（以及它触发的邮件）往往就是用户拿到它的唯一机会。
+    await guestnotify.notify_deployed(
+        user,
+        guestnotify.from_lxc_request(
+            payload,
+            node=payload.node,
+            vmid=vmid,
+            origin=str(payload.ostemplate or ""),
+        ),
     )
 
     return {

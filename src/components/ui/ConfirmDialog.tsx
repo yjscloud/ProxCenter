@@ -45,15 +45,20 @@ export function ConfirmDialog({
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
 
-  /* 每次打开重置输入 */
+  /* 每次打开重置输入。
+     要求输入的文本也要进依赖：列表页删完一台接着删下一台时，弹窗的 open 可能从
+     头到尾都是 true（目标换了但一直开着），只盯 open 会把上一台的确认文本留在框里 ——
+     那正是「框里自己带着一串字符」的来源。 */
   useEffect(() => {
     if (open) {
       setTyped('');
       setBusy(false);
     }
-  }, [open]);
+  }, [open, requireText]);
 
-  const textOk = !requireText || typed.trim() === requireText;
+  /* 两边都 trim 后比较：PVE 的机器名允许带首尾空格，直接全等会让「照抄名字」
+     永远对不上，确认按钮一直是灰的（用户只会以为按钮坏了）。 */
+  const textOk = !requireText || typed.trim() === requireText.trim();
   const isBusy = busy || loading;
 
   const handleConfirm = async () => {

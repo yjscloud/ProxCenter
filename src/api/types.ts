@@ -1281,6 +1281,14 @@ export interface VmDetail {
   uptime?: number;
   /** 创建时间；面板记录优先，其次 PVE 的 `meta.ctime`，都没有时为 null */
   created?: number | null;
+  /**
+   * 来源模板：这台机器从哪个模板克隆来的（模板已删时 name 为空串）。
+   *
+   * 新建、ISO 安装、导入出来的机器没有来源模板，这里是 null —— 那是「确实没有」，
+   * 不是「没查到」。链接克隆的机器尤其要看这一行：磁盘依赖该模板，模板一删这台
+   * 机器就起不来了。
+   */
+  source_template?: { node: string; vmid: number; name: string } | null;
   disks: VmDiskConfig[];
   networks: VmNetworkConfig[];
   /** 配置里是否启用了 QEMU Guest Agent（agent: 1 / enabled=1）*/
@@ -2901,6 +2909,171 @@ export interface SshHostTestResult {
   journal?: string;
   secure?: string;
   authlog?: string;
+  /**
+   * 本次连接看到的指纹与库里记录的不一致。
+   * 可能是中间人，也可能是主机重装过 —— 排查无误后可以「重新信任」。
+   */
+  mismatch?: boolean;
+  /** 库里记录的指纹（mismatch 时给出，供用户比对） */
+  expected?: string;
+  /** 本次连接看到的实际指纹 */
+  actual?: string;
+}
+
+/* ---------------------------------------------------- 虚拟机导入 / 导出 */
+/** 已上传到 PVE 的 import 内容的文件（导入源） */
+export interface ImportSource {
+  volid: string;
+  /** 相对卷名（import/xx.ova）—— 接口要的就是它，不带存储前缀 */
+  volume: string;
+  storage: string;
+  name: string;
+  format: string;
+  size?: number | null;
+}
+
+/** 可以承载导入文件的存储（支持 import 内容类型） */
+export interface ImportStorage {
+  storage: string;
+  type: string;
+  active: boolean;
+  avail?: number | null;
+  content?: string | null;
+  /**
+   * 目录型存储在宿主机上的路径（拿不到时是空串）。散开的 OVF 传不上去，
+   * 只能由用户 scp 到 `<path>/import/`，所以界面上要把这个路径指出来。
+   */
+  path?: string;
+}
+
+/** PVE 对 OVF/OVA 的告警（缺 SCSI 控制器、OVA 需要解包空间等） */
+export interface ImportWarning {
+  type: string;
+  key?: string;
+  value?: string;
+}
+
+export interface ImportMetadata {
+  source: string;
+  type: string;
+  /** 可直接用于建机的参数（内存 / 核数 / 名称 / 网卡…） */
+  create_args: Record<string, unknown>;
+  /**
+   * 磁盘位 → 源卷。PVE 9.2 给的是 `{ scsi0: { size, volid } }`，
+   * 早期文档写的是字符串形式，两种都做兼容。
+   */
+  disks: Record<string, string | { size?: number; volid?: string }>;
+  net: Record<string, unknown>;
+  warnings: ImportWarning[];
+  /**
+   * 裸磁盘镜像（VMDK / QCOW2 / RAW…）：里面只有盘上的数据，没有 OVF 那种描述
+   * 机器配置的 XML，所以 PVE 解析不了，由面板合成一份等价描述。
+   * 这种情况下 create_args 是空的，内存 / CPU 核数需要人来填。
+   */
+  bare?: boolean;
+}
+
+/** 一次导出作业 */
+export interface ExportJob {
+  id: string;
+  node: string;
+  vmid: number;
+  name: string;
+  format: string;
+  storage: string;
+  status: 'running' | 'done' | 'failed' | string;
+  /** preparing / converting / packing / done / failed */
+  stage: string;
+  progress: number;
+  detail: string;
+  files: Array<{ name: string; size: number }>;
+  created: number;
+  finished: number;
+  /**
+   * 面板重启前留下的产物：磁盘上还在，但已经查不到它属于哪台机器。
+   * 列表里照样给下载与删除 —— 用户要的正是「把它清掉」。
+   */
+  orphan?: boolean;
+}
+
+/* -------------------------------------------------- 虚拟机重装系统 */
+/** 可作为重装来源的模板 */
+export interface ReinstallTemplate {
+  node: string;
+  vmid: number;
+  name: string;
+  ostype: string;
+  /** 模板的系统盘卷 ID */
+  disk: string;
+  size: number;
+  used: number;
+  /** 模板是否带 cloud-init 配置 */
+  cloudinit: boolean;
+}
+
+/**
+ * 这台虚拟机**当前**在用的网络配置（重装向导的默认值来源）。
+ * 后端从 PVE 的 `ipconfigN` 读回来，所以机器关着也有值。
+ */
+export interface ReinstallNetwork {
+  /** static = 配置里写死了地址；dhcp = 原配置就是 DHCP；'' = 没配过 cloud-init 网络 */
+  mode: 'static' | 'dhcp' | '';
+  /** 带掩码，与 PVE 里的写法一致（如 10.0.0.10/24） */
+  ip: string;
+  gateway: string;
+  dns: string;
+}
+
+export interface ReinstallStep {
+  step: string;
+  ok: boolean;
+  detail?: string;
+}
+
+/**
+ * 一次重装的作业记录（后端后台任务）。
+ * 提交后立即返回，进度与结果都靠轮询 `GET /vms/reinstall-jobs` 拿。
+ */
+export interface ReinstallJob {
+  id: string;
+  /** 提交人（普通用户只能看到自己的作业） */
+  owner: string;
+  connection: string;
+  node: string;
+  vmid: number;
+  /** 原来的虚拟机名（重装后改叫什么另说） */
+  name: string;
+  /** 模板，形如 node/vmid */
+  template: string;
+  storage: string;
+  status: 'running' | 'success' | 'failed';
+  /** 正在做的一步（running 时有值） */
+  stage: string;
+  /** 失败原因；成功时是新系统盘卷名 */
+  detail: string;
+  steps: ReinstallStep[];
+  old_volume: string;
+  new_volume: string;
+  /** Unix 秒 */
+  created: number;
+  finished: number;
+}
+
+export interface VmReinstallBody {
+  template_node: string;
+  template_vmid: number;
+  target_storage: string;
+  hostname?: string;
+  ci_user?: string;
+  ci_password?: string;
+  ssh_keys?: string;
+  ip_mode?: string;
+  ip?: string;
+  gateway?: string;
+  dns?: string;
+  start?: boolean;
+  /** 连数据盘一起删（默认 true：重装 = 回到干净状态） */
+  wipe_data_disks?: boolean;
 }
 
 export interface FleetHost {
@@ -3430,4 +3603,75 @@ export interface ProtectedVerifyResult {
    * 后端对普通用户按归属过滤（管理员拿到全量结果，这个字段为 undefined）。
    */
   scoped?: boolean;
+}
+
+/* ---------------------------------------------------------------------------
+   面板自身的更新（检查新版本 / 一键更新，见后端 app/update.py）
+   --------------------------------------------------------------------------- */
+
+/** 安装目录的 git 状态（容器与打包安装时只有 is_git: false） */
+export interface UpdateGitInfo {
+  is_git?: boolean;
+  root?: string;
+  remote?: string;
+  branch?: string;
+  head?: string;
+  /** HEAD 正好落在某个 tag 上时的 tag 名（不在 tag 上就是空串） */
+  tag?: string;
+  /** 工作区有未提交改动 —— 一键更新会覆盖它们，所以默认被挡住 */
+  dirty?: boolean;
+  dirty_files?: number;
+}
+
+/** 面板「是怎么装的」：这决定更新能不能一键做 */
+export interface UpdateDeployment {
+  form?: 'docker' | 'git' | 'other';
+  root?: string;
+  /** 当前进程所属的 systemd 服务名（空串 = 不是 systemd 托管的） */
+  service?: string;
+  /** 真的由 systemd 托管：手工起的实例重启的是另一个进程，代码不会换 */
+  managed?: boolean;
+  is_root?: boolean;
+  git?: UpdateGitInfo;
+}
+
+export interface UpdateStatus {
+  current: string;
+  /** 最近一次检查到的最新版本（空串 = 还没检查出结果） */
+  latest: string;
+  tag: string;
+  release_name: string;
+  /** Release 说明（GitHub 的 body，可能较长） */
+  notes: string;
+  release_url: string;
+  published_at: string;
+  /** 上次检查的 Unix 秒；0 = 从未检查 */
+  checked_at: number;
+  update_available: boolean;
+  /** 用户选择「跳过」的版本（空串 = 不跳过） */
+  skipped: string;
+  auto_check: boolean;
+  repo: string;
+  /** 上次检查的失败原因（空串 = 成功） */
+  error: string;
+  /** 更新进行中时的信息（空对象 = 当前没有在更新） */
+  applying?: { tag?: string; started_at?: number; log?: string; from?: string };
+  last_update?: { tag?: string; ok?: boolean; at?: number; log?: string };
+  /** 能否一键更新；为 false 时看 reason */
+  can_apply: boolean;
+  /** 不能一键更新的原因，直接展示给用户 */
+  reason: string;
+  deployment: UpdateDeployment;
+  /** 该部署形态下的手工升级命令 */
+  manual: string[];
+}
+
+/** 一键更新启动后的回执（更新本身在后台跑，进度看日志） */
+export interface UpdateApplyResult {
+  started: boolean;
+  tag: string;
+  log: string;
+  script: string;
+  command: string;
+  current: string;
 }

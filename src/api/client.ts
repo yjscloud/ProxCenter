@@ -135,6 +135,10 @@ http.interceptors.request.use(
     // 界面语言：后端据此返回权限目录 / FAQ / 内置角色名与错误消息
     // （见 backend/app/i18n.py）。这个模块在 React 之外，所以直接读持久化的语言。
     config.headers.set?.('Accept-Language', detectLang());
+    // 页面级连接：只在调用方没显式指定时才补，显式传的优先
+    if (pageConnection && !config.headers.has?.('X-PVE-Connection')) {
+      config.headers.set?.('X-PVE-Connection', pageConnection);
+    }
     // 访问令牌在 HttpOnly Cookie 里，浏览器自动带 —— 这里只处理 CSRF：
     // 后端要求改状态的方法回填 X-CSRF-Token，值是那枚「非 HttpOnly」的 cookie。
     const method = (config.method ?? 'get').toLowerCase();
@@ -364,6 +368,27 @@ export function scoped(connectionId?: unknown): AxiosRequestConfig {
   return { headers: { 'X-PVE-Connection': connectionId } };
 }
 
+/* ---------------------------------------------------------------------------
+   页面级 PVE 连接
+   --------------------------------------------------------------------------- */
+
+/**
+ * 「当前页面属于哪条 PVE 连接」。
+ *
+ * 为什么需要它：节点名在每台 PVE 上都是**本地的**，多连接部署里光有节点名
+ * 判断不出该打哪台机器（两台都可能叫 pve / pve9）。详情页只拿得到 node 名，
+ * 于是请求落到「当前连接」，而那台 PVE 上没有该节点时会回一句
+ * `hostname lookup 'xxx' failed` —— 看着像 PVE 的 DNS 坏了，其实是打错了机器。
+ *
+ * 详情页从列表页跳进来时 URL 上带着 ?connection=，挂载时设一次，页面里所有
+ * 请求（含各 Tab 自己的查询）就都跟着走；离开时清掉，不影响别的页面。
+ */
+let pageConnection = '';
+
+export function setPageConnection(id?: string | null): void {
+  pageConnection = typeof id === 'string' && id ? id : '';
+}
+
 export async function upload<T>(
   url: string,
   formData: FormData,
@@ -389,8 +414,23 @@ export function isNotImplemented(err: unknown): boolean {
 }
 
 /** 把任意错误转成可展示文案 */
+/* nginx 在后端没起来时回的是 HTML 错误页（<html>…502 Bad Gateway…），它被当成
+   detail 直接显示出来的话，用户看到的是一整段 HTML，读不懂也帮不上忙 —— 这恰恰
+   发生在「面板正在重启」这种过一会儿就好的场景里。统一换成一句人话。 */
+const GATEWAY_BODY = /^\s*</;
+
 export function errorMessage(err: unknown): string {
-  if (err instanceof ApiError) return err.detail;
+  if (err instanceof ApiError) {
+    if (err.status >= 502 && err.status <= 504 && GATEWAY_BODY.test(err.detail)) {
+      return tStatic('api.gatewayDown');
+    }
+    // 413 同样是 nginx 直接回的 HTML 错误页，而它背后是一件用户自己能解决的事：
+    // 文件比服务器的上传上限还大。说清楚原因和「那该怎么办」，别甩一坨 HTML。
+    if (err.status === 413) {
+      return tStatic('api.tooLarge');
+    }
+    return err.detail;
+  }
   if (err instanceof Error) return err.message;
   return tStatic('api.unknown');
 }

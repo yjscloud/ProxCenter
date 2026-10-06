@@ -5,7 +5,9 @@ from an ``.img`` requires several ordered Proxmox operations, and each must
 complete before the next begins:
 
 1. ``POST /nodes/{node}/qemu``            create an empty shell VM
-2. ``POST .../qemu/{vmid}/importdisk``    import the cloud image as a volume
+2. ``POST .../qemu``（带 import-from=）  the cloud image becomes the system disk
+   —— 早先这里写的是 ``POST .../qemu/{vmid}/importdisk``，但该端点在 PVE 9.2
+   已被移除（实测 501），现已改为在创建 VM 的配置里直接指定 import-from
 3. ``POST .../qemu/{vmid}/config``        attach the volume as scsi0, set boot
 4. ``POST .../qemu/{vmid}/resize``        grow the disk to the requested size
 5. ``POST .../qemu/{vmid}/config``        attach the cloud-init drive + serial
@@ -258,12 +260,21 @@ async def build_template_from_image(
         "onboot": 1 if payload.start_on_boot else 0,
         "description": payload.description or "由 ProxCenter 从 cloud 镜像构建的模板",
         "tags": payload.tags,
-        # The disk arrives via importdisk; no scsi0 yet.
+        # 磁盘由 PVE 在**配置阶段**直接从 cloud 镜像导入（import-from），
+        # 不再走「先建壳机 → qm importdisk」—— 那个端点已被 PVE 9.2 移除
+        # （实测 501），继续用它这条流水线会在第二步直接失败。
+        "scsi0": f"{payload.storage}:0,import-from={payload.image},discard=on",
     }
 
     try:
-        upid = await _await(client, await client.qemu_create(payload.node, create_config))
-        record("创建虚拟机", True, f"VMID {vmid}")
+        # 创建这一步现在包含「把云镜像搬成系统盘」，几十 GB 的镜像可能跑十几分钟，
+        # 等待窗口按 30 分钟给（_await 默认 10 分钟会在中途放弃）
+        upid = await _await(
+            client,
+            await client.qemu_create(payload.node, create_config),
+            timeout=1800,
+        )
+        record("创建虚拟机并导入镜像", True, f"VMID {vmid} ← {payload.image}")
     except ProxmoxError as exc:
         await security.audit(
             request, user, "template.build", target=f"{payload.node}/{vmid}",
@@ -271,44 +282,12 @@ async def build_template_from_image(
         )
         raise HTTPException(
             status_code=exc.status_code if exc.status_code < 600 else 500,
-            detail=f"步骤 1/5 创建虚拟机失败：{exc.message}",
+            detail=f"步骤 1/4 创建虚拟机失败：{exc.message}",
         ) from exc
 
-    # --- 2. import the cloud image ------------------------------------
-    try:
-        upid = await _await(
-            client,
-            await client.qemu_importdisk(payload.node, vmid, payload.image, payload.storage),
-            timeout=900,
-        )
-        record("导入镜像", True, payload.image)
-    except ProxmoxError as exc:
-        await _cleanup_failed_build(client, payload.node, vmid)
-        await security.audit(
-            request, user, "template.build", target=f"{payload.node}/{vmid}",
-            result="failed", detail=f"importdisk: {exc.message}",
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"步骤 2/5 导入镜像失败：{exc.message}。"
-                "请确认镜像存放在该节点的 ISO 存储中，且存储类型支持导入（dir/NFS/CIFS）。"
-                "已回滚并删除临时虚拟机。"
-            ),
-        ) from exc
-
-    # --- 3. locate the imported volume --------------------------------
-    volid = await _find_imported_volume(client, payload.node, payload.storage, vmid)
-    if not volid:
-        await _cleanup_failed_build(client, payload.node, vmid)
-        raise HTTPException(
-            status_code=500,
-            detail="步骤 3/5 失败：未能定位导入后的磁盘卷，已回滚临时虚拟机。",
-        )
-
-    # --- 4. attach the disk, boot order, cloud-init drive -------------
+    # --- 2. attach boot order + cloud-init ----------------------------
+    # 系统盘已经在创建时由 import-from 建好，这里只补启动顺序与 cloud-init
     attach: Dict[str, Any] = {
-        "scsi0": f"{volid},discard=on",
         "boot": "order=scsi0",
         "ide2": "cloudinit",
         "ciuser": payload.ci_user or "ubuntu",
@@ -325,15 +304,15 @@ async def build_template_from_image(
 
     try:
         await _await(client, await client.qemu_set_config(payload.node, vmid, attach))
-        record("配置磁盘与 cloud-init", True, volid)
+        record("配置 cloud-init", True, payload.image)
     except ProxmoxError as exc:
         await _cleanup_failed_build(client, payload.node, vmid)
         raise HTTPException(
             status_code=500,
-            detail=f"步骤 4/5 配置磁盘失败：{exc.message}。已回滚临时虚拟机。",
+            detail=f"步骤 2/4 配置 cloud-init 失败：{exc.message}。已回滚临时虚拟机。",
         ) from exc
 
-    # --- 5. grow the disk if requested --------------------------------
+    # --- 3. grow the disk if requested --------------------------------
     if payload.disk_size:
         try:
             await _await(
@@ -348,7 +327,7 @@ async def build_template_from_image(
             # that is not fatal for the template.
             record("扩容磁盘", False, exc.message)
 
-    # --- 6. freeze as a template --------------------------------------
+    # --- 4. freeze as a template --------------------------------------
     try:
         await _await(client, await client.qemu_to_template(payload.node, vmid))
         record("转换为模板", True)
@@ -359,7 +338,7 @@ async def build_template_from_image(
         )
         raise HTTPException(
             status_code=500,
-            detail=f"步骤 6/6 转换为模板失败：{exc.message}（虚拟机 {vmid} 已保留，可手动处理）",
+            detail=f"步骤 4/4 转换为模板失败：{exc.message}（虚拟机 {vmid} 已保留，可手动处理）",
         ) from exc
 
     await security.audit(
@@ -374,26 +353,6 @@ async def build_template_from_image(
         "success": True,
         "steps": steps,
     }
-
-
-async def _find_imported_volume(
-    client: Any, node: str, storage: str, vmid: int
-) -> str:
-    """Find the volume importdisk created for this VM.
-
-    PVE names it itself (``vm-{vmid}-disk-N``) so we look it up rather than
-    guessing, with a conventional fallback.
-    """
-    try:
-        content = await client.storage_content(node, storage, content="images")
-    except ProxmoxError:
-        content = []
-
-    for item in content or []:
-        if item.get("vmid") == vmid and item.get("volid"):
-            return str(item["volid"])
-
-    return f"{storage}:vm-{vmid}-disk-0"
 
 
 async def _cleanup_failed_build(client: Any, node: str, vmid: int) -> None:

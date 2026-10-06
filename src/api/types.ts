@@ -3655,7 +3655,14 @@ export interface UpdateStatus {
   /** 上次检查的失败原因（空串 = 成功） */
   error: string;
   /** 更新进行中时的信息（空对象 = 当前没有在更新） */
-  applying?: { tag?: string; started_at?: number; log?: string; from?: string };
+  applying?: {
+    tag?: string;
+    started_at?: number;
+    log?: string;
+    from?: string;
+    /** 进度：脚本打在日志里的标记 + deploy.sh 的分步（后端算好，label 已本地化） */
+    progress?: { percent: number; stage: string; label: string; tail: string };
+  };
   last_update?: { tag?: string; ok?: boolean; at?: number; log?: string };
   /** 能否一键更新；为 false 时看 reason */
   can_apply: boolean;

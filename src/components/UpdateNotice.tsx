@@ -68,12 +68,18 @@ export function UpdateNotice() {
     }
   };
 
-  /* 更新进行中：不弹窗也让人知道发生了什么（面板随时会重启） */
+  /* 更新进行中：不弹窗也让人知道发生了什么（面板随时会重启）。
+     顶栏的位置放得下的只有一句，所以这里只带百分比与阶段，进度条在设置页那张卡片上。 */
   if (applyingTag && !open) {
+    const progress = data.applying?.progress;
     return (
       <Notice tone="warning" title={t('update.applyingTitle')}>
         {t('update.applyingBody', { tag: applyingTag })}{' '}
-        <span className="mono fs-xs">{data.applying?.log ?? ''}</span>
+        {progress ? (
+          <strong>
+            {progress.label} · {progress.percent}%
+          </strong>
+        ) : null}
       </Notice>
     );
   }

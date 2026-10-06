@@ -3659,6 +3659,13 @@ export interface UpdateStatus {
   last_update?: { tag?: string; ok?: boolean; at?: number; log?: string };
   /** 能否一键更新；为 false 时看 reason */
   can_apply: boolean;
+  /**
+   * 条件全满足、只差「工作区干净」。
+   * 为 true 时界面给一个次级按钮：仍然更新（更新脚本会先把本地改动 stash 起来，可恢复）。
+   */
+  can_apply_dirty?: boolean;
+  /** 工作区里未提交的改动数（can_apply_dirty 的说明里会用到） */
+  dirty_files?: number;
   /** 不能一键更新的原因，直接展示给用户 */
   reason: string;
   deployment: UpdateDeployment;

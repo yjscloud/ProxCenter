@@ -6078,7 +6078,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'update.modalTitle': 'Panel update',
   'update.modalSubtitle': 'Running {current} · latest {latest}',
   'update.notes': 'Release notes',
+  'update.expand': 'Show',
+  'update.collapse': 'Hide',
   'update.apply': 'Update now',
+  'update.applyDirty': 'Update anyway (stash {n} change(s))',
   'update.applyHint':
     'Updating fetches the new version, rebuilds the frontend and restarts the panel in the background. The panel is briefly unavailable and this page reloads once it is back.',
   'update.applyStarted': 'Update started',

@@ -231,10 +231,22 @@ class TestUpdateScript:
         assert f'exec >>"{log}" 2>&1' in text
         assert "git fetch --tags --prune origin" in text
         assert "git rev-parse --verify --quiet" in text
-        assert 'git checkout --force "v0.1.5"' in text
+        assert 'git checkout "v0.1.5"' in text
         assert './deploy.sh --service "proxcenter.service"' in text
         # 刻意不用 set -e：失败时要把原因留在日志里，而不是静默退出
         assert "set -euo" not in text
+
+    def test_local_changes_are_stashed_instead_of_clobbered(self) -> None:
+        """开发机上工作区几乎总是脏的：更新必须先 stash，且不能再用 --force。
+
+        ``--force`` 会把用户手里的改动直接覆盖掉；stash 之后 ``git stash pop`` 能原样
+        找回，所以「点按钮就能更新」与「不丢东西」可以同时成立。
+        """
+        text = update._script_text(_dep(), "v0.1.5", Path("/tmp/x.log"))
+        assert "git stash push -m \"proxcenter-update-v0.1.5\"" in text
+        assert "git status --porcelain --untracked-files=no" in text
+        # 关键：不再用 checkout --force（它会把本地改动直接覆盖掉）
+        assert "checkout --force" not in text
 
     def test_tag_is_validated_before_it_reaches_shell(self) -> None:
         assert update._TAG_RE.match("v0.1.5")

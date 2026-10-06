@@ -429,10 +429,10 @@ def _apply_ready(
         )
     if git.get("dirty") and not allow_dirty:
         return False, i18n.pick(
-            f"工作区有 {git.get('dirty_files')} 处未提交改动，更新会覆盖它们。"
-            "请先提交/备份，或确认可以丢弃后再试。",
-            f"The work tree has {git.get('dirty_files')} uncommitted change(s) that the update "
-            "would overwrite. Commit or back them up first.",
+            f"工作区有 {git.get('dirty_files')} 处未提交改动。继续更新会先把它们 stash 起来"
+            "（之后用 git stash list / git stash pop 可以原样找回），也可以先自己提交。",
+            f"The work tree has {git.get('dirty_files')} uncommitted change(s). Continuing stashes "
+            "them first (recover with git stash list / git stash pop), or commit them yourself.",
         )
     if applying:
         return False, i18n.pick(
@@ -462,7 +462,14 @@ cd "{root}" || {{ echo "安装目录不存在"; exit 1; }}
 
 if ! git fetch --tags --prune origin; then echo "git fetch 失败（网络或凭据问题），放弃更新"; exit 1; fi
 if ! git rev-parse --verify --quiet "{tag}^{{commit}}" >/dev/null; then echo "远端找不到 {tag}，放弃更新"; exit 1; fi
-if ! git checkout --force "{tag}"; then echo "切到 {tag} 失败，放弃更新"; exit 1; fi
+# 工作区有未提交改动时 checkout 会被挡住：先 stash 起来，事后 `git stash list` 能原样
+# 找回 —— 更新面板不该顺手弄丢用户手里的改动。这里用**普通** checkout 而不是
+# `--force`：真遇到冲突就报错退出，而不是把本地文件覆盖掉。
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo "[$(date -Is)] 工作区有未提交改动，先 stash 后更新（git stash list 可找回）"
+  git stash push -m "proxcenter-update-{tag}" || echo "stash 失败，继续尝试切换版本"
+fi
+if ! git checkout "{tag}"; then echo "切到 {tag} 失败，放弃更新（本地改动已在 stash 里）"; exit 1; fi
 echo "[$(date -Is)] 代码已切到 {tag}（commit $(git rev-parse --short HEAD)）"
 
 echo "[$(date -Is)] 开始按官方脚本重装：{pip} + 前端构建 + 重启 {service}"
@@ -629,8 +636,13 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not ready and applying:
         # 「更新中」不是错误：按钮置灰的原因要能区分开
         reason = i18n.pick("正在更新中，请等面板重启。", "An update is in progress; wait for the restart.")
+    # 「只差工作区干净」要单独报出来：界面据此给一个次级按钮（先 stash 本地改动再更新）。
+    # 否则只要用户手里有未提交改动，这个功能就等于不存在 —— 而开发机上几乎总是有。
+    ready_dirty = ready or _apply_ready(dep, applying, allow_dirty=True)[0]
     if ready and not available:
         ready, reason = False, i18n.pick("当前已是最新版本。", "Already up to date.")
+    if not available:
+        ready_dirty = False
     manual = manual_commands(dep, str(latest.get("tag") or ""))
     # 落库一次：上面可能刚把「更新中」判定成成功/失败，让下次读到的就是干净的
     if known is None:
@@ -652,6 +664,9 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "applying": applying,
         "last_update": state.get("last_update") if isinstance(state.get("last_update"), dict) else {},
         "can_apply": ready,
+        # 条件全满足、只差「工作区干净」：界面据此给次级按钮（先 stash 本地改动再更新）
+        "can_apply_dirty": ready_dirty,
+        "dirty_files": int((dep.get("git") or {}).get("dirty_files") or 0),
         "reason": reason,
         "deployment": {
             "form": dep.get("form"),

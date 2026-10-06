@@ -5941,7 +5941,10 @@ export const zhCN = {
   'update.modalTitle': '面板更新',
   'update.modalSubtitle': '当前 {current} · 最新 {latest}',
   'update.notes': '更新说明',
+  'update.expand': '展开',
+  'update.collapse': '收起',
   'update.apply': '立即更新',
+  'update.applyDirty': '仍然更新（先暂存 {n} 处改动）',
   'update.applyHint':
     '更新会在后台拉取新版本、重新构建前端并重启面板。过程中面板会短暂中断，本页会在服务回来之后自动刷新。',
   'update.applyStarted': '更新已开始',

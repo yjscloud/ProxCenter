@@ -21,6 +21,7 @@ import { useT, type MessageKey } from '../i18n';
 import { Button } from './ui/Button';
 import { Field, Input, Switch } from './ui/Input';
 import { Notice } from './ui/EmptyState';
+import { ProgressBar } from './ui/ProgressBar';
 import { IconDownload, IconRefresh } from './Icons';
 import {
   UpdateManualCommands,
@@ -145,8 +146,19 @@ export function PanelUpdateCard() {
 
       {data.applying?.tag ? (
         <Notice tone="warning" title={t('update.applyingTitle')}>
-          {t('update.applyingBody', { tag: data.applying.tag })}{' '}
-          <span className="mono fs-xs">{data.applying.log ?? ''}</span>
+          {t('update.applyingBody', { tag: data.applying.tag })}
+          {/* 进度条：百分比与阶段文案都由后端从更新日志里算好（见 app/update._read_progress） */}
+          <div className="mt-8">
+            <ProgressBar value={data.applying.progress?.percent ?? 0} />
+            <div className="fs-xs text-muted mt-8">
+              {data.applying.progress
+                ? `${data.applying.progress.label} · ${data.applying.progress.percent}%`
+                : t('update.progressPending')}
+            </div>
+            {data.applying.log ? (
+              <div className="mono fs-xs text-muted mt-8">{data.applying.log}</div>
+            ) : null}
+          </div>
         </Notice>
       ) : null}
 

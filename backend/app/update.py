@@ -65,6 +65,42 @@ LOG_DIR = ROOT / "logs"
 #: 虽然来源是 GitHub 的 tag，但「上游返回什么就原样拼进脚本」是典型的注入口子。
 _TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$")
 
+#: 源码包安装（从 Releases 下载 tar.gz 解开的，没有 .git）的标志文件。三个都在，
+#: 才认为这是一个结构完整的安装 —— 与 deploy.sh 自己的前置检查同一套标准。
+ARCHIVE_FILES = ("deploy.sh", "package.json", "backend/requirements.txt")
+#: 归档式更新需要的外部命令：下载（curl 或 wget）、解包（tar）、同步（rsync）。
+ARCHIVE_TOOLS = {
+    "download": ("curl", "wget"),
+    "tar": ("tar",),
+    "rsync": ("rsync",),
+}
+
+#: 进度标记：更新脚本自己打的 ``PROGRESS <百分比> <阶段>``。
+_PROGRESS_RE = re.compile(r"PROGRESS (\d{1,3}) ([a-z-]+)")
+#: deploy.sh 的分步标记（``==> [3/5] …``），用来把「装依赖并构建」那一段细化。
+_DEPLOY_STEP_RE = re.compile(r"\[(\d+)/(\d+)\]")
+#: deploy.sh 的 5 个步骤 → 展示文案。按**序号**映射，不去匹配它的标题文字：标题会随
+#: 语言和措辞变（还能被翻译），而序号是稳定的 —— `[3/5]` 永远是构建前端、`[4/5]`
+#: 永远是装服务并重启。用户最关心的就是这两步，所以它们要各自显示出来，而不是笼统地
+#: 写成一句「安装依赖并构建前端」。
+DEPLOY_STAGES = {
+    1: ("准备 Python 依赖", "preparing Python dependencies"),
+    2: ("准备面板配置", "preparing the panel configuration"),
+    3: ("构建前端（npm run build）", "building the frontend (npm run build)"),
+    4: ("重启面板服务", "restarting the panel service"),
+    5: ("健康检查", "health check"),
+}
+#: 阶段 → 展示文案（中/英）。阶段名是给机器看的稳定标识，文案在这里定。
+STAGE_LABELS = {
+    "start": ("准备", "preparing"),
+    "fetch": ("拉取新版本", "fetching the new version"),
+    "download": ("下载新版本", "downloading the new version"),
+    "switch": ("切换 / 解包代码", "switching / unpacking the code"),
+    "deploy": ("安装依赖并构建前端", "installing dependencies and building the frontend"),
+    "verify": ("校验结果", "verifying"),
+    "done": ("完成", "done"),
+}
+
 
 class UpdateError(RuntimeError):
     """可以直接展示给用户的更新相关错误。"""
@@ -284,7 +320,9 @@ def git_info(root: Path = ROOT) -> Dict[str, Any]:
     }
 
 
-def manual_commands(dep: Optional[Dict[str, Any]] = None, tag: str = "") -> List[str]:
+def manual_commands(
+    dep: Optional[Dict[str, Any]] = None, tag: str = "", repo: str = ""
+) -> List[str]:
     """该部署形态下**手工**升级的命令（在线更新不可用时给人照抄的）。"""
     dep = dep or deployment()
     target = tag or str((dep.get("git") or {}).get("latest_tag") or "")
@@ -295,6 +333,26 @@ def manual_commands(dep: Optional[Dict[str, Any]] = None, tag: str = "") -> List
             "docker compose up -d",
         ]
     git = dep.get("git") or {}
+    if dep.get("form") == "archive":
+        # 源码包安装：没有 git，升级 = 下载目标 tag 的源码包 → rsync 覆盖 → 重跑部署脚本。
+        # 与面板内一键更新做的事完全一样（那套也会把被覆盖的文件备份到 logs/update-backup-*）。
+        spec = target or "<新版本 tag>"
+        name = f"ProxCenter-{str(spec).lstrip('vV')}"
+        slug = str(repo or DEFAULT_REPO)
+        lines = [
+            f"cd {dep.get('root')}",
+            f"curl -fL -o /tmp/{spec}.tar.gz "
+            f"https://github.com/{slug}/archive/refs/tags/{spec}.tar.gz",
+            f"tar -xzf /tmp/{spec}.tar.gz -C /tmp",
+            "# 覆盖代码（保留配置 / 数据 / 日志 / 依赖与产物）",
+            "sudo rsync -a --delete --exclude '.git' --exclude 'backend/.env' "
+            "--exclude 'backend/data' --exclude 'logs' --exclude 'node_modules' "
+            f"--exclude 'dist' --exclude '.venv' /tmp/{name}/ {dep.get('root')}/",
+        ]
+        lines.append(
+            "sudo ./deploy.sh" if dep.get("node") else "sudo ./deploy.sh --skip-frontend"
+        )
+        return lines
     if git.get("is_git"):
         spec = target or "<新版本 tag>"
         lines = [f"cd {dep.get('root')}"]
@@ -319,6 +377,15 @@ def manual_commands(dep: Optional[Dict[str, Any]] = None, tag: str = "") -> List
     ]
 
 
+def _which_any(names: Tuple[str, ...]) -> str:
+    """从几个候选命令里挑第一个存在的（下载工具 curl / wget 二选一）。"""
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
 def deployment() -> Dict[str, Any]:
     """当前面板是「怎么装的」—— 决定更新该怎么做。全部只读判断。"""
     git = git_info()
@@ -328,7 +395,17 @@ def deployment() -> Dict[str, Any]:
         writable = os.access(ROOT, os.W_OK)
     except OSError:
         writable = False
-    form = "docker" if in_docker() else ("git" if git.get("is_git") else "other")
+    if in_docker():
+        form = "docker"
+    elif git.get("is_git"):
+        form = "git"
+    elif all((ROOT / name).exists() for name in ARCHIVE_FILES):
+        # 从 Releases 下载源码包解开的安装：没有 .git，但目录结构一模一样，
+        # 可以「下载新 tag 的源码包 → rsync 覆盖 → deploy.sh」这样在线更新。
+        form = "archive"
+    else:
+        form = "other"
+    tools = {key: _which_any(names) for key, names in ARCHIVE_TOOLS.items()}
     return {
         "form": form,
         "root": str(ROOT),
@@ -338,6 +415,7 @@ def deployment() -> Dict[str, Any]:
         "writable": writable,
         "node": shutil.which("node") is not None,
         "systemd_run": shutil.which("systemd-run") is not None,
+        "tools": tools,
         "git": git,
     }
 
@@ -357,6 +435,46 @@ def _read_result(applying: Dict[str, Any]) -> Dict[str, str]:
         if key.strip():
             fields[key.strip()] = value.strip()
     return fields
+
+
+def _read_progress(applying: Dict[str, Any]) -> Dict[str, Any]:
+    """从更新日志里读出进度：脚本自己打的 ``PROGRESS`` 标记 + deploy.sh 的分步标记。
+
+    脚本是**我们的**，标记可以打得很细；但「装依赖 + 构建前端」那一段是 deploy.sh 内部
+    的事，只能借它自己的 ``==> [n/m]`` 把 45% → 95% 这段细化。两个来源都没读到就返回
+    空字典，界面退化成只显示「正在更新中」。
+    """
+    path = str(applying.get("log") or "")
+    if not path:
+        return {}
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return {}
+    percent, stage = 0, ""
+    for line in lines:
+        match = _PROGRESS_RE.search(line)
+        if match:
+            percent = min(max(int(match.group(1)), 0), 100)
+            stage = match.group(2)
+    if not stage:
+        return {}
+    label = STAGE_LABELS.get(stage) or ("处理中", "working")
+    if stage == "deploy":
+        for line in reversed(lines[-60:]):
+            match = _DEPLOY_STEP_RE.search(line)
+            if match:
+                done, total = int(match.group(1)), max(int(match.group(2)), 1)
+                percent = max(percent, min(45 + round(50 * done / total), 95))
+                # 细化到具体步骤：前端构建、服务重启各自显示（用户最关心的两步）
+                label = DEPLOY_STAGES.get(done) or label
+                break
+    return {
+        "percent": percent,
+        "stage": stage,
+        "label": i18n.pick(label[0], label[1]),
+        "tail": "\n".join(lines[-6:]),
+    }
 
 
 def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -417,12 +535,18 @@ def _apply_ready(
             "The panel runs in a container and cannot swap its own image — "
             "run the compose commands below on the host.",
         )
-    git = dep.get("git") or {}
-    if not git.get("is_git"):
+    if dep.get("form") not in ("git", "archive"):
         return False, i18n.pick(
-            "这个安装目录不是 git 工作区（可能是打包产物安装的），请按下面的命令手工升级。",
-            "This installation directory is not a git checkout — upgrade manually with "
-            "the commands below.",
+            "这个安装目录既不是 git 工作区，也不像源码包安装（`deploy.sh` / `package.json` "
+            "之类缺失），请按下面的命令手工升级。",
+            "This installation is neither a git checkout nor an unpacked release "
+            "(`deploy.sh` / `package.json` missing) — upgrade with the commands below.",
+        )
+    if applying:
+        # 一次只跑一个：两个更新脚本同时 checkout / 覆盖同一份代码，结果不可预期
+        return False, i18n.pick(
+            f"已经有一次更新在进行了（目标 {applying.get('tag')}），请等它结束。",
+            f"An update is already running (target {applying.get('tag')}); wait for it to finish.",
         )
     if not dep.get("managed"):
         return False, i18n.pick(
@@ -453,6 +577,18 @@ def _apply_ready(
             "(replacing only the backend would leave UI and API out of sync). Install Node.js "
             "18+ first, or build dist/ elsewhere and upgrade with the commands below.",
         )
+    if dep.get("form") == "archive":
+        # 源码包安装：没有 git，靠「下载 tar.gz → rsync 覆盖」更新，缺工具就没法做。
+        missing = [key for key, path in (dep.get("tools") or {}).items() if not path]
+        if missing:
+            return False, i18n.pick(
+                f"主机上缺少归档更新需要的命令：{'、'.join(missing)}"
+                "（需要 curl 或 wget、tar、rsync）。",
+                f"The host is missing tools needed for archive updates: {', '.join(missing)} "
+                "(curl or wget, tar, rsync).",
+            )
+        return True, ""
+    git = dep.get("git") or {}
     if not str(git.get("remote") or "").strip():
         return False, i18n.pick(
             "这个 git 工作区没有配置 origin 远端，无法拉取新版本。",
@@ -464,11 +600,6 @@ def _apply_ready(
             "（之后用 git stash list / git stash pop 可以原样找回），也可以先自己提交。",
             f"The work tree has {git.get('dirty_files')} uncommitted change(s). Continuing stashes "
             "them first (recover with git stash list / git stash pop), or commit them yourself.",
-        )
-    if applying:
-        return False, i18n.pick(
-            f"已经有一次更新在进行了（目标 {applying.get('tag')}），请等它结束。",
-            f"An update is already running (target {applying.get('tag')}); wait for it to finish.",
         )
     return True, ""
 
@@ -497,20 +628,71 @@ def _launch_env() -> Dict[str, str]:
 
 
 def _script_text(
-    dep: Dict[str, Any], tag: str, log: Path, result: Optional[Path] = None
+    dep: Dict[str, Any],
+    tag: str,
+    log: Path,
+    result: Optional[Path] = None,
+    repo: str = "",
 ) -> str:
     """生成更新脚本。
 
-    刻意做成**独立进程**：脚本最后要 ``systemctl restart`` 面板自己，若在面板进程里
-    执行，最后一步会把自己杀掉、脚本也一起没了 —— 前端可能还没构建完，面板就停在
-    半新半旧的状态。所以走 ``systemd-run``（或 setsid）脱离当前进程，日志落文件。
+    两件事值得说明：
+
+    * 刻意做成**独立进程**：脚本最后要 ``systemctl restart`` 面板自己，若在面板进程里
+      执行，最后一步会把自己杀掉、脚本也一起没了 —— 前端可能还没构建完，面板就停在
+      半新半旧的状态。所以走 ``systemd-run``（或 setsid）脱离当前进程，日志落文件。
+    * 每一步都打一行 ``PROGRESS <百分比> <阶段>``：界面据此画进度条。装依赖与构建前端
+      那一段最耗时也最看不清，由 deploy.sh 自己的 ``==> [n/m]`` 标记细化（见
+      :func:`_read_progress`）。
     """
     root = dep.get("root") or str(ROOT)
     service = str(dep.get("service") or "proxcenter")
     pip = str(ROOT / ".venv" / "bin" / "pip")
     outcome = result or log.with_suffix(".result")
+    stamp = log.stem.replace("update-", "")
+    backup = f"{root}/logs/update-backup-{stamp}"
+    archive = dep.get("form") == "archive"
+    download = (dep.get("tools") or {}).get("download") or "curl"
+
+    if archive:
+        # 源码包安装（没有 .git）：下载目标 tag 的源码包 → rsync 覆盖。
+        # 被覆盖的文件先备份到 logs/update-backup-<时间戳>/：这种安装没有 git 可以
+        # stash，改错了得能捞回来。
+        pack = f"ProxCenter-{tag.lstrip('vV')}"
+        code_section = f'''echo "PROGRESS 12 download"
+mkdir -p "$TMP"
+if ! {download} -fL -o "$TMP/src.tar.gz" "https://github.com/{repo or DEFAULT_REPO}/archive/refs/tags/{tag}.tar.gz"; then
+  echo "下载 {tag} 的源码包失败（网络问题？），放弃更新"; exit 1
+fi
+echo "PROGRESS 30 switch"
+if ! tar -xzf "$TMP/src.tar.gz" -C "$TMP"; then echo "解包失败，放弃更新"; exit 1; fi
+if [ ! -d "$TMP/{pack}" ]; then echo "源码包里没有预期的目录 {pack}，放弃更新"; exit 1; fi
+mkdir -p "{backup}"
+echo "[$(date -Is)] 覆盖代码（被替换的文件备份在 {backup}）"
+if ! rsync -a --delete \\
+    --exclude '.git' --exclude 'backend/.env' --exclude 'backend/data' --exclude 'logs' \\
+    --exclude 'node_modules' --exclude 'dist' --exclude '.venv' --exclude '__pycache__' \\
+    --backup --backup-dir="{backup}" \\
+    "$TMP/{pack}/" "{root}/"; then
+  echo "同步代码失败，放弃更新"; exit 1
+fi'''
+    else:
+        code_section = f'''echo "PROGRESS 12 fetch"
+if ! git fetch --tags --prune origin; then echo "git fetch 失败（网络或凭据问题），放弃更新"; exit 1; fi
+if ! git rev-parse --verify --quiet "{tag}^{{commit}}" >/dev/null; then echo "远端找不到 {tag}，放弃更新"; exit 1; fi
+echo "PROGRESS 30 switch"
+# 工作区有未提交改动时 checkout 会被挡住：先 stash 起来，事后 `git stash list` 能原样
+# 找回 —— 更新面板不该顺手弄丢用户手里的改动。这里用**普通** checkout 而不是
+# `--force`：真遇到冲突就报错退出，而不是把本地文件覆盖掉。
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo "[$(date -Is)] 工作区有未提交改动，先 stash 后更新（git stash list 可找回）"
+  git stash push -m "proxcenter-update-{tag}" || echo "stash 失败，继续尝试切换版本"
+fi
+if ! git checkout "{tag}"; then echo "切到 {tag} 失败，放弃更新（本地改动已在 stash 里）"; exit 1; fi
+echo "[$(date -Is)] 代码已切到 {tag}（commit $(git rev-parse --short HEAD)）"'''
+
     return f"""#!/usr/bin/env bash
-# 由 ProxCenter 生成：把面板从 {__version__} 更新到 {tag}。
+# 由 ProxCenter 生成：把面板从 {__version__} 更新到 {tag}（{'源码包安装' if archive else 'git 工作区'}）。
 # 每一步都显式判断退出码（不用 set -e）：失败时要把原因留在日志里，而不是静默退出。
 set -uo pipefail
 # 一次性单元（systemd-run）的环境极简：没有 HOME、PATH 也可能不全，而 deploy.sh 开了
@@ -522,28 +704,24 @@ export PATH="${{PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/b
 # 会一直显示「正在更新中」，直到 30 分钟超时。
 trap 'rc=$?; printf "code=%s\\nat=%s\\n" "$rc" "$(date +%s)" > "{outcome}"' EXIT
 exec >>"{log}" 2>&1
+echo "PROGRESS 5 start"
 echo "[$(date -Is)] 更新开始：{__version__} → {tag}"
+TMP="$(mktemp -d)"
 cd "{root}" || {{ echo "安装目录不存在"; exit 1; }}
 
-if ! git fetch --tags --prune origin; then echo "git fetch 失败（网络或凭据问题），放弃更新"; exit 1; fi
-if ! git rev-parse --verify --quiet "{tag}^{{commit}}" >/dev/null; then echo "远端找不到 {tag}，放弃更新"; exit 1; fi
-# 工作区有未提交改动时 checkout 会被挡住：先 stash 起来，事后 `git stash list` 能原样
-# 找回 —— 更新面板不该顺手弄丢用户手里的改动。这里用**普通** checkout 而不是
-# `--force`：真遇到冲突就报错退出，而不是把本地文件覆盖掉。
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  echo "[$(date -Is)] 工作区有未提交改动，先 stash 后更新（git stash list 可找回）"
-  git stash push -m "proxcenter-update-{tag}" || echo "stash 失败，继续尝试切换版本"
-fi
-if ! git checkout "{tag}"; then echo "切到 {tag} 失败，放弃更新（本地改动已在 stash 里）"; exit 1; fi
-echo "[$(date -Is)] 代码已切到 {tag}（commit $(git rev-parse --short HEAD)）"
+{code_section}
 
+echo "PROGRESS 45 deploy"
 echo "[$(date -Is)] 开始按官方脚本重装：{pip} + 前端构建 + 重启 {service}"
 if ! ./deploy.sh --service "{service}"; then
   echo "[$(date -Is)] deploy.sh 失败。面板可能仍停在旧版本（服务未重启）；"
   echo "            修好上面的报错后手工重跑：cd {root} && sudo ./deploy.sh"
   exit 1
 fi
-echo "[$(date -Is)] 更新完成，当前版本：$(git describe --tags 2>/dev/null || git rev-parse --short HEAD)"
+rm -rf "$TMP"
+echo "PROGRESS 99 verify"
+echo "[$(date -Is)] 更新完成，当前版本：$(git describe --tags 2>/dev/null || grep -o '[0-9]*\\.[0-9]*\\.[0-9]*' backend/app/__init__.py | head -1)"
+echo "PROGRESS 100 done"
 echo "[$(date -Is)] 本脚本日志：{log}"
 """
 
@@ -573,7 +751,10 @@ async def apply_update(tag: str, *, allow_dirty: bool = False) -> Dict[str, Any]
     script = LOG_DIR / f"update-{stamp}.sh"
     outcome = LOG_DIR / f"update-{stamp}.result"
     try:
-        script.write_text(_script_text(dep, target, log, outcome), encoding="utf-8")
+        # repo 只给「源码包安装」用（下载 tar.gz 的地址就是它）
+        script.write_text(
+            _script_text(dep, target, log, outcome, await get_repo()), encoding="utf-8"
+        )
         script.chmod(0o700)
     except OSError as exc:
         raise UpdateError(
@@ -696,10 +877,52 @@ async def _announce(state: Dict[str, Any], release: Dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------ 对外状态
+async def _announce_result(last: Dict[str, Any]) -> None:
+    """更新结束后给管理员留一条站内消息（成功、失败各一种说法）。
+
+    为什么不是脚本自己发：脚本跑在面板之外，而它最后一步就是重启面板 —— 由它写库既
+    不方便（要带数据库凭据）也没必要。面板下次读状态时就能得出结论，顺手补上这条提醒。
+    """
+    tag = str(last.get("tag") or "")
+    ok = bool(last.get("ok"))
+    log = str(last.get("log") or "")
+    if ok:
+        title = i18n.pick(f"面板已更新到 {tag}", f"Panel updated to {tag}")
+        body = i18n.pick(
+            "更新已完成，刷新页面即可看到新版本。",
+            "The update finished — reload the page to pick up the new version.",
+        )
+        level = "success"
+    else:
+        title = i18n.pick(
+            f"面板更新到 {tag} 未完成", f"Updating the panel to {tag} did not finish"
+        )
+        body = i18n.pick(
+            f"面板仍运行在 {__version__}，请查看更新日志：{log}",
+            f"The panel still runs {__version__}; check the update log: {log}",
+        )
+        level = "danger"
+    for username in await _notify_targets():
+        try:
+            await notifications.push(
+                username,
+                title=title,
+                body=body,
+                link="/settings",
+                kind="update",
+                level=level,
+            )
+        except Exception:  # noqa: BLE001 - 单个用户写失败不影响别人
+            logger.warning("给 %s 发更新结果提醒失败", username, exc_info=True)
+
+
 async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """界面要的全部信息：版本、检查结果、能否一键更新、手工命令。"""
     state = known if isinstance(known, dict) else await load_state()
     applying = _applying_state(state)
+    if applying:
+        # 进度条：读脚本打在日志里的标记（见 _read_progress）
+        applying["progress"] = _read_progress(applying)
     dep = deployment()
     latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
     version = str(latest.get("version") or "")
@@ -716,7 +939,14 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         ready, reason = False, i18n.pick("当前已是最新版本。", "Already up to date.")
     if not available:
         ready_dirty = False
-    manual = manual_commands(dep, str(latest.get("tag") or ""))
+    manual = manual_commands(dep, str(latest.get("tag") or ""), await get_repo())
+    # 更新结束（成功或失败）后提醒一次：脚本是在面板之外跑完的，而它最后一步就是重启
+    # 面板 —— 没人会在那里写消息，所以在这里补上，用 notified 标记保证只发一次。
+    last = state.get("last_update") if isinstance(state.get("last_update"), dict) else {}
+    if last.get("tag") and not last.get("notified"):
+        await _announce_result(last)
+        last["notified"] = True
+        state["last_update"] = last
     # 落库一次：上面可能刚把「更新中」判定成成功/失败，让下次读到的就是干净的
     if known is None:
         await save_state(state)
@@ -735,7 +965,7 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "repo": await get_repo(),
         "error": str(state.get("error") or ""),
         "applying": applying,
-        "last_update": state.get("last_update") if isinstance(state.get("last_update"), dict) else {},
+        "last_update": last,
         "can_apply": ready,
         # 条件全满足、只差「工作区干净」：界面据此给次级按钮（先 stash 本地改动再更新）
         "can_apply_dirty": ready_dirty,

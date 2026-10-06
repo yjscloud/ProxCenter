@@ -18,7 +18,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -32,16 +34,31 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
-from app import scheduler, update  # noqa: E402
+from app import scheduler, store, update  # noqa: E402
 from test_api_routes import api, auth_headers  # noqa: E402,F401
 
 
 # ------------------------------------------------------------------ 道具
+def _next_version() -> str:
+    """当前版本的「下一个补丁版」—— 用例里的「新版本」由它推导。
+
+    写死版本号会在下次发布后悄悄失效：`is_newer("0.1.5", "0.1.7")` 是 False，
+    于是「检查到新版本」这条用例莫名其妙地挂掉（发布 0.1.7 时真踩到了）。
+    """
+    parts = list(update.parse_version(update.__version__)) or [0, 0, 0]
+    parts = (parts + [0, 0, 0])[:3]
+    parts[-1] += 1
+    return ".".join(str(part) for part in parts)
+
+
+NEXT_VERSION = _next_version()
+NEXT_TAG = f"v{NEXT_VERSION}"
+
 RELEASE = {
-    "tag_name": "v0.1.5",
-    "name": "0.1.5",
+    "tag_name": NEXT_TAG,
+    "name": NEXT_VERSION,
     "body": "修了几个导入的坑",
-    "html_url": "https://github.com/yjscloud/ProxCenter/releases/tag/v0.1.5",
+    "html_url": f"https://github.com/yjscloud/ProxCenter/releases/tag/{NEXT_TAG}",
     "published_at": "2026-10-06T00:00:00Z",
     "prerelease": False,
 }
@@ -128,10 +145,10 @@ class TestFetchLatest:
         data = asyncio.run(
             update.fetch_latest("yjscloud/ProxCenter", transport=_transport(RELEASE))
         )
-        assert data["tag"] == "v0.1.5"
-        assert data["version"] == "0.1.5"
+        assert data["tag"] == NEXT_TAG
+        assert data["version"] == NEXT_VERSION
         assert data["notes"].startswith("修了")
-        assert data["url"].endswith("/v0.1.5")
+        assert data["url"].endswith(f"/{NEXT_TAG}")
 
     def test_missing_release_is_explained(self) -> None:
         with pytest.raises(update.UpdateError) as excinfo:
@@ -167,10 +184,14 @@ class TestApplyGuards:
         ready, reason = update._apply_ready(_dep(form="docker"), {})
         assert not ready and "容器" in reason
 
-    def test_not_a_git_checkout_is_refused(self) -> None:
-        dep = _dep(git={"is_git": False, "root": "/srv/proxcenter"})
+    def test_unknown_installation_is_refused(self) -> None:
+        """既不是 git 工作区、也不像源码包安装（缺 deploy.sh / package.json）→ 只给命令。
+
+        （非 git 但结构完整的安装现在**可以**在线更新，见 TestArchiveUpdate。）
+        """
+        dep = _dep(form="other", git={"is_git": False, "root": "/srv/proxcenter"})
         ready, reason = update._apply_ready(dep, {})
-        assert not ready and "不是 git 工作区" in reason
+        assert not ready and "手工升级" in reason
 
     def test_manual_instance_is_refused(self) -> None:
         """手工启动的实例：更新脚本最后重启的是 systemd 那个进程，代码不会生效。"""
@@ -387,10 +408,10 @@ class TestUpdateApi:
         monkeypatch.setattr(update, "fetch_latest", _fake_fetch(RELEASE))
         body = api.post("/api/update/check", headers=headers).json()
         assert body["update_available"] is True
-        assert body["latest"] == "0.1.5"
+        assert body["latest"] == NEXT_VERSION
         assert body["error"] == ""
         items = api.get("/api/notifications", headers=headers).json()["items"]
-        assert any("0.1.5" in str(item.get("title") or "") for item in items)
+        assert any(NEXT_VERSION in str(item.get("title") or "") for item in items)
 
     def test_same_version_is_notified_only_once(self, api, monkeypatch) -> None:  # noqa: F811
         headers = auth_headers(api)
@@ -398,7 +419,7 @@ class TestUpdateApi:
         api.post("/api/update/check", headers=headers)
         api.post("/api/update/check", headers=headers)
         items = api.get("/api/notifications", headers=headers).json()["items"]
-        hits = [i for i in items if "0.1.5" in str(i.get("title") or "")]
+        hits = [i for i in items if NEXT_VERSION in str(i.get("title") or "")]
         assert len(hits) == 1
 
     def test_check_failure_becomes_a_message_not_an_error(self, api, monkeypatch) -> None:  # noqa: F811
@@ -417,9 +438,11 @@ class TestUpdateApi:
         monkeypatch.setattr(update, "fetch_latest", _fake_fetch(RELEASE))
         assert api.post("/api/update/check", headers=headers).json()["update_available"] is True
         body = api.put(
-            "/api/update/settings", json={"skipped_version": "0.1.5"}, headers=headers
+            "/api/update/settings",
+            json={"skipped_version": NEXT_VERSION},
+            headers=headers,
         ).json()
-        assert body["skipped"] == "0.1.5"
+        assert body["skipped"] == NEXT_VERSION
         assert body["update_available"] is False
 
     def test_auto_check_can_be_turned_off(self, api) -> None:  # noqa: F811
@@ -441,3 +464,148 @@ class TestUpdateApi:
     def test_scheduler_job_is_registered(self, api) -> None:  # noqa: F811
         """自动检查挂在调度器上（间隔与启停可在「后台作业」页里改）。"""
         assert scheduler.is_registered("update_check")
+
+    def test_finished_update_leaves_exactly_one_notification(self, api) -> None:  # noqa: F811
+        """更新跑完要提醒一次 —— 脚本在面板之外跑完，这条消息只能由面板补。
+
+        真实链路：脚本重启面板 → 面板下次读状态时发现版本已换，判定成功并写一条站内
+        消息（见 app/update._announce_result）。这里直接把「已更新完」的状态塞进库里，
+        验证提醒真的发出去、且只发一次。
+        """
+        headers = auth_headers(api)
+        asyncio.run(
+            store.set_setting(
+                "update_state",
+                json.dumps(
+                    {
+                        "latest": {"tag": "v0.9.9", "version": "0.9.9"},
+                        "last_update": {
+                            "tag": "v0.9.9",
+                            "ok": True,
+                            "at": 1760000000,
+                            "log": "/tmp/update-x.log",
+                        },
+                    }
+                ),
+            )
+        )
+        body = api.get("/api/update/status", headers=headers).json()
+        assert body["last_update"]["notified"] is True
+
+        def hits() -> int:
+            items = api.get("/api/notifications", headers=headers).json()["items"]
+            return sum(1 for item in items if "0.9.9" in str(item.get("title") or ""))
+
+        assert hits() == 1
+        # 再读一次状态不该重复提醒
+        api.get("/api/update/status", headers=headers)
+        assert hits() == 1
+
+
+def _archive_dep(**over: Any) -> Dict[str, Any]:
+    """一个「从 Releases 下载源码包安装」的部署形态（目录里没有 .git）。"""
+    dep = _dep(form="archive", git={"is_git": False, "root": "/srv/proxcenter"})
+    dep["tools"] = {
+        "download": "/usr/bin/curl",
+        "tar": "/usr/bin/tar",
+        "rsync": "/usr/bin/rsync",
+    }
+    dep.update(over)
+    return dep
+
+
+class TestArchiveUpdate:
+    """源码包安装（没有 .git）也要能在面板里更新。
+
+    以前这类安装只会得到一句「这个安装目录不是 git 工作区」，只能手工升级；现在走
+    「下载目标 tag 的源码包 → rsync 覆盖（被替换的文件先备份）→ deploy.sh」，
+    与 git 安装做的事完全一样。
+    """
+
+    def test_ready_when_everything_is_there(self) -> None:
+        assert update._apply_ready(_archive_dep(), {}) == (True, "")
+
+    def test_missing_tools_are_explained(self) -> None:
+        ready, reason = update._apply_ready(
+            _archive_dep(tools={"download": "", "tar": "", "rsync": ""}), {}
+        )
+        assert not ready
+        for tool in ("download", "tar", "rsync"):
+            assert tool in reason
+
+    def test_manual_commands_download_the_tarball(self) -> None:
+        text = "\n".join(
+            update.manual_commands(_archive_dep(), "v0.1.8", "yjscloud/ProxCenter")
+        )
+        assert "https://github.com/yjscloud/ProxCenter/archive/refs/tags/v0.1.8.tar.gz" in text
+        assert "rsync -a --delete" in text
+        assert "sudo ./deploy.sh" in text
+
+    def test_script_unpacks_and_backs_up_what_it_overwrites(self) -> None:
+        log = Path("/srv/proxcenter/logs/update-20261006-120000.log")
+        script = update._script_text(
+            _archive_dep(), "v0.1.8", log, None, "yjscloud/ProxCenter"
+        )
+        assert "archive/refs/tags/v0.1.8.tar.gz" in script
+        assert "tar -xzf" in script
+        # 覆盖前先备份：源码包安装没有 git 可以 stash，改错了得能捞回来
+        assert '--backup --backup-dir="/srv/proxcenter/logs/update-backup-20261006-120000"' in script
+        # 配置 / 数据 / 日志 / 依赖与产物不能被动到
+        for keep in ("backend/.env", "backend/data", "logs", "node_modules", "dist", ".venv"):
+            assert keep in script
+        # 这种安装没有 git：脚本里不该出现 git 命令（否则会白失败一次）
+        assert "git fetch" not in script
+
+
+class TestProgress:
+    """更新进度：脚本自己打的 PROGRESS 标记 + deploy.sh 的分步标记。"""
+
+    def test_reads_the_last_marker(self, tmp_path: Path) -> None:
+        log = tmp_path / "u.log"
+        log.write_text("PROGRESS 5 start\nnoise\nPROGRESS 12 fetch\n", encoding="utf-8")
+        got = update._read_progress({"log": str(log)})
+        assert got["percent"] == 12
+        assert got["stage"] == "fetch"
+        assert got["label"]
+
+    def test_deploy_step_refines_the_percentage(self, tmp_path: Path) -> None:
+        """装依赖 + 构建前端那一段最久，用 deploy.sh 自己的 [n/m] 把它细化。"""
+        log = tmp_path / "u.log"
+        log.write_text("PROGRESS 45 deploy\n==> [1/5] a\n==> [3/5] b\n", encoding="utf-8")
+        assert update._read_progress({"log": str(log)})["percent"] == 75
+
+    def test_build_and_restart_are_their_own_stages(self, tmp_path: Path) -> None:
+        """「构建前端」与「重启服务」要分别显示 —— 一键更新必须自己做完这两件事。"""
+        log = tmp_path / "u.log"
+        log.write_text(
+            "PROGRESS 45 deploy\n==> [3/5] Preparing the frontend build\n", encoding="utf-8"
+        )
+        build = update._read_progress({"log": str(log)})
+        log.write_text(
+            "PROGRESS 45 deploy\n==> [4/5] Installing the systemd service\n", encoding="utf-8"
+        )
+        restart = update._read_progress({"log": str(log)})
+        assert build["percent"] == 75
+        assert restart["percent"] == 85
+        assert build["label"] != restart["label"]
+
+    def test_no_marker_means_no_progress(self, tmp_path: Path) -> None:
+        log = tmp_path / "u.log"
+        log.write_text("[2026-10-06T22:40:05] 更新开始\n", encoding="utf-8")
+        assert update._read_progress({"log": str(log)}) == {}
+
+    def test_missing_log_is_empty(self) -> None:
+        assert update._read_progress({"log": "/nonexistent/u.log"}) == {}
+
+
+class TestGeneratedScriptSyntax:
+    def test_both_forms_are_valid_bash(self, tmp_path: Path) -> None:
+        """生成的脚本本身就是 shell 代码：语法错误只能靠 bash -n 提前拦住。"""
+        for form, dep in (("git", _dep()), ("archive", _archive_dep())):
+            script = tmp_path / f"{form}.sh"
+            script.write_text(
+                update._script_text(dep, "v0.1.8", tmp_path / "u.log", None, "o/r"),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+            assert proc.returncode == 0, f"{form}: {proc.stderr}"

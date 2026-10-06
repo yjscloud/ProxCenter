@@ -6104,6 +6104,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'update.settingsSaved': 'Saved',
   'update.settingsFailed': 'Could not save',
   'update.applyingTitle': 'Updating the panel',
+  'update.progressPending': 'Preparing (reading progress from the log…)',
   'update.applyingBody':
     'Updating to {tag}; the panel will restart shortly and this page reloads once it is back. Log:',
   'update.doneOkTitle': 'Last update succeeded',

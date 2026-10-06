@@ -5967,6 +5967,7 @@ export const zhCN = {
   'update.settingsSaved': '已保存',
   'update.settingsFailed': '保存失败',
   'update.applyingTitle': '正在更新面板',
+  'update.progressPending': '正在准备（读取日志里的进度…）',
   'update.applyingBody':
     '已开始更新到 {tag}，面板随后会重启；本页会在服务回来之后自动刷新。日志：',
   'update.doneOkTitle': '上次更新成功',

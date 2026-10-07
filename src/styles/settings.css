@@ -214,3 +214,83 @@
   color: var(--text-secondary);
   word-break: break-all;
 }
+
+/* ------------------------------------------------------------------ 留白
+   设置页字段密集，标签、说明与控件之间容易糊成一片。这里在页面容器
+   （.settings-page，由 PageShell 挂到 .page 上）内统一放宽一档，「文字和
+   输入框、按钮挨得太近」的问题在本页解决，不改全局组件的默认密度。
+   ------------------------------------------------------------------ */
+
+.settings-page {
+  /* 标签 ↔ 控件、控件 ↔ 说明 的统一间距。.field 用的就是这个变量，
+     行内按钮的偏移量也算自它，跟着一起对齐 */
+  --field-gap: 9px;
+}
+
+/* 说明文字自身再松一点行距，多行 hint 不至于挤成一团 */
+.settings-page .field-message {
+  margin-top: 1px;
+  line-height: 1.55;
+}
+
+/* 分组里的「分组标题 → 字段区」之间也留一点 */
+.settings-page .dyn-list {
+  gap: 14px;
+}
+
+/* 卡片标题栏右侧的按钮（保存 / 刷新）别贴在一起 */
+.settings-page .card-header-actions {
+  gap: 8px;
+}
+
+/* 并排字段：行距比列距大，上一行的说明不会和下一行的标签黏在一起 */
+.settings-page .set-grid {
+  gap: 22px 20px;
+}
+
+.settings-page .set-cols {
+  gap: 24px 30px;
+}
+
+/* 同一栏里：分组标题 / 字段 / 读数之间各留一口气 */
+.settings-page .set-col {
+  gap: 15px;
+}
+
+/* 分组标题与下面的字段之间多留一点（标题本身带了条分隔线） */
+.settings-page .set-form-block-head {
+  margin-top: 4px;
+  padding-bottom: 10px;
+}
+
+/* 读数条不再紧贴输入框 */
+.settings-page .set-readout {
+  margin-top: 0;
+}
+
+/* 底部操作条：按钮之间、按钮与提示之间都别挤在一起 */
+.settings-page .set-action-bar {
+  gap: 10px;
+  margin-top: 20px;
+  padding: 14px 16px;
+}
+
+/* 卡片标题与正文之间的过渡也放一档 */
+.settings-page .card-header {
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+}
+
+/* 卡片里的说明条别贴着上一段字段/读数 */
+.settings-page .card > .notice {
+  margin-top: 16px;
+}
+
+/* 逐项开关：开关与文字、标题与下方路径之间各留一点 */
+.settings-page .switch-field {
+  gap: 12px;
+}
+
+.settings-page .switch-content {
+  gap: 4px;
+}

@@ -168,14 +168,17 @@ export function PageShell({
   subtitle,
   actions,
   children,
+  className,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
+  /** 追加到 .page 上的类名：个别页面要单独调密度时用（如设置页） */
+  className?: string;
 }) {
   return (
-    <div className="page">
+    <div className={`page${className ? ` ${className}` : ''}`}>
       <div className="page-header">
         <div>
           <div className="page-title">{title}</div>

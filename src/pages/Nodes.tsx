@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clusterApi, connectionsApi, nodesApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { PageShell } from '../components/Layout';
@@ -40,6 +40,7 @@ import {
   IconPlus,
   IconSearch,
   IconChevronRight,
+  IconPlug,
 } from '../components/Icons';
 import {
   formatBytes,
@@ -51,6 +52,7 @@ import {
 import { nodeStatusMeta } from '../utils/status'
 import { useT, type MessageKey } from '../i18n';
 import { useAuth } from '../hooks/useAuth';
+import { useToast } from '../hooks/useToast';
 import { NodeNoteField, useNodeMeta } from '../components/NodeMeta';
 import type { NodeInfo } from '../api/types';
 
@@ -131,6 +133,49 @@ export function Nodes() {
   const limitedConnections = (connStatusQuery.data ?? []).filter(
     (c) => c.ok && !c.node_metrics,
   );
+
+  /* ---- 默认读取的 PVE ----
+     少数接口（健康探活、/cluster/status）一次只能读一台，页头那行「集群版本 /
+     仲裁」就取自它。多套 PVE 时「读哪一套」必须由人决定，否则「这里怎么只有
+     一台的版本」是个没人答得上的问题。它**不等于主连接**：其余连接照样同级，
+     下方节点列表也仍然汇总全部连接。 */
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const connectionsQuery = useQuery({
+    queryKey: ['connections'],
+    queryFn: connectionsApi.list,
+    staleTime: 300_000,
+    retry: false,
+    enabled: isAdmin,
+  });
+  const conns = connectionsQuery.data ?? [];
+  const defaultConnId = conns.find((item) => item.active)?.id ?? '';
+  const [switchingDefault, setSwitchingDefault] = useState(false);
+
+  const pickDefaultConn = async (id: string) => {
+    if (!id || id === defaultConnId) return;
+    setSwitchingDefault(true);
+    try {
+      await connectionsApi.activate(id);
+      toast.success(
+        t('nodes.defaultPveSwitched'),
+        t('nodes.defaultPveSwitchedHint', {
+          name: conns.find((item) => item.id === id)?.name || id,
+        }),
+      );
+      /* 只读单台的接口都要重取：页头的集群版本 / 仲裁、健康探活，以及全站合计 */
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['connections'] }),
+        queryClient.invalidateQueries({ queryKey: ['cluster', 'status'] }),
+        queryClient.invalidateQueries({ queryKey: ['cluster', 'fleet-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['health'] }),
+      ]);
+    } catch (err) {
+      toast.error(t('nodes.defaultPveSwitchFailed'), errorMessage(err));
+    } finally {
+      setSwitchingDefault(false);
+    }
+  };
 
   const list = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
 
@@ -313,6 +358,31 @@ export function Nodes() {
       }
     >
       <NodeSubNav active="nodes" />
+
+      {/* 多套 PVE 时「读哪一套」必须能选：页头的集群版本 / 仲裁这类接口一次只能
+          读一台，默认由后端挑（第一条），而那往往不是想看的那台。 */}
+      {isAdmin && conns.length > 1 ? (
+        <div className="scope-bar">
+          <span className="scope-label">
+            <IconPlug size={15} />
+            {t('nodes.defaultPveLabel')}
+          </span>
+          <Select
+            aria-label={t('nodes.defaultPveLabel')}
+            value={defaultConnId}
+            disabled={switchingDefault}
+            onChange={(event) => void pickDefaultConn(event.target.value)}
+            options={conns.map((item) => ({
+              label: `${item.name || item.host}${
+                item.id === defaultConnId ? t('nodes.defaultPveCurrent') : ''
+              }`,
+              value: item.id,
+            }))}
+            style={{ maxWidth: 280 }}
+          />
+          <span className="scope-meta">{t('nodes.defaultPveHint')}</span>
+        </div>
+      ) : null}
 
       {showQuorumWarning ? (
         <Notice

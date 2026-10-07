@@ -330,18 +330,18 @@
     margin-left: 0;
   }
 
-  /* SSH 作用域切换条：标题、主机下拉、右侧统计各占一行（窄屏挤不下） */
-  .ssh-scope-bar {
+  /* 作用域切换条：标题、下拉、右侧统计各占一行（窄屏挤不下） */
+  .scope-bar {
     gap: 10px;
   }
 
   /* 「作用域」竖线分隔在换行后就不成立了 */
-  .ssh-scope-label {
+  .scope-label {
     padding-right: 0;
     border-right: none;
   }
 
-  .ssh-scope-meta {
+  .scope-meta {
     margin-left: 0;
     width: 100%;
   }

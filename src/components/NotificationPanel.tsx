@@ -93,7 +93,19 @@ export function NotificationPanel({ limit = 200, onNavigate }: NotificationPanel
           }}
           options={[
             { label: t('notif.filterAll'), value: 'all' },
-            { label: t('notif.filterUnread'), value: 'unread' },
+            {
+              /* 未读数挂在「未读」这一段上：读/未读的界线在筛选条这一层
+                 就能看出来，不必先点进去数一遍 */
+              label: (
+                <>
+                  {t('notif.filterUnread')}
+                  {unread > 0 ? (
+                    <span className="notif-seg-count">{unread}</span>
+                  ) : null}
+                </>
+              ),
+              value: 'unread',
+            },
           ]}
         />
         <span className="row-actions">
@@ -148,6 +160,11 @@ export function NotificationPanel({ limit = 200, onNavigate }: NotificationPanel
                   aria-hidden="true"
                 />
                 <span className="notif-feed-title">{item.title}</span>
+                {/* 读/未读在视觉上是「竖条 + 字重 + 底色」三条线索，
+                    读屏则只拿得到这一句 —— 否则未读与否完全听不出来 */}
+                {item.read ? null : (
+                  <span className="sr-only">{t('notif.unreadLabel')}</span>
+                )}
                 <span className="notif-item-time" title={formatDateTime(item.created)}>
                   {formatRelative(item.created)}
                 </span>

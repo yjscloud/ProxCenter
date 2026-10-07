@@ -1783,8 +1783,9 @@
 }
 
 /* --- 作用域切换条 --- */
-/* 这是整页的主控，用一层很淡的品牌色和品牌色描边把它从「内容卡片」里区分出来 */
-.ssh-scope-bar {
+/* 这是整页的主控，用一层很淡的品牌色和品牌色描边把它从「内容卡片」里区分出来。
+   SSH 安全（选主机）与节点页（选默认读取的 PVE）共用这一套外观。 */
+.scope-bar {
   display: flex;
   align-items: center;
   gap: 16px;
@@ -1801,7 +1802,10 @@
   box-shadow: var(--shadow-sm);
 }
 
-.ssh-scope-label {
+.scope-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   flex-shrink: 0;
   padding-right: 16px;
   border-right: 1px solid var(--border);
@@ -1810,8 +1814,12 @@
   color: var(--text-primary);
 }
 
+.scope-label svg {
+  color: var(--accent);
+}
 
-.ssh-scope-meta {
+
+.scope-meta {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -4833,22 +4841,71 @@
   margin-bottom: 12px;
 }
 
+/* 「未读」段上的计数：让「还剩几条没看」在工具栏这一层就成立，
+   不必点进列表数一遍 */
+.notif-seg-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: #ffffff;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1;
+  vertical-align: middle;
+}
+
 .notif-feed {
   display: flex;
   flex-direction: column;
 }
 
+/* --- 已读 / 未读的第一眼区分 ---
+   原先只有一层 8% 透明的品牌蓝底（--accent-dim），在白卡片上几乎看不出来；
+   而左侧圆点读没读都是「级别色 + 光晕」，等于没有读/未读信号。
+   现在未读叠三条互不依赖的线索，任何一条单独成立都够用：
+     1) 结构 —— 左侧 3px 品牌色竖条（灰度、色觉障碍下同样成立）；
+     2) 字重 —— 标题转 600 + 主文本色，已读行回落到常规字重与次级灰；
+     3) 颜色 —— 底色转蓝、圆点保留级别色与光晕。
+   已读行留等宽透明边框，两种状态的文字左边界不会来回跳；
+   悬停走中性灰、未读底走品牌蓝，两者不会被看混。 */
 .notif-feed-item {
-  padding: 11px 2px;
+  padding: 11px 12px;
+  border-left: 3px solid transparent;
   border-bottom: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .notif-feed-item:last-child {
   border-bottom: 0;
 }
 
+.notif-feed-item:hover {
+  background: var(--bg-hover);
+}
+
+/* 底色用「半透明品牌蓝」而不是「与卡片白底按比例混色」：弹窗与页面两种
+   容器底色不同，半透明色会各自叠出正确的效果。12% 是个折中——比原来的
+   8%（--accent-dim）明显，又不到「选中态」那种重量。 */
 .notif-feed-item.is-unread {
-  background: var(--accent-dim);
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.notif-feed-item.is-unread:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* 已读：圆点压暗并去掉光晕 —— 色相还留着（仍看得出是哪一级），但不再抢注意力 */
+.notif-feed-item:not(.is-unread) .notif-dot {
+  opacity: 0.38;
+  box-shadow: none;
 }
 
 .notif-feed-head {
@@ -4869,7 +4926,15 @@
   flex: 1;
   min-width: 0;
   font-size: var(--font-size-base);
-  font-weight: 500;
+  font-weight: var(--font-weight-normal);
+  color: var(--text-secondary);
+}
+
+/* 未读标题：加粗 + 主文本色。字重差是「一眼分得出」里最便宜的那一档，
+   而且不依赖颜色 —— 灰度打印、色觉障碍下同样成立 */
+.notif-feed-item.is-unread .notif-feed-title {
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 /* 折叠时只给一行预览：消息一多，逐条铺满全文会翻不到底 */

@@ -28,6 +28,8 @@ export interface UpdateInfo {
   can_apply: boolean;
   reason: string;
   manual: string[];
+  /** 未提交改动涉及的文件名；列在「为什么不能一键更新」下面，给用户一个下一步 */
+  dirty_paths?: string[];
 }
 
 /* -------------------------------------------------------------- 版本对照 */
@@ -79,6 +81,17 @@ export function UpdateNoticeLine({ status }: { status: UpdateInfo }) {
   return (
     <Notice tone="warning" title={t('update.reasonTitle')}>
       {status.reason}
+      {/* 把「有 N 处改动」落成具体文件名：用户扫一眼就知道是不是自己改的。
+          实测最常见的一处就是 package-lock.json —— 部署脚本跑 npm install 时
+          被重写的，看一眼就能放心点「继续更新」。 */}
+      {status.dirty_paths?.length ? (
+        <div className="mt-8">
+          <div className="fs-xs text-muted">{t('update.dirtyFiles')}</div>
+          <div className="mono fs-xs" style={{ whiteSpace: 'pre-wrap' }}>
+            {status.dirty_paths.join('\n')}
+          </div>
+        </div>
+      ) : null}
     </Notice>
   );
 }

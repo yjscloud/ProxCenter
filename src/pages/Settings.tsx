@@ -339,6 +339,7 @@ export function Settings() {
 
   return (
     <PageShell
+      className="settings-page"
       title={
         <>
           <IconSettings size={20} />

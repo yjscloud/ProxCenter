@@ -3621,6 +3621,8 @@ export interface UpdateGitInfo {
   /** 工作区有未提交改动 —— 一键更新会覆盖它们，所以默认被挡住 */
   dirty?: boolean;
   dirty_files?: number;
+  /** 改动的文件名（最多 8 个）—— 用户据此判断「这是不是我改的、要不要先提交」 */
+  dirty_paths?: string[];
 }
 
 /** 面板「是怎么装的」：这决定更新能不能一键做 */
@@ -3673,6 +3675,8 @@ export interface UpdateStatus {
   can_apply_dirty?: boolean;
   /** 工作区里未提交的改动数（can_apply_dirty 的说明里会用到） */
   dirty_files?: number;
+  /** 未提交改动涉及的文件名（最多 8 个）；界面列在「为什么不能一键更新」下面 */
+  dirty_paths?: string[];
   /** 不能一键更新的原因，直接展示给用户 */
   reason: string;
   deployment: UpdateDeployment;

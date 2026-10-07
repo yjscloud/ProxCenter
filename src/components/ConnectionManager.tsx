@@ -337,8 +337,10 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       token_secret: '',
       console_user: '',
       console_password: '',
-      // 新建连接默认校验证书（PVE_VERIFY_SSL，生产默认开启）
-      verify_ssl: configQuery.data?.verify_ssl_default ?? false,
+      /* 新建连接默认**不**校验证书：PVE 出厂用的是自签名证书，校验一开这台
+         主机当场连不上，而报错只说「证书校验失败」，第一次接入的人很难定位。
+         需要校验证书的（生产、已导入 CA）在表单里自己打开即可。 */
+      verify_ssl: false,
       node_default: '',
     });
     setSecretAlreadySet(false);

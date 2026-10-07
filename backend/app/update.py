@@ -293,6 +293,19 @@ def in_docker() -> bool:
     return Path("/.dockerenv").exists() or os.environ.get("PROXCENTER_IN_DOCKER") == "1"
 
 
+def _porcelain_path(line: str) -> str:
+    """从 ``git status --porcelain`` 的一行里取出文件名。
+
+    格式是 ``XY <path>``（重命名是 ``XY <old> -> <new>``），XY 恒为两个字符，
+    所以第 4 个字符起就是文件名。带空格或以非 ASCII 开头的路径会被 git 加上引号，
+    这里一并剥掉，免得界面上显示成 ``"\\346\\226\\207\\344\\273\\266"``。
+    """
+    text = line[3:] if len(line) > 3 else line
+    if " -> " in text:
+        text = text.split(" -> ", 1)[1]
+    return text.strip().strip('"')
+
+
 def git_info(root: Path = ROOT) -> Dict[str, Any]:
     """安装目录的 git 状态（只读命令）。"""
     code, _ = _run(["git", "rev-parse", "--is-inside-work-tree"], root)
@@ -306,7 +319,7 @@ def git_info(root: Path = ROOT) -> Dict[str, Any]:
     tag_code, tag = _run(["git", "describe", "--tags", "--exact-match"], root)
     if tag_code != 0:
         tag = ""
-    code, dirty = _run(["git", "status", "--porcelain"], root)
+    code, dirty = _run(["git", "status", "--porcelain", "--untracked-files=no"], root)
     files = [line for line in dirty.splitlines() if line.strip()] if code == 0 else []
     return {
         "is_git": True,
@@ -317,6 +330,10 @@ def git_info(root: Path = ROOT) -> Dict[str, Any]:
         "tag": tag,
         "dirty": bool(files),
         "dirty_files": len(files),
+        # 具体是哪些文件：只写「有 N 处改动」时用户没有下一步可走 —— 实测最常见的
+        # 一处改动就是 ``package-lock.json``（部署脚本跑 npm install 时被重写），
+        # 点开一看就能自己判断「这不是我改的，可以放心继续」。
+        "dirty_paths": [_porcelain_path(line) for line in files[:8]],
     }
 
 
@@ -685,6 +702,8 @@ echo "PROGRESS 30 switch"
 # 找回 —— 更新面板不该顺手弄丢用户手里的改动。这里用**普通** checkout 而不是
 # `--force`：真遇到冲突就报错退出，而不是把本地文件覆盖掉。
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  # 只看已跟踪文件的改动：与 git_info() 的判断口径必须完全一致，否则会出现
+  # 「面板说有改动、点了继续更新又不 stash」的死胡同（未跟踪文件不参与，见那里）。
   echo "[$(date -Is)] 工作区有未提交改动，先 stash 后更新（git stash list 可找回）"
   git stash push -m "proxcenter-update-{tag}" || echo "stash 失败，继续尝试切换版本"
 fi
@@ -970,6 +989,8 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         # 条件全满足、只差「工作区干净」：界面据此给次级按钮（先 stash 本地改动再更新）
         "can_apply_dirty": ready_dirty,
         "dirty_files": int((dep.get("git") or {}).get("dirty_files") or 0),
+        # 哪些文件脏：界面把它列在「为什么不能一键更新」下面，用户才知道下一步做什么
+        "dirty_paths": list((dep.get("git") or {}).get("dirty_paths") or []),
         "reason": reason,
         "deployment": {
             "form": dep.get("form"),

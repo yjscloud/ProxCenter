@@ -525,8 +525,8 @@ export function SshSecurity() {
           <span className="section-hint">{t('ssh.scopeSectionHint')}</span>
         </div>
 
-        <div className="ssh-scope-bar">
-          <span className="ssh-scope-label">{t('ssh.scopeLabel')}</span>
+        <div className="scope-bar">
+          <span className="scope-label">{t('ssh.scopeLabel')}</span>
           <Select
             aria-label={t('ssh.scopeLabel')}
             value={scopeId}
@@ -534,7 +534,7 @@ export function SshSecurity() {
             options={scopeOptions}
             style={{ maxWidth: 280 }}
           />
-          <span className="ssh-scope-meta">
+          <span className="scope-meta">
             {fleet ? (
               <Badge
                 variant={

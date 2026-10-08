@@ -16,6 +16,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { portsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { AskAiButton } from '../components/AskAiButton';
 import { LocalHostNotice, useLocalHost } from '../components/LocalHostNotice';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
@@ -914,6 +915,10 @@ export function PortGuard() {
       subtitle={t('ports.subtitle')}
       actions={
         <div className="form-row">
+          {/* 看完暴露面，顺手让 AI 结合进程与告警一起判断哪些该收紧 */}
+          {view === 'host' && hostId ? (
+            <AskAiButton hostId={hostId} question={t('ai.askFromPorts')} />
+          ) : null}
           {canManage ? (
             <Button
               size="sm"

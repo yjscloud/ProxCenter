@@ -21,6 +21,7 @@ from .pve import (
     set_request_connection,
 )
 from .routers import (
+    ai as ai_router,
     alerts,
     audit,
     auth,
@@ -54,6 +55,8 @@ from .routers import (
     portguard as ports_router,
     # 每用户的界面偏好（仪表盘布局等）
     prefs as prefs_router,
+    # 统一处置（预览 → 二次确认 → 执行）；动作实现在 app.remediation
+    remediation as remediation_router,
     roles,
     # 后台作业状态与配置（/api/scheduler/*）；调度实现在 app.scheduler
     scheduler as scheduler_router,
@@ -73,6 +76,11 @@ from .routers import (
     reinstall as reinstall_router,
     vms,
 )
+from . import aichat
+from . import aiaudit
+# 远程终端：进程退出时要主动断开挂着的 SSH 交互会话（见 lifespan）
+from . import aiterm
+from . import alert_rootcause
 from . import alerting
 from . import apitokens
 from . import certs as cert_manager
@@ -110,6 +118,10 @@ logger = logging.getLogger("ProxCenter")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
+    # AI 排查助手：谁在什么时候让 AI 在哪台机器上跑了什么命令，必须可追溯
+    await aiaudit.init_table()
+    # AI 会话：把「一次性排查」升级成可追问的对话（对话线程 + 消息）
+    await aichat.init_table()
     await alerting.init_table()
     await cert_manager.init_table()
     await ownership.init_table()
@@ -177,8 +189,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler.start()
     yield
 
+    # 停止路径**逐步打点**：这几步里任何一步卡住，systemd 都会在 TimeoutStopSec
+    # （15 秒）到点后直接 SIGKILL —— 进程被硬杀，数据库连接池与远端 SSH 都来不及
+    # 收口，而且日志里只会留下一句「stop-sigterm timed out」，看不出卡在哪。
+    # 打点之后，最后一条日志指向的就是卡住的那一步。
+    logger.info("正在停止：后台调度器")
     await scheduler.stop()
+    # 打开的远程终端各挂着一条 SSH 连接：进程退出前主动收口，
+    # 让远端把登录会话干净地关掉，而不是留一堆半死的连接。
+    logger.info("正在停止：远程终端")
+    await aiterm.close_all()
+    logger.info("正在停止：HTTP 客户端")
     await client.aclose()
+    logger.info("正在停止：数据库连接池")
     await database.close_pool()
     logger.info("Shutdown complete")
 
@@ -588,9 +611,13 @@ app.include_router(ip_pools.router)
 app.include_router(firewall.router)
 app.include_router(ssh.router)
 app.include_router(baseline.router)
+# AI 排查助手：只读解读巡检结果（配置仅管理员可改）
+app.include_router(ai_router.router)
 app.include_router(ports_router.router)
 # 应急隔离挂在 /api/vms/{node}/{vmid}/quarantine，与 vms 共用归属校验
 app.include_router(isolation.router)
+# 统一处置：/api/remediation/actions|preview|apply（预览 + 二次确认 + 审计）
+app.include_router(remediation_router.router)
 app.include_router(hostaudit.router)
 app.include_router(users.router)
 app.include_router(roles.router)
@@ -610,6 +637,36 @@ app.include_router(search.router)
 async def version() -> Dict[str, Any]:
     info = await site.get_site_info()
     return {"name": info["name"], "version": __version__, "api": "v1"}
+
+
+# 未知的 /api/* 路径一律回 404（**所有方法**）。
+#
+# 为什么非加不可：下面的 SPA 兜底是 ``GET /{full_path:path}``，它匹配**任何**路径。
+# POST 到一个不存在的接口时，Starlette 于是发现「路径有匹配、方法不对」，回
+# **405 Method Not Allowed** —— 前端把 detail 原样显示，用户看到「Method Not
+# Allowed」，会去翻请求方法写错了没有，而真相通常是后端还跑着旧版本、这个接口
+# 根本没发布。405 在这里说了假话，404 才是实话。
+#
+# 必须注册在**所有**真实路由之后：FastAPI 按注册顺序匹配，先注册的赢。
+@app.api_route(
+    "/api/{rest:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+)
+async def api_not_found(rest: str) -> JSONResponse:
+    # detail 要自己把话说全 —— 前端是**原样显示**它的。只说 "Not Found" 的话用户
+    # 拿不到任何线索，而这里最常见的原因恰恰是「后端还跑着旧版本，这个接口根本
+    # 还没发布」，那句话必须出现，否则排查方向会整个跑偏。
+    return JSONResponse(
+        status_code=404,
+        content={
+            "detail": i18n.pick(
+                f"接口不存在：/api/{rest}（后端可能还在跑旧版本，重启后再试）",
+                f"No such endpoint: /api/{rest} (the backend may still be running "
+                "an older build — restart and retry)",
+            )
+        },
+    )
 
 
 # ------------------------------------------------------------ front-end UI
@@ -691,6 +748,10 @@ UPDATE_CHECK_FIRST_DELAY = update.FIRST_DELAY
 FRP_WATCHDOG_INTERVAL = 60
 # 首次延迟 20 秒：启动时要先跑配置迁移与数据库初始化，别抢在前面
 FRP_WATCHDOG_FIRST_DELAY = 20
+# 告警根因聚合：跟着告警巡检的节奏（每分钟一轮判定）走，但这只是「检查」的频率 ——
+# 真正推送由告警指纹与冷却压制，同一批告警不会反复推
+ROOTCAUSE_INTERVAL = 5 * ALERT_INTERVAL
+ROOTCAUSE_FIRST_DELAY = 2 * ALERT_INTERVAL
 
 
 def _job(
@@ -713,6 +774,18 @@ def _job(
         default_interval=interval,
         summarize=summarize,
         first_delay=first_delay,
+    )
+
+
+def _rootcause_summary(result: Any) -> str:
+    """告警根因聚合的摘要：跳过原因 / 参与聚合的归属人数 + 推送份数。"""
+    if not isinstance(result, dict):
+        return ""
+    if result.get("skipped"):
+        return str(result["skipped"])
+    return (
+        f"聚合 {int(result.get('owners') or 0)} 人，"
+        f"推送 {int(result.get('sent') or 0)} 份"
     )
 
 
@@ -842,6 +915,18 @@ scheduler.register(
         backupguard.evaluate,
         BACKUP_CHECK_INTERVAL,
         summarize=_count("命中"),
+    )
+)
+scheduler.register(
+    _job(
+        "alert_rootcause",
+        "告警根因聚合",
+        "安全巡检",
+        "多条告警疑似同源时聚合成一条根因报告并推送",
+        alert_rootcause.run_once,
+        ROOTCAUSE_INTERVAL,
+        summarize=_rootcause_summary,
+        first_delay=ROOTCAUSE_FIRST_DELAY,
     )
 )
 scheduler.register(

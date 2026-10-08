@@ -26,9 +26,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+#: Guest Agent / 容器网卡接口的等待上限（秒）。
+#:
+#: 原先定的是 2 秒，实测偏保守：**能应答的机器全在 217ms 内回来**，剩下的是永远
+#: 不回话的（guest 里没装 / 没跑 agent，PVE 会一直等它）。但列表是并发发的，
+#: 整张列表的响应时间等于「最慢的那一台」—— 这个值就是列表的耗时代价，所以收紧
+#: 到 1.2 秒（仍是实测峰值的 5 倍余量）。
+AGENT_TIMEOUT_SECONDS = 1.2
+
+# 进程内缓存，见下面「缓存」一节的说明。
+HIT_TTL_SECONDS = 60.0
+MISS_TTL_SECONDS = 120.0
+
+#: ``连接|节点|VMID|类型`` → (过期时刻, 地址)。空串表示「问过了，没有」。
+_cache: Dict[str, Tuple[float, str]] = {}
 
 #: cloud-init ``ipconfigN`` / 容器 ``netN`` 里的 ``ip=`` 取值
 IPCONFIG_RE = re.compile(r"(?:^|,)\s*ip=([^,]+)")
@@ -116,6 +132,69 @@ def static_ip_from_config(cfg: Dict[str, Any]) -> str:
     return ""
 
 
+# ------------------------------------------------------------------------------- 缓存
+#
+# 为什么需要：解析一台机器的地址要问 PVE（虚拟机的 Guest Agent / 容器的网卡接口），
+# 每台一两次请求，但**代价差得很远** —— agent 正常应答是几毫秒到两百毫秒，而 guest
+# 里没跑 agent、PVE 一直等它回话的那台会一直拖到超时上限。实测 12 台虚拟机里 11 台
+# 在 217ms 内返回，唯独一台每次都拖满两秒；列表是并发发的（``parallel``），于是
+# **一台慢机把整张列表钉死在 2 秒上**，用户每次刷新虚拟机列表都要等这么久。
+#
+# 所以加一层进程内缓存（与 :mod:`app.guest_created` 同一套取舍：多 worker 各持一份，
+# 代价是每个 worker 各请求一轮，收益是列表本身不再为此变慢）：
+#
+# * **有值**的条目按 :data:`HIT_TTL_SECONDS`（60 秒）过期。刻意短命：地址是会变的
+#   （DHCP 续租、换网卡、改静态下发），不能像创建时间那样缓存一整天；
+# * **没值**的条目按 :data:`MISS_TTL_SECONDS`（120 秒）过期 —— 这才是上面那台慢机
+#   的解药：问过一次之后两分钟内不再问它。代价是它万一把 agent 跑起来了，最晚两
+#   分钟后才会显示地址（在那之前本来也一直显示「—」）；
+# * 取不到（异常）与「确实没有」按同一条处理：对调用方来说都是「这台现在没有地址」。
+#
+# 缓存键带**连接**：多台 PVE 上可以有同名节点、同 VMID 的机器，少一段就会把别人家
+# 的地址显示到这台机器上（与 :func:`guest_created.cache_key` 同一条理由）。
+
+
+def _key(conn_id: Any, node: Any, vmid: Any, guest_type: Any) -> str:
+    """缓存键：连接 + 节点 + VMID + 类型。四段都不能省，理由见上。"""
+    return f"{conn_id or ''}|{node or ''}|{vmid or ''}|{guest_type or ''}"
+
+
+def cache_key(guest: Dict[str, Any]) -> str:
+    """:func:`_key` 的列表项版本（键的形状必须与 :func:`forget` 一致）。"""
+    return _key(
+        guest.get("connection_id"),
+        guest.get("node"),
+        guest.get("vmid"),
+        guest.get("type"),
+    )
+
+
+def cached(guest: Dict[str, Any]) -> Optional[str]:
+    """缓存里现有的地址；没有或已过期都返回 ``None``，且**不会**去请求 PVE。"""
+    key = cache_key(guest)
+    hit = _cache.get(key)
+    if hit is None:
+        return None
+    if time.time() >= hit[0]:
+        _cache.pop(key, None)
+        return None
+    return hit[1]
+
+
+def forget(conn_id: Any, node: Any, vmid: Any, guest_type: Any) -> None:
+    """忘掉一台机器（机器被删除 / 重建时调），下次老老实实重新解析。
+
+    参数与 :func:`guest_created.drop_record` 对齐：删除机器那两处是并排调用的，
+    形状一样读起来才知道它们在做同一件事。
+    """
+    _cache.pop(_key(conn_id, node, vmid, guest_type), None)
+
+
+def clear() -> None:
+    """清空进程内缓存（测试与「PVE 连接被改动」时用）。"""
+    _cache.clear()
+
+
 async def _fetch_config(
     client: Any, node: str, vmid: Any, is_ct: bool, timeout: float
 ) -> Dict[str, Any]:
@@ -151,16 +230,51 @@ async def _container_iface_ip(client: Any, node: str, vmid: Any, timeout: float)
     return pick_container_ip(interfaces or [])
 
 
-async def resolve(client: Any, guest: Dict[str, Any], *, timeout: float = 2.0) -> str:
+async def resolve(
+    client: Any, guest: Dict[str, Any], *, timeout: float = AGENT_TIMEOUT_SECONDS
+) -> str:
     """列表用：尽力解析一台客户机的 IP（虚拟机与容器都走这里）。
 
     ``guest`` 就是列表项（或 PVE 的 cluster resources 行）：至少要有 ``node`` /
     ``vmid``，并带上 ``type``（``lxc`` 或其它）与 ``status``。
+
+    带进程内缓存（见上面「缓存」一节）：列表每刷新一次都会把每台机器重新问一遍，
+    而其中总有一两台会一直拖到超时 —— 缓存让这种机器两分钟内只问一次。
     """
+    if not guest.get("node") or guest.get("vmid") is None:
+        return ""
+
+    # 只在**带连接 id** 时走缓存。列表项都带（``collect_vms`` / ``list_containers``
+    # 在解析前就填好了 connection_id）；而「手上只有 node/vmid」的一次性调用刻意
+    # 排除在外，有两个理由：
+    #
+    # * 那些场景本来就是**反复重试**等地址的（见 vms.py 的
+    #   ``_await_managed_registration``：每 20 秒问一次，等 DHCP 机器自报地址），
+    #   缓存会把重试变成「两分钟才试一次」；
+    # * 没有连接就分不清两台 PVE 上同名节点、同 VMID 的机器，可能把别人家的地址
+    #   显示到这台机器上。
+    key = cache_key(guest) if guest.get("connection_id") else ""
+    if key:
+        hit = _cache.get(key)
+        if hit is not None:
+            if time.time() < hit[0]:
+                return hit[1]
+            _cache.pop(key, None)
+
+    ip = await _resolve_uncached(client, guest, timeout=timeout)
+    if key:
+        # 有值与没值用不同时长：地址会变，有值也只是一分钟；而「没有」要压住那台
+        # 拖满超时的机器，否则每次列表刷新都要陪它等一遍。
+        _cache[key] = (time.time() + (HIT_TTL_SECONDS if ip else MISS_TTL_SECONDS), ip)
+    return ip
+
+
+async def _resolve_uncached(
+    client: Any, guest: Dict[str, Any], *, timeout: float
+) -> str:
+    """真正去问 PVE 的那部分（顺序与降级规则见模块说明）。"""
     node = guest.get("node")
     vmid = guest.get("vmid")
-    if not node or vmid is None:
-        return ""
     is_ct = str(guest.get("type") or "") == "lxc"
     running = str(guest.get("status") or "") == "running"
 

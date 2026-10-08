@@ -22,7 +22,7 @@ import { IconCheck, IconTrash } from './Icons';
 import { formatDateTime, formatRelative } from '../utils/format';
 import { useToast } from '../hooks/useToast';
 import { useT } from '../i18n';
-import type { AppNotification } from '../api/types';
+import type { AppNotification, NotificationListResult } from '../api/types';
 
 export interface NotificationPanelProps {
   /** 一次拉多少条 */
@@ -46,10 +46,48 @@ export function NotificationPanel({ limit = 200, onNavigate }: NotificationPanel
     staleTime: 10_000,
   });
 
+  /**
+   * 标记已读。
+   *
+   * 这里刻意**不**整表重取（``invalidateQueries``）：当前若在「未读」筛选下，
+   * 重取走的是 ``unread_only=true``，刚被标成已读的这一条会被过滤掉 ——
+   * 用户点开它要看正文的那一刻，行连同正文一起消失，列表还变成「暂无未读」。
+   * 也就是「点击未读无法读取内容」。
+   *
+   * 改成就地更新缓存：这一条转成已读样式留在原地（正文继续可读），未读数同步
+   * 更新；等用户切走再回来（换筛选 = 换 query key，重新取一次）时，它自然不在
+   * 「未读」里了 —— 这正是预期：读完了它就不该再占着未读列表。
+   */
   const markRead = useMutation({
     mutationFn: (body: { ids?: number[]; all?: boolean }) => notificationsApi.markRead(body),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['notifications'] });
+    onSuccess: (res, body) => {
+      const ids = body.ids ?? [];
+      qc.setQueryData<NotificationListResult>(
+        ['notifications', 'panel', filter, limit],
+        (old) => {
+          if (!old) return old;
+          if (body.all) {
+            // 「全部标为已读」是用户主动点的动作：未读视图清空才符合预期，
+            // 与「点开某一条」要留在原地不是一回事
+            return filter === 'unread'
+              ? { ...old, items: [], unread: res.unread }
+              : {
+                  ...old,
+                  items: old.items.map((item) => ({ ...item, read: true })),
+                  unread: res.unread,
+                };
+          }
+          return {
+            ...old,
+            items: old.items.map((item) =>
+              ids.includes(item.id) ? { ...item, read: true } : item,
+            ),
+            unread: res.unread,
+          };
+        },
+      );
+      // 顶栏铃铛的角标是另一个 query key，单独同步一次
+      qc.setQueryData(['notifications', 'unread'], { unread: res.unread });
     },
   });
 

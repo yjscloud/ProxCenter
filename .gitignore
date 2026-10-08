@@ -45,6 +45,12 @@ backup/
 # 属于本地工作文档 —— 放进公开仓库等于把推广计划摊开给人看
 outreach/
 
+# 推广素材（AI 生成图 + 真实截图合成图 + 投放文案）：
+# 体积大、无版本价值，且是对外投放物料而非项目代码，不进仓库。
+# 截图原件放在 /data/image（仓库外），这里是合成产物。
+generated-images/
+marketing/
+
 # 浏览器自动化 / 调试留下的产物：
 #   .playwright-cli/   playwright-cli 的会话目录
 #   login.yaml         登录页的无障碍快照（调样式时抓的）

@@ -16,11 +16,13 @@ import {
   backupsApi,
   clusterApi,
   nodesApi,
+  sshFleetApi,
   storagesApi,
   vmsApi,
 } from '../api/endpoints';
 import { setPageConnection, errorMessage, isNotImplemented } from '../api/client';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
+import { AskAiButton } from '../components/AskAiButton';
 import { Breadcrumb } from '../components/Topbar';
 import {
   Card,
@@ -225,6 +227,17 @@ export function VmDetail() {
     retry: false,
   });
 
+  /* ---- 这台虚拟机对应的受管主机 ----
+     面板下发的虚拟机会在「SSH 安全 → 受管主机」里登记一条记录（靠 vmid 关联，
+     见 sshremote.remember_host）。有它才能让 AI 助手直接连上去查这**台机器**；
+     认不出来就只带问题过去，由助手页让用户自己挑主机（不替他默认选一台）。 */
+  const sshHostsQuery = useQuery({
+    queryKey: ['ssh', 'hosts'],
+    queryFn: sshFleetApi.hosts,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   /* ---- 最近任务 ---- */
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', node, 20],
@@ -245,6 +258,34 @@ export function VmDetail() {
   }, [tasksQuery.data, vmid]);
 
   const vm: VmDetailType | undefined = vmQuery.data;
+
+  /**
+   * 这台虚拟机对应哪台受管主机（给「问 AI」用）。
+   *
+   * 两级认法，宽到窄：
+   *  1. ``vmid`` —— 面板下发的机器登记时就带了它，最准（vmid 在集群内唯一）；
+   *  2. ``IP``  —— **手工添加**的受管主机没有 vmid，但地址往往就是这台机器的地址
+   *     （真实案例：手工登记的 ``test-kvm-web-docker-7`` 只差这一条才对得上）。
+   *
+   * 都认不出来就返回空串：助手页会提示「请先确认要排查哪台机器」，而不是
+   * 悄悄拿默认的第一台顶上 —— 那会让 AI 去查另一台机器。
+   */
+  const managedHostId = useMemo(() => {
+    const hosts = sshHostsQuery.data ?? [];
+    const byVmid = hosts.find(
+      (item) => item.vmid != null && Number(item.vmid) === Number(vmid),
+    );
+    if (byVmid) return byVmid.id;
+    const ips = new Set<string>();
+    for (const iface of vm?.agent_interfaces ?? []) {
+      for (const addr of iface.ip_addresses ?? []) {
+        const ip = String(addr.ip_address || '').trim();
+        if (ip) ips.add(ip);
+      }
+    }
+    if (ips.size === 0) return '';
+    return hosts.find((item) => ips.has(String(item.host || '').trim()))?.id ?? '';
+  }, [sshHostsQuery.data, vmid, vm?.agent_interfaces]);
 
   /* 「更多操作」菜单按 VmSummary 的形态工作（同一套菜单也会用在别处）。
      这里 useMemo 缓一份：详情页每次轮询都会重渲染，若传对象字面量进子组件，
@@ -437,6 +478,14 @@ export function VmDetail() {
           />
           <div className="detail-title-row">
             <span className="detail-name">{vm.name || `VM ${vmid}`}</span>
+            {/* 机器出问题时的下一步：带着这台虚拟机去问 AI。它若是面板下发的
+                机器（已登记为受管主机），AI 能直接连上去查；否则只带上问题，
+                到助手页自己挑一台主机（提示文案也据此不同）。 */}
+            <AskAiButton
+              hostId={managedHostId || undefined}
+              question={t('ai.askFromVm', { name: vm.name || `VM ${vmid}` })}
+              title={managedHostId ? t('ai.askFromVmHint') : t('ai.askFromVmNoHost')}
+            />
             {/* 改名放在标题旁：它修饰的就是这个名字本身，在概览卡片里再放一个
                 反而要用户先切回概览页 */}
             {canWrite ? (

@@ -245,6 +245,23 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
         ],
     },
     {
+        "key": "ai",
+        "label": "AI 排查助手",
+        "permissions": [
+            {
+                "key": "ai.exec",
+                "label": "上机执行",
+                "desc": "授权 AI 在目标主机上执行只读诊断命令（白名单限制、全程记入审计）。默认仅管理员",
+            },
+            {
+                "key": "ai.terminal",
+                "label": "远程终端",
+                "desc": "在受管主机上打开可交互的 SSH 终端，直接在浏览器里操作。"
+                "这等于把该主机的登录凭据交给使用者，默认仅管理员",
+            },
+        ],
+    },
+    {
         "key": "ports",
         "label": "端口与进程",
         "permissions": [

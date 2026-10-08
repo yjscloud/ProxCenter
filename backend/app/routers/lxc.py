@@ -512,6 +512,8 @@ async def delete_container(
     await security.audit(request, user, "ct.delete", target=f"{node}/{vmid}")
     # 连同创建时间记录一起删：VMID 回收后旧记录会贴到新建的同号容器上
     await guest_created.drop_record(_op_connection(), node, vmid, "lxc")
+    # 同虚拟机：IP 缓存一并清掉，免得贴在重建的同号容器上
+    guestip.forget(_op_connection(), node, vmid, "lxc")
     return {"task": task}
 
 

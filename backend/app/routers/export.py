@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from .. import alerting, exporting, ownership, security, store
+from .. import aiaudit, alerting, exporting, i18n, ownership, security, store
 from ..formatters import normalize_task
 from ..pve import (
     ProxmoxError,
@@ -341,6 +341,97 @@ async def export_alerts(
             "阈值",
             "结果",
             "详情",
+        ],
+        rows=rows(),
+    )
+
+
+# ------------------------------------------------------------------ AI 排查记录
+#
+# 一行 = 一次工具调用，会话字段（谁、哪台机、哪个模型、耗时）在每行重复。
+# 选这个粒度是因为导出的用途是**追责与核对**：「AI 在我机器上到底做了什么」
+# 只能一行一条命令地看；而按会话导，工具明细就被压进一个单元格里成了死数据。
+#
+# 用 LEFT JOIN，所以只解读、没调用工具的那次排查也有一行（工具列为空）——
+# 「AI 没动手」本身也是需要留痕的事实。
+@router.get("/ai")
+async def export_ai(
+    request: Request,
+    host_id: Optional[str] = None,
+    user: Dict[str, Any] = Depends(security.require_permission("baseline.view")),
+):
+    """导出 AI 排查记录（会话 + 工具调用明细）。普通用户只导得出自己的。"""
+    username = (
+        "" if str(user.get("role") or "") == "admin" else str(user.get("username") or "")
+    )
+
+    await security.audit_read(
+        request,
+        user,
+        "ai.export",
+        target="ai_records",
+        detail=f"username={username or '*'} host_id={host_id or '*'}",
+    )
+
+    # 表头跟着界面语言走：导出文件多半会被转发给同事，英文界面的人拿到一张
+    # 中文表头的表会很别扭。（其余四个导出的表头是早年硬编码的中文，尚未统一。）
+    mode_labels = {"agent": i18n.tr("工具排查"), "digest": i18n.tr("仅解读")}
+    status_labels = {
+        "done": i18n.tr("完成"),
+        "failed": i18n.tr("失败"),
+        "running": i18n.tr("进行中"),
+    }
+
+    async def rows() -> AsyncIterator[Sequence[Any]]:
+        async for item in aiaudit.stream_records(
+            username=username, host_id=host_id or ""
+        ):
+            ok = item.get("ok")
+            yield [
+                _ts(item.get("created")),
+                item.get("username") or "",
+                item.get("host_name") or item.get("host_id") or "",
+                mode_labels.get(str(item.get("mode") or ""), item.get("mode") or ""),
+                item.get("model") or item.get("provider") or "",
+                status_labels.get(
+                    str(item.get("status") or ""), item.get("status") or ""
+                ),
+                item.get("steps") or 0,
+                item.get("tool_calls") or 0,
+                item.get("call_step") if item.get("call_step") is not None else "",
+                item.get("tool") or "",
+                item.get("args") or "",
+                item.get("command") or "",
+                "" if ok is None else (i18n.tr("成功") if ok else i18n.tr("失败")),
+                item.get("call_ms") if item.get("call_ms") is not None else "",
+                item.get("output") or "",
+                item.get("total_tokens") or 0,
+                item.get("duration_ms") or 0,
+                item.get("error") or "",
+            ]
+
+    return exporting.csv_attachment(
+        filename=f"{i18n.tr('AI排查记录')}-{_stamp()}.csv",
+        ascii_filename=f"ai-inspection-records-{_stamp()}.csv",
+        header=[
+            _time_header(i18n.tr("时间")),
+            i18n.tr("用户"),
+            i18n.tr("主机"),
+            i18n.tr("模式"),
+            i18n.tr("模型"),
+            i18n.tr("状态"),
+            i18n.tr("轮次"),
+            i18n.tr("工具调用数"),
+            i18n.tr("步骤"),
+            i18n.tr("工具"),
+            i18n.tr("参数"),
+            i18n.tr("命令"),
+            i18n.tr("结果"),
+            i18n.tr("耗时(ms)"),
+            i18n.tr("输出"),
+            i18n.tr("Tokens"),
+            i18n.tr("总耗时(ms)"),
+            i18n.tr("错误"),
         ],
         rows=rows(),
     )

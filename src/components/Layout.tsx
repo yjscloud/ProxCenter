@@ -2,7 +2,7 @@
    ProxCenter — Layout 主布局
    ========================================================================== */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { Suspense, useEffect, useState, type ReactNode } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import {
   Sidebar,
@@ -14,6 +14,7 @@ import { Topbar } from './Topbar';
 import { UpdateNotice } from './UpdateNotice';
 import { CommandPalette } from './CommandPalette';
 import { ErrorBoundary } from './ErrorBoundary';
+import { Spinner } from './ui/Spinner';
 import { useAuth } from '../hooks/useAuth';
 import { useUiPrefs } from '../hooks/useUiPrefs';
 import { useTaskStream } from '../hooks/useWebSocket';
@@ -141,7 +142,13 @@ export function Layout() {
             )
           ) : (
             <ErrorBoundary>
-              <Outlet />
+              {/* 页面是按需加载的（见 App.tsx 的 lazyPage）：这道边界只罩住
+                  内容区 —— 切页时侧边栏与顶栏原地不动，不会整屏闪一下加载态。
+                  chunk 取不下来（断网、发版后旧的 hash 被清掉）时抛出的错会落到
+                  外面的 ErrorBoundary，用户看到的是重试提示而不是白屏。 */}
+              <Suspense fallback={<PageLoading />}>
+                <Outlet />
+              </Suspense>
             </ErrorBoundary>
           )}
         </main>
@@ -155,6 +162,21 @@ export function Layout() {
 
       {/* 命令面板挂在 Layout 上：它的开关状态要同时被全局快捷键与顶栏按钮驱动 */}
       <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
+    </div>
+  );
+}
+
+/**
+ * 按需加载页面的等待态。
+ *
+ * 只占内容区，不遮侧边栏与顶栏 —— 页面 chunk 一般只有几十 KB，正常网络下这点
+ * 空白一闪而过；用全屏加载态反而会「整屏黑一下再回来」，比等它加载完更晃眼。
+ */
+function PageLoading() {
+  const t = useT();
+  return (
+    <div className="page-loading" role="status" aria-label={t('shell.loadingPage')}>
+      <Spinner size={24} label={t('shell.loadingPage')} />
     </div>
   );
 }

@@ -12,10 +12,10 @@
    * **异常登录告警策略**：阈值、冷却、通知人，对所有主机生效。
    ========================================================================== */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { sshApi, sshFleetApi } from '../api/endpoints';
+import { lxcApi, sshApi, sshFleetApi, vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { PageShell } from '../components/Layout';
 import { LocalHostCard } from '../components/LocalHostNotice';
@@ -32,6 +32,7 @@ import { UserSelect } from '../components/ui/UserSelect';
 import { PagerBar, usePaged } from '../hooks/usePaged';
 import {
   IconAlert,
+  IconLink,
   IconPlus,
   IconServer,
   IconShield,
@@ -102,6 +103,35 @@ export function SshSecurityConfig() {
   });
 
   const hosts = hostsQuery.data ?? [];
+  /* 「这台主机对应哪台虚拟机」的可选列表。
+     认机器靠 vmid 而不是地址：地址会变、也会撞车（两台机器写反、同网段复用），
+     而 vmid 在集群内唯一。面板下发的机器自带这个关联，不需要在这里选。 */
+  const vmsQuery = useQuery({
+    queryKey: ['vms', 'all'],
+    queryFn: () => vmsApi.list(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const guests = useMemo(
+    () => (vmsQuery.data ?? []).filter((vm) => !vm.template),
+    [vmsQuery.data],
+  );
+  const guestOptions = useMemo(
+    () => [
+      { label: t('sshConfig.bindGuestNone'), value: '' },
+      ...guests.map((vm) => ({
+        label: `${vm.name || vm.vmid}（${vm.node}/${vm.vmid}）`,
+        value: `${vm.node}/${vm.vmid}`,
+      })),
+    ],
+    [guests, t],
+  );
+  /** 当前草稿绑的是哪台：Select 的 value 就是 `node/vmid` 这个组合键 */
+  const guestValue = (() => {
+    if (!hostDraft) return '';
+    const vmid = hostDraft.vmid as number | null | undefined;
+    return vmid ? `${String(hostDraft.node ?? '')}/${vmid}` : '';
+  })();
   const policy = overviewQuery.data?.policy ?? null;
   const hostPage = usePaged(hosts, 'hosts');
 
@@ -143,6 +173,104 @@ export function SshSecurityConfig() {
       use_sudo: false,
       log_source: 'auto',
       enabled: true,
+      node: '',
+      vmid: null,
+      conn_id: '',
+    });
+  };
+
+  /** 还没关联虚拟机的手工主机 —— 自动关联只处理这批，面板下发的自带关联 */
+  const bindable = hosts.filter((row) => row.origin !== 'panel' && !row.vmid);
+
+  /**
+   * 按地址自动关联「受管主机 → 虚拟机」。
+   *
+   * 只在**恰好一台** guest 的地址与该主机地址完全一致时才绑。两个候选说明地址
+   * 重复了 —— 那就是赌，不是认，宁可跳过去让人看一眼。没候选就说明这台主机压根
+   * 不在集群里（物理机、别的集群），同样跳过。
+   *
+   * 走的是平常的 PUT（同一套校验、同一份审计、同样要二次确认），不另开后端接口：
+   * 一次性的数据整理不值得加一条只有它自己会用的端点。
+   */
+  const autoBindGuests = async () => {
+    const pending = bindable;
+    if (pending.length === 0) return;
+    setBusy(true);
+    try {
+      /* 键与虚拟机 / 容器列表页一致：先去过那些页面的话，这份数据已经在缓存里 */
+      const [vms, lxcs] = await Promise.all([
+        qc.fetchQuery({
+          queryKey: ['vms', 'with-ip', 'all'],
+          queryFn: () => vmsApi.list(undefined, { withIp: true, type: 'qemu' }),
+          staleTime: 60_000,
+        }),
+        qc.fetchQuery({
+          queryKey: ['lxc', 'with-ip', 'all'],
+          queryFn: () => lxcApi.list(undefined, { withIp: true }),
+          staleTime: 60_000,
+        }),
+      ]);
+      const guests = [...(vms ?? []), ...(lxcs ?? [])].filter((g) => !g.template);
+
+      let bound = 0;
+      const skipped: string[] = [];
+      for (const host of pending) {
+        const addr = String(host.host || '').trim();
+        const hits = addr ? guests.filter((g) => String(g.ip || '').trim() === addr) : [];
+        if (hits.length !== 1) {
+          skipped.push(
+            `${host.name}（${
+              hits.length === 0
+                ? t('sshConfig.autoBindNoMatch')
+                : t('sshConfig.autoBindAmbiguous')
+            }）`,
+          );
+          continue;
+        }
+        const hit = hits[0];
+        await sshFleetApi.updateHost(host.id, {
+          // secret 留空 = 沿用已存的凭据（后端按「空即保留」处理，绝不回传明文）
+          ...host,
+          secret: '',
+          node: hit.node,
+          vmid: hit.vmid,
+          conn_id: hit.connection_id ?? '',
+        });
+        bound += 1;
+      }
+
+      await refreshFleet();
+      toast.success(
+        t('sshConfig.autoBindDone', { bound }),
+        skipped.length
+          ? t('sshConfig.autoBindSkipped', { list: skipped.join('、') })
+          : t('sshConfig.autoBindAll'),
+      );
+    } catch (err) {
+      toast.error(t('sshConfig.autoBindFailed'), errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 绑定 / 解绑「这台主机对应哪台虚拟机」。
+   *
+   * 三个字段一起写：``conn_id`` 决定这台机器属于哪个 PVE 连接 —— 多台 PVE 时
+   * vmid 是各自独立的，只给 vmid 有可能绑到另一台 PVE 的同号机器上。
+   */
+  const bindGuest = (value: string) => {
+    if (!hostDraft) return;
+    if (!value) {
+      setHostDraft({ ...hostDraft, node: '', vmid: null, conn_id: '' });
+      return;
+    }
+    const hit = guests.find((vm) => `${vm.node}/${vm.vmid}` === value);
+    setHostDraft({
+      ...hostDraft,
+      node: hit?.node ?? '',
+      vmid: hit?.vmid ?? null,
+      conn_id: hit?.connection_id ?? '',
     });
   };
 
@@ -276,6 +404,13 @@ export function SshSecurityConfig() {
             {row.origin === 'panel' ? (
               <Badge variant="neutral" size="sm">
                 {t('sshConfig.originPanel')}
+              </Badge>
+            ) : null}
+            {/* 绑定了虚拟机的（多半是手工添加后补的）：标出来让人一眼确认
+                「这台受管主机 = 那台机器」，否则只能靠地址猜。 */}
+            {row.vmid ? (
+              <Badge variant="neutral" size="sm" title={t('sshConfig.boundGuestHint')}>
+                {row.node ? `${row.node}/${row.vmid}` : `#${row.vmid}`}
               </Badge>
             ) : null}
           </div>
@@ -510,9 +645,24 @@ export function SshSecurityConfig() {
             icon={<IconServer size={16} />}
             actions={
               canManage && hosts.length ? (
-                <Button size="sm" variant="primary" onClick={startCreateHost}>
-                  <IconPlus size={14} /> {t('sshConfig.addHost')}
-                </Button>
+                <div className="flex items-center gap-8">
+                  {/* 存量手工主机多半没填关联，逐台补太枯燥 —— 按地址自动认一次。
+                      只在候选唯一时才绑，认不出的留在列表里等人工确认。 */}
+                  {bindable.length > 0 ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={busy}
+                      onClick={() => void autoBindGuests()}
+                      title={t('sshConfig.autoBindHint')}
+                    >
+                      <IconLink size={14} /> {t('sshConfig.autoBind')}
+                    </Button>
+                  ) : null}
+                  <Button size="sm" variant="primary" onClick={startCreateHost}>
+                    <IconPlus size={14} /> {t('sshConfig.addHost')}
+                  </Button>
+                </div>
               ) : null
             }
           />
@@ -701,6 +851,25 @@ export function SshSecurityConfig() {
                 />
               </Field>
             </div>
+
+            {/* 对应哪台虚拟机：关联之后，虚拟机详情页的「问 AI」能直接定位到这台
+                主机；不关联就只能靠 IP 猜（地址会变、也会撞车）。面板下发的主机
+                这项由面板维护、接口改不动，所以置灰并说明。 */}
+            <Field
+              label={t('sshConfig.fieldGuest')}
+              hint={
+                editingHost?.origin === 'panel'
+                  ? t('sshConfig.bindGuestPanelHint')
+                  : t('sshConfig.bindGuestHint')
+              }
+            >
+              <Select
+                value={guestValue}
+                onChange={(e) => bindGuest(e.target.value)}
+                options={guestOptions}
+                disabled={editingHost?.origin === 'panel' || vmsQuery.isLoading}
+              />
+            </Field>
 
             <div className="field-row">
               <Field label={t('sshConfig.fieldUser')} required>

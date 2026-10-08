@@ -200,6 +200,14 @@ export const IconSearch = (p: IconProps) => (
   </Icon>
 );
 
+/* AI 排查助手：四角星 + 一点闪光，是「智能」的通用符号 */
+export const IconSparkle = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M11 3.5 12.6 8.4 17.5 10 12.6 11.6 11 16.5 9.4 11.6 4.5 10 9.4 8.4z" />
+    <path d="M18.5 14v3.5M20.25 15.75h-3.5" />
+  </Icon>
+);
+
 export const IconClose = (p: IconProps) => (
   <Icon {...p}>
     <path d="M6 6l12 12M18 6 6 18" />
@@ -412,6 +420,13 @@ export const IconShield = (p: IconProps) => (
   <Icon {...p}>
     <path d="M12 3 4.5 6v6c0 4.5 3.2 8.3 7.5 9.5 4.3-1.2 7.5-5 7.5-9.5V6z" />
     <path d="m9 12 2 2 4-4" />
+  </Icon>
+);
+
+/* 处置中心：一把扳手 —— 语义是「动手修」，与只读的体检 / 分析页面区分开 */
+export const IconWrench = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
   </Icon>
 );
 

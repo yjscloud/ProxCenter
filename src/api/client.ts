@@ -23,7 +23,7 @@ export const AUTH_FLAG_KEY = 'pve_authed';
 
 /** CSRF 双提交：后端下发的 cookie 名与要求的请求头名，必须一一对应 */
 const CSRF_COOKIE = 'panel_csrf';
-const CSRF_HEADER = 'X-CSRF-Token';
+export const CSRF_HEADER = 'X-CSRF-Token';
 const SAFE_METHODS = new Set(['get', 'head', 'options']);
 
 /* ---------------------------------------------------------------------------

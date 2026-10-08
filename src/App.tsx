@@ -1,52 +1,89 @@
 /* ==========================================================================
    ProxCenter — 路由与鉴权守卫
+
+   页面一律**按需加载**（见 lazyPage）。原先四十多个页面全是静态 import，全被
+   打进首屏那一个 2.4 MB 的包里 —— 用户打开任何一个页面，都要先把所有页面的
+   代码下载并解析一遍，冷启动白等好几秒。改成按需之后，首屏只带当前这一个页面。
+
+   两个例外刻意保持静态：`NotFound` 与下面的加载态本身。404 是「地址不对」的
+   兜底，专程再发一个网络请求去取它只是让错误页也变慢。
    ========================================================================== */
 
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import { Suspense, lazy, type ComponentType, type ReactNode } from 'react';
 import { Layout } from './components/Layout';
 import { Spinner } from './components/ui/Spinner';
 import { useAuth } from './hooks/useAuth';
 import { useSiteInfo } from './hooks/useSiteInfo';
 import { useT } from './i18n';
 
-import { Login } from './pages/Login';
-import { Register } from './pages/Register';
-import { ForgotPassword } from './pages/ForgotPassword';
-import { ResetPassword } from './pages/ResetPassword';
-import { Dashboard } from './pages/Dashboard';
-import { VirtualMachines } from './pages/VirtualMachines';
-import { Containers } from './pages/Containers';
-import { VmDetail } from './pages/VmDetail';
-import { LxcDetail } from './pages/LxcDetail';
-import { Templates } from './pages/Templates';
-import { Nodes } from './pages/Nodes';
-import { NodesConnections } from './pages/NodesConnections';
-import { NodeDetail } from './pages/NodeDetail';
-import { Storages } from './pages/Storages';
-import { Networks } from './pages/Networks';
-import { Firewall } from './pages/Firewall';
-import { SshSecurity } from './pages/SshSecurity';
-import { SshSecurityConfig } from './pages/SshSecurityConfig';
-import { SecurityBaseline } from './pages/SecurityBaseline';
-import { PortGuard } from './pages/PortGuard';
-import { IncidentResponse } from './pages/IncidentResponse';
-import { HostAudit } from './pages/HostAudit';
-import { Snapshots } from './pages/Snapshots';
-import { Backups } from './pages/Backups';
-import { Tasks } from './pages/Tasks';
-import { Frp } from './pages/Frp';
-import { Alerts } from './pages/Alerts';
-import { Notifications } from './pages/Notifications';
-import { Certificates } from './pages/Certificates';
-import { Users } from './pages/Users';
-import { AuditLog } from './pages/AuditLog';
-import { Settings } from './pages/Settings';
-import { Scheduler } from './pages/Scheduler';
-import { Profile } from './pages/Profile';
-import { Landing } from './pages/Landing';
-import { FeishuBot } from './pages/FeishuBot';
 import { NotFound } from './pages/NotFound';
+
+/**
+ * 把一个页面组件变成按需加载。
+ *
+ * 页面都是**具名导出**（`export function Dashboard`），而 `React.lazy` 只认
+ * default，所以这里补一层。`name` 受模块自身键的约束 —— 导出名写错，编译期就
+ * 会报错，不用等到运行时白屏。
+ *
+ * 没有写成四十多条 `import(…).then(…)`：既吵，又每条都要重抄一遍类型。
+ */
+function lazyPage<T extends object>(load: () => Promise<T>, name: keyof T & string) {
+  return lazy(async () => {
+    const mod = await load();
+    return { default: mod[name] as ComponentType };
+  });
+}
+
+const Login = lazyPage(() => import('./pages/Login'), 'Login');
+const Register = lazyPage(() => import('./pages/Register'), 'Register');
+const ForgotPassword = lazyPage(() => import('./pages/ForgotPassword'), 'ForgotPassword');
+const ResetPassword = lazyPage(() => import('./pages/ResetPassword'), 'ResetPassword');
+const Dashboard = lazyPage(() => import('./pages/Dashboard'), 'Dashboard');
+const VirtualMachines = lazyPage(() => import('./pages/VirtualMachines'), 'VirtualMachines');
+const Containers = lazyPage(() => import('./pages/Containers'), 'Containers');
+const VmDetail = lazyPage(() => import('./pages/VmDetail'), 'VmDetail');
+const LxcDetail = lazyPage(() => import('./pages/LxcDetail'), 'LxcDetail');
+const Templates = lazyPage(() => import('./pages/Templates'), 'Templates');
+const Nodes = lazyPage(() => import('./pages/Nodes'), 'Nodes');
+const NodesConnections = lazyPage(
+  () => import('./pages/NodesConnections'),
+  'NodesConnections',
+);
+const NodeDetail = lazyPage(() => import('./pages/NodeDetail'), 'NodeDetail');
+const Storages = lazyPage(() => import('./pages/Storages'), 'Storages');
+const Networks = lazyPage(() => import('./pages/Networks'), 'Networks');
+const Firewall = lazyPage(() => import('./pages/Firewall'), 'Firewall');
+const SshSecurity = lazyPage(() => import('./pages/SshSecurity'), 'SshSecurity');
+const SshSecurityConfig = lazyPage(
+  () => import('./pages/SshSecurityConfig'),
+  'SshSecurityConfig',
+);
+const AiAssistant = lazyPage(() => import('./pages/AiAssistant'), 'AiAssistant');
+const SecurityBaseline = lazyPage(
+  () => import('./pages/SecurityBaseline'),
+  'SecurityBaseline',
+);
+const PortGuard = lazyPage(() => import('./pages/PortGuard'), 'PortGuard');
+const IncidentResponse = lazyPage(
+  () => import('./pages/IncidentResponse'),
+  'IncidentResponse',
+);
+const HostAudit = lazyPage(() => import('./pages/HostAudit'), 'HostAudit');
+const Snapshots = lazyPage(() => import('./pages/Snapshots'), 'Snapshots');
+const Backups = lazyPage(() => import('./pages/Backups'), 'Backups');
+const Tasks = lazyPage(() => import('./pages/Tasks'), 'Tasks');
+const Frp = lazyPage(() => import('./pages/Frp'), 'Frp');
+const Alerts = lazyPage(() => import('./pages/Alerts'), 'Alerts');
+const Notifications = lazyPage(() => import('./pages/Notifications'), 'Notifications');
+const Certificates = lazyPage(() => import('./pages/Certificates'), 'Certificates');
+const Users = lazyPage(() => import('./pages/Users'), 'Users');
+const AuditLog = lazyPage(() => import('./pages/AuditLog'), 'AuditLog');
+const Settings = lazyPage(() => import('./pages/Settings'), 'Settings');
+const Scheduler = lazyPage(() => import('./pages/Scheduler'), 'Scheduler');
+const Profile = lazyPage(() => import('./pages/Profile'), 'Profile');
+const Landing = lazyPage(() => import('./pages/Landing'), 'Landing');
+const FeishuBot = lazyPage(() => import('./pages/FeishuBot'), 'FeishuBot');
 
 /* ---------------------------------------------------------------------------
    全屏加载态
@@ -61,6 +98,17 @@ function FullPageLoader() {
       <div className="text-secondary">{t('shell.checkingAuthHint')}</div>
     </div>
   );
+}
+
+/**
+ * 公开页面（登录 / 注册 / 官网）的加载边界。
+ *
+ * 按需加载的组件上方必须有一道 Suspense，否则一挂载就抛错。后台那些页面由
+ * Layout 里那道边界兜住（所以切页时侧边栏和顶栏不会跟着闪），而这几页不在
+ * Layout 里，各自要有一道。
+ */
+function PublicBoundary({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<FullPageLoader />}>{children}</Suspense>;
 }
 
 /* ---------------------------------------------------------------------------
@@ -125,13 +173,16 @@ export function App() {
 
   return (
     <Routes>
-      {/* 公开路由 */}
+      {/* 公开路由（每一条都套 PublicBoundary：这些页面按需加载，而它们不在
+          Layout 里，拿不到里面那道边界） */}
       <Route
         path="/login"
         element={
-          <RedirectIfAuthed>
-            <Login />
-          </RedirectIfAuthed>
+          <PublicBoundary>
+            <RedirectIfAuthed>
+              <Login />
+            </RedirectIfAuthed>
+          </PublicBoundary>
         }
       />
 
@@ -139,9 +190,11 @@ export function App() {
       <Route
         path="/register"
         element={
-          <RedirectIfAuthed>
-            <Register />
-          </RedirectIfAuthed>
+          <PublicBoundary>
+            <RedirectIfAuthed>
+              <Register />
+            </RedirectIfAuthed>
+          </PublicBoundary>
         }
       />
 
@@ -152,15 +205,31 @@ export function App() {
       <Route
         path="/forgot-password"
         element={
-          <RedirectIfAuthed>
-            <ForgotPassword />
-          </RedirectIfAuthed>
+          <PublicBoundary>
+            <RedirectIfAuthed>
+              <ForgotPassword />
+            </RedirectIfAuthed>
+          </PublicBoundary>
         }
       />
-      <Route path="/reset-password" element={<ResetPassword />} />
+      <Route
+        path="/reset-password"
+        element={
+          <PublicBoundary>
+            <ResetPassword />
+          </PublicBoundary>
+        }
+      />
 
       {/* 产品官网（免登录） */}
-      <Route path="/" element={<Landing />} />
+      <Route
+        path="/"
+        element={
+          <PublicBoundary>
+            <Landing />
+          </PublicBoundary>
+        }
+      />
 
 
       {/* 受保护路由 */}
@@ -226,6 +295,16 @@ export function App() {
           element={
             <RequirePermission perm="baseline.view">
               <SecurityBaseline />
+            </RequirePermission>
+          }
+        />
+        {/* AI 排查助手：把上面这些巡检结果交给大模型做归因与排序。
+            只读（不连目标主机执行命令），权限与安全基线同档；模型配置仅管理员可改 */}
+        <Route
+          path="/ai-assistant"
+          element={
+            <RequirePermission perm="baseline.view">
+              <AiAssistant />
             </RequirePermission>
           }
         />

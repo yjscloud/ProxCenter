@@ -17,6 +17,7 @@ import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { sshApi, sshFleetApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { AskAiButton } from '../components/AskAiButton';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge, TagList } from '../components/ui/Badge';
@@ -527,6 +528,10 @@ export function SshSecurity() {
 
         <div className="scope-bar">
           <span className="scope-label">{t('ssh.scopeLabel')}</span>
+          {/* 看完失败排行，顺手让 AI 结合告警与体检一起判断是不是真被爆破 */}
+          {scopeId ? (
+            <AskAiButton hostId={scopeId} question={t('ai.askFromSsh')} />
+          ) : null}
           <Select
             aria-label={t('ssh.scopeLabel')}
             value={scopeId}

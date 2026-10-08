@@ -1259,6 +1259,8 @@ async def delete_vm(
     # 连同创建时间记录一起删掉：VMID 会被回收，旧记录贴到重建的同号机器上
     # 比「显示 —」更难发现。
     await guest_created.drop_record(_op_connection(), node, vmid, "qemu")
+    # IP 缓存同样要清：VMID 回收后，旧地址会贴着同号的新机器显示一分钟
+    guestip.forget(_op_connection(), node, vmid, "qemu")
     # 面板为这台机器登记的受管主机（勾了「接入安全管控」才会有）也一并清掉，
     # 连同它在「SSH 安全 / 登录审计 / 端口与进程 / 安全基线」里的数据 ——
     # 机器都没了，再留着只会每轮巡检白拨一条 SSH。

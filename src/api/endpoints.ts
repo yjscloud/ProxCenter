@@ -3,8 +3,35 @@
    路径严格对齐后端契约
    ========================================================================== */
 
-import { del, get, http, post, put, scoped, upload } from './client';
+import {
+  CSRF_HEADER,
+  del,
+  get,
+  http,
+  post,
+  put,
+  readCsrfToken,
+  scoped,
+  upload,
+} from './client';
 import type {
+  AiCapabilities,
+  AiChatStreamEvent,
+  AiConfig,
+  AiConversation,
+  AiConversationDetail,
+  AiInspectResponse,
+  AiModelsResponse,
+  AiMyProviders,
+  AiPlaybook,
+  AiSessionDetail,
+  AiSessionPage,
+  AiStatus,
+  AiTerminalPreflight,
+  RemediationAction,
+  RemediationPreview,
+  RemediationResult,
+  AiStreamEvent,
   AuditEntry,
   AuditQuery,
   CaptchaChallenge,
@@ -1300,7 +1327,7 @@ export function wsUrl(path: string, extra?: Record<string, string>): string {
  * 空值参数一律丢掉，后端按「未筛选」处理。
  */
 export function exportUrl(
-  resource: 'audit' | 'tasks' | 'vms' | 'alerts',
+  resource: 'audit' | 'tasks' | 'vms' | 'alerts' | 'ai',
   params?: Record<string, string | number | boolean | undefined | null>,
 ): string {
   const search = new URLSearchParams();
@@ -1332,6 +1359,21 @@ export function vncWsUrl(
   return wsUrl(`/vms/${node}/${vmid}/console/vncws`, {
     port: String(port),
     vncticket: ticket,
+  });
+}
+
+/**
+ * AI 排查助手左侧终端的 WebSocket 地址。
+ *
+ * 鉴权走同源 HttpOnly Cookie（浏览器在 WS 握手上会自动带上），所以不把令牌
+ * 拼进 URL —— 那会漏进 Nginx access log、浏览器历史与 Referer。
+ * host_id 决定连哪台受管主机；cols / rows 只是初值，之后由 resize 消息更新。
+ */
+export function aiTerminalWsUrl(hostId: string, cols: number, rows: number): string {
+  return wsUrl('/ai/terminal/ws', {
+    host_id: hostId,
+    cols: String(cols),
+    rows: String(rows),
   });
 }
 
@@ -2105,4 +2147,252 @@ export const protectedBackupsApi = {
     }),
   verify: (push = true) =>
     post<ProtectedVerifyResult>('/backups/protected/verify', {}, { params: { push } }),
+};
+
+/* ---------------------------------------------------------------- AI 排查助手 */
+/* ---------------------------------------------------------------- 统一处置 */
+/**
+ * 预览 → 确认 → 执行。
+ *
+ * 预览只读（不必二次确认）；执行是写操作，后端会要求二次确认 —— 命中时
+ * axios 拦截器自动弹框并重放原请求，业务代码不用自己处理。
+ */
+export const remediationApi = {
+  actions: () => get<{ actions: RemediationAction[] }>('/remediation/actions'),
+  preview: (action: string, params: Record<string, unknown>) =>
+    post<RemediationPreview>('/remediation/preview', { action, params }),
+  apply: (action: string, params: Record<string, unknown>) =>
+    post<RemediationResult>('/remediation/apply', { action, params }),
+};
+
+/**
+ * SSE 流式 POST 的公共实现（一次性排查与会话消息共用）。
+ *
+ * 用 POST + `fetch` 读 `ReadableStream` 而不是 `EventSource` —— 后者只能发 GET，
+ * 而这里要传 body。事件格式是 SSE（`data: {json}\n\n`），所以还要自己切帧：
+ * 网络分片不保证落在事件边界上。
+ */
+async function streamSse<T>(
+  path: string,
+  body: Record<string, unknown>,
+  onEvent: (event: T) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const base = import.meta.env.VITE_API_BASE || '/api';
+  const resp = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      // 这条是手写 fetch，不经过 axios 的请求拦截器，CSRF 头必须自己补上 ——
+      // 漏掉会被后端直接拒（"请求缺少 CSRF 校验信息"）。
+      [CSRF_HEADER]: readCsrfToken(),
+    },
+    credentials: 'include',
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!resp.ok) {
+    // 后端把可预期的失败放在 detail 里（没配模型、越权、上游报错）
+    let message = `HTTP ${resp.status}`;
+    try {
+      const payload = await resp.json();
+      if (payload?.detail) message = String(payload.detail);
+    } catch {
+      /* 不是 JSON 就用状态码 */
+    }
+    throw new Error(message);
+  }
+  if (!resp.body) throw new Error('当前浏览器不支持流式响应');
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? ''; // 最后一段可能不完整，留到下一轮
+    for (const frame of frames) {
+      const line = frame.trim();
+      if (!line.startsWith('data:')) continue;
+      try {
+        onEvent(JSON.parse(line.slice(5).trim()) as T);
+      } catch {
+        /* 坏帧跳过，不能让一行解析失败中断整次排查 */
+      }
+    }
+  }
+}
+
+export const aiApi = {
+  /** 全局模型配置（仅管理员；密钥只回传「配没配」与打码值） */
+  config: () => get<AiConfig>('/ai/config'),
+
+  /**
+   * 我自己的模型（外加平台共享的只读项）。
+   *
+   * 和 ``config`` 的区别不只是权限：普通用户**根本看不到**别人配了什么 ——
+   * 每条模型背后是某个人的 API key，看得见就等于能拿去用。
+   */
+  myProviders: () => get<AiMyProviders>('/ai/my-providers'),
+
+  saveMyProviders: (payload: {
+    providers: Record<string, unknown>[];
+    /** 个人设置：记在**这个人**名下，不改平台默认值 */
+    hours?: number;
+    token_budget?: number;
+  }) => put<AiMyProviders>('/ai/my-providers', payload),
+
+  /** 保存配置。api_key 留空 = 沿用旧密钥，api_key_clear = 清除 */
+  saveConfig: (payload: Record<string, unknown>) => put<AiConfig>('/ai/config', payload),
+
+  /** 用表单当前值测连通性（不必先保存）；密钥留空则回退到已存的那一份 */
+  testProvider: (provider: Record<string, unknown>) =>
+    post<{ ok: boolean; model: string; reply: string }>('/ai/config/test', { provider }),
+
+  /** 可排查的主机 + 助手可用状态（区分「没配模型」与「可以排查」） */
+  targets: () => get<{ hosts: BaselineHost[]; status: AiStatus }>('/ai/targets'),
+
+  /** 已接入的模型清单（不含密钥，普通用户可见，用于页面上的状态条） */
+  models: () => get<AiModelsResponse>('/ai/models'),
+
+  /**
+   * 助手能力说明：工具清单 + 边界。
+   *
+   * 清单由后端从工具表实时生成，不是手写文档 —— 加一个工具、改一条描述，
+   * 说明页立刻跟着变，不会出现"文档说能做，代码其实做不了"。
+   */
+  capabilities: () => get<AiCapabilities>('/ai/capabilities'),
+
+  /**
+   * 终端连接前的自检：权限 / 主机归属 / SSH 可达。
+   *
+   * 为什么不让前端直接连 WebSocket 试：握手失败时浏览器**拿不到任何状态码**，
+   * 「后端拒绝了」和「反向代理没转发 WebSocket」在界面上长得一模一样。
+   * 先走一次普通 HTTP，才能把这两种情况分开说清楚。
+   */
+  terminalPreflight: (hostId: string) =>
+    get<AiTerminalPreflight>(
+      `/ai/terminal/preflight${hostId ? `?host_id=${encodeURIComponent(hostId)}` : ''}`,
+    ),
+
+  /**
+   * 批准 / 拒绝 AI 提议的写命令（逐条确认）。
+   *
+   * 与排查是两条连接：排查挂在流式响应上等，这里用一次普通 POST 把它唤醒。
+   */
+  approve: (approvalId: string, approved: boolean) =>
+    post<{ ok: boolean }>('/ai/approval', {
+      approval_id: approvalId,
+      approved,
+    }),
+
+  /** 排查记录（工具调用明细的入口）。普通用户只看得到自己的 */
+  sessions: (params: { limit?: number; offset?: number; host_id?: string } = {}) => {
+    const search = new URLSearchParams();
+    if (params.limit != null) search.set('limit', String(params.limit));
+    if (params.offset != null) search.set('offset', String(params.offset));
+    if (params.host_id) search.set('host_id', params.host_id);
+    const qs = search.toString();
+    return get<AiSessionPage>(`/ai/sessions${qs ? `?${qs}` : ''}`);
+  },
+
+  /** 单次排查的详情：会话 + 每一步工具调用 */
+  sessionDetail: (id: string) =>
+    get<AiSessionDetail>(`/ai/sessions/${encodeURIComponent(id)}`),
+
+  /** 跑一次排查（L1：只读解读）。要等一轮体检 + 一次模型推理 */
+  inspect: (hostId: string, providerId?: string) =>
+    post<AiInspectResponse>('/ai/inspect', {
+      host_id: hostId,
+      provider_id: providerId || undefined,
+    }),
+
+  /** L2：一次性排查（带工具调用），边跑边推事件。 */
+  inspectStream: (
+    hostId: string,
+    onEvent: (event: AiStreamEvent) => void,
+    signal?: AbortSignal,
+    providerId?: string,
+    allowExec = false,
+  ) =>
+    streamSse<AiStreamEvent>(
+      '/ai/inspect/stream',
+      {
+        host_id: hostId,
+        provider_id: providerId || undefined,
+        // 用户本次是否授权 AI 上机执行只读命令（不勾就不带这个字段）
+        allow_exec: allowExec || undefined,
+      },
+      onEvent,
+      signal,
+    ),
+
+  /* ---- 会话式对话（首轮体检 + 追问）---- */
+
+  /** 新建一条会话。首轮体检前调用，拿到 conversation.id */
+  createConversation: (body: {
+    host_id: string;
+    provider_id?: string;
+    /** 会话级授权：记在会话上，刷新后开关能回到用户上次的选择 */
+    allow_exec?: boolean;
+  }) => post<AiConversation>('/ai/conversations', body),
+
+  /** 排障预案清单：空会话的快捷入口由它渲染（后端可插拔，前端不用改） */
+  playbooks: () => get<{ items: AiPlaybook[] }>('/ai/playbooks'),
+
+  /** 我的会话列表（管理员看全部）。用于「继续上次的对话」与记录页的会话视图 */
+  conversations: (params: {
+    host_id?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const search = new URLSearchParams();
+    if (params.host_id) search.set('host_id', params.host_id);
+    if (params.limit != null) search.set('limit', String(params.limit));
+    if (params.offset != null) search.set('offset', String(params.offset));
+    const qs = search.toString();
+    return get<{ total: number; items: AiConversation[] }>(
+      `/ai/conversations${qs ? `?${qs}` : ''}`,
+    );
+  },
+
+  /** 会话详情：元信息 + 全部消息 + 最近一次运行的元信息 */
+  conversation: (id: string) =>
+    get<AiConversationDetail>(`/ai/conversations/${encodeURIComponent(id)}`),
+
+  /**
+   * 在会话里发一条消息，边跑边推事件。
+   *
+   * ``mode`` 决定这一轮的形态：
+   * - ``chat``（默认）：自由对话，不预采集证据、不强制 JSON；
+   * - ``inspect``：体检模板，采集证据并产出 findings 报告（text 可留空）。
+   */
+  sendMessageStream: (
+    conversationId: string,
+    text: string,
+    onEvent: (event: AiChatStreamEvent) => void,
+    signal?: AbortSignal,
+    providerId?: string,
+    allowExec = false,
+    mode: 'chat' | 'inspect' = 'chat',
+    preset = '',
+  ) =>
+    streamSse<AiChatStreamEvent>(
+      `/ai/conversations/${encodeURIComponent(conversationId)}/messages/stream`,
+      {
+        text,
+        mode,
+        // 给了预案就用预案的指令代替 text（text 留空即可）
+        preset: preset || undefined,
+        provider_id: providerId || undefined,
+        allow_exec: allowExec || undefined,
+      },
+      onEvent,
+      signal,
+    ),
 };

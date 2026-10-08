@@ -30,6 +30,7 @@ import {
   exportUrl,
   lxcApi,
   nodesApi,
+  sshFleetApi,
   vmMetaApi,
   vmMetaKey,
   vmsApi,
@@ -81,6 +82,7 @@ import {
   IconEdit,
   IconKey,
   IconUpload,
+  IconSparkle,
 } from '../components/Icons';
 import {
   formatBytes,
@@ -271,6 +273,11 @@ interface RowMenuProps {
   canResetPassword: boolean;
   /** 是否显示「导出」（仅虚拟机，且需要 vm.backup） */
   canExport: boolean;
+  /**
+   * 这台机器对应的受管主机 id（面板下发的机器靠 vmid 关联，见 sshremote）。
+   * 空串 = 还没登记为受管主机，此时「问 AI」只带问题过去，让用户自己选主机。
+   */
+  askHostId?: string;
 }
 
 function RowMenu({
@@ -288,8 +295,10 @@ function RowMenu({
   canAssign,
   canResetPassword,
   canExport,
+  askHostId,
 }: RowMenuProps) {
   const t = useT();
+  const navigate = useNavigate();
   const L = useKindLabels(kind);
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
@@ -367,6 +376,25 @@ function RowMenu({
     </button>
   );
 
+  /* 只读条目：不吃上面那个 `disabled`。
+     它是给「问 AI」用的 —— 问 AI 不改这台机器上的任何东西，被「你没有写权限」
+     或「机器正在忙」拦住毫无道理（恰恰是只读账号、机器卡住时最想找人看看）。 */
+  const readonlyItem = (label: string, icon: React.ReactNode, action: () => void) => (
+    <button
+      type="button"
+      className="dropdown-item"
+      role="menuitem"
+      onClick={(e) => {
+        e.stopPropagation();
+        setOpen(false);
+        action();
+      }}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+
   return (
     <span
       className="row-menu"
@@ -388,6 +416,20 @@ function RowMenu({
             right: pos.right,
           }}
         >
+          {/* 放在最前：机器出问题时，「让 AI 看看」是最先想找的入口 */}
+          {readonlyItem(t('guestList.askAi'), <IconSparkle size={15} />, () => {
+            const params = new URLSearchParams();
+            if (askHostId) params.set('host', askHostId);
+            params.set(
+              'question',
+              t('guestList.askAiQuestion', {
+                noun: L.noun,
+                name: vm.name || String(vm.vmid),
+              }),
+            );
+            navigate(`/ai-assistant?${params.toString()}`);
+          })}
+          <div className="user-dropdown-divider" />
           {item(t('guestList.cloneTitle', { noun: L.noun }), <IconCopy size={15} />, onClone)}
           {/* 容器没有「转模板」：PVE 的 pct 不提供这个能力 */}
           {kind === 'qemu' && !vm.template
@@ -513,6 +555,35 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     queryFn: nodesApi.list,
     staleTime: 60_000,
   });
+
+  /* ---- 受管主机对照表 ----
+     面板下发的机器在「SSH 安全 → 受管主机」里有一条记录，靠 vmid 关联（见
+     sshremote.remember_host）；**手工添加**的受管主机没有 vmid，只能靠地址认。
+     列表里的「问 AI」据此带上目标主机，AI 才能真的连上去查这台机器。
+
+     读不到（无 ssh 权限）时整表为空，功能照旧可用，只是少一个预选 ——
+     所以失败不提示、不打扰。 */
+  const sshHostsQuery = useQuery({
+    queryKey: ['ssh', 'hosts'],
+    queryFn: sshFleetApi.hosts,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const hostIndex = useMemo(() => {
+    const byVmid = new Map<number, string>();
+    const byIp = new Map<string, string>();
+    for (const item of sshHostsQuery.data ?? []) {
+      if (item.vmid != null) byVmid.set(Number(item.vmid), item.id);
+      const ip = String(item.host || '').trim();
+      if (ip) byIp.set(ip, item.id);
+    }
+    return { byVmid, byIp };
+  }, [sshHostsQuery.data]);
+
+  /** 这台机器对应哪台受管主机：先按 vmid 认（最准），认不到再按 IP 认。 */
+  const hostForGuest = (guest: VmSummary): string | undefined =>
+    hostIndex.byVmid.get(Number(guest.vmid)) ||
+    (guest.ip ? hostIndex.byIp.get(guest.ip) : undefined);
 
   /* ---- 可下发剩余数量 ----
      虚拟机与容器各有一份额度（后端按类型分开记账），所以键里要带类型，
@@ -1250,6 +1321,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               onExport={() => setExportTarget(vm)}
               canExport={canExport}
               onDelete={() => setDeleteTarget(vm)}
+              askHostId={hostForGuest(vm)}
             />
           </span>
         );

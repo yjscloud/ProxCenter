@@ -23,11 +23,15 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
+import logging
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from fastapi import Depends, HTTPException
 
 from . import localhost, ownership, security, sshremote
+from .formatters import short_hostname
+
+logger = logging.getLogger(__name__)
 
 LOCAL_HOST_ID = "local"
 
@@ -118,6 +122,48 @@ async def assert_host_access(user: Dict[str, Any], host_id: str) -> Dict[str, An
 async def host_owners() -> Dict[str, str]:
     """主机 id → 用户名（主机列表展示归属用）。"""
     return await ownership.owners_map(ownership.KIND_SSH_HOST)
+
+
+# ------------------------------------------------- 历史记录里的主机名还原
+#
+# AI 会话与排查记录在建行时把当时的 ``host_name`` 抄了一份 —— 那是审计事实，
+# 库里那份**不改**（「当时它叫这个」本身是有意义的）。但列表里继续显示旧名，
+# 用户就对不上号了：受管主机改过名之后，打开排查记录看到的还是老名字，而这恰恰
+# 是最需要一眼认出「是哪台机器」的地方。于是读的时候把展示名换成当前的名字。
+
+
+async def current_display_names() -> Dict[str, str]:
+    """``host_id`` → **当前**展示名（受管主机 + 面板本机）。"""
+    names: Dict[str, str] = {}
+    try:
+        rows = await sshremote.list_hosts()
+    except Exception:  # noqa: BLE001 - 名字取不到不该让记录页整体报错
+        logger.warning("读取受管主机名称失败，历史记录将保留原快照名", exc_info=True)
+        return names
+    for row in rows:
+        host_id = str(row.get("id") or "")
+        name = str(row.get("name") or row.get("host") or "")
+        if host_id and name:
+            names[host_id] = name
+    # 面板本机不在 ssh_hosts 里，名字取自运行中的 hostname。助手早期允许把本机
+    # 作为排查对象，库里因此可能留下 host_id=local 的历史记录，按现在的机器名显示。
+    names.setdefault(LOCAL_HOST_ID, short_hostname() or LOCAL_HOST_ID)
+    return names
+
+
+def apply_display_names(
+    rows: Iterable[Dict[str, Any]], names: Dict[str, str]
+) -> None:
+    """把行里快照的 ``host_name`` 就地换成当前名字。
+
+    **拿不到就不换**（主机已被移除时）：记录不该因为主机没了就变成一串 id，
+    那时保留快照反而是唯一有意义的值。就地修改 —— 调用方拿到的本来就是新拆出来的
+    dict，不必再复制一遍。
+    """
+    for row in rows or []:
+        current = names.get(str(row.get("host_id") or ""))
+        if current:
+            row["host_name"] = current
 
 
 async def set_host_owner(host_id: str, username: str) -> None:

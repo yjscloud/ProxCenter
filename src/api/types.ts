@@ -2888,6 +2888,13 @@ export interface SshHost {
   origin: 'manual' | 'panel' | string;
   /** 已确认的 SSH 主机指纹；为空表示首次连接还没信任 */
   known_host: string;
+  /**
+   * 来源虚拟机（`origin=panel` 时才有）：面板靠它把「这台受管主机」与
+   * `node/vmid` 对应起来 —— 虚拟机详情页据此找到可以问 AI 的目标主机。
+   */
+  node?: string;
+  vmid?: number | null;
+  conn_id?: string;
   /** 凭据是否设置（私钥 / 口令永不回传前端） */
   secret_set: boolean;
   /**
@@ -3693,3 +3700,441 @@ export interface UpdateApplyResult {
   command: string;
   current: string;
 }
+
+/* ---------------------------------------------------------------- AI 排查助手 */
+
+/** external = 外部 API（DeepSeek / 通义 / OpenAI）；internal = 内网自建（vLLM / Ollama） */
+export type AiProviderKind = 'external' | 'internal';
+
+export interface AiProvider {
+  id: string;
+  name: string;
+  kind: AiProviderKind;
+  base_url: string;
+  model: string;
+  enabled: boolean;
+  /** 密钥只回传「配没配」与打码值，明文永不出后端 */
+  api_key_set: boolean;
+  api_key_masked: string;
+  /** 归属：空 = 平台共享；用户名 = 那个人私有 */
+  owner?: string;
+  /** 授权名单：所有者把自己的模型开放给哪些人（能用，但改不了） */
+  granted?: string[];
+  /** 平台共享项对普通用户只读：看得见在用哪个，但改不了 */
+  readonly?: boolean;
+}
+
+/**
+ * 助手的命令白名单 / 黑名单快照。
+ *
+ * 与**执行时真正校验的那份规则**是同一份（见后端 `aitools.security_policy`），
+ * 所以「能力说明」里列出来的清单不会和实际行为对不上 —— 这也正是它必须由
+ * 后端下发的理由：抄一份到前端，改了代码忘了改文案就开始骗人。
+ */
+export interface AiSecurityPolicy {
+  /** 只读白名单：模型自己拼命令时，管道每一段的首个可执行文件必须命中 */
+  readonly_commands: string[];
+  /** 出现即整条拒绝的字符 / 结构（多命令、命令替换、重定向） */
+  denied_metachars: string[];
+  /** 子命令白名单：第一个非选项参数必须命中 */
+  subcommand_allow: Record<string, string[]>;
+  /** 参数黑名单（以 "-" 开头的项按前缀匹配，覆盖 -AINPUT 这类连写） */
+  token_deny: Record<string, string[]>;
+  /** 子串黑名单：参数本身是脚本 / 表达式，只能按内容匹配 */
+  substr_deny: Record<string, string[]>;
+  /** 允许「列目录」的路径前缀 */
+  allowed_dirs: string[];
+  /** 允许「读内容」的具体文件 */
+  allowed_files: string[];
+  /** 文件名里带这些词的，无论白名单怎么写都不给读 */
+  forbidden_hints: string[];
+  /** 写命令里「即便用户批准也不执行」的那一类（已是人话说明） */
+  write_forbidden: string[];
+  max_readonly_length: number;
+  max_write_length: number;
+}
+
+/** 助手能力：工具清单 + 边界 + 命令白黑名单。由后端实时生成，改规则即改文档 */
+export interface AiCapabilities {
+  tools: Array<{
+    name: string;
+    description: string;
+    /** host = 会在目标主机上执行命令；internal = 只读平台已有的巡检数据 */
+    kind: 'host' | 'internal';
+  }>;
+  /** 具体的白名单 / 黑名单，供「能力说明」逐条展示 */
+  policy: AiSecurityPolicy;
+  max_steps: number;
+  timeout_seconds: number;
+}
+
+/**
+ * 终端连接前的自检结果。
+ *
+ * WebSocket 握手失败时浏览器拿不到任何状态码，这个接口专门用来把「为什么连不上」
+ * 问清楚：``ok=false`` 时 ``reason`` 就是后端的结论；``ok=true`` 却仍然连不上，
+ * 说明问题在中间的**反向代理没有转发 WebSocket**。
+ */
+export interface AiTerminalPreflight {
+  ok: boolean;
+  /** 第一处不满足的原因（ok=true 时为空串） */
+  reason: string;
+  /** 逐项结论，便于把「哪一步过了」也展示出来 */
+  checks: Array<{ key: string; ok: boolean; detail?: string }>;
+}
+
+/** 个人视角的配置：自己配的（可编辑）+ 平台共享的（只读） */
+export interface AiMyProviders extends AiConfig {
+  /** 个人不能创建全局共享项 —— 那等于把自己的凭据推给所有人用 */
+  can_share: boolean;
+}
+
+/** 厂商预设：选一个，Base URL 与常用模型名自动就位（后端下发，加厂商不用改前端） */
+export interface AiPreset {
+  name: string;
+  /** 界面分组；自定义兜底项是 other */
+  group: 'cn' | 'intl' | 'local' | 'other';
+  kind: AiProviderKind;
+  base_url: string;
+  models: string[];
+  custom?: boolean;
+}
+
+export interface AiConfig {
+  enabled: boolean;
+  active_id: string;
+  providers: AiProvider[];
+  temperature: number;
+  max_tokens: number;
+  timeout: number;
+  /** 交给模型的分析窗口（小时） */
+  hours: number;
+  /** 单次排查累计 token 上限；到顶直接收口 */
+  token_budget?: number;
+  /** 厂商预设（仅管理员读配置时下发） */
+  presets?: AiPreset[];
+}
+
+/** 已接入的模型。不含密钥 —— 普通用户也能看到平台接了哪些模型 */
+export interface AiModelInfo {
+  id: string;
+  name: string;
+  model: string;
+  kind: AiProviderKind;
+  active: boolean;
+  /** 平台共享（管理员建的、不属于任何人） */
+  shared?: boolean;
+  /** 别人点名授权给我的：能用，但改不了 */
+  granted?: boolean;
+}
+
+export interface AiModelsResponse {
+  enabled: boolean;
+  active_id: string;
+  models: AiModelInfo[];
+}
+
+/** 一次排查的记录（工具调用明细的列表行） */
+export interface AiSession {
+  id: string;
+  username: string;
+  host_id: string;
+  host_name: string;
+  mode: string;
+  status: string;
+  model: string;
+  provider: string;
+  steps: number;
+  tool_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  duration_ms: number;
+  error: string;
+  /** 这次排查的结论（summary + findings 的 JSON 字符串）；旧记录可能为空 */
+  result?: string;
+  /** 所属对话线程；一次性排查（旧路径）为空 */
+  conversation_id?: string;
+  created: number;
+  finished: number;
+}
+
+/** 审计表里的单次工具调用（后端持久化形态：args / output 是字符串） */
+export interface AiAuditCall {
+  id: string;
+  session_id: string;
+  step: number;
+  tool: string;
+  args: string;
+  ok: number;
+  output: string;
+  elapsed_ms: number;
+  created: number;
+}
+
+export interface AiSessionPage {
+  total: number;
+  items: AiSession[];
+}
+
+export interface AiSessionDetail {
+  session: AiSession;
+  calls: AiAuditCall[];
+}
+
+/** 助手可用状态：让页面区分「还没配模型」与「可以排查」 */
+export interface AiStatus {
+  enabled: boolean;
+  ready: boolean;
+  provider: string;
+  provider_kind: string;
+}
+
+/* ---------------------------------------------------------------- 统一处置 */
+/** 处置风险：reversible 可回滚 / 可反向操作；irreversible 会断网、关机等 */
+export type RemediationRisk = 'reversible' | 'irreversible';
+
+export type RemediationTargetKind = 'host' | 'vm' | 'local';
+
+export interface RemediationAction {
+  id: string;
+  label: string;
+  description: string;
+  target_kind: RemediationTargetKind;
+  risk: RemediationRisk;
+  permission: string;
+  params: string[];
+}
+
+/** 执行前预览（dry-run）：后端只读生成，不产生任何副作用 */
+export interface RemediationPreview {
+  action: string;
+  label: string;
+  risk: RemediationRisk;
+  params: Record<string, unknown>;
+  summary: string;
+  steps: string[];
+  note: string;
+  current?: Record<string, unknown>;
+}
+
+export interface RemediationResult {
+  action: string;
+  risk: RemediationRisk;
+  params: Record<string, unknown>;
+  ok: boolean;
+  detail: unknown;
+}
+
+export type AiSeverity = 'high' | 'medium' | 'low';
+
+export interface AiFinding {
+  severity: AiSeverity;
+  title: string;
+  phenomenon: string;
+  evidence: string[];
+  suggestion: string;
+  /** 指回原始检查项，例如 baseline:ssh_root_login */
+  source_ref: string[];
+}
+
+export interface AiResult {
+  summary: string;
+  findings: AiFinding[];
+  data_gaps: string[];
+  confidence: string;
+}
+
+/** 一次工具调用（L2）。落库的审计记录与此同构 */
+export interface AiToolCall {
+  step: number;
+  tool: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  output: string;
+  elapsed_ms?: number | null;
+}
+
+export interface AiInspectResponse {
+  ok: boolean;
+  /** analyze = L1 只读解读；agent = L2 带工具调用 */
+  mode?: 'analyze' | 'agent';
+  host_id: string;
+  host_name: string;
+  address: string;
+  generated_at: number;
+  model: string;
+  provider: string;
+  provider_kind: string;
+  result: AiResult;
+  /** L2：实际用了几轮 */
+  steps?: number;
+  /** L2：这次排查调用了哪些工具 */
+  tool_calls?: AiToolCall[];
+  usage: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+  timing: { collect_ms: number; total_ms: number };
+}
+
+/**
+ * 排障预案（可插拔的提问模板）。
+ *
+ * `title` 既当按钮文案，也是对话里那条用户消息（后端落库的就是它）；
+ * `prompt` 是真正发给模型的指令，只在服务端流转，前端拿不到也不需要。
+ */
+export interface AiPlaybook {
+  key: string;
+  /** chat（默认）| inspect（触发一次完整体检） */
+  mode: string;
+  title: string;
+  hint: string;
+}
+
+/** 会话里的一条消息（与后端 ai_messages 同构） */
+export interface AiChatMessage {
+  id: string;
+  conversation_id: string;
+  seq: number;
+  /** user | assistant | tool | context（context 是喂给模型的 [数据] 段，界面不展示） */
+  role: string;
+  content: string;
+  /** assistant 的 tool_calls（JSON 字符串） */
+  tool_calls?: string | null;
+  tool_call_id?: string;
+  tool_name?: string;
+  /**
+   * 这条工具调用**实际在主机上执行的那条命令**（内部工具读平台数据，不走命令行，
+   * 所以为空）。回看历史会话时「AI 到底敲了什么」就靠它 —— 光有 tool_name 和
+   * args 只说明「选了哪个工具、填了什么参数」。
+   */
+  command?: string;
+  /** 工具调用是否成功；非工具消息为 null（「不适用」与「失败」是两回事） */
+  ok?: number | null;
+  created: number;
+}
+
+/** 一条对话线程（首轮体检产出报告，之后可追问） */
+export interface AiConversation {
+  id: string;
+  username: string;
+  host_id: string;
+  host_name: string;
+  provider: string;
+  title: string;
+  /** 首轮体检产出的 findings 报告（JSON 字符串）；还没体检过则为空 */
+  report?: string | null;
+  /** 会话级「允许上机执行」授权：刷新后据此恢复开关（1 / 0） */
+  allow_exec?: number;
+  /** 这条会话跑过多少轮（列表接口附带，用于记录页） */
+  runs?: number;
+  created: number;
+  updated: number;
+}
+
+/** 会话最近一次运行的元信息（报告卡上「值不值信」的参照） */
+export interface AiChatSessionMeta {
+  model: string;
+  provider: string;
+  status: string;
+  steps: number;
+  tool_calls: number;
+  total_tokens: number;
+  duration_ms: number;
+  created: number;
+  finished: number;
+}
+
+export interface AiConversationDetail {
+  conversation: AiConversation;
+  messages: AiChatMessage[];
+  session: AiChatSessionMeta | null;
+}
+
+/**
+ * 会话流的 SSE 事件。
+ *
+ * 与 {@link AiStreamEvent} 的区别：多了 ``assistant``（本轮回复文本）与
+ * ``report``（首轮产出的报告）；``done`` 也不再携带整份结果（结果已经落库）。
+ */
+export type AiChatStreamEvent =
+  | { type: 'stage'; stage: string }
+  | { type: 'thinking'; step: number; max_steps: number }
+  | {
+      type: 'tool_start';
+      tool: string;
+      args: Record<string, unknown>;
+      /**
+       * 准备在主机上执行的那条命令；内部工具（读平台数据）不走命令行，为空串。
+       * 由后端按工具模板 + 参数还原，展示的命令与实际执行的一致。
+       */
+      command?: string;
+      step: number;
+    }
+  | {
+      type: 'tool_done';
+      tool: string;
+      step: number;
+      /** 实际执行的那条命令（执行层回传的精确形态）；没执行成时是按参数还原的意图 */
+      command?: string;
+      ok: boolean;
+      preview: string;
+      elapsed_ms?: number | null;
+    }
+  /** 提议执行写命令：本轮挂在这里，等用户点批准 / 拒绝 */
+  | {
+      type: 'approval';
+      approval_id: string;
+      command: string;
+      purpose: string;
+      timeout: number;
+    }
+  /** 开始新一段流式文本（上一次的增量到此为止）；收尾时的 ``assistant`` 才是权威文本 */
+  | { type: 'token_reset' }
+  /** 回复文本的流式增量（打字机效果） */
+  | { type: 'token'; text: string }
+  /** 本轮回复文本（已落库） */
+  | { type: 'assistant'; message_id: string; content: string }
+  /** 首轮体检产出的报告 */
+  | { type: 'report'; report: AiResult }
+  | { type: 'done'; conversation_id: string; session_id: string }
+  | { type: 'error'; message: string }
+  | { type: 'aborted' };
+
+/** SSE 事件（排查过程的实时推送） */
+export type AiStreamEvent =
+  | { type: 'stage'; stage: string }
+  | { type: 'thinking'; step: number; max_steps: number }
+  /** 提议执行写命令：排查在这条挂起，等用户点批准 / 拒绝 */
+  | {
+      type: 'approval';
+      approval_id: string;
+      command: string;
+      purpose: string;
+      /** 等待上限（秒），超时按拒绝处理 */
+      timeout: number;
+    }
+  | {
+      type: 'tool_start';
+      tool: string;
+      args: Record<string, unknown>;
+      /** 准备在主机上执行的命令（内部工具为空串），见 AiChatStreamEvent */
+      command?: string;
+      step: number;
+    }
+  | {
+      type: 'tool_done';
+      tool: string;
+      step: number;
+      /** 实际执行的那条命令，见 AiChatStreamEvent */
+      command?: string;
+      ok: boolean;
+      preview: string;
+      elapsed_ms?: number | null;
+    }
+  | { type: 'done'; result: AiInspectResponse; session_id: string }
+  | { type: 'error'; message: string }
+  /** 用户点了终止：排查停在当前这一步，属正常结束，不是失败 */
+  | { type: 'aborted' };

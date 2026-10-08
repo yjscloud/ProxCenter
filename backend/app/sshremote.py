@@ -174,6 +174,39 @@ def normalise_host(raw: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -
         new_secret = stored
     else:
         new_secret = crypto.encrypt(str(secret))
+
+    # 「这台受管主机对应集群里的哪台虚拟机」。
+    #
+    # 面板下发的机器，这个关联由面板自己维护（见 routers/vms._register_managed），
+    # **接口传什么都不采纳** —— 否则一次编辑就能把「虚拟机被删时自动清理这台主机
+    # 及其安全数据」的关联摘掉，留下一台永远不会被清理的僵尸记录。
+    # 手工添加的主机则相反：接口层可以填，认机器就不用再靠地址猜。
+    is_panel = (
+        str(item.get("origin") or current.get("origin") or ORIGIN_MANUAL) == ORIGIN_PANEL
+    )
+    if is_panel:
+        # 新建时库里还没有这条记录（current 为空），关联只在 item 里；
+        # 已存在则以库里的为准 —— 这正是「接口改不动」的意思。
+        src = current if current.get("id") else item
+        guest_ref = {
+            "node": str(src.get("node") or "").strip()[:64],
+            "vmid": _as_vmid(src.get("vmid")),
+            "conn_id": str(src.get("conn_id") or "").strip()[:64],
+        }
+    else:
+        # **键在不在**决定是「解绑」还是「不传」：vmid 传 null、node 传空串都算
+        # 显式解绑；字段压根没传（老前端、内部调用）才保持原值。
+        # 用 `or` 兜底是分不清这两种情况的 —— 那会让「解绑」永远解不掉。
+        guest_ref = {
+            "node": str(
+                item["node"] if "node" in item else current.get("node") or ""
+            ).strip()[:64],
+            "vmid": _as_vmid(item["vmid"] if "vmid" in item else current.get("vmid")),
+            "conn_id": str(
+                item["conn_id"] if "conn_id" in item else current.get("conn_id") or ""
+            ).strip()[:64],
+        }
+
     return {
         "id": str(item.get("id") or current.get("id") or ("h" + uuid.uuid4().hex[:10])),
         "name": str(item.get("name") or current.get("name") or host).strip()[:128],
@@ -195,13 +228,9 @@ def normalise_host(raw: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -
             == ORIGIN_PANEL
             else ORIGIN_MANUAL
         ),
-        # 来源虚拟机由 routers/vms._register_managed 写入（接口层传不进来：
-        # SshHostIn 里没有这几个字段）。编辑主机时从 current 带过来，别丢。
-        "node": str(item.get("node") or current.get("node") or "").strip()[:64],
-        "vmid": _as_vmid(
-            item.get("vmid") if item.get("vmid") is not None else current.get("vmid")
-        ),
-        "conn_id": str(item.get("conn_id") or current.get("conn_id") or "").strip()[:64],
+        # 来源虚拟机：面板下发的机器由面板维护（接口改不动，见上面的 guest_ref），
+        # 手工添加的机器由用户在表单里选。编辑时留空即保持原值。
+        **guest_ref,
         "updated": int(time.time()),
         "updated_by": str(item.get("updated_by") or current.get("updated_by") or "").strip()[:64],
     }

@@ -24,6 +24,7 @@ import {
   IconSettings,
   IconShield,
   IconSnapshot,
+  IconSparkle,
   IconStorage,
   IconTerminal,
   IconTasks,
@@ -202,6 +203,14 @@ export const NAV_SECTIONS: NavSection[] = [
         to: '/security-baseline',
         labelKey: 'nav.securityBaseline',
         icon: <IconCheck size={18} />,
+        permission: 'baseline.view',
+      },
+      {
+        /* AI 排查助手：解读上面这些巡检结果。与安全基线同一档权限 ——
+           能看体检报告的人就能让 AI 解读一遍（它只读，不改任何东西）。 */
+        to: '/ai-assistant',
+        labelKey: 'nav.aiAssistant',
+        icon: <IconSparkle size={18} />,
         permission: 'baseline.view',
       },
     ],

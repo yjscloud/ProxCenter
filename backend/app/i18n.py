@@ -463,6 +463,17 @@ ZH_EN: Dict[str, str] = {
         "View baseline reports and scores. Administrators only by default: once granted, a regular user only sees the hosts they added, and the panel host stays closed",
     "一键修复 SSH / 内核参数 / 口令策略等基线项（改动面板所在主机）":
         "Fix baseline items such as SSH / kernel parameters / password policy in one click (modifies the panel host)",
+    "AI 排查助手": "AI troubleshooting assistant",
+    "上机执行": "Run on host",
+    "授权 AI 在目标主机上执行只读诊断命令（白名单限制、全程记入审计）。默认仅管理员":
+        "Let the AI run read-only diagnostic commands on the target host (allowlisted and fully "
+        "audited). Administrators only by default",
+    "远程终端": "Remote terminal",
+    "在受管主机上打开可交互的 SSH 终端，直接在浏览器里操作。"
+    "这等于把该主机的登录凭据交给使用者，默认仅管理员":
+        "Open an interactive SSH terminal on a managed host and use it directly in the browser. "
+        "This is equivalent to handing the host's login credentials to the user; administrators "
+        "only by default",
     "查看监听端口与可疑进程清单。默认仅管理员：授予后普通用户只看到自己添加的主机，面板本机不开放":
         "View listening ports and suspicious processes. Administrators only by default: once granted, a regular user only sees the hosts they added, and the panel host stays closed",
     "配置巡检策略（预期端口 / 进程白名单）与立即巡检推送告警":
@@ -543,6 +554,8 @@ ZH_EN: Dict[str, str] = {
     "服务看护": "Service watchdog",
     "数据清理": "Data cleanup",
     # ---- 后台作业：名称 ----
+    "AI 巡检报告": "AI inspection report",
+    "告警根因聚合": "Alert root-cause grouping",
     "资源告警巡检": "Resource alert inspection",
     "SSH 登录安全": "SSH login security",
     "受管主机 SSH 巡检": "Managed host SSH inspection",
@@ -557,6 +570,10 @@ ZH_EN: Dict[str, str] = {
     "站内通知保留清理": "Notification retention purge",
     "API Token 残留清理": "API token residue purge",
     # ---- 后台作业：说明 ----
+    "汇总各用户可见主机的巡检结论，发现高 / 中优先级问题时推送到飞书 / 邮件":
+        "Summarise inspection findings for each user's visible hosts and push when high/medium issues appear",
+    "多条告警疑似同源时聚合成一条根因报告并推送":
+        "Group alerts that likely share a root cause into a single report and push it",
     "按阈值评估节点与虚拟机的 CPU / 内存 / 存储，命中规则即告警":
         "Evaluate node and VM CPU / memory / storage against thresholds and alert on matches",
     "检查本机的失败登录、爆破与异常来源，命中即告警":
@@ -798,6 +815,8 @@ ZH_EN: Dict[str, str] = {
     "受管远程主机的登录安全": "Login security of managed remote hosts",
     "受保护备份核对": "Protected backup verification",
     "受保护备份丢失或被改动": "Protected backups lost or modified",
+    "定期把各主机巡检结论汇总成报告推送": "Periodically summarise host inspection findings into a report and push it",
+    "多条告警疑似同源时，聚合成一条根因报告": "Group alerts that likely share a root cause into a single report",
     "该来源已停止推送告警（静默，不记录历史）": "This source no longer pushes alerts (muted, not recorded in history)",
     # ---- 监控告警：配置校验与通道投递结果 ----
     "Webhook 地址需要是完整的 http(s) 链接": "The webhook URL must be a complete http(s) link",
@@ -998,6 +1017,66 @@ ZH_EN: Dict[str, str] = {
     "免费证书待提交资料": "Free certificate: waiting for documents",
     "已退款": "Refunded",
     "证书迁移中": "Being migrated",
+    # ---- AI 排查助手 ----
+    "找不到这条排查记录": "Inspection record not found",
+    "模型没有返回任何内容": "The model returned no content",
+    "指定的模型不可用（可能已被停用或你无权使用）": "The selected model is unavailable (it may be disabled, or you may not have access to it)",
+    # ---- AI 能力说明：工具描述（从 aitools 实时生成，改工具即改文档）----
+    "查看目标主机的磁盘使用情况（df -h），用于判断是否有分区将满。": "Check disk usage on the target host (df -h) to see whether any partition is about to fill up.",
+    "查看内存与 swap 使用情况（free -m）。": "Check memory and swap usage (free -m).",
+    "查看负载、运行时长与登录用户数（uptime）。": "Check load average, uptime and logged-in users (uptime).",
+    "按 CPU 占用倒序列出进程（最上面的最吃 CPU），用于定位异常进程。": "List processes by CPU usage (highest first) to locate abnormal ones.",
+    "列出正在监听的 TCP/UDP 端口及其进程（ss -tulnp）。": "List listening TCP/UDP ports and their processes (ss -tulnp).",
+    "列出启动失败或异常退出的 systemd 单元（systemctl --failed）。": "List systemd units that failed to start or exited abnormally (systemctl --failed).",
+    "查看块设备与分区（lsblk），用于确认磁盘拓扑。": "Show block devices and partitions (lsblk) to confirm the disk layout.",
+    "列出一个目录的内容（ls -la）。只允许 /etc、/var/log、/opt、/srv、/usr/local 下面的路径。": "List a directory (ls -la). Only paths under /etc, /var/log, /opt, /srv and /usr/local are allowed.",
+    "读取一个配置文件的全文（cat）。只允许读取固定的白名单文件，例如 /etc/ssh/sshd_config、/etc/fstab、/etc/nginx/nginx.conf 等。": "Read a config file in full (cat). Only a fixed whitelist is readable, e.g. /etc/ssh/sshd_config, /etc/fstab, /etc/nginx/nginx.conf.",
+    "读取某个 systemd 单元的最近日志（journalctl）。unit 用服务名，例如 sshd、nginx、pveproxy。": "Read recent logs of a systemd unit (journalctl). Pass the service name, e.g. sshd, nginx, pveproxy.",
+    "查看最近的成功登录记录（last -n 20），用于发现异常来源。": "Show recent successful logins (last -n 20) to spot unusual sources.",
+    "查看时间同步状态（timedatectl），时间不准会让日志与告警对不上。": "Check time sync status (timedatectl) — a skewed clock makes logs and alerts impossible to correlate.",
+    "从目标主机向一个地址发 4 个 ICMP 包（ping），用于判断连通性、丢包率与往返延迟。address 填 IP 或域名。": "Send 4 ICMP packets from the target host to an address (ping) to check reachability, packet loss and round-trip latency. “address” is an IP or domain name.",
+    "解析一个域名（getent hosts），用于确认 DNS 是否正常、解析到哪个地址。": "Resolve a domain name (getent hosts) to confirm DNS works and see which address it resolves to.",
+    "查看内核路由表（ip route），用于判断默认网关与到某网段的路由是否存在。": "Show the kernel routing table (ip route) to check the default gateway and routes to a subnet.",
+    "概览各网卡的地址、状态与 MTU（ip -br addr），用于确认网卡是否 UP、IP 配置是否正确。": "Summarize each NIC’s address, state and MTU (ip -br addr) to confirm the link is up and IPs are correct.",
+    "查看各网卡的累计收发包与错误 / 丢弃计数（ip -s link），用于判断网卡层面是否存在丢包或错包。": "Show per-NIC cumulative packets and error/drop counters (ip -s link) to tell whether packets are dropped or corrupted at the NIC level.",
+    "套接字总览（ss -s）：各状态连接数与 TIME_WAIT 数量，用于判断连接是否堆积、端口是否被耗尽。": "Socket summary (ss -s): connection counts by state and TIME_WAIT volume, to see whether connections are piling up or ports are exhausted.",
+    "查看 CPU 型号、核数、NUMA 与缓存拓扑（lscpu），是分析性能瓶颈与中断分布的基础。": "Show CPU model, core count, NUMA and cache topology (lscpu) — the basis for analyzing performance and interrupt distribution.",
+    "间隔 1 秒采样 3 次，看 CPU 使用、上下文切换、swap 换入换出与 IO 等待（vmstat），用于初步判断瓶颈在 CPU、内存还是磁盘。": "Sample three times at 1-second intervals (vmstat) for CPU usage, context switches, swap in/out and IO wait, to tell whether the bottleneck is CPU, memory or disk.",
+    "查看各 CPU 的软中断累计计数（/proc/softirqs），用于判断网络 / 定时器软中断是否集中在个别核上。": "Show per-CPU softirq counters (/proc/softirqs) to see whether network/timer softirqs are concentrated on a few cores.",
+    "按常驻内存（RSS）倒序列出进程，用于定位内存占用大户与疑似内存泄漏的进程。": "List processes by resident memory (RSS) to locate memory hogs and suspected leaks.",
+    "读取内核环形缓冲区的最近日志（journalctl -k），用于排查 OOM、驱动报错、硬件异常等只出现在内核日志里的问题。": "Read the most recent kernel ring-buffer logs (journalctl -k) to diagnose OOM, driver errors and hardware faults that show up only in the kernel log.",
+    "查看内核启动参数（/proc/cmdline），用于确认是否预留了 crashkernel（kdump 的前提）、以及有无异常启动项。": "Show kernel boot parameters (/proc/cmdline) to confirm whether crashkernel (a prerequisite for kdump) is reserved and whether any boot option is abnormal.",
+    "查看某个 systemd 单元的详细状态（systemctl status），比 --failed 更细；排查 kdump、chronyd、nginx 等具体服务时使用。": "Show the detailed status of a systemd unit (systemctl status), finer than --failed; use it for services such as kdump, chronyd or nginx.",
+    "查询某个已安装软件包的版本与状态（dpkg-query），适用于 Debian / Ubuntu / Proxmox；package 填包名，例如 openssh-server。": "Query the version and status of an installed package (dpkg-query) on Debian / Ubuntu / Proxmox; “package” is the package name, e.g. openssh-server.",
+    "取平台已落库的历史资源指标（CPU / 内存 / 磁盘 / 网络），用于判断问题「什么时候开始的、是突发还是持续恶化」——这是只看瞬时命令看不到的。scope 填 guest 查虚拟机/容器（需同时填 node 与 vmid），填 node 查节点（需管理员）；hours 是回看窗口（小时，默认 6）。": "Fetch platform-recorded historical resource metrics (CPU / memory / disk / network) to tell when an issue started and whether it is a spike or a steady worsening — something snapshot commands cannot show. Set scope=guest for a VM/container (provide both node and vmid), or scope=node for a node (admin only); hours is the look-back window in hours (default 6).",
+    "取最近的集群变更记录（启动 / 关机 / 快照 / 备份 / 迁移 / 克隆 / 配置修改等任务），用于回答「问题出现之前做过什么」。hours 是回看窗口（默认 24）。": "Fetch recent cluster change records (start / shutdown / snapshot / backup / migrate / clone / config changes) to answer “what happened before the problem appeared”. hours is the look-back window (default 24).",
+    "取与被排查对象相关的集群资源：节点负载、同节点邻居虚拟机、节点存储用量，用于判断「这台机器慢」是否由宿主或邻居资源争抢导致。node 填节点名、vmid 可选；两个都留空则返回集群的节点概览，可用它先找出有哪些节点。": "Fetch cluster resources related to the object under investigation: node load, neighbouring VMs on the same node, and node storage usage — to tell whether “this machine is slow” is caused by host or neighbour contention. node is the node name and vmid is optional; leave both empty for a cluster node overview you can use to discover the nodes.",
+    "取这台主机的完整安全体检报告（比一开始给你的摘要更全），包含全部检查项的结论与修复建议。": "Fetch the full security baseline report for this host (more complete than the initial summary), with conclusions and remediation advice for every check.",
+    "取这台主机最近 24 小时的 SSH 登录失败统计与来源 IP 排名。": "Fetch SSH login-failure statistics for the last 24 hours, ranked by source IP.",
+    "取最近的告警历史（含已恢复的），用于判断问题是长期存在还是刚刚出现。": "Fetch recent alert history (including recovered ones) to tell whether an issue is long-standing or just appeared.",
+    # 导出 CSV 的表头与取值（跟着界面语言走）
+    "AI排查记录": "AI inspection records",
+    "工具排查": "Tool-based inspection",
+    "时间": "Time",
+    "用户": "User",
+    "模式": "Mode",
+    "模型": "Model",
+    "轮次": "Rounds",
+    "工具调用数": "Tool calls",
+    "步骤": "Step",
+    "工具": "Tool",
+    "参数": "Arguments",
+    "结果": "Result",
+    "耗时(ms)": "Elapsed (ms)",
+    "输出": "Output",
+    "Tokens": "Tokens",
+    "总耗时(ms)": "Total duration (ms)",
+    "错误": "Error",
+    "完成": "Done",
+    "失败": "Failed",
+    "进行中": "Running",
+    "成功": "Succeeded",
+    "仅解读": "Digest only",
 }
 
 

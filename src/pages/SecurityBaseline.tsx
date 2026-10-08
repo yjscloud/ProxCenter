@@ -17,6 +17,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { baselineApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { AskAiButton } from '../components/AskAiButton';
 import { LocalHostNotice, useLocalHost } from '../components/LocalHostNotice';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
@@ -743,6 +744,11 @@ export function SecurityBaseline() {
       subtitle={t('baseline.subtitle')}
       actions={
         <div className="form-row">
+          {/* 体检出问题之后，最自然的下一步是「让 AI 帮我看看」——
+              带着当前主机跳过去，问题也一并预填好 */}
+          {view === 'host' && hostId ? (
+            <AskAiButton hostId={hostId} question={t('ai.askFromBaseline')} />
+          ) : null}
           {view === 'host' && canManage && report?.elevated && report.summary.auto_fixable > 0 ? (
             <Button
               size="sm"

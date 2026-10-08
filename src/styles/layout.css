@@ -46,6 +46,16 @@
   min-height: 0;
 }
 
+/* 按需加载页面的等待态（见 Layout 的 PageLoading）。
+   刻意不用 .notfound 那套 100vh —— 那是整屏加载（校验登录状态）用的，
+   放在内容区里会把页面撑出多余的滚动条。 */
+.page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40vh;
+}
+
 /* 侧边栏折叠时主内容区略收紧，避免宽屏下留白过多 */
 @media (min-width: 1280px) {
   .app-shell.sidebar-collapsed .app-content {
@@ -5816,5 +5826,289 @@
 
   .dash-node-row > *:nth-child(4) {
     display: none;
+  }
+}
+
+/* ==========================================================================
+   AI 排查助手 —— 控制台（左：终端 / 过程，右：对话与授权）
+   ==========================================================================
+
+   要解决的问题：这两块内容是「越宽越好、越高越好」的连续阅读区（终端滚日志、
+   对话滚回答），而页面顶部本身已有 ~600px 的页头、参数卡与页签。写死一个
+   高度两头不讨好 —— 给 340px 时终端只有十几行；给「视口减一点」又会溢出屏幕。
+
+   做法：**总高交给外层**（跟着视口走，带上限与保底），两张卡片用 flex 撑满，
+   再由内部的可滚动区 ``flex:1`` 吸收剩余。这样：
+
+   * 两个卡片底部天然对齐 —— 不依赖任何魔法数字，AI 那侧的工具栏换行、
+     多出「历史会话」下拉时也不会错位；
+   * 终端能拿到「页面剩下的全部高度」，正是它需要的。
+
+   注意 ``min-height: 0``：flex 子项的默认 ``min-height:auto`` 会以内容高度
+   为下限，不写这一句时内部滚动区撑不回去，整页会被顶高。 */
+.ai-console {
+  height: clamp(460px, calc(100vh - 410px), 820px);
+  align-items: stretch;
+}
+
+.ai-console > * {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* 左栏两个页签各是一个占满整格的容器，切换只改 display（见 AiAssistant） */
+.ai-console-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.ai-console-pane.is-hidden {
+  display: none;
+}
+
+.ai-console .card {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.ai-console .card > .card-header {
+  flex: none;
+}
+
+/* 对话卡片的标题栏里挤着三个控件（预案 / 历史会话 / 新会话）。半宽列放不下时，
+   默认的 flex 会把标题栏左侧那块（标题 + 副标题）压成 0 宽 —— 文字一个字一行
+   竖着排，卡片标题等于消失，标题栏还被撑得老高。允许换行：控件整体落到第二行，
+   标题拿回自己的宽度。
+
+   （这是本页原有的问题：卡片被固定高度压扁时看不出来，放开高度就露出来了。） */
+.ai-console .card-header {
+  flex-wrap: wrap;
+}
+
+/* 但那还不够：``.card-header-actions`` 自己带着 ``flex-shrink: 0``，也就是
+   **根本不允许被压缩**。三个控件加起来五百多像素，在半宽列（约 490px）里放不下
+   又缩不了，于是顶穿卡片，被 ``.app-content`` 的 overflow 裁掉，「+ 新会话」只剩
+   半个。而且它不收缩时，里面那行也就永远「装得下」，换行规则根本不会触发。
+
+   所以要两件事一起做：允许这一块收缩（``flex-shrink: 1`` + ``min-width: 0``），
+   再让里面的控件行可以折行。宁可标题栏高一行，也不要控件缺一块。
+
+   只作用于控制台里的卡片：``.card-header-actions`` 是全站共用的，在别处动它
+   会把所有页面的标题栏行为一起改掉。 */
+.ai-console .card-header-actions,
+.ai-console .card-header-actions > * {
+  min-width: 0;
+}
+
+.ai-console .card-header-actions {
+  flex-shrink: 1;
+}
+
+.ai-console .card-header-actions > * {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 对话与「执行过程」的滚动区 */
+.ai-console-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* 「排查过程」里那条命令的原文。
+   等宽 + 单行 + 横向滚动：`journalctl -u xxx -n 60 | grep -i error` 这类命令换个行
+   就断成两截、看着像两条命令，而撑宽整行又会把时间线顶出卡片。 */
+.ai-command {
+  display: block;
+  margin-left: 21px; /* 与图标后面的文字左对齐 */
+  max-width: calc(100% - 21px);
+  padding: 3px 8px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* `$` 用伪元素画：拷走命令时不会把这个提示符一起带走 */
+.ai-command::before {
+  content: '$ ';
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   AI 回答正文（RichText）
+   --------------------------------------------------------------------------
+   排版按「窄栏里读一段结论」来定，不按「读一份文档」来定：
+
+   * 行高 1.75 —— 中文是方块字、密度高，行距压到 1.5 相邻的字会糊成一片；
+   * 段距 8px（--space-2 那一档）—— 要让「结论」和「依据」一眼能分开，这是
+     窄栏里唯一有效的分段手段；
+   * 正文用 --text-primary 而不是继承来的次级色，对比度 ≥ 4.5:1（WCAG AA）。
+     回答是要人照着做决定的，不该比旁边的说明文字还淡。
+
+   只在这里定样式，不去改 .chat 之类的通用类 —— 那是全站共用的。
+   ========================================================================== */
+/* 段间距。先把子元素的 margin 全部归零，再给「除第一个之外」的加回来 ——
+   两条规则特异性相同，靠源码顺序生效。**不要**写成 `.ai-rich p { margin: 0 }`：
+   元素选择器比 `> * + *` 特异性更高，会把段间距整个压掉（p 的 UA 外边距 1em
+   还会让首尾多出两段空白）。 */
+.ai-rich > * {
+  margin: 0;
+}
+
+.ai-rich > * + * {
+  margin-top: 8px;
+}
+
+/* 真出现 ** 时通常是模型在指某个数字。用 semibold + 主色就够，700 会和标题
+   抢视线，而标题在这套提示词下本来就不该出现。 */
+.ai-rich strong {
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+/* 行内代码：命令、路径、配置项。等宽 + 浅底 + 细边，在中文正文里一眼认得出，
+   又不像代码块那样把段落拦腰截断。 */
+.ai-rich code.ai-rich-code {
+  font-family: var(--font-mono);
+  font-size: 0.94em;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-muted);
+  color: var(--text-secondary);
+  /* 一行 200 字符的管道命令必须能断行，否则会把气泡整个撑破 */
+  word-break: break-word;
+}
+
+.ai-rich ul,
+.ai-rich ol {
+  padding-left: 20px;
+}
+
+.ai-rich li + li {
+  margin-top: 4px;
+}
+
+.ai-rich li::marker {
+  color: var(--text-muted);
+}
+
+/* --------------------------------------------------------------------------
+   授权区那句警示 ＋ 能力说明里的白名单 / 黑名单
+
+   这两处是同一件事的两种说法：把「重点」（写操作要你点头、哪些命令一律
+   拒绝）用颜色拎出来，而不是靠 ** 这类标记符号 —— 标记在纯文本里只会原样
+   显示，既没重点也没解释。
+   -------------------------------------------------------------------------- */
+.ai-warn-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--warning);
+}
+
+/* 图标不允许被压扁或换行挤走，始终和第一行文字对齐 */
+.ai-warn-note > svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+.ai-policy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-policy-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.ai-policy-label {
+  font-size: 13px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+/* 命令与路径：等宽 + 浅底，扫一眼就能挑出自己要找的那个 */
+.ai-chip-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-chip {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 1px 6px;
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+/* 黑名单用红色描边：同一排里「允许」和「拒绝」必须一眼分得开 */
+.ai-chip.ai-chip-deny {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.ai-policy-rule {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-policy-steps {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+
+/* 终端容器：滚动由 xterm 自己管，这里只负责占满剩余高度 */
+.ai-console-term {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 窄屏下 grid-2 会塌成单列，再锁死总高就会把两张卡各压一半 —— 那时改回
+   自然高度，让页面正常滚动。 */
+@media (max-width: 768px) {
+  .ai-console {
+    height: auto;
+  }
+
+  .ai-console-scroll,
+  .ai-console-term {
+    flex: none;
+    height: 420px;
   }
 }

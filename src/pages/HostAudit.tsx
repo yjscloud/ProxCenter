@@ -17,6 +17,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { hostAuditApi, vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { LocalHostNotice, useLocalHost } from '../components/LocalHostNotice';
+import { AskAiButton } from '../components/AskAiButton';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -291,19 +292,25 @@ export function HostAudit() {
           subtitle={isAdmin ? t('hostAudit.scopeAdmin') : t('hostAudit.scopeUser')}
           icon={<IconServer size={16} />}
           actions={
-            <Select
-              value={hostId}
-              onChange={(e) => setHostId(e.target.value)}
-              options={
-                hostOptions.length
-                  ? hostOptions
-                  : /* 兜底只给「已导入本机」的管理员：本机默认不管控，未导入时选了必 409 */
-                    isAdmin && localHostInfo.enabled
-                    ? [{ label: t('hostAudit.localHost'), value: 'local' }]
-                    : []
-              }
-              aria-label={t('hostAudit.selectHostAria')}
-            />
+            <div className="flex items-center gap-8">
+              {/* 看到可疑登录，顺手让 AI 结合失败来源与提权行为一起判断 */}
+              {hostId ? (
+                <AskAiButton hostId={hostId} question={t('ai.askFromAudit')} />
+              ) : null}
+              <Select
+                value={hostId}
+                onChange={(e) => setHostId(e.target.value)}
+                options={
+                  hostOptions.length
+                    ? hostOptions
+                    : /* 兜底只给「已导入本机」的管理员：本机默认不管控，未导入时选了必 409 */
+                      isAdmin && localHostInfo.enabled
+                      ? [{ label: t('hostAudit.localHost'), value: 'local' }]
+                      : []
+                }
+                aria-label={t('hostAudit.selectHostAria')}
+              />
+            </div>
           }
         />
         <div className="tabs" role="tablist" aria-label={t('hostAudit.viewAria')}>

@@ -1365,6 +1365,15 @@ class SshHostIn(BaseModel):
     log_source: str = Field(default="auto", pattern="^(auto|journalctl|secure|auth.log)$")
     enabled: bool = True
     known_host: str = ""
+    # 这台主机对应集群里的哪台虚拟机（可选）。面板下发的机器会自动带上这三项；
+    # 手工添加的主机没有它，于是「这台受管主机到底是哪台机器」只能靠地址猜 ——
+    # 而地址会变、也可能撞车（同一台机器换 IP、或两台机器地址写反）。
+    # 填上之后，虚拟机详情页的「问 AI」就能精确定位到这台主机。
+    # 清空 = 解绑（传空字符串 / null 即可）。面板下发的主机不接受这里改，
+    # 见 app/sshremote.py 的 save_host。
+    node: str = ""
+    vmid: Optional[int] = Field(default=None, ge=1)
+    conn_id: str = ""
 
 
 class SshJailPolicyIn(BaseModel):

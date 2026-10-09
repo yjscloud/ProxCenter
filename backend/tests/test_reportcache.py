@@ -117,6 +117,28 @@ class TestStalePath:
         assert reportcache.peek_stale(key) == payload
         assert reportcache.peek(key) is None, "过期的不能当新鲜数据发出去"
 
+    def test_peek_stale_respects_max_age(self) -> None:
+        """报告页也走 stale 通路，但旧值有年龄上限。
+
+        没有上限的话，进程起来后第一次巡检的结果会一直被当作现状端出来 —— 首页
+        的待办只关心「有没有不合格项」，过时一点无所谓；报告页那一屏是要照着做
+        处置的。超过上限时返回 None，调用方于是老实等一轮。
+        """
+        counter = _Counter()
+        key = reportcache.scope_key("baseline", {"h1"})
+        asyncio.run(reportcache.get_or_scan(key, counter.produce))
+        stored_at, value = reportcache._cache[key]
+
+        # 过了 TTL、但还在上限内：给
+        reportcache._cache[key] = (stored_at - reportcache.TTL_SECONDS * 2, value)
+        assert reportcache.peek_stale(key, reportcache.STALE_MAX_AGE) == value
+
+        # 越过上限：不给，让调用方等一轮
+        reportcache._cache[key] = (stored_at - reportcache.STALE_MAX_AGE - 60, value)
+        assert reportcache.peek_stale(key, reportcache.STALE_MAX_AGE) is None
+        # 不传上限（首页那条通路）时行为不变：仍然给
+        assert reportcache.peek_stale(key) == value
+
     def test_refresh_later_updates_the_value(self) -> None:
         """先用旧值应答之后，后台那一轮要给下一次请求留下新结果。"""
         counter = _Counter(delay=0.01)

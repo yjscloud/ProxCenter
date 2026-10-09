@@ -20,6 +20,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import date, timedelta
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from . import database, hostscope
@@ -285,6 +286,172 @@ async def list_sessions(
     # 受管主机改过名之后，记录页还显示旧名就认不出是哪台机器了。
     hostscope.apply_display_names(items, await hostscope.current_display_names())
     return {"total": total, "items": items}
+
+
+# --------------------------------------------------------------- 用量统计
+#
+# 「这次 AI 到底花了多少 token」是使用者最关心的成本问题之一，而 token 分散在
+# 每一次运行里（``ai_sessions`` 的三个 token 列）。这里把它们按窗口聚合起来，
+# 供助手页的用量卡片展示。
+#
+# 为什么不做成定时汇总表：数据量级不大（一台面板几百到几千次运行），现场聚合
+# 就够；而汇总表要处理迟到写入与补算，复杂度远高于收益。等哪天查询变慢了再说。
+
+#: 默认回看窗口（天）。默认给短的 —— 用户看的是「最近花了多少」，
+#: 想看历史总量可以去记录页按页翻。
+USAGE_DEFAULT_DAYS = 7
+#: 窗口上限，防止有人传个 99999 把整库扫一遍
+USAGE_MAX_DAYS = 365
+#: 按模型分组最多返回几条。长尾（偶发用一次的模型）没必要占位置。
+USAGE_MODEL_LIMIT = 6
+
+
+async def usage_stats(
+    *,
+    username: str = "",
+    host_id: str = "",
+    days: int = USAGE_DEFAULT_DAYS,
+) -> Dict[str, Any]:
+    """AI 用量统计：窗口内的 token 消耗、运行次数与按模型 / 按天的明细。
+
+    归属口径**复用排查记录页那一套**（:func:`_session_filters`）：管理员不限、
+    普通用户只看自己的。消耗是花在某个人头上的成本，与「记录页能翻到谁」是同一
+    件事 —— 两边各写一份过滤，迟早会漂成两个口径。
+
+    token 只累加 ``ai_sessions`` 的三个 token 列：那是每次运行收尾时落库的用量
+    （上游没回传 usage 时是估算值，见 ``ai.run_tool_loop``），**不重新计算** ——
+    统计口径必须和记录页看到的是同一个数。
+    """
+    window = max(1, min(USAGE_MAX_DAYS, int(days or USAGE_DEFAULT_DAYS)))
+    clause, params = _session_filters(username, host_id)
+    # 时间窗是本函数独有的（记录页按页翻，不需要）；拼在归属条件之后。
+    # 窗口起点要等连上库、由 MySQL 给出（见下面那段），所以 since 先给一个纯算术的
+    # 兜底值，参数也在那之后再补进 params。
+    time_clause = "created >= ?"
+    clause = f"{clause} AND {time_clause}" if clause else f" WHERE {time_clause}"
+    since = int(time.time()) - window * 86400
+    # 窗口内每一天的日期（``YYYY-MM-DD``），同样由 MySQL 给出首日后纯日期递推
+    day_series: List[str] = []
+
+    totals: Dict[str, int] = {
+        "runs": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "tool_calls": 0,
+        "duration_ms": 0,
+    }
+    by_model: List[Dict[str, Any]] = []
+    daily: List[Dict[str, Any]] = []
+    try:
+        async with database.connect() as db:
+            # 「近 N 天」按**自然日**对齐：起点取 MySQL 时区里今天的 00:00 往前推
+            # N-1 天，而不是「此刻减 N*86400 秒」。两个好处：daily 恰好 N 个点，
+            # 且 total == sum(daily) —— 用「此刻往回 N 天」的话首日只覆盖当天的一
+            # 小段，卡片上的总数与柱子加起来对不上，而这两个数在同一个弹窗里是
+            # 并排显示的。时区也一并交给 MySQL：面板与数据库不同机、时区不一致时，
+            # 在 Python 里换算会把日期整体挪一天。
+            cursor = await db.execute(
+                "SELECT UNIX_TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL ? DAY)) AS since,"
+                " DATE(DATE_SUB(CURDATE(), INTERVAL ? DAY)) AS first_day",
+                (window - 1, window - 1),
+            )
+            row = await cursor.fetchone()
+            clock = dict(row) if row else {}
+            try:
+                since = int(clock.get("since") or 0) or since
+            except (TypeError, ValueError):
+                pass
+            first_day = str(clock.get("first_day") or "")
+            if first_day:
+                # 日期序列用**纯日期算术**递推：首日字符串是 MySQL 给的，加天数
+                # 不经过任何时区换算
+                start = date.fromisoformat(first_day)
+                day_series = [
+                    (start + timedelta(days=offset)).isoformat()
+                    for offset in range(window)
+                ]
+            params = [*params, since]
+
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS runs,"
+                " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+                " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
+                " COALESCE(SUM(total_tokens), 0) AS total_tokens,"
+                " COALESCE(SUM(tool_calls), 0) AS tool_calls,"
+                " COALESCE(SUM(duration_ms), 0) AS duration_ms"
+                " FROM ai_sessions" + clause,
+                tuple(params),
+            )
+            row = await cursor.fetchone()
+            if row:
+                item = dict(row)
+                for key in totals:
+                    totals[key] = int(item.get(key) or 0)
+
+            cursor = await db.execute(
+                "SELECT model, provider, COUNT(*) AS runs,"
+                " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+                " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
+                " COALESCE(SUM(total_tokens), 0) AS total_tokens"
+                " FROM ai_sessions" + clause
+                + " GROUP BY model, provider"
+                " ORDER BY total_tokens DESC, runs DESC LIMIT ?",
+                tuple([*params, USAGE_MODEL_LIMIT]),
+            )
+            for raw in await cursor.fetchall():
+                item = dict(raw)
+                by_model.append(
+                    {
+                        "model": str(item.get("model") or ""),
+                        "provider": str(item.get("provider") or ""),
+                        "runs": int(item.get("runs") or 0),
+                        "prompt_tokens": int(item.get("prompt_tokens") or 0),
+                        "completion_tokens": int(item.get("completion_tokens") or 0),
+                        "total_tokens": int(item.get("total_tokens") or 0),
+                    }
+                )
+
+            # 按天聚合交给 MySQL：DATE(FROM_UNIXTIME(...)) 是 MySQL 方言，面板只跑
+            # MySQL（见 README），换来的是不用把整窗口的行拉回进程里再分组。
+            cursor = await db.execute(
+                "SELECT DATE(FROM_UNIXTIME(created)) AS day,"
+                " COUNT(*) AS runs,"
+                " COALESCE(SUM(total_tokens), 0) AS total_tokens"
+                " FROM ai_sessions" + clause
+                + " GROUP BY day ORDER BY day ASC",
+                tuple(params),
+            )
+            counted: Dict[str, Dict[str, Any]] = {}
+            for raw in await cursor.fetchall():
+                item = dict(raw)
+                counted[str(item.get("day") or "")] = item
+            # 窗口内**每一天都要出现**（缺的补 0），而不是只返回有数据的那几天：
+            # 柱状图要的是等距时间轴。「这天没跑」与「这天不在窗口里」在图上必须
+            # 能区分开，否则 7 天窗口只有 2 天有数据时，两根柱子会被抻宽成两块色块。
+            # day_series 为空（窗口对齐查询没成功）时退回只列有数据的天。
+            for day in day_series or sorted(counted):
+                item = counted.get(day) or {}
+                daily.append(
+                    {
+                        "day": day,
+                        "runs": int(item.get("runs") or 0),
+                        "total_tokens": int(item.get("total_tokens") or 0),
+                    }
+                )
+    except Exception:  # noqa: BLE001 - 统计失败退化成空数据，不该让卡片整块报错
+        logger.warning("读取 AI 用量统计失败", exc_info=True)
+
+    runs = totals["runs"]
+    totals["avg_tokens"] = int(totals["total_tokens"] / runs) if runs else 0
+    totals["avg_duration_ms"] = int(totals["duration_ms"] / runs) if runs else 0
+    return {
+        "days": window,
+        "since": since,
+        "total": totals,
+        "by_model": by_model,
+        "daily": daily,
+    }
 
 
 # 单批取多少行。一行 = 一次工具调用，所以批量按行数而不是会话数算。

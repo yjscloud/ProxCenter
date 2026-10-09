@@ -6029,6 +6029,353 @@
   margin-top: 3px;
 }
 
+/* --------------------------------------------------------------------------
+   AI 用量（token 消耗）弹窗
+
+   主读数直接用仪表盘的 KPI 卡（.kpi-card / .kpi-value / .kpi-hint），窗口切换用
+   SegmentedControl，次级读数沿用「一个数值 + 一行标签」的统计行 —— 项目里
+   「一个关键读数 + 若干次级读数」本来就有现成语言，不另造一套。
+   （这里曾经自造过一套 hero 样式 —— 自建渐变端点、网格底纹、左侧竖条，那些东西
+   应用内都没有先例，于是整个弹窗看起来像另一个设计系统。别再那样做。）
+
+   自有类只解决这个弹窗独有的两件事：
+   * .ai-usage-split —— 输入与输出的构成要在同一根条上看出来（比例是这张弹窗里
+     最容易被误读的信息：输入占九成以上时，成本大头是逐轮累积的历史上下文）；
+   * .ai-usage-chart —— 每日趋势要有一条等距时间轴（后端为此把窗口内每一天都
+     补齐了，缺的为 0）。
+   -------------------------------------------------------------------------- */
+
+/* KPI 卡标题行右侧放的是窗口切换（不是图标），居中对齐更稳 */
+.ai-usage-hero .kpi-top {
+  align-items: center;
+}
+
+/* ---- 输入 / 输出构成条 ---- */
+/* 贴在主读数下面：构成是那个数字的注解，不该另起一个区块。
+   一条发丝线与 hint 分开，让「总数」与「总数由什么组成」是两层信息。 */
+.ai-usage-split {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-muted);
+}
+
+.ai-usage-split-track {
+  display: flex;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  /* 空轨道底色：两段都是 0 时（窗口内只有失败的运行）不至于是一条看不见的缝 */
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.ai-usage-split-seg {
+  transition: width var(--transition);
+}
+
+/* 输入段用品牌蓝实色、输出段用亮青蓝 --accent-2：两段同色系、明度拉开。
+   输入段若用 --grad-accent，它的亮端就是 --accent-2，与输出段撞色、接口处
+   会看不见分界。 */
+.ai-usage-split-seg.is-prompt {
+  background: var(--accent);
+}
+
+.ai-usage-split-seg.is-completion {
+  flex: 1;
+  background: var(--accent-2);
+}
+
+.ai-usage-split-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.ai-usage-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-usage-legend-item b {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ai-usage-legend-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.ai-usage-legend-item.is-prompt .ai-usage-legend-dot {
+  background: var(--accent);
+}
+
+.ai-usage-legend-item.is-completion .ai-usage-legend-dot {
+  background: var(--accent-2);
+}
+
+/* 两段的百分比并排靠右：它们是一组对照。跟着左右分布的话，「95% / 5%」
+   会被读成两个各自独立的读数。 */
+.ai-usage-legend-share {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ---- 次级读数：一行四项，用发丝线框成一组 ---- */
+/* 四个读数各占一格、竖线分隔：原先散开排布时看不出它们是「同一层级的四个数」，
+   靠得远反而像四段互不相干的文字。 */
+.ai-usage-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 16px 0 4px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.ai-usage-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.ai-usage-stat + .ai-usage-stat {
+  border-left: 1px solid var(--border-muted);
+}
+
+.ai-usage-stat-value {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.ai-usage-stat-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 区块（每日消耗 / 按模型） ---- */
+/* 一条发丝线把两块数据隔开：比单纯加大间距更明确地表达「换了一个话题」 */
+.ai-usage-section {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-muted);
+}
+
+.ai-usage-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ai-usage-section-title {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+
+/* ---- 每日消耗：等距时间轴柱状图 ---- */
+/* 后端把窗口内每一天都补齐了（缺的为 0），所以列宽天然等距 —— 不需要再按
+   日期差去算列的位置。高度固定，柱子的百分比高度才有参照。 */
+.ai-usage-chart {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  height: 108px;
+}
+
+.ai-usage-col {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-usage-col-field {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  /* 每列自带一截基线：柱子之间因此是断开的，读起来是一串刻度而不是一整块面板 */
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.ai-usage-col-bar {
+  /* 限宽 + 居中：列宽是按天数等分的，窄窗口下（7 天）一列能有 120px 上下，
+     柱子铺满就成了色块。留出两侧空白才读得出「这是一根柱子」。
+     30 天窗口下列宽只有 20 多像素，min() 会让它自动退回铺满。 */
+  width: min(100%, 40px);
+  margin: 0 auto;
+  border-radius: 3px 3px 0 0;
+  /* 垂直渐变（顶亮底深）而不是 --grad-accent 的 135°：在细高的柱子上，
+     斜向渐变会显得两端各是各的颜色。 */
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  transition: height var(--transition), filter var(--transition-fast);
+}
+
+/* 这天没跑：只留一截轨道，不画柱子 —— 画出 0 高度的柱子会像
+   「跑了但没有消耗」，那是另一回事。轨道用 --border 而不是 --bg-hover：
+   后者在白色卡面上几乎看不见，那样「这天没跑」和「这天不在窗口里」又混了。 */
+.ai-usage-col.is-idle .ai-usage-col-bar {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+}
+
+/* 悬停时整列（连基线）亮一层：柱子限宽之后，光靠柱子本身做 hover 反馈
+   命中区域太小，指针落在列上却看不出选中了哪一天。 */
+.ai-usage-col:hover .ai-usage-col-field {
+  background: linear-gradient(180deg, transparent, var(--accent-dim));
+}
+
+.ai-usage-col:hover .ai-usage-col-bar {
+  filter: brightness(1.1);
+}
+
+/* 最后一天（今天）：位置高亮。用「最后一列」而不是「有数据的最后一列」——
+   空着的那一天也正是用户最关心「今天还没跑」的那一格。 */
+/* 空列不加发光：淡色轨道配一层青色光晕，看着像那天出了问题 */
+.ai-usage-col.is-latest:not(.is-idle) .ai-usage-col-bar {
+  box-shadow: 0 0 10px -2px var(--accent-2);
+}
+
+.ai-usage-col.is-latest .ai-usage-col-day {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* 悬停时浮出这一列的数值：图上没有纵轴刻度，光看柱高读不出绝对值 */
+.ai-usage-col-tip {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 2px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.ai-usage-col:hover .ai-usage-col-tip {
+  opacity: 1;
+  transform: translate(-50%, -4px);
+}
+
+.ai-usage-col-day {
+  flex: none;
+  text-align: center;
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  color: var(--text-muted);
+  white-space: nowrap;
+  /* 长窗口下只标注其中几列，标签比列宽是常态（列宽按天数均分），
+     裁掉就成了半个日期 */
+  overflow: visible;
+}
+
+/* ---- 按模型：网格对齐的条形读数 ---- */
+.ai-usage-models {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 用 grid 而不是 flex：模型名长短不一，flex 会把后面的列推得参差不齐，
+   六列在每行上严格对齐才像一张表。 */
+.ai-usage-model {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 168px) minmax(60px, 1fr) 52px 92px 56px;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 色相由行内样式给的 --m-hue 决定（见 AiUsageModal 的 MODEL_HUES）：
+   只给一个色号，明度与饱和度在这里统一，六个模型才成调。 */
+.ai-usage-model-dot {
+  justify-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--m-hue) 88% 48%);
+}
+
+/* 模型名可能很长（自建服务的 model 字段），宁可省略也不要顶掉右边的数字 */
+.ai-usage-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+
+.ai-usage-model-track {
+  display: block;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.ai-usage-model-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    90deg,
+    hsl(var(--m-hue) 92% 44%),
+    hsl(var(--m-hue) 94% 58%)
+  );
+  transition: width var(--transition);
+}
+
+/* 占比相对**总量**（条长相对的是最大的那个模型，见组件里的注释） */
+.ai-usage-model-share {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.ai-usage-model-value {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.ai-usage-model-runs {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  text-align: right;
+}
+
 .ai-policy {
   display: flex;
   flex-direction: column;

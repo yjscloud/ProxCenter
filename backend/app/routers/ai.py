@@ -246,6 +246,21 @@ async def session_detail(
     return {"session": record, "calls": await aiaudit.session_calls(session_id)}
 
 
+@router.get("/usage")
+async def usage(
+    days: int = 7,
+    host_id: str = "",
+    user: Dict[str, Any] = Depends(VIEW),
+) -> Dict[str, Any]:
+    """AI 用量统计（token 消耗）：窗口内的总量 + 按模型 / 按天明细。
+
+    归属口径与排查记录页一致 —— 管理员看全平台，普通用户只看自己的。消耗是
+    花在谁头上的成本，与「记录页能翻到谁」必须是同一个答案。
+    """
+    username = "" if _is_admin(user) else str(user.get("username") or "")
+    return await aiaudit.usage_stats(username=username, host_id=host_id, days=days)
+
+
 @router.post("/inspect")
 async def inspect(
     payload: Dict[str, Any],
@@ -270,6 +285,7 @@ async def inspect(
                 provider_id=provider_id,
                 username=str(user.get("username") or ""),
                 is_admin=_is_admin(user),
+                perms=security.effective_permissions(user),
             )
     except ai.AIError as exc:
         # 越权、没配模型、上游报错都在这里 —— 都是可预期的业务错误，回 400
@@ -318,7 +334,7 @@ async def inspect_stream(
     """
     host_id = str(payload.get("host_id") or "local")
     provider_id = str(payload.get("provider_id") or "")
-    # 授权执行：用户勾了「允许 AI 在目标主机执行只读命令」，且本人有 ai.exec 权限。
+    # 授权执行：用户勾了「授权 AI 在目标主机执行命令」，且本人有 ai.exec 权限。
     # 权限位与授权要同时成立 —— 勾选框不是授权本身，它只是一次显式确认。
     allow_exec = bool(payload.get("allow_exec"))
     if allow_exec and not security.has_user_permission(user, "ai.exec"):
@@ -328,6 +344,9 @@ async def inspect_stream(
         )
     allowed = await hostscope.allowed_host_ids(user)
     username = str(user.get("username") or "")
+    # 权限清单一并带进 AI 层：SSH 登录分析这类**全局**数据要据此决定给不给
+    # （见 ai.collect_evidence 的说明）—— 排查本身的门槛比 SSH 安全页低。
+    perms = security.effective_permissions(user)
     queue: "asyncio.Queue[Any]" = asyncio.Queue()
 
     async def emit(event: Dict[str, Any]) -> None:
@@ -365,6 +384,7 @@ async def inspect_stream(
                     username=username,
                     is_admin=_is_admin(user),
                     allow_exec=allow_exec,
+                    perms=perms,
                 )
 
                 calls = result.get("tool_calls") or []
@@ -588,6 +608,8 @@ async def conversation_stream(
     conv = await aichat.get_conversation(conversation_id)
     username = str(user.get("username") or "")
     is_admin = _is_admin(user)
+    # 与一次性排查同一条口径：权限清单要带进 AI 层（整轮体检会采集全局证据）
+    perms = security.effective_permissions(user)
     if not conv or not aichat.owns(conv, username, is_admin):
         raise HTTPException(status_code=404, detail=i18n.tr("找不到这条会话"))
 
@@ -640,6 +662,7 @@ async def conversation_stream(
                     username=username,
                     is_admin=is_admin,
                     allow_exec=allow_exec,
+                    perms=perms,
                 )
                 calls = result.get("tool_calls") or []
                 await aiaudit.record_calls(session_id, calls)

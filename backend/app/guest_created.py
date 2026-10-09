@@ -368,10 +368,14 @@ async def _backfill_from_audit(
     actions = ", ".join("?" for _ in _AUDIT_ACTIONS)
     try:
         async with database.connect() as db:
+            # target_guest 是 target 的生成列（取 `a -> b` 的最后一段，见 store.py）：
+            # 建机记录 `pve9/100` 与克隆记录 `pve9/100 -> pve9/104` 都能命中。
+            # 原先写成 `target = ? OR target LIKE '%-> …'`，两条都用不上索引，
+            # 每台机器一次全表扫描 —— 而它在虚拟机列表的首屏路径上。
             cursor = await db.execute(
                 f"SELECT timestamp FROM audit_log WHERE action IN ({actions}) "
-                "AND (target = ? OR target LIKE ?) ORDER BY timestamp DESC LIMIT 1",
-                (*_AUDIT_ACTIONS, f"{node}/{vmid}", f"%-> {node}/{vmid}"),
+                "AND target_guest = ? ORDER BY timestamp DESC LIMIT 1",
+                (*_AUDIT_ACTIONS, f"{node}/{vmid}"),
             )
             row = await cursor.fetchone()
     except Exception:  # noqa: BLE001 - 回填失败就退化成 meta 值
@@ -588,21 +592,30 @@ async def fill(
     # 克隆出来的机器：PVE 的 meta 是模板带过来的，用面板的审计记录纠正成实际克隆
     # 时刻。必须放在读完 config 之后 —— 判断依据是「审计时间明显晚于 meta」，
     # 而 meta 只有读进来才知道（见 _backfill_from_audit）。
-    for _key, group in without_record:
-        meta_value = group[0].get("created")
-        if not meta_value:
-            continue
-        head = group[0]
-        value = await _backfill_from_audit(
-            head.get("connection_id"),
-            head.get("node"),
-            head.get("vmid"),
-            head.get("type"),
-            meta_value,
+    #
+    # 并发跑：一台一次审计查询（那条 SQL 带 OR + 前置通配的 LIKE，用不上索引），
+    # 串行时一台几十毫秒、机器一多就是首屏看得见的等待 —— 而这批查询彼此无关。
+    # 每台每 worker 只查一次的去重在 _backfill_from_audit 里（_backfilled 集合），
+    # 所以并发不会把同一个 key 查两遍。
+    heads = [group for _key, group in without_record if group and group[0].get("created")]
+    if heads:
+        values = await parallel(
+            (
+                _backfill_from_audit(
+                    group[0].get("connection_id"),
+                    group[0].get("node"),
+                    group[0].get("vmid"),
+                    group[0].get("type"),
+                    group[0].get("created"),
+                )
+                for group in heads
+            ),
+            limit=limit,
         )
-        if value:
-            for item in group:
-                item["created"] = value
+        for group, value in zip(heads, values):
+            if value:
+                for item in group:
+                    item["created"] = value
 
     for conn, node, guest_type, alive in _sweep(groups, records):
         await _drop_stale_records(conn, node, guest_type, alive)

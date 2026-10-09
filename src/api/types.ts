@@ -3811,6 +3811,10 @@ export interface AiConfig {
   hours: number;
   /** 单次排查累计 token 上限；到顶直接收口 */
   token_budget?: number;
+  /** 自由对话档的回复字数上限（默认 150） */
+  reply_chars_terse?: number;
+  /** 预案档的回复字数上限（默认 400） */
+  reply_chars_deep?: number;
   /** 厂商预设（仅管理员读配置时下发） */
   presets?: AiPreset[];
 }
@@ -3880,6 +3884,45 @@ export interface AiSessionPage {
 export interface AiSessionDetail {
   session: AiSession;
   calls: AiAuditCall[];
+}
+
+/** AI 用量统计（token 消耗）。归属口径与排查记录页一致 */
+export interface AiUsageTotals {
+  runs: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  tool_calls: number;
+  duration_ms: number;
+  /** 平均每次运行的 token 数。后端算好，前端不再除一遍 —— 两边各除一次迟早不一样 */
+  avg_tokens: number;
+  avg_duration_ms: number;
+}
+
+export interface AiUsageByModel {
+  model: string;
+  provider: string;
+  runs: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface AiUsageDaily {
+  /** ``YYYY-MM-DD``（后端按 MySQL 时区切的天） */
+  day: string;
+  runs: number;
+  total_tokens: number;
+}
+
+export interface AiUsageStats {
+  /** 回看窗口（天）；后端会把入参夹到合法区间后再回传 */
+  days: number;
+  /** 窗口起点（秒级时间戳），文案里显示「起算时间」用 */
+  since: number;
+  total: AiUsageTotals;
+  by_model: AiUsageByModel[];
+  daily: AiUsageDaily[];
 }
 
 /** 助手可用状态：让页面区分「还没配模型」与「可以排查」 */

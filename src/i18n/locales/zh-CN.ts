@@ -3640,16 +3640,15 @@ export const zhCN = {
   /* ------------------------------------------------------ 官网：重点能力 */
   'landing.highlights.title': '最值得单说的四件事',
   'landing.highlights.desc': '不是功能清单的复读，而是运维真正会因为它们决定用不用这个面板的地方。',
-  'landing.highlights.stateRunning': '进行中',
-  'landing.highlights.stateTodo': '待执行',
-  'landing.highlights.pipeline.title': '构建 debian-12 模板',
-  'landing.highlights.pipeline.chip': '每步等待 PVE 任务完成',
-  'landing.highlights.pipeline.stepShell': '创建空壳虚拟机',
-  'landing.highlights.pipeline.stepImport': 'importdisk 导入镜像',
-  'landing.highlights.pipeline.stepCloudInit': '挂载 cloud-init 驱动',
-  'landing.highlights.pipeline.stepGrow': '按需扩容系统盘',
-  'landing.highlights.pipeline.stepTemplate': '转换为模板',
-  'landing.highlights.pipeline.note': '任一步失败 → 自动删除临时虚拟机，不留半成品',
+  'landing.highlights.ai.title': 'AI 排查助手',
+  'landing.highlights.ai.chip': '默认只读',
+  'landing.highlights.ai.chatUser': '我',
+  'landing.highlights.ai.chatQuestion': 'web-01 为什么这么卡？',
+  'landing.highlights.ai.chatPanel': 'AI',
+  'landing.highlights.ai.chatAnswer': '内存吃紧：可用 320 MB、无 swap，OOM 记录已经出现。',
+  'landing.highlights.ai.toolCmd': 'free -m',
+  'landing.highlights.ai.toolAudit': '安全体检报告',
+  'landing.highlights.ai.note': '只读命令直接执行，写操作需逐条批准',
   'landing.highlights.contain.title': '可疑虚拟机隔离处置',
   'landing.highlights.contain.chip': '顺序不可颠倒',
   'landing.highlights.contain.orderSnapshot': '① 取证快照',
@@ -6007,7 +6006,7 @@ export const zhCN = {
   'nav.aiAssistant': 'AI 排查助手',
   'ai.title': 'AI 排查助手',
   'ai.subtitle':
-    '描述现象或直接提问，AI 会登录这台主机跑只读命令去查，边查边答。要改动系统的命令必须你逐条批准。',
+    '描述现象或直接提问，AI 会登录这台主机跑诊断命令去查，边查边答。只读命令直接执行；要改动系统的命令，必须你逐条批准。',
   'ai.runningHint': '正在调模型并执行命令，通常十几秒到一分钟',
   'ai.settings': '模型设置',
   'ai.selectHost': '目标主机',
@@ -6059,14 +6058,22 @@ export const zhCN = {
   'ai.tokenBudget': '单次排查 token 上限',
   'ai.tokenBudgetHint':
     '跨多轮累加；到顶后模型会基于已有信息直接给结论。默认 60000，上限 1 亿。真正的刹车是轮数与整轮超时，这里只是兜底。',
+  'ai.replyCharsTerse': '自由对话回复字数上限',
+  'ai.replyCharsTerseHint':
+    '日常问答回答的字数上限，默认 150。太短容易漏掉依据，太长则像在复述工具输出。',
+  'ai.replyCharsDeep': '预案回复字数上限',
+  'ai.replyCharsDeepHint':
+    '点预案跑完一整套排查后，那份交代报告的字数上限，默认 400。',
   'ai.advanced': '高级参数',
 
   /* 结果区 */
   'ai.failed': '排查失败',
+  /* 这句常驻页脚，之前写的是「不会做任何修改」—— 开了授权之后那是错的，
+     而且错在「安全承诺」这一层：用户会据此以为 AI 绝不会动他的系统。 */
   'ai.disclaimer':
-    'AI 的回答仅供参考，可能出现遗漏或误判。它会登录目标主机执行只读命令（看磁盘、进程、日志、配置），不会做任何修改；执行的每条命令都记在左侧「排查过程」里，可以核对后再动手。',
+    'AI 的回答仅供参考，可能出现遗漏或误判。它会登录目标主机执行命令（看磁盘、进程、日志、配置）：只读诊断命令直接执行，改动系统的命令必须你逐条批准；每条命令都记在左侧「排查过程」里，可以核对后再动手。',
   'ai.readonlyTip':
-    '排查只使用系统自带的只读命令（df / ps / ss / journalctl 等），工具与参数都经过白名单校验，且不会使用 sudo。建议受管主机使用普通权限账号，不要给排查询用 root。',
+    '排查默认只使用系统自带的只读命令（df / ps / ss / journalctl 等），工具与参数都经过白名单校验，且不会使用 sudo；开启「授权上机执行」后，AI 还能提议改动系统的命令，但必须你逐条批准。建议受管主机使用普通权限账号，不要给排查询用 root。',
   'ai.timeout': '排查超时或中断，请稍后重试',
 
   /* 排查过程（L2：工具调用） */
@@ -6185,6 +6192,36 @@ export const zhCN = {
     '你没有「远程终端」权限，无法在这里直接登录受管主机。需要的话请让管理员在角色里授予。',
   'ai.terminalNeedHost': '先在上方选择一台受管主机，终端才能打开（面板本机不开放）。',
 
+  /* 用量（token 消耗）监控 */
+  'ai.usage.open': 'Token 消耗',
+  'ai.usage.title': 'Token 消耗',
+  'ai.usage.heroCaption': '近 {days} 天累计',
+  'ai.usage.modalDesc': '按时间窗统计的 token 消耗、运行次数与模型明细。',
+  'ai.usage.subtitle': '近 {days} 天 · 共 {runs} 次运行',
+  'ai.usage.subtitleEmpty': '这段时间还没有消耗记录',
+  'ai.usage.windowDays': '{n} 天',
+  'ai.usage.windowLabel': '统计窗口',
+  'ai.usage.totalTokens': '总消耗',
+  'ai.usage.promptTokens': '输入',
+  'ai.usage.completionTokens': '输出',
+  'ai.usage.runs': '运行次数',
+  'ai.usage.avgTokens': '平均每次',
+  'ai.usage.toolCalls': '工具调用',
+  'ai.usage.avgDuration': '平均耗时',
+  'ai.usage.splitAria': '输入与输出的 token 构成',
+  'ai.usage.unit': 'tokens',
+  'ai.usage.trend': '每日消耗',
+  'ai.usage.dayTip': '{day} · {n} tokens',
+  'ai.usage.byModel': '按模型',
+  'ai.usage.runsUnit': '{n} 次',
+  'ai.usage.unknownModel': '未知模型',
+  'ai.usage.noData': '没有用量数据',
+  'ai.usage.noDataDesc':
+    '跑一次体检或在对话里问一句，这里就会统计近 {n} 天消耗的 token。',
+  'ai.usage.loadFailed': '用量读取失败',
+  'ai.usage.loadFailedMsg':
+    '稍后再试；也可以在「排查记录」里逐条核对每次运行的 token。',
+
   /* 分页与已接入模型 */
   'ai.tabInspect': '排查',
   'ai.tabRecords': '排查记录',
@@ -6241,9 +6278,11 @@ export const zhCN = {
   'ai.recRoleTool': '工具',
   'ai.sharedModel': '平台共享',
   'ai.capabilities': '能力说明',
-  'ai.allowExec': '授权 AI 在目标主机执行只读命令',
+  /* 标签刻意不再写「只读」：这个开关同时打开两条通道 —— 只读命令直接执行、
+     改动系统的命令进入「提议 → 逐条批准」。只写「只读」会让人低估它的范围。 */
+  'ai.allowExec': '授权 AI 在目标主机执行命令',
   'ai.allowExecHint':
-    '勾选后 AI 可自行组合只读诊断命令（例如 ps aux | grep nginx）。只读命令限白名单、不使用 sudo，每条命令都记入排查记录。',
+    '勾选后 AI 可自行组合并执行只读诊断命令（例如 ps aux | grep nginx）；需要改动系统的命令不会直接执行，只在你逐条批准后才跑。只读命令限白名单、不使用 sudo，全部记入排查记录。',
   /* 这一句在界面上用警示色单独一行（见 AiAssistant 的 ai-warn-note）：
      它说的是「写操作也要你点头」，是这张卡里最该被看见的一句。 */
   'ai.allowExecWarn':
@@ -6287,11 +6326,12 @@ export const zhCN = {
     '用自己的模型排查：填一个大模型接口即可，只有你能用，也只有你会产生费用。',
   'ai.capSubtitle': '它能做什么、不会做什么',
   'ai.capIntro':
-    '选一台主机，它先读平台已有的巡检数据，必要时再登录主机执行只读命令，最后给出结论与依据。',
+    '选一台主机，它先读平台已有的巡检数据，必要时再登录主机执行命令（只读命令直接跑，改动系统的命令要你逐条批准），最后给出结论与依据。',
   'ai.capInternalTitle': '只读平台数据',
   'ai.capInternalBody': '不碰主机，直接取平台已有的巡检结果。',
   'ai.capHostTitle': '在目标主机上执行',
-  'ai.capHostBody': '会真的登录主机跑命令 —— 全部是只读命令，且路径与文件都有白名单。',
+  'ai.capHostBody':
+    '会真的登录主机跑命令：只读诊断命令直接执行（路径与文件都有白名单）；开启授权后，改动系统的命令会先提议、由你逐条批准。',
   'ai.capLimitTitle': '边界',
   'ai.capLimitBody':
     '单次排查最多 {steps} 轮、{seconds} 秒；每一次调用都会落审计，可在「排查记录」里逐条回看。',

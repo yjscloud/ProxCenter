@@ -412,31 +412,58 @@ def owns(conversation: Dict[str, Any], username: str, is_admin: bool) -> bool:
 
 # ------------------------------------------------------------- 上下文重建
 def _sanitize_model_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """保证每个带 ``tool_calls`` 的 assistant 消息后面都有齐全的 tool 响应。
+    """保证 tool 消息与带 ``tool_calls`` 的 assistant 消息**成对**出现。
 
-    用户中途「终止」时，会话里可能留下一个只跑了一半的工具调用组 —— 直接回放
-    会被上游判成请求非法（400）。这里把不完整的那一组整段丢弃：宁可少一轮上下文，
+    上游对这件事严格到缺一不可，而两个方向都会落单、都会 400：
+
+    * **调用组缺响应**：assistant 带 ``tool_calls``，但它对应的 tool 响应不齐。
+      用户中途「终止」时会留下这种半截组（见 :func:`append_message` 的落库时机），
+      回放时上游报「tool_calls 后面必须跟 tool 响应」。
+    * **没有调用方的孤儿 tool 消息**：``tool`` 找不到它的 assistant。重建上下文时
+      消息是按**条数**裁剪的（见 :func:`_context_rows` 的 ``keep_recent``），剪口完全
+      可能落在工具响应行上 —— 前一行被裁掉，这条 ``tool`` 就成了对话的开头。上游
+      报「Messages with role 'tool' must be a response to a preceding message with
+      'tool_calls'」。它只在**对话长到触发裁剪之后**才出现，所以表现为「聊着聊着
+      偶发 400」，最难查。
+
+    两条合成一句：**一条消息只有在它的配对方也被保留时才保留**。宁可少一轮上下文，
     也不能让用户的下一句话直接报错。
     """
     out: List[Dict[str, Any]] = []
+    # 已经保留下来的 assistant 声明的 tool_call id；后面的 tool 只有落在其中才留。
+    # 用集合而不是「往回看一条」：完整组内的响应是就地 append 的，但如果同一轮里
+    # 出现了空 id 或对不上的 id，只有这个集合能把它们认出来。
+    kept_calls: set = set()
     i = 0
     total = len(messages)
     while i < total:
         msg = messages[i]
-        calls = msg.get("tool_calls") if msg.get("role") == "assistant" else None
+        role = str(msg.get("role") or "")
+
+        if role == "tool":
+            call_id = str(msg.get("tool_call_id") or "")
+            # 空 id 或对不上任何已保留的调用 → 孤儿，留着就是一次 400
+            if call_id and call_id in kept_calls:
+                out.append(msg)
+            i += 1
+            continue
+
+        calls = msg.get("tool_calls") if role == "assistant" else None
         if calls:
             ids = [str(c.get("id") or "") for c in calls]
             responses: Dict[str, Dict[str, Any]] = {}
             j = i + 1
-            while j < total and messages[j].get("role") == "tool":
+            while j < total and str(messages[j].get("role") or "") == "tool":
                 responses[str(messages[j].get("tool_call_id") or "")] = messages[j]
                 j += 1
             if ids and all(cid in responses for cid in ids):
                 out.append(msg)
                 for cid in ids:
                     out.append(responses[cid])
+                kept_calls.update(ids)
             i = j  # 缺响应：整组跳过（含它的 tool 行）
             continue
+
         out.append(msg)
         i += 1
     return out
@@ -587,6 +614,7 @@ async def chat_turn(
     username: str = "",
     is_admin: bool = False,
     allow_exec: bool = False,
+    perms: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """在一条会话里跑一轮（带并发闸门）。
 
@@ -613,6 +641,7 @@ async def chat_turn(
             username=username,
             is_admin=is_admin,
             allow_exec=allow_exec,
+            perms=perms,
         )
 
 
@@ -628,6 +657,7 @@ async def _run_turn(
     username: str = "",
     is_admin: bool = False,
     allow_exec: bool = False,
+    perms: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """真正跑一轮：自由对话，或按体检模板产出报告。"""
     mode = normalise_mode(mode)
@@ -681,7 +711,7 @@ async def _run_turn(
         # 它可以是会话的第一轮，也可以中途再来一次（「重新体检」）。
         await notify({"type": "stage", "stage": "collect"})
         evidence = await ai.collect_evidence(
-            host_id, hours=hours, username=username, is_admin=is_admin
+            host_id, hours=hours, username=username, is_admin=is_admin, perms=perms
         )
         context_content = ai.evidence_user_content(host, evidence)
         # context 行落库：它是「这台机器当时的证据快照」，回看与上下文重建都要它
@@ -694,7 +724,8 @@ async def _run_turn(
             if str(row.get("role") or "") != "context"
         ]
         model_messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": ai.report_system_prompt()},
+            # 体检轮也要按授权切换「能做什么」那一段：重新体检时同样可能开着授权
+            {"role": "system", "content": ai.report_system_prompt(allow_exec=allow_exec)},
         ]
         model_messages += to_model_messages(prior)
         model_messages.append({"role": "user", "content": context_content})
@@ -730,10 +761,22 @@ async def _run_turn(
 
         # 长度分档：预案（playbook）自己跑了一整套排查，用户点它就是要一份交代
         # 清楚的报告，压到自由对话那档会把「已排除什么、还剩什么不确定」全砍掉；
-        # 其余按最严的 150 字那档。理由见 ai.LENGTH_DEEP。
+        # 其余按最严的那档。两档的字数上限可以由用户自己调（见 ai.USER_SETTING_KEYS），
+        # cfg 已经合并过他自己设的值，这里只管把档位和字数传下去。
         system_prompt = ai.chat_system_prompt(
             MAX_STEPS_CHAT,
-            length=ai.LENGTH_DEEP if playbook else ai.LENGTH_TERSE,
+            length=ai.reply_length_style(
+                playbook=bool(playbook),
+                terse_chars=int(
+                    cfg.get("reply_chars_terse") or ai.DEFAULT_REPLY_CHARS_TERSE
+                ),
+                deep_chars=int(
+                    cfg.get("reply_chars_deep") or ai.DEFAULT_REPLY_CHARS_DEEP
+                ),
+            ),
+            # 「能做什么」那一段按授权切换（见 ai.scope_for）：不传就等于告诉模型
+            # 「你只能读」，而工具表里明明摆着提议写命令的那把 —— 它会不敢用。
+            allow_exec=allow_exec,
         )
         if summary.strip():
             system_prompt += i18n.pick(
@@ -787,6 +830,7 @@ async def _run_turn(
         # 只有追问轮（自然语言）才做打字机流式；体检轮要的是整段 JSON，
         # 流出去是一屏半截的括号。
         stream_tokens=not finalize_json,
+        perms=perms,
         on_message=_persist,
     )
 

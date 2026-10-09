@@ -1319,6 +1319,18 @@ async def collect() -> Dict[str, Any]:
 # 远程探测要跑十几条命令，给足时间（sshd -T 在慢机器上也要几秒）
 PROBE_TIMEOUT = 45.0
 
+# 巡检的并发上限：每台主机一条 SSH，同时最多开多少条。
+#
+# 主机少时它不生效（信号量不会限制超出任务数）；主机多时它决定「分几批」——
+# N 台的总耗时约为 ceil(N / 上限) × 单批最慢的那台。原来是 8，十几台就要排两批、
+# 一批卡住就翻倍。
+#
+# 这里可以给得比一般「并发数」大：同时连的是**不同的**机器，每台目标机只会收到
+# 一条连接，不存在把某一台的 sshd 打满的问题（MaxStartups 是单机限制）。真正的
+# 约束在面板这一侧 —— 每个并发持有一条 SSH 连接。主机规模再上一个量级时，
+# 要调的就是这里。
+PROBE_CONCURRENCY = 16
+
 
 def probe_command(sudo: str = "") -> str:
     """一条只读单行命令：把体检所需的原始数据分节打印回来。
@@ -1718,12 +1730,22 @@ async def fleet_reports(
         rows = [row for row in rows if row["id"] in wanted]
     include_local = (wanted is None or "local" in wanted) and await localhost.enabled()
 
-    results = await parallel([collect_remote(row) for row in rows], limit=8) if rows else []
+    # 本机也放进同一批：它跑的是本地子进程（ss / ps / 十几项检查），几秒量级，
+    # 单独 await 在整批之后等于白添一段串行时间。
+    tasks: List[Any] = [collect_remote(row) for row in rows]
+    if include_local:
+        tasks.append(collect())
+    done = await parallel(tasks, limit=PROBE_CONCURRENCY) if tasks else []
 
     reports: List[Dict[str, Any]] = []
     if include_local:
-        reports.append(await collect())
-    for row, item in zip(rows, results):
+        local_item = done[len(rows)]
+        if isinstance(local_item, BaseException):
+            # 本机体检失败沿用原来的行为：抛出去。面板自己的机器都读不到，这一轮
+            # 的结论本来就不完整，返回一份「少了本机」的汇总只会误导。
+            raise local_item
+        reports.append(local_item)
+    for row, item in zip(rows, done[: len(rows)]):
         if isinstance(item, BaseException):  # parallel 把异常原样返回
             reports.append(_remote_error_report(row, str(item)))
         else:

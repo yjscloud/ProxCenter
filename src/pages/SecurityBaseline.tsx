@@ -468,7 +468,14 @@ export function SecurityBaseline() {
 
   const fleetQuery = useQuery({
     queryKey: ['baseline', 'fleet'],
-    queryFn: () => baselineApi.fleet(),
+    /*
+    走 stale 通路：有上次的结果就先显示、真扫丢给后台（顶部会显示采集时间，
+    重扫期间还有一句「正在重新体检」）。不带这个参数的话，进来就要干等一轮
+    SSH 巡检 —— 每台主机一条连接、单条最坏 45 秒。
+    不会因此看到过时数据：加固 / 纳管这类会改变结论的写操作都会清掉后端缓存，
+    那些路径下这一步拿不到旧值、照样真扫；「重新体检」按钮走 fleet(true)。
+  */
+    queryFn: () => baselineApi.fleet(false, true),
     enabled: view === 'fleet',
     staleTime: SCAN_STALE_TIME,
     gcTime: SCAN_GC_TIME,
@@ -516,9 +523,10 @@ export function SecurityBaseline() {
     try {
       const fresh = await queryClient.fetchQuery({
         queryKey: ['baseline', 'host', id],
-        queryFn: () => baselineApi.host(id),
-        /* 点了「扫描」就必须真跑一遍：缓存里那份可能还新鲜（5 分钟），
-           不写 0 的话 fetchQuery 直接回缓存，按钮转一圈其实什么都没做 */
+        /* 点了「扫描」就必须真跑一遍。两头都要让开：前端这层写 staleTime: 0，
+           后端那层传 refresh —— 单机报告后端也有短 TTL 缓存，只让开前端的话
+           按钮转一圈，拿回来的仍是后端缓存里那份。 */
+        queryFn: () => baselineApi.host(id, true),
         staleTime: 0,
       });
       await queryClient.invalidateQueries({ queryKey: ['baseline', 'fleet'] });

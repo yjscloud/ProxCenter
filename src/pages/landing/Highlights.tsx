@@ -10,7 +10,7 @@
    处置顺序），而不是放一张通用插图：图本身就是内容的一部分。
    ========================================================================== */
 
-import { IconAlert, IconCheck, IconClock, IconShield } from '../../components/Icons';
+import { IconAlert, IconCheck, IconClock, IconShield, IconSparkle } from '../../components/Icons';
 import { useT, type MessageKey } from '../../i18n';
 import type { VisualKind } from './content';
 import { useLandingContent } from './hooks';
@@ -74,8 +74,8 @@ export function Highlights() {
 
 function HighlightVisual({ kind }: { kind: VisualKind }) {
   switch (kind) {
-    case 'pipeline':
-      return <VisualPipeline />;
+    case 'ai':
+      return <VisualAI />;
     case 'contain':
       return <VisualContain />;
     case 'baseline':
@@ -85,41 +85,47 @@ function HighlightVisual({ kind }: { kind: VisualKind }) {
   }
 }
 
-/* ---- 1. 模板流水线：五步顺序推进，末步还在跑 ---- */
+/* ---- 1. AI 排查助手：一句提问 → 只读取数 → 只给结论 ---- */
 
-const PIPELINE_STEPS: { labelKey: MessageKey; state: string }[] = [
-  { labelKey: 'landing.highlights.pipeline.stepShell', state: 'done' },
-  { labelKey: 'landing.highlights.pipeline.stepImport', state: 'done' },
-  { labelKey: 'landing.highlights.pipeline.stepCloudInit', state: 'done' },
-  { labelKey: 'landing.highlights.pipeline.stepGrow', state: 'run' },
-  { labelKey: 'landing.highlights.pipeline.stepTemplate', state: 'todo' },
+/** 示意里点出的两类只读来源：本地命令一条、平台内置工具一条，都是真实存在的 */
+const AI_TOOL_KEYS: MessageKey[] = [
+  'landing.highlights.ai.toolCmd',
+  'landing.highlights.ai.toolAudit',
 ];
 
-function VisualPipeline() {
+function VisualAI() {
   const t = useT();
   return (
     <div className="lp-visual">
       <div className="lp-visual-head">
-        <span className="lp-visual-title">{t('landing.highlights.pipeline.title')}</span>
-        <span className="lp-visual-chip">{t('landing.highlights.pipeline.chip')}</span>
+        <span className="lp-visual-title">{t('landing.highlights.ai.title')}</span>
+        <span className="lp-visual-chip">
+          <IconSparkle size={11} />
+          {t('landing.highlights.ai.chip')}
+        </span>
       </div>
-      <ol className="lp-steps-v">
-        {PIPELINE_STEPS.map((step) => (
-          <li className={`lp-step-v is-${step.state}`} key={step.labelKey}>
-            <span className="lp-step-v-mark">
-              {step.state === 'done' ? <IconCheck size={11} /> : null}
+
+      <div className="lp-chat">
+        <div className="lp-chat-row is-user">
+          <span className="lp-chat-avatar">{t('landing.highlights.ai.chatUser')}</span>
+          <span className="lp-chat-bubble">{t('landing.highlights.ai.chatQuestion')}</span>
+        </div>
+        <div className="lp-chat-row is-bot">
+          <span className="lp-chat-avatar is-bot">{t('landing.highlights.ai.chatPanel')}</span>
+          <span className="lp-chat-bubble">
+            {t('landing.highlights.ai.chatAnswer')}
+            <span className="lp-chat-actions">
+              {AI_TOOL_KEYS.map((key, index) => (
+                <span className={`lp-chat-btn${index === 0 ? ' is-primary' : ''}`} key={key}>
+                  {t(key)}
+                </span>
+              ))}
             </span>
-            <span className="lp-step-v-label">{t(step.labelKey)}</span>
-            {step.state === 'run' ? (
-              <span className="lp-step-v-tag">{t('landing.highlights.stateRunning')}</span>
-            ) : null}
-            {step.state === 'todo' ? (
-              <span className="lp-step-v-tag is-muted">{t('landing.highlights.stateTodo')}</span>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-      <div className="lp-visual-note">{t('landing.highlights.pipeline.note')}</div>
+          </span>
+        </div>
+      </div>
+
+      <div className="lp-visual-note">{t('landing.highlights.ai.note')}</div>
     </div>
   );
 }

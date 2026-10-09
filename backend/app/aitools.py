@@ -28,7 +28,7 @@ import logging
 import re
 import shlex
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import i18n
 
@@ -1095,7 +1095,20 @@ async def _internal_baseline(host_id: str) -> Dict[str, Any]:
     }
 
 
-async def _internal_ssh() -> Dict[str, Any]:
+async def _internal_ssh(perms: Optional[Iterable[str]] = None) -> Dict[str, Any]:
+    """SSH 登录失败统计。
+
+    数据源是**面板本机**的 SSH 日志（全局，不区分主机），所以与 SSH 安全页共用
+    同一个 ``ssh.view`` 门槛：没有这个权限就不给 —— 攻击来源 IP 与被爆破的用户名
+    是敏感信息，不能因为「进排查」这一层门槛更低就顺手带出去。
+    """
+    if perms is None or "ssh.view" not in perms:
+        return {
+            "error": i18n.pick(
+                "需要「SSH 安全」权限才能读取登录失败分析",
+                "The “SSH security” permission is required to read login-failure data",
+            )
+        }
     from . import sshguard
 
     report = await sshguard.collect(24)
@@ -1106,10 +1119,12 @@ async def _internal_ssh() -> Dict[str, Any]:
     }
 
 
-async def _internal_alerts() -> Dict[str, Any]:
+async def _internal_alerts(owner: Optional[str] = None) -> Dict[str, Any]:
+    """最近告警历史。``owner=None`` 才是管理员视角（不限），否则只取该用户的 ——
+    与告警页同一个口径，普通用户不该从模型嘴里读到别人的告警。"""
     from . import alerting
 
-    history = await alerting.history(40, None)
+    history = await alerting.history(40, owner)
     return {
         "history": [
             {
@@ -1418,11 +1433,14 @@ async def run_internal_tool(
     host_id: str = "local",
     username: str = "",
     is_admin: bool = False,
+    perms: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """执行一个平台内部数据工具（直接读现有巡检模块，不经命令行）。
 
     ``args`` 是模型给的具名参数（metrics / changes / related 用得到）；
-    其余工具忽略它。权限隔离在这里落地：非管理员只能看到自己名下的虚拟机。
+    其余工具忽略它。权限隔离在这里落地：非管理员只能看到自己名下的虚拟机；
+    ``perms`` 用来把关「全局数据」类工具（SSH 登录分析）—— ``None`` 表示调用方
+    没声明权限，一律按最小权限处理。
     """
     tool = INTERNAL_TOOL_MAP.get(name)
     if tool is None:
@@ -1433,10 +1451,13 @@ async def run_internal_tool(
     except ToolError as exc:
         return {"ok": False, "output": str(exc)}
 
+    # 告警按归属过滤（与告警页同一个 visible_owner 口径）；SSH 是面板本机的全局
+    # 数据，按 ssh.view 权限位决定给不给。
+    owner = None if is_admin else str(username or "")
     runners: Dict[str, Any] = {
         "baseline": lambda: _internal_baseline(host_id),
-        "ssh": _internal_ssh,
-        "alerts": _internal_alerts,
+        "ssh": lambda: _internal_ssh(perms),
+        "alerts": lambda: _internal_alerts(owner),
         "metrics": lambda: _internal_metrics(params, username=username, is_admin=is_admin),
         "changes": lambda: _internal_changes(params, username=username, is_admin=is_admin),
         "related": lambda: _internal_related(params, username=username, is_admin=is_admin),

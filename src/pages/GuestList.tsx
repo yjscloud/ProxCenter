@@ -547,7 +547,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       isLxc
         ? lxcApi.list(nodeFilter || undefined, { withIp: true })
         : vmsApi.list(nodeFilter || undefined, { withIp: true, type: 'qemu' }),
-    refetchInterval: 10_000,
+    /* 30 秒：这一枪并不便宜 —— with_ip 要逐台问 PVE 拿地址（并发扇出 + 等
+       Guest Agent），10 秒一次等于让列表页常驻在一轮接一轮的轮询里。列表要的是
+       「状态大致是新的」，半分钟足够。 */
+    refetchInterval: 30_000,
   });
 
   const nodesQuery = useQuery({

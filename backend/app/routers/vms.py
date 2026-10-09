@@ -190,12 +190,21 @@ async def collect_vms(
     result: List[Dict[str, Any]] = []
     failure: Optional[ProxmoxError] = None
 
-    for profile, client in targets:
-        try:
-            resources = await client.cluster_resources("vm")
-        except ProxmoxError as exc:
-            failure = failure or exc
-            continue
+    # 多套 PVE 连接并发取列表：它们彼此独立、互不依赖，串行时总耗时是各连接的
+    # **和**（早先为了「单套失败只跳过它自己」写成 for + try，顺带把并发也丢了）。
+    # parallel 把异常原样返回，这里再逐个判断，失败语义与原来一致。
+    resources_list = await parallel(
+        (client.cluster_resources("vm") for _profile, client in targets),
+        limit=max(1, len(targets)),
+    )
+
+    for (profile, client), resources in zip(targets, resources_list):
+        if isinstance(resources, BaseException):
+            if isinstance(resources, ProxmoxError):
+                failure = failure or resources
+                continue
+            # 非 PVE 异常（配置缺失、鉴权失败之类）保持原来的向上冒泡行为
+            raise resources
 
         wanted = ("qemu", "lxc") if guest_type == "all" else (guest_type,)
         vms = [r for r in (resources or []) if r.get("type") in wanted]

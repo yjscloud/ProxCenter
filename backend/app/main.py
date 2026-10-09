@@ -104,6 +104,7 @@ from . import hostaudit as host_audit
 from . import i18n
 from .routers import frp as frp_router
 from . import backupguard
+from . import buildinfo
 from . import portguard
 from . import database
 from . import guest_created
@@ -154,6 +155,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 启动时一次性迁移，避免第一个 GET 接口看到空数据。
     await frp.migrate_legacy()
     logger.info("数据库就绪：%s", database.describe())
+    # 前端产物与后端是不是同一个版本。不一致时界面可能少功能或行为不对，而它此前
+    # 在界面上毫无迹象（代码已是新版、服务照跑、页面照开）。见 app.buildinfo。
+    buildinfo.log_at_startup()
     logger.info("Panel listening on %s:%s", settings.host, settings.port)
 
     client = get_client()
@@ -636,7 +640,13 @@ app.include_router(search.router)
 @app.get("/api/version", tags=["meta"])
 async def version() -> Dict[str, Any]:
     info = await site.get_site_info()
-    return {"name": info["name"], "version": __version__, "api": "v1"}
+    return {
+        "name": info["name"],
+        "version": __version__,
+        "api": "v1",
+        # 前端构建产物的版本与一致性（见 app.buildinfo）：界面据此提示「产物陈旧」
+        "frontend": buildinfo.status(),
+    }
 
 
 # 未知的 /api/* 路径一律回 404（**所有方法**）。

@@ -3672,7 +3672,31 @@ export interface UpdateStatus {
     /** 进度：脚本打在日志里的标记 + deploy.sh 的分步（后端算好，label 已本地化） */
     progress?: { percent: number; stage: string; label: string; tail: string };
   };
-  last_update?: { tag?: string; ok?: boolean; at?: number; log?: string };
+  last_update?: {
+    tag?: string;
+    ok?: boolean;
+    at?: number;
+    log?: string;
+    /**
+     * 失败时的可操作提示（后端从日志尾部认出来的，已本地化）。
+     * 目前认的是「前端依赖没装齐」——原始输出只有一堆 tsc 报错，用户看不出该做什么。
+     */
+    hint?: string;
+  };
+  /**
+   * 前端构建产物与后端的版本一致性（见后端 `app.buildinfo`）。
+   *
+   * 不一致说明界面上跑的是旧前端：代码已是新版、服务照常运行、页面照常打开，
+   * 但少了新功能或行为不对。`reason` 为 `no_dist` 是正常情况（只跑后端 API）。
+   */
+  build?: {
+    backend: string;
+    /** 产物版本；没有构建标记时为 null */
+    frontend: string | null;
+    consistent: boolean;
+    built_at: number | null;
+    reason: '' | 'mismatch' | 'no_build' | 'no_dist';
+  };
   /** 能否一键更新；为 false 时看 reason */
   can_apply: boolean;
   /**

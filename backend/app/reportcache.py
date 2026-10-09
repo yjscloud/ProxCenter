@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 # 缓存有效期（秒）。比前端 staleTime 短，理由见模块说明第 2 条。
 TTL_SECONDS = 120.0
 
+#: 「先给旧值、后台重扫」这条通路允许的最大陈旧时间（秒）。
+#: 报告页现在也走这条路（见 :func:`peek_stale`），而报告页不能拿一份几小时前的
+#: 巡检当现状：超过这个年龄就返回 ``None``，让调用方老实等一轮。
+STALE_MAX_AGE = 900.0
+
 # key -> (写入时间, 报告)；key -> 正在巡检时用的锁
 _cache: Dict[Any, Tuple[float, Any]] = {}
 _locks: Dict[Any, asyncio.Lock] = {}
@@ -93,14 +98,22 @@ def store(key: ScopeKey, payload: Any) -> None:
     _cache[key] = (time.time(), payload)
 
 
-def peek_stale(key: ScopeKey) -> Optional[Any]:
+def peek_stale(key: ScopeKey, max_age: float = 0.0) -> Optional[Any]:
     """取**任意**缓存值，包括已经过期的；一条都没有返回 ``None``。
 
     与 :func:`peek` 的差别就在一个 TTL：调用方要的是「先有个大概、别让人等」，
     而不是准确数据 —— 首页工作台的待办只关心「有没有不合格项」。
+
+    ``max_age`` 给这个「大概」加一条上限（秒），``0`` 表示不限。报告页也走这条
+    通路（有旧值先返回、真扫丢给后台），但它不能把几小时前的巡检当作现状：超过
+    上限时返回 ``None``，调用方于是老实等一轮，而不是端出一份过时的结论。
     """
     hit = _cache.get(key)
-    return hit[1] if hit else None
+    if not hit:
+        return None
+    if max_age > 0 and time.time() - hit[0] > max_age:
+        return None
+    return hit[1]
 
 
 def refresh_later(

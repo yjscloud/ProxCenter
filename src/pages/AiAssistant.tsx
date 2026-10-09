@@ -31,7 +31,9 @@ import { Modal } from '../components/ui/Modal';
 import { RemediationDialog } from '../components/RemediationDialog';
 import { ApprovalCard, type ApprovalRequest } from '../components/AiApprovalCard';
 import { AiTerminal } from '../components/AiTerminal';
+import { AiUsageModal } from '../components/AiUsageModal';
 import {
+  IconActivity,
   IconAlert,
   IconCheck,
   IconChevronDown,
@@ -219,7 +221,13 @@ export function AiAssistant() {
   const [leftTab, setLeftTab] = useState<'terminal' | 'activity'>('terminal');
   const [hostId, setHostId] = useState('');
   const [modelId, setModelId] = useState('');
-  /** 本次排查是否授权 AI 在目标主机执行只读命令（一次一授权，不记住） */
+  /**
+   * 是否授权 AI 在目标主机执行只读命令。
+   *
+   * 默认关闭，且**只有两种**情况会被打开：用户手动勾选，或打开一条明确的
+   * 历史会话时恢复它上次的选择。新建会话 / 切换主机一律回到关闭 —— 换了机器
+   * 或开了新对话，就是一次全新的授权，不沿用旧的值。
+   */
   const [allowExec, setAllowExec] = useState(false);
   /** 待用户批准的写命令：AI 提议后本轮挂起，等对话流里的审批卡拍板 */
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
@@ -229,6 +237,7 @@ export function AiAssistant() {
   const [errorText, setErrorText] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   /** 终止本轮用。断开连接后后端也会停下（request.is_disconnected），不白烧 token */
   const abortRef = useRef<AbortController | null>(null);
 
@@ -377,12 +386,14 @@ export function AiAssistant() {
   );
 
   /** 把会话详情的各字段摊进状态（对话、报告、元信息）。 */
-  function applyDetail(detail: AiConversationDetail) {
+  function applyDetail(detail: AiConversationDetail, restoreExec = true) {
     setConvId(detail.conversation.id);
     setTranscript(detail.messages);
     setReport(parseReport(detail.conversation.report));
-    // 恢复这条会话上次的授权选择，别让刷新悄悄把「上机执行」关掉
-    setAllowExec(Boolean(detail.conversation.allow_exec));
+    // 恢复这条会话上次的授权选择，别让刷新悄悄把「上机执行」关掉。
+    // 但「切主机后自动接续最近一条会话」不算用户主动打开它 —— 那种情况传
+    // restoreExec=false：刚选完主机就是一次全新的授权，不该沿用旧会话的开关。
+    setAllowExec(restoreExec ? Boolean(detail.conversation.allow_exec) : false);
     const session = detail.session;
     setReportMeta(
       session
@@ -399,7 +410,11 @@ export function AiAssistant() {
     );
   }
 
-  async function loadConversation(id: string, switchHost = false) {
+  async function loadConversation(
+    id: string,
+    switchHost = false,
+    restoreExec = true,
+  ) {
     try {
       const detail = await aiApi.conversation(id);
       // 从记录页跳进来时，会话可能属于另一台主机：先把选择器同步过去，
@@ -412,7 +427,7 @@ export function AiAssistant() {
         skipAutoSelectRef.current = true;
         setHostId(detail.conversation.host_id);
       }
-      applyDetail(detail);
+      applyDetail(detail, restoreExec);
       setEvents([]);
       setErrorText('');
       setPrevFindings(null);
@@ -458,7 +473,11 @@ export function AiAssistant() {
       setPrevFindings(null);
       setEvents([]);
       setErrorText('');
-      if (items.length > 0) void loadConversation(items[0].id);
+      // 换了一台主机就是一次全新的授权：默认关闭，不沿用上一台留下的开关。
+      setAllowExec(false);
+      // 自动接续最近一条会话只为「接着聊」，**不**恢复它的上机执行授权 ——
+      // 否则用户刚选完主机，开关就自己亮起来，看起来像默认授权了。
+      if (items.length > 0) void loadConversation(items[0].id, false, false);
     })();
     return () => {
       cancelled = true;
@@ -568,6 +587,8 @@ export function AiAssistant() {
       /* 拉不到就保留屏上的乐观消息 */
     }
     void fetchConversations(hostId);
+    // 这一轮已经落库，用量统计跟着变 —— 不刷新的话卡片还停在上一轮的数字上
+    void qc.invalidateQueries({ queryKey: ['ai', 'usage'] });
   }
 
   /**
@@ -597,7 +618,18 @@ export function AiAssistant() {
           resetStream();
           return;
         }
-        setEvents((list) => [...list, event]);
+        // 左栏「排查过程」只收过程类事件：assistant / report / approval / aborted
+        // 各有去处（对话气泡、报告卡、审批卡），混进来只会撑大数组、让
+        // ActivityPane 的「有没有内容」判断失准 —— 它们在 TimelineRow 里并不渲染。
+        if (
+          event.type === 'stage' ||
+          event.type === 'thinking' ||
+          event.type === 'tool_start' ||
+          event.type === 'tool_done' ||
+          event.type === 'error'
+        ) {
+          setEvents((list) => [...list, event]);
+        }
         if (event.type === 'assistant') {
           // 收尾：权威文本落地，流式缓冲功成身退
           resetStream();
@@ -740,9 +772,18 @@ export function AiAssistant() {
     setPrevFindings(null);
     setEvents([]);
     setErrorText('');
+    // 新会话默认不授权上机执行：上一条会话开过不等于这条也要开。
+    setAllowExec(false);
   }
 
   function stop() {
+    // 正卡在写命令审批上时，必须先把它按「拒绝」收口：后端此刻挂在等待里，
+    // 只断开流并不会让它醒 —— 用户之后（或卡片倒计时到点）仍可能把这条命令
+    // 放行。先发一次拒绝，再断开 SSE。
+    if (approval) {
+      void aiApi.approve(approval.approval_id, false).catch(() => {});
+      setApproval(null);
+    }
     abortRef.current?.abort();
   }
 
@@ -792,11 +833,15 @@ export function AiAssistant() {
       }
       subtitle={t('ai.subtitle')}
       actions={
+        /* 三个入口都是「打开一个弹窗看看」，彼此没有主次 —— 所以统一用
+           secondary。混用 ghost 会让有底有框的那个（我的模型）看起来像主操作，
+           其实它只是同一排里的一个入口。（项目里页面级 actions 也都是 secondary，
+           见 Backups / Certificates / AuditLog。） */
         <div className="flex items-center gap-8">
           {/* 先说清楚能干什么，再让人动手：这是个会登录到他服务器上执行命令
               的功能，用户有权在按按钮之前知道边界在哪 */}
           <Button
-            variant="ghost"
+            variant="secondary"
             icon={<IconInfo size={15} />}
             onClick={() => setCapabilitiesOpen(true)}
           >
@@ -808,6 +853,15 @@ export function AiAssistant() {
             onClick={() => setSettingsOpen(true)}
           >
             {isAdmin ? t('ai.settings') : t('ai.myModels')}
+          </Button>
+          {/* 用量排在这一组的最后：前两个是「动手之前该知道的」（能力边界、
+              用哪个模型），用量是「事后回看」的，顺序上也该靠后 */}
+          <Button
+            variant="secondary"
+            icon={<IconActivity size={15} />}
+            onClick={() => setUsageOpen(true)}
+          >
+            {t('ai.usage.open')}
           </Button>
         </div>
       }
@@ -1056,6 +1110,9 @@ export function AiAssistant() {
         open={capabilitiesOpen}
         onClose={() => setCapabilitiesOpen(false)}
       />
+
+      {/* 用量明细：入口是标题栏那组按钮里的「Token 消耗」 */}
+      <AiUsageModal open={usageOpen} onClose={() => setUsageOpen(false)} />
 
       {/* 配置面板对所有人开放：管理员配全平台的，普通用户配自己的 ——
           界面里平台共享项会置灰，看得见在用哪个，但改不了。 */}
@@ -2810,6 +2867,9 @@ function SettingsModal({
   const [hours, setHours] = useState(24);
   /** 单次排查累计 token 上限：到顶直接收口，防止一次跑飞烧穿额度 */
   const [tokenBudget, setTokenBudget] = useState(60000);
+  /** 回复字数上限的两个档位：自由对话 / 预案（跑完一整套排查）各一个 */
+  const [replyCharsTerse, setReplyCharsTerse] = useState(150);
+  const [replyCharsDeep, setReplyCharsDeep] = useState(400);
   const [drafts, setDrafts] = useState<ProviderDraft[]>([]);
   const [activeId, setActiveId] = useState('');
   const [saving, setSaving] = useState(false);
@@ -2851,6 +2911,8 @@ function SettingsModal({
     setEnabled(cfg.enabled);
     setHours(cfg.hours ?? 24);
     setTokenBudget(cfg.token_budget ?? 60000);
+    setReplyCharsTerse(cfg.reply_chars_terse ?? 150);
+    setReplyCharsDeep(cfg.reply_chars_deep ?? 400);
     setDrafts((cfg.providers ?? []).map(toDraft));
     setActiveId(cfg.active_id ?? (cfg.providers?.[0]?.id ?? ''));
   }, [open, configQuery.data]);
@@ -2929,7 +2991,14 @@ function SettingsModal({
     try {
       const reply = await aiApi.testProvider({ ...draft });
       setTestResults((prev) => ({ ...prev, [draft.id]: true }));
-      toast.success(t('ai.testOk'), reply.model || '');
+      // note：连得上，但有话要说（推理模型只输出了思考过程就被测试预算截断）。
+      // 用 info 而不是 success —— 结论确实是「通了」，但得顺带说清为什么没看到
+      // 正文，否则用户会以为测试没生效、又去折腾地址。
+      if (reply.note) {
+        toast.info(t('ai.testOk'), reply.note);
+      } else {
+        toast.success(t('ai.testOk'), reply.model || '');
+      }
     } catch (err) {
       setTestResults((prev) => ({ ...prev, [draft.id]: false }));
       toast.error(t('ai.testFailed'), errorMessage(err));
@@ -2968,6 +3037,8 @@ function SettingsModal({
           enabled,
           hours,
           token_budget: tokenBudget,
+          reply_chars_terse: replyCharsTerse,
+          reply_chars_deep: replyCharsDeep,
           active_id: activeId,
           providers,
         });
@@ -2975,7 +3046,13 @@ function SettingsModal({
         // 个人只能提交自己的；归属由后端强制盖上，这里传什么都不作数。
         // 分析窗口与 token 上限一并提交：它们记在**这个人**名下（普通用户用的是
         // 自己的模型和自己的额度），不是改平台默认值
-        await aiApi.saveMyProviders({ providers, hours, token_budget: tokenBudget });
+        await aiApi.saveMyProviders({
+          providers,
+          hours,
+          token_budget: tokenBudget,
+          reply_chars_terse: replyCharsTerse,
+          reply_chars_deep: replyCharsDeep,
+        });
       }
       toast.success(t('ai.saved'));
       onSaved();
@@ -3025,10 +3102,11 @@ function SettingsModal({
             hint={t('ai.enableHint')}
           />
 
-          {/* 这两项决定「一次排查跑多大」：分析窗口是往回看多少数据，token 上限是
-              最多烧多少额度。放在模型列表**上面** —— 它们管的是整次排查而不是某一个
-              模型。而且普通用户用的是自己的模型、花自己的额度（见后端
-              visible_providers 的说明），这两个数理应由他自己定，不必全平台共用一个值。 */}
+          {/* 这几项决定「一次排查跑多大、回答写多长」：分析窗口是往回看多少数据，
+              token 上限是最多烧多少额度，两个字数档是回答的字数上限。放在模型列表
+              **上面** —— 它们管的是整次排查而不是某一个模型。而且普通用户用的是自己
+              的模型、花自己的额度（见后端 visible_providers 的说明），这些数理应由他
+              自己定，不必全平台共用一个值。 */}
           <div className="flex items-end gap-12 flex-wrap mt-16">
             <div style={{ maxWidth: 260, flex: '1 1 200px' }}>
               <Field label={t('ai.hours')} hint={t('ai.hoursHint')}>
@@ -3049,6 +3127,28 @@ function SettingsModal({
                   max={100000000}
                   value={tokenBudget}
                   onChange={(e) => setTokenBudget(Number(e.target.value) || 60000)}
+                />
+              </Field>
+            </div>
+            <div style={{ maxWidth: 260, flex: '1 1 200px' }}>
+              <Field label={t('ai.replyCharsTerse')} hint={t('ai.replyCharsTerseHint')}>
+                <Input
+                  type="number"
+                  min={50}
+                  max={5000}
+                  value={replyCharsTerse}
+                  onChange={(e) => setReplyCharsTerse(Number(e.target.value) || 150)}
+                />
+              </Field>
+            </div>
+            <div style={{ maxWidth: 260, flex: '1 1 200px' }}>
+              <Field label={t('ai.replyCharsDeep')} hint={t('ai.replyCharsDeepHint')}>
+                <Input
+                  type="number"
+                  min={50}
+                  max={5000}
+                  value={replyCharsDeep}
+                  onChange={(e) => setReplyCharsDeep(Number(e.target.value) || 400)}
                 />
               </Field>
             </div>

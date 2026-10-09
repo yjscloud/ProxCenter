@@ -382,7 +382,13 @@ export function PortGuard() {
   });
   const overviewQuery = useQuery({
     queryKey: ['ports', 'overview'],
-    queryFn: () => portsApi.overview(),
+    /*
+    与安全基线同一条通路：有上次的结果就先显示、真扫丢给后台（顶部会显示采集
+    时间与「正在重新巡检」）。不带 stale 的话，每次进这一页都要等一整轮 SSH。
+    策略 / 处置变更会清掉后端缓存，那些路径下仍然真扫；「重新巡检」按钮走
+    overview(true)。
+  */
+    queryFn: () => portsApi.overview(false, true),
     enabled: view === 'fleet',
     staleTime: SCAN_STALE_TIME,
     gcTime: SCAN_GC_TIME,
@@ -436,9 +442,10 @@ export function PortGuard() {
     try {
       const fresh = await queryClient.fetchQuery({
         queryKey: ['ports', 'host', id],
-        queryFn: () => portsApi.host(id),
-        /* 点了「巡检」就必须真跑一遍：查询缓存里那份可能还新鲜（5 分钟），
-           不写 0 的话 fetchQuery 直接回缓存，按钮转一圈其实什么都没做 */
+        /* 点了「巡检」就必须真跑一遍。两头都要让开：前端这层写 staleTime: 0，
+           后端那层传 refresh —— 单机详情后端也有短 TTL 缓存，只让开前端的话
+           按钮转一圈，拿回来的仍是后端缓存里那份。 */
+        queryFn: () => portsApi.host(id, true),
         staleTime: 0,
       });
       await queryClient.invalidateQueries({ queryKey: ['ports', 'overview'] });

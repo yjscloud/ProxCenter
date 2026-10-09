@@ -50,9 +50,10 @@ async def fleet(
     绕过缓存 —— 页面上的「重新体检」走的就是这条路。缓存理由与边界见
     :mod:`app.reportcache`。
 
-    ``stale=1`` 是给首页工作台的：它只想知道「有没有不合格项」这一句，
-    为它现场 SSH 一轮（实测 3 秒，主机不可达时几十秒）不值得 —— 有旧值就先
-    返回，真扫放到后台，下一次再打开就是新的。报告页不要用这个参数。
+    ``stale=1``：有旧值就先返回、真扫放到后台，别让人为一份概览干等一轮。
+    首页工作台只用得上「有没有不合格项」一句；报告页这一屏也是同样的取舍 ——
+    它展示的是每台主机的一行摘要，不是要据此动手改配置。上限是
+    :data:`reportcache.STALE_MAX_AGE`（15 分钟）：更旧的旧值不端出来，老实等一轮。
     """
     allowed = await hostscope.allowed_host_ids(user)
     key = reportcache.scope_key("baseline", allowed)
@@ -65,7 +66,7 @@ async def fleet(
         # 只用 peek_stale：peek() 遇到过期条目会**顺手删掉**，写成
         # ``peek(key) or peek_stale(key)`` 的话，过期的那一刻反而什么都拿不到、
         # 退化成同步等一轮 —— 正是这条通路要避免的。
-        payload = reportcache.peek_stale(key)
+        payload = reportcache.peek_stale(key, reportcache.STALE_MAX_AGE)
         if payload is None:
             # 一条都没有（进程刚起来）：只能老实等一轮，待办区届时会补上
             payload, cached = await reportcache.get_or_scan(
@@ -94,9 +95,34 @@ async def fleet(
     return payload
 
 
-async def _host_report(host_id: str, request: Request, user: Dict[str, Any]) -> Dict[str, Any]:
+async def _host_report(
+    host_id: str,
+    request: Request,
+    user: Dict[str, Any],
+    refresh: bool = False,
+) -> Dict[str, Any]:
+    """单台主机的完整体检报告（带一层短 TTL 缓存）。
+
+    单机报告也要现场 SSH（最坏 45 秒），而「在几台主机之间来回看」正是这一页的
+    常见用法 —— 每次点回去都重跑一条 SSH 纯属浪费。这里放进与总览同一层缓存：
+    TTL 内直接命中，过期了才真扫一轮。
+
+    刻意**不走 stale 通路**：总览用旧值换响应速度是划算的（它是一屏摘要），
+    而单机详情是用户已经点进来要看的报告，端一份过时的基线结论出来，比多等
+    几秒更糟。
+
+    ``refresh`` 是给页面上的「扫描」按钮用的：它必须真跑一遍，缓存这一层对它
+    是透明的 —— 不绕过的话按钮转一圈，拿回来的还是 TTL 内那份旧报告。
+    """
+    key = reportcache.scope_key("baseline:host", [host_id])
     try:
-        payload = await baseline.collect_host(host_id)
+        if refresh:
+            payload = await baseline.collect_host(host_id)
+            reportcache.store(key, payload)
+        else:
+            payload, _cached = await reportcache.get_or_scan(
+                key, lambda: baseline.collect_host(host_id)
+            )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await security.audit_read(
@@ -113,19 +139,24 @@ async def _host_report(host_id: str, request: Request, user: Dict[str, Any]) -> 
 async def host_report(
     host_id: str,
     request: Request,
+    refresh: bool = False,
     user: Dict[str, Any] = Depends(VIEW),
 ) -> Dict[str, Any]:
-    """单台主机的完整体检报告（``host_id`` 为 ``local`` 或受管主机 id）。"""
-    return await _host_report(host_id, request, user)
+    """单台主机的完整体检报告（``host_id`` 为 ``local`` 或受管主机 id）。
+
+    ``refresh=1`` 绕过报告缓存强制重扫 —— 页面上的「扫描」按钮走这条。
+    """
+    return await _host_report(host_id, request, user, refresh)
 
 
 @router.get("/report", dependencies=[Depends(hostscope.require_local_admin)])
 async def report(
     request: Request,
+    refresh: bool = False,
     user: Dict[str, Any] = Depends(VIEW),
 ) -> Dict[str, Any]:
     """本机（面板所在主机）的完整体检报告。"""
-    return await _host_report("local", request, user)
+    return await _host_report("local", request, user, refresh)
 
 
 @router.post("/fix")

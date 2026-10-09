@@ -465,9 +465,11 @@ ZH_EN: Dict[str, str] = {
         "Fix baseline items such as SSH / kernel parameters / password policy in one click (modifies the panel host)",
     "AI 排查助手": "AI troubleshooting assistant",
     "上机执行": "Run on host",
-    "授权 AI 在目标主机上执行只读诊断命令（白名单限制、全程记入审计）。默认仅管理员":
-        "Let the AI run read-only diagnostic commands on the target host (allowlisted and fully "
-        "audited). Administrators only by default",
+    "允许 AI 在目标主机上执行命令：只读诊断命令（白名单限制）可直接执行，"
+    "改动系统的命令需你逐条批准。全程记入审计。默认仅管理员":
+        "Let the AI run commands on the target host: read-only diagnostics (allowlisted) run "
+        "directly, while commands that change the system need your approval one at a time. "
+        "Everything is audited. Administrators only by default",
     "远程终端": "Remote terminal",
     "在受管主机上打开可交互的 SSH 终端，直接在浏览器里操作。"
     "这等于把该主机的登录凭据交给使用者，默认仅管理员":

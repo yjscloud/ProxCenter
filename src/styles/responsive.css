@@ -259,6 +259,30 @@
   .toast {
     width: 100%;
   }
+
+  /* 用量弹窗：四格读数排成两行（第三格起换行，左边线要去掉、第一行补下边线），
+     按模型那张表从六列收到四列 —— 占比与次数是补充信息，窄屏上先让给模型名
+     和比例条。 */
+  .ai-usage-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ai-usage-stat:nth-child(3) {
+    border-left: none;
+  }
+
+  .ai-usage-stat:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--border-muted);
+  }
+
+  .ai-usage-model {
+    grid-template-columns: 10px minmax(0, 0.8fr) minmax(48px, 1fr) 56px;
+  }
+
+  .ai-usage-model-share,
+  .ai-usage-model-runs {
+    display: none;
+  }
 }
 
 /* ---------------------------------------------------------------------------

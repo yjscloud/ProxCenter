@@ -41,6 +41,7 @@ async def hosts(user: Dict[str, Any] = Depends(VIEW)) -> Dict[str, Any]:
 async def overview(
     request: Request,
     refresh: bool = False,
+    stale: bool = False,
     user: Dict[str, Any] = Depends(VIEW),
 ) -> Dict[str, Any]:
     """全平台总览：并发巡检可见主机，每台只回摘要（最需要看的排最前）。
@@ -49,6 +50,10 @@ async def overview(
     主机集合分键的短 TTL 缓存：同一时刻的重复打开（来回切页面、开两个标签、
     几个人同时看）只跑一轮。``refresh=1`` 绕过缓存 —— 页面上的「重新巡检」
     走的就是这条路。缓存理由与边界见 :mod:`app.reportcache`。
+
+    ``stale=1``：有旧值就先返回、真扫放到后台。这一屏是每台主机一行摘要，
+    为它干等一轮不值得；旧值的年龄上限见 :data:`reportcache.STALE_MAX_AGE`，
+    超出就老实等一轮（与安全基线页同一条通路）。
     """
     allowed = await hostscope.allowed_host_ids(user)
     key = reportcache.scope_key("ports", allowed)
@@ -57,6 +62,17 @@ async def overview(
         payload = await portguard.fleet_overview(allowed)
         reportcache.store(key, payload)
         cached = False
+    elif stale:
+        # 只用 peek_stale：peek() 碰到过期条目会**顺手删掉**，写成
+        # ``peek(key) or peek_stale(key)`` 反而会在过期那一刻退化成同步等一轮
+        payload = reportcache.peek_stale(key, reportcache.STALE_MAX_AGE)
+        if payload is None:
+            payload, cached = await reportcache.get_or_scan(
+                key, lambda: portguard.fleet_overview(allowed)
+            )
+        else:
+            cached = True
+            reportcache.refresh_later(key, lambda: portguard.fleet_overview(allowed))
     else:
         payload, cached = await reportcache.get_or_scan(
             key, lambda: portguard.fleet_overview(allowed)
@@ -111,11 +127,27 @@ async def put_policy(
 async def host_detail(
     host_id: str,
     request: Request,
+    refresh: bool = False,
     user: Dict[str, Any] = Depends(VIEW),
 ) -> Dict[str, Any]:
-    """单台主机的巡检详情（``host_id`` 为 ``local`` 或受管主机 id）。"""
+    """单台主机的巡检详情（``host_id`` 为 ``local`` 或受管主机 id）。
+
+    同样走一层短 TTL 缓存：一次详情要 SSH 到那台机器跑一趟探测（最坏 45 秒），
+    而「几台主机来回看」正是这里的常见用法。理由与安全基线的单机报告一致
+    （见 ``routers/baseline._host_report``）：刻意不接 stale 通路 —— 用户已经
+    点进来看了，端一份过时的端口/进程清单出来比多等几秒更糟。
+
+    ``refresh=1`` 绕过缓存强制重巡检 —— 页面上的「巡检」按钮走这条。
+    """
+    key = reportcache.scope_key("ports:host", [host_id])
     try:
-        payload = await portguard.collect_host(host_id)
+        if refresh:
+            payload = await portguard.collect_host(host_id)
+            reportcache.store(key, payload)
+        else:
+            payload, _cached = await reportcache.get_or_scan(
+                key, lambda: portguard.collect_host(host_id)
+            )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     summary = payload.get("summary") or {}

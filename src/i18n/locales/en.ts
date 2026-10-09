@@ -794,16 +794,15 @@ export const en: Partial<Record<MessageKey, string>> = {
   /* --------------------------------------------------- Landing: highlights */
   'landing.highlights.title': 'Four things worth calling out',
   'landing.highlights.desc': 'Not a re-read of the feature list, but the places where an operator actually decides whether to use this panel.',
-  'landing.highlights.stateRunning': 'running',
-  'landing.highlights.stateTodo': 'queued',
-  'landing.highlights.pipeline.title': 'Building a debian-12 template',
-  'landing.highlights.pipeline.chip': 'Each step waits for the PVE task to finish',
-  'landing.highlights.pipeline.stepShell': 'Create the shell VM',
-  'landing.highlights.pipeline.stepImport': 'importdisk the image',
-  'landing.highlights.pipeline.stepCloudInit': 'Attach the cloud-init drive',
-  'landing.highlights.pipeline.stepGrow': 'Grow the system disk',
-  'landing.highlights.pipeline.stepTemplate': 'Convert to template',
-  'landing.highlights.pipeline.note': 'Any step fails → the temporary VM is removed, nothing left half-built',
+  'landing.highlights.ai.title': 'AI troubleshooting assistant',
+  'landing.highlights.ai.chip': 'Read-only by default',
+  'landing.highlights.ai.chatUser': 'You',
+  'landing.highlights.ai.chatQuestion': 'Why is web-01 so sluggish?',
+  'landing.highlights.ai.chatPanel': 'AI',
+  'landing.highlights.ai.chatAnswer': 'Memory pressure: 320 MB free, no swap, and OOM kills already logged.',
+  'landing.highlights.ai.toolCmd': 'free -m',
+  'landing.highlights.ai.toolAudit': 'Audit report',
+  'landing.highlights.ai.note': 'Read-only commands run directly; changes need your approval',
   'landing.highlights.contain.title': 'Isolating a suspicious VM',
   'landing.highlights.contain.chip': 'The order cannot be swapped',
   'landing.highlights.contain.orderSnapshot': '1. Evidence snapshot',
@@ -6147,7 +6146,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'nav.aiAssistant': 'AI assistant',
   'ai.title': 'AI inspection assistant',
   'ai.subtitle':
-    'Describe the symptom or just ask a question — the AI signs in to this host, runs read-only commands and answers as it goes. Anything that changes the system needs your approval, command by command.',
+    'Describe the symptom or just ask a question — the AI signs in to this host, runs diagnostic commands and answers as it goes. Read-only commands run directly; anything that changes the system needs your approval, command by command.',
   'ai.runningHint': 'Calling the model and running commands; usually 10-60 seconds',
   'ai.settings': 'Model settings',
   'ai.selectHost': 'Target host',
@@ -6198,13 +6197,19 @@ export const en: Partial<Record<MessageKey, string>> = {
   'ai.tokenBudget': 'Token budget per run',
   'ai.tokenBudgetHint':
     'Accumulated across rounds; once reached the model concludes from what it has. Default 60000, up to 100 million. The real brakes are the round count and the overall timeout — this is just a backstop.',
+  'ai.replyCharsTerse': 'Reply length — chat (chars)',
+  'ai.replyCharsTerseHint':
+    'Character limit for everyday Q&A answers; 150 by default. Too short drops the evidence, too long reads like a dump of the tool output.',
+  'ai.replyCharsDeep': 'Reply length — playbook (chars)',
+  'ai.replyCharsDeepHint':
+    'Character limit for the report produced after a playbook run; 400 by default.',
   'ai.advanced': 'Advanced',
 
   'ai.failed': 'Inspection failed',
   'ai.disclaimer':
-    'The AI output is advisory and may miss or misjudge things. It signs in to the target host and runs read-only commands (disk, processes, logs, config); it never modifies anything. Every command it runs is listed under “Progress” on the left — check it before acting.',
+    'The AI output is advisory and may miss or misjudge things. It signs in to the target host and runs commands (disk, processes, logs, config): read-only diagnostics run directly, while anything that changes the system needs your approval command by command. Every command it runs is listed under “Progress” on the left — check it before acting.',
   'ai.readonlyTip':
-    'Only built-in read-only commands are used (df / ps / ss / journalctl …). Every tool and argument is validated against an allowlist, and sudo is never used. Use a regular account on managed hosts — do not give the assistant root.',
+    'Inspections default to built-in read-only commands (df / ps / ss / journalctl …). Every tool and argument is validated against an allowlist, and sudo is never used; once on-host execution is granted, the AI may also propose commands that change the system, but each one needs your approval. Use a regular account on managed hosts — do not give the assistant root.',
   'ai.timeout': 'The inspection timed out or was interrupted; try again',
 
   'ai.progressTitle': 'Progress',
@@ -6334,6 +6339,37 @@ export const en: Partial<Record<MessageKey, string>> = {
   'ai.terminalNeedHost':
     'Pick a managed host above first — the terminal only opens for managed hosts (the panel host itself is not exposed).',
 
+  /* Token usage monitoring */
+  'ai.usage.open': 'Token usage',
+  'ai.usage.title': 'Token usage',
+  'ai.usage.heroCaption': 'Last {days} days',
+  'ai.usage.modalDesc':
+    'Tokens spent, runs and per-model breakdown for the selected window.',
+  'ai.usage.subtitle': 'Last {days} days · {runs} runs',
+  'ai.usage.subtitleEmpty': 'No usage in this window',
+  'ai.usage.windowDays': '{n}d',
+  'ai.usage.windowLabel': 'Window',
+  'ai.usage.totalTokens': 'Total',
+  'ai.usage.promptTokens': 'Input',
+  'ai.usage.completionTokens': 'Output',
+  'ai.usage.runs': 'Runs',
+  'ai.usage.avgTokens': 'Avg / run',
+  'ai.usage.toolCalls': 'Tool calls',
+  'ai.usage.avgDuration': 'Avg duration',
+  'ai.usage.splitAria': 'Input vs output token split',
+  'ai.usage.unit': 'tokens',
+  'ai.usage.trend': 'Daily usage',
+  'ai.usage.dayTip': '{day} · {n} tokens',
+  'ai.usage.byModel': 'By model',
+  'ai.usage.runsUnit': '{n} runs',
+  'ai.usage.unknownModel': 'Unknown model',
+  'ai.usage.noData': 'No usage data',
+  'ai.usage.noDataDesc':
+    'Run an inspection or ask a question, and the tokens spent over the last {n} days will show up here.',
+  'ai.usage.loadFailed': 'Cannot load usage',
+  'ai.usage.loadFailedMsg':
+    'Try again later, or check each run in “Inspection history”.',
+
   'ai.tabInspect': 'Inspect',
   'ai.tabRecords': 'History',
   'ai.modelsConnected': '{n} model(s) connected',
@@ -6390,9 +6426,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'ai.recRoleTool': 'Tool',
   'ai.sharedModel': 'Shared',
   'ai.capabilities': 'Capabilities',
-  'ai.allowExec': 'Let the AI run read-only commands on the target host',
+  'ai.allowExec': 'Let the AI run commands on the target host',
   'ai.allowExecHint':
-    'With this on, the AI may compose its own read-only diagnostics (e.g. ps aux | grep nginx). Read-only commands use an allowlist, never sudo, and every command is recorded in the inspection log.',
+    'With this on, the AI may compose and run its own read-only diagnostics (e.g. ps aux | grep nginx). Commands that change the system are never run directly — they wait for your approval, one at a time. Read-only commands use an allowlist, never sudo, and everything is recorded in the inspection log.',
   'ai.allowExecWarn':
     'Commands that change the system run only after you approve them one by one; the grant applies to this run only.',
   'ai.approval.title': 'Approve the AI’s command',
@@ -6442,7 +6478,7 @@ export const en: Partial<Record<MessageKey, string>> = {
     'Never touches the host — reads inspection results the platform already collected.',
   'ai.capHostTitle': 'Runs on the target host',
   'ai.capHostBody':
-    'It really signs in and runs commands — all read-only, with a whitelist for paths and files.',
+    'It really signs in and runs commands: read-only diagnostics run directly (paths and files are allowlisted); once granted, commands that change the system are proposed first and need your approval one at a time.',
   'ai.capLimitTitle': 'Limits',
   'ai.capLimitBody':
     'One inspection runs at most {steps} rounds within {seconds}s; every call is audited and can be reviewed one by one under “History”.',

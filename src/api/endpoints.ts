@@ -26,6 +26,7 @@ import type {
   AiPlaybook,
   AiSessionDetail,
   AiSessionPage,
+  AiUsageStats,
   AiStatus,
   AiTerminalPreflight,
   RemediationAction,
@@ -2037,10 +2038,20 @@ export const baselineApi = {
           : '/baseline/fleet',
     ),
   /** 单台服务器的完整体检报告（hostId 为 local 或受管主机 id） */
-  host: (hostId: string) =>
-    get<BaselineReport>(`/baseline/hosts/${encodeURIComponent(hostId)}`),
+  /**
+   * 单台服务器的完整体检报告（hostId 为 local 或受管主机 id）。
+   *
+   * 后端对单机报告也有一层短 TTL 缓存（「几台主机来回看」不该每台都重开一条
+   * SSH），所以页面上的「扫描」必须传 `refresh` —— 否则按钮转一圈，拿回来的
+   * 还是缓存里那份旧报告。
+   */
+  host: (hostId: string, refresh = false) =>
+    get<BaselineReport>(
+      `/baseline/hosts/${encodeURIComponent(hostId)}${refresh ? '?refresh=1' : ''}`,
+    ),
   /** 本机完整报告（等价于 host('local')，保留给「只看面板本机」的场景） */
-  report: () => get<BaselineReport>('/baseline/report'),
+  report: (refresh = false) =>
+    get<BaselineReport>(refresh ? '/baseline/report?refresh=1' : '/baseline/report'),
   /** 单项加固（改动服务器配置，需 baseline.manage + 二次确认） */
   fix: (key: string, hostId = 'local') =>
     post<BaselineFixResult>('/baseline/fix', { key, host_id: hostId }),
@@ -2061,12 +2072,28 @@ export const portsApi = {
    *
    * 后端对这份报告有一层 2 分钟的 TTL 缓存（同一时刻的重复打开只跑一轮巡检），
    * `refresh` = 绕过缓存强制重新巡检 —— 页面上的「重新巡检」用它。
+   *
+   * `stale` = 有旧值就先返回、真扫放到后台（与安全基线同一条通路，上限 15 分钟）。
+   * 页面上走的是这条：这一屏是每台主机一行摘要，不该让人为它干等一轮 SSH。
+   * 「重新巡检」按钮仍然传 `refresh`，不走这里。
    */
-  overview: (refresh = false) =>
-    get<PortOverview>(refresh ? '/ports/overview?refresh=1' : '/ports/overview'),
-  /** 单台服务器详情（监听端口 + 可疑进程） */
-  host: (hostId: string) =>
-    get<PortReport>(`/ports/hosts/${encodeURIComponent(hostId)}`),
+  overview: (refresh = false, stale = false) =>
+    get<PortOverview>(
+      refresh
+        ? '/ports/overview?refresh=1'
+        : stale
+          ? '/ports/overview?stale=1'
+          : '/ports/overview',
+    ),
+  /**
+   * 单台服务器详情（监听端口 + 可疑进程）。
+   *
+   * 与 `baselineApi.host` 同理：后端有短 TTL 缓存，「巡检」按钮要传 `refresh`。
+   */
+  host: (hostId: string, refresh = false) =>
+    get<PortReport>(
+      `/ports/hosts/${encodeURIComponent(hostId)}${refresh ? '?refresh=1' : ''}`,
+    ),
   policy: () => get<{ policy: PortPolicy }>('/ports/policy'),
   savePolicy: (policy: PortPolicy) =>
     put<{ policy: PortPolicy }>('/ports/policy', policy),
@@ -2245,14 +2272,24 @@ export const aiApi = {
     /** 个人设置：记在**这个人**名下，不改平台默认值 */
     hours?: number;
     token_budget?: number;
+    /** 回复字数上限的两个档位（自由对话 / 预案） */
+    reply_chars_terse?: number;
+    reply_chars_deep?: number;
   }) => put<AiMyProviders>('/ai/my-providers', payload),
 
   /** 保存配置。api_key 留空 = 沿用旧密钥，api_key_clear = 清除 */
   saveConfig: (payload: Record<string, unknown>) => put<AiConfig>('/ai/config', payload),
 
-  /** 用表单当前值测连通性（不必先保存）；密钥留空则回退到已存的那一份 */
+  /**
+   * 用表单当前值测连通性（不必先保存）；密钥留空则回退到已存的那一份。
+   *
+   * ``note``：连得上、但有话要说（例如推理模型只输出了思考过程就被测试的预算
+   * 截断）。它是**成功**的附加说明，不是错误。
+   */
   testProvider: (provider: Record<string, unknown>) =>
-    post<{ ok: boolean; model: string; reply: string }>('/ai/config/test', { provider }),
+    post<{ ok: boolean; model: string; reply: string; note?: string }>('/ai/config/test', {
+      provider,
+    }),
 
   /** 可排查的主机 + 助手可用状态（区分「没配模型」与「可以排查」） */
   targets: () => get<{ hosts: BaselineHost[]; status: AiStatus }>('/ai/targets'),
@@ -2304,6 +2341,20 @@ export const aiApi = {
   /** 单次排查的详情：会话 + 每一步工具调用 */
   sessionDetail: (id: string) =>
     get<AiSessionDetail>(`/ai/sessions/${encodeURIComponent(id)}`),
+
+  /**
+   * AI 用量统计（token 消耗）。
+   *
+   * 与记录页同一个归属口径：管理员看全平台，普通用户只看自己的 ——
+   * 消耗是花在谁头上的成本，不该互相可见。
+   */
+  usage: (params: { days?: number; host_id?: string } = {}) => {
+    const search = new URLSearchParams();
+    if (params.days != null) search.set('days', String(params.days));
+    if (params.host_id) search.set('host_id', params.host_id);
+    const qs = search.toString();
+    return get<AiUsageStats>(`/ai/usage${qs ? `?${qs}` : ''}`);
+  },
 
   /** 跑一次排查（L1：只读解读）。要等一轮体检 + 一次模型推理 */
   inspect: (hostId: string, providerId?: string) =>

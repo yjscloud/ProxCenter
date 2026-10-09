@@ -46,6 +46,7 @@ import {
   IconSettings,
   IconShield,
   IconSnapshot,
+  IconSparkle,
   IconStorage,
   IconTasks,
   IconTemplate,
@@ -374,6 +375,14 @@ export const DOMAINS: Domain[] = [
         ],
         icon: <IconCheck size={15} />,
       },
+      {
+        name: ['AI 排查助手', 'AI troubleshooting assistant'],
+        desc: [
+          '接入大模型后用自然语言排查主机问题，只读命令与体检数据自动取数给结论，回答长度与单次额度可调',
+          'Troubleshoot a host in plain language once an LLM is configured: read-only commands and audit data are gathered for you, with adjustable answer length and token budget',
+        ],
+        icon: <IconSparkle size={15} />,
+      },
     ],
   },
   {
@@ -698,7 +707,7 @@ export const NAV_LINKS: { id: string; labelKey: MessageKey }[] = [
    每块配一张示意图，visual 决定渲染哪一种（见 Highlights.tsx）
    --------------------------------------------------------------------------- */
 
-export type VisualKind = 'pipeline' | 'contain' | 'baseline' | 'auto';
+export type VisualKind = 'ai' | 'contain' | 'baseline' | 'auto';
 
 /** 双语相同：标识符、时间戳与英文专名不必把同一串写两遍 */
 export function same(text: string): Bi {
@@ -718,24 +727,24 @@ export interface Highlight {
 
 export const HIGHLIGHTS: Highlight[] = [
   {
-    id: 'pipeline',
-    kicker: ['交付', 'Delivery'],
-    title: ['模板 + Cloud-init 交付流水线', 'Template + Cloud-init delivery pipeline'],
+    id: 'ai',
+    kicker: ['智能', 'Intelligence'],
+    title: ['用自然语言把排查做完', 'Troubleshooting, done in plain language'],
     desc: [
-      '把「开一台机器」变成一条可重复执行的流水线。后端按固定顺序推进，每步之间等待 PVE 任务真正完成，任一步失败都会自动删掉临时虚拟机，不留半成品。',
-      'Turns “spin up a machine” into a repeatable pipeline. The backend advances in a fixed order, waiting for each PVE task to actually finish; if any step fails the temporary VM is deleted instead of being left half-built.',
+      '接入自己的大模型后，用一句话描述现象，助手会自己调用只读命令与平台里的体检数据，把结论和依据摆在最前面。全程只读，不改动目标主机上的任何东西。',
+      'Bring your own LLM, describe the symptom in one sentence, and the assistant calls read-only commands and the panel’s own audit data on its own — leading with a verdict and its evidence. Everything is read-only; nothing on the target host is changed.',
     ],
     points: [
-      ['从 cloud 镜像一键构建模板，无需手工敲 qm 命令', 'Build a template from a cloud image in one click — no hand-typed qm commands'],
-      ['克隆时注入主机名、静态 IP、SSH 公钥，开完即用', 'Hostname, static IP and SSH key injected on clone, usable the moment it boots'],
-      ['构建过程中的临时虚拟机在失败时自动回收', 'Temporary VMs created during the build are reclaimed automatically if it fails'],
+      ['内置体检报告、SSH 失败、告警、指标等只读工具，需要什么自己取', 'Built-in read-only tools — audit reports, SSH failures, alerts, metrics — fetched on demand'],
+      ['回答长度与单次 token 上限可按人调节：短问短答，深挖详述', 'Answer length and per-run token budget are adjustable per user: brief for quick questions, longer for deep dives'],
+      ['破坏性操作只会给出建议，绝不替用户执行', 'Destructive actions are only ever suggested, never carried out for you'],
     ],
     tags: [
-      ['一键建模板', 'One-click template'],
-      ['注入主机名与 IP', 'Hostname and IP injection'],
-      ['失败自动清理', 'Cleanup on failure'],
+      ['自然语言排查', 'Plain-language troubleshooting'],
+      ['只读工具', 'Read-only tools'],
+      ['额度可调', 'Adjustable budget'],
     ],
-    visual: 'pipeline',
+    visual: 'ai',
   },
   {
     id: 'contain',

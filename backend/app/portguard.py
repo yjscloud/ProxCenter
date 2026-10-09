@@ -39,6 +39,9 @@ _which = baseline._which
 _elevated = baseline._elevated
 parse_probe_sections = baseline.parse_probe_sections
 PROBE_TIMEOUT = baseline.PROBE_TIMEOUT
+# 并发上限与安全基线共用同一个值：两页扫的是同一批主机、同一类探测，没有理由
+# 各定一套（取值理由见 baseline.PROBE_CONCURRENCY）
+PROBE_CONCURRENCY = baseline.PROBE_CONCURRENCY
 
 POLICY_KEY = "port_guard_policy"
 
@@ -1100,22 +1103,24 @@ async def fleet_reports(
         rows = [row for row in rows if row["id"] in wanted]
     include_local = (wanted is None or "local" in wanted) and await localhost.enabled()
 
-    results = (
-        await parallel(
-            [
-                collect_remote(row, policy, dispositions.get(str(row["id"])) or {})
-                for row in rows
-            ],
-            limit=8,
-        )
-        if rows
-        else []
-    )
+    # 本机与远程放进同一批：本机巡检跑的是本地子进程（ss / ps），单独 await 等于
+    # 在整批之后白添一段串行时间（与 baseline.fleet_reports 同一处改动）。
+    tasks: List[Any] = [
+        collect_remote(row, policy, dispositions.get(str(row["id"])) or {})
+        for row in rows
+    ]
+    if include_local:
+        tasks.append(collect(policy))
+    done = await parallel(tasks, limit=PROBE_CONCURRENCY) if tasks else []
 
     reports: List[Dict[str, Any]] = []
     if include_local:
-        reports.append(await collect(policy))
-    for row, item in zip(rows, results):
+        local_item = done[len(rows)]
+        if isinstance(local_item, BaseException):
+            # 本机巡检失败沿用原来的行为：抛出去
+            raise local_item
+        reports.append(local_item)
+    for row, item in zip(rows, done[: len(rows)]):
         if isinstance(item, BaseException):  # parallel 把异常原样返回
             reports.append(_remote_error_report(row, str(item)))
         else:

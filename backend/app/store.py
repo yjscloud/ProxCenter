@@ -75,10 +75,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
     result    VARCHAR(32)  NOT NULL DEFAULT 'success',
     detail    TEXT,
     ip        VARCHAR(64)  DEFAULT '',
+    -- target 归一化后的「目标机器」：取 `a -> b` 里的最后一段。
+    -- 建机记录的 target 就是 `节点/VMID`，克隆 / 重装是 `来源 -> 节点/VMID`，
+    -- 两种形态在这里统一。（另有一种只写到 VMID 的克隆记录，如 `... -> 104`：
+    -- 它本来就不含节点名，归一化后同样对不上 —— 与改动前那条 LIKE 的行为一致。）
+    -- TRIM 是为了消掉尾随空格带来的差异：原来 `target LIKE '%-> 节点/VMID'`
+    -- 末尾没有锚定，`'… -> pve9/104 '` 也能命中，而 `SUBSTRING_INDEX` 会把它
+    -- 原样带出来。
+    -- 生成列由 MySQL 自己算，写入路径一行都不用改；建索引是为了让创建时间回填
+    -- 能按机器直查 —— 原来那条 `target = ? OR target LIKE '%-> ?'` 用不上任何
+    -- 索引，每台机器一次全表扫描，而它跑在虚拟机列表的首屏路径上。
+    target_guest VARCHAR(255)
+        GENERATED ALWAYS AS (SUBSTRING_INDEX(TRIM(target), ' -> ', -1)) VIRTUAL,
     PRIMARY KEY (id),
     KEY idx_audit_ts (timestamp DESC),
     KEY idx_audit_user (username),
-    KEY idx_audit_action (action)
+    KEY idx_audit_action (action),
+    KEY idx_audit_guest_time (target_guest, timestamp)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -153,6 +166,32 @@ async def init_db() -> None:
             if column not in columns:
                 await db.execute(ddl)
         await db.commit()
+
+        # 审计表补列：target_guest = target 里的「那台机器」（取 `a -> b` 的最后
+        # 一段）。创建时间回填要按 node/vmid 查克隆记录，而 target 有两种形态
+        # （`pve9/100` 与 `pve9/100 -> pve9/104`），原先的 OR + 前置通配 LIKE
+        # 用不上索引、每台机器一次全表扫描 —— 它跑在虚拟机列表的首屏路径上。
+        # 用 VIRTUAL 而不是 STORED：加虚拟列是 INPLACE 的，不必重建整张表
+        # （审计表动辄几十万行），代价只是读取那几列时现算一次。
+        audit_columns = await database.table_columns(db, "audit_log")
+        if "target_guest" not in audit_columns:
+            try:
+                await db.execute(
+                    "ALTER TABLE audit_log ADD COLUMN target_guest VARCHAR(255)"
+                    " GENERATED ALWAYS AS (SUBSTRING_INDEX(TRIM(target), ' -> ', -1))"
+                    " VIRTUAL,"
+                    " ADD KEY idx_audit_guest_time (target_guest, timestamp)"
+                )
+                await db.commit()
+            except Exception:  # noqa: BLE001 - 迁移尽力而为，失败不影响主流程
+                # 这条 DDL 带了生成列与索引，比单纯补一列更容易受 MySQL 版本 /
+                # 权限影响。失败也不该让面板起不来：回填那条查询自己会退化成
+                # 「查不到」（见 guest_created._backfill_from_audit 的 except），
+                # 少的是「克隆机器的创建时间纠正」，不是功能。
+                logger.warning(
+                    "给 audit_log 补 target_guest 失败：创建时间回填会退化成查不到",
+                    exc_info=True,
+                )
 
         # 会话表补列：elevated_until = 该会话最后一次「二次确认」的到期时间
         # （敏感操作前要重输密码 / 动态码，见 security.require_step_up）。

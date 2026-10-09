@@ -283,6 +283,17 @@ On a host without Node.js, build on a machine that has it, copy `dist/` back and
 - **Emergency response** — isolating a suspicious VM snapshots it first, then drops the network,
   powers it off and enables protection. Backups can be registered as protected so the panel refuses
   to delete them.
+- **AI inspection assistant** — hands the platform's existing findings (baseline, port scan, login
+  audit, alerts, change log, metrics) to a model that answers "what to fix first", as a
+  **conversation you can follow up on** rather than a one-shot summary. Read-only by default
+  (parameterised templates, regex and path allow-lists, no sudo); with "authorise the AI to run
+  commands" ticked it may compose read-only pipelines such as `ps aux | grep nginx`, every
+  executable allow-listed and `;` `&&` `||`, redirects and command substitution rejected.
+  **Anything that changes the system is shown first and approved command by command** — `rm -rf /`,
+  `mkfs`, `dd` and power operations are refused even if approved. A built-in SSH terminal shares the
+  view, conclusions carry a `source_ref` back to the original check, and every tool call plus token
+  usage is recorded and exportable as CSV. Needs `ai.exec` and `ai.terminal` (admin-only by
+  default).
 - **Audit and monitoring** — `last` / `lastb` and sudo / su entries folded into the same audit table
   as the panel's operations, cluster dashboards, live node metrics over `/ws/metrics`, RRD charts,
   disk capacity forecasting, and Feishu webhook plus mail notifications with per-user channels.

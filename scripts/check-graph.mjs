@@ -147,3 +147,50 @@ if (undeclared.size) {
 console.log(
   `✓ 全部第三方依赖均已声明（${scanned.length} 个文件 + manualChunks ${chunkNames.length} 项）`,
 );
+
+/* ---------------------------------------------------------------------------
+   额外检查：package-lock.json 必须与 package.json 一致
+
+   与上面那条同一类「只在新环境炸」，但更隐蔽 —— 它不会让构建失败，只会让**每台
+   机器在每次部署时莫名多出一处未提交改动**：
+
+   package-lock.json 里也记着**根包自己的版本号**。发版时只改 package.json 的
+   version、忘了同步 lock，npm install 就会在每次部署时把 lock 重写一遍（deploy.sh
+   每次都会跑 install 检查依赖）。工作区于是永远是脏的，而面板的在线更新只要看到
+   工作区有改动就要二次确认（见 backend/app/update.py 的 git_info）—— 用户看到的
+   是「为什么不能一键更新」，而原因跟他的代码毫无关系。
+
+   实测漏过三个版本（0.2.2 / 0.2.3 / 0.2.4 都只改了 package.json），所以在这里钉死：
+   版本号与两张依赖表都必须对得上。
+   --------------------------------------------------------------------------- */
+const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+const lockRoot = (lock.packages || {})[''] || {};
+const drift = [];
+
+if (lock.version !== pkg.version) {
+  drift.push(`version：package.json ${pkg.version} ≠ package-lock.json ${lock.version}`);
+}
+if (lockRoot.version && lockRoot.version !== pkg.version) {
+  drift.push(
+    `根包 version：package.json ${pkg.version} ≠ lock 的 packages[""] ${lockRoot.version}`,
+  );
+}
+for (const field of ['dependencies', 'devDependencies']) {
+  const inPkg = pkg[field] || {};
+  const inLock = lockRoot[field] || {};
+  for (const name of new Set([...Object.keys(inPkg), ...Object.keys(inLock)])) {
+    if (inPkg[name] !== inLock[name]) {
+      drift.push(
+        `${field} 的 ${name}：package.json ${inPkg[name] ?? '(没有)'} ≠ lock ${inLock[name] ?? '(没有)'}`,
+      );
+    }
+  }
+}
+
+if (drift.length) {
+  console.error(`✗ package-lock.json 与 package.json 不一致（${drift.length} 处）:`);
+  drift.forEach((line) => console.error(`   ${line}`));
+  console.error('   修：npm install --package-lock-only --no-audit --no-fund');
+  process.exit(1);
+}
+console.log('✓ package-lock.json 与 package.json 一致（版本号 + 依赖表）');

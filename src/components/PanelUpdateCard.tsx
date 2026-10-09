@@ -59,6 +59,17 @@ export function PanelUpdateCard() {
 
   const skipped = data.skipped && data.skipped === data.latest;
   const last = data.last_update ?? {};
+  const build = data.build;
+  /*
+    前端产物与后端不是一套时要提示出来。这里出现的两种情形都值得说一句：
+    * mismatch —— dist/ 是别的版本构建的（依赖没装成、构建中断、用了
+      --skip-frontend、或者 rsync 保留了旧产物），界面可能少功能或行为不对；
+    * no_build —— 产物没有版本标记，判断不了新旧（老脚本构建的），提一句让它重建。
+    刻意**不报** no_dist：那是「只跑后端 API」的正常情况（开发时前端由 Vite 提供）。
+  */
+  const buildStale =
+    !!build &&
+    (build.reason === 'mismatch' || build.reason === 'no_build');
 
   return (
     <div className="mt-16">
@@ -171,6 +182,32 @@ export function PanelUpdateCard() {
             ? t('update.doneOk', { tag: last.tag })
             : t('update.doneFail', { tag: last.tag })}{' '}
           {last.log ? <span className="mono fs-xs">{last.log}</span> : null}
+          {/* 失败时后端从日志尾部认出来的「接下来该做什么」：这里的原始输出只有
+              一排 tsc 报错，用户看不出那是前端依赖没装齐 */}
+          {last.hint ? (
+            <div className="fs-xs mt-8" style={{ color: 'var(--warning)' }}>
+              {last.hint}
+            </div>
+          ) : null}
+        </Notice>
+      ) : null}
+
+      {/* 界面跑的是旧前端：代码已是新版、服务照跑、页面照开，只是功能不对 */}
+      {buildStale && build ? (
+        <Notice
+          tone="warning"
+          title={
+            build.reason === 'mismatch'
+              ? t('update.buildStaleTitle')
+              : t('update.buildUnknownTitle')
+          }
+        >
+          {build.reason === 'mismatch'
+            ? t('update.buildStale', {
+                frontend: build.frontend ?? '',
+                backend: build.backend,
+              })
+            : t('update.buildUnknown')}
         </Notice>
       ) : null}
 

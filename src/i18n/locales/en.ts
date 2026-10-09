@@ -6137,6 +6137,12 @@ export const en: Partial<Record<MessageKey, string>> = {
   'update.doneOk': 'Updated to {tag}',
   'update.doneFailTitle': 'Last update did not finish',
   'update.doneFail': 'Updating to {tag} did not succeed — check the log:',
+  'update.buildStaleTitle': 'Frontend build and backend differ in version',
+  'update.buildStale':
+    'The UI is running v{frontend} while the backend is v{backend} — features may be missing or behave incorrectly. Run npm install && npm run build in the install directory, then restart the panel.',
+  'update.buildUnknownTitle': 'Frontend build has no version marker',
+  'update.buildUnknown':
+    'This dist/ was produced by an older build script, so it cannot be matched against the backend. Run npm run build to rebuild it (builds since 0.2.2 carry the marker).',
   'update.deployForm': 'Deployment',
   'update.form.git': 'Source + systemd',
   'update.form.docker': 'Docker container',

@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from . import __version__, i18n, notifications, store
+from . import __version__, buildinfo, i18n, notifications, store
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +494,68 @@ def _read_progress(applying: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+#: 前端依赖没装齐时，tsc 的报错长这样：``Cannot find module '@xterm/xterm'``。
+#: 用户看到的原始输出只有一排这样的行，看不出「是依赖没同步、该执行 npm install」。
+_MISSING_MODULE_RE = re.compile(r"Cannot find module '([^']+)'", re.IGNORECASE)
+
+
+def _frontend_deps() -> set:
+    """``package.json`` 里声明的运行依赖（裸包名）。读不到就返回空集合。"""
+    try:
+        data = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    deps = data.get("dependencies")
+    if not isinstance(deps, dict):
+        return set()
+    return {str(name) for name in deps}
+
+
+def _root_package(name: str) -> str:
+    """``@xterm/xterm/lib/x.js`` → ``@xterm/xterm``（scope 包要保留两段）。"""
+    parts = [part for part in str(name).split("/") if part]
+    if str(name).startswith("@") and len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return parts[0] if parts else ""
+
+
+def _failure_hint(applying: Dict[str, Any]) -> str:
+    """从更新日志尾部猜出「接下来该做什么」，猜不出返回空串。
+
+    目前只认一种最常见、也最让人无从下手的失败：**跳版本升级时前端依赖没装齐**。
+    界面上的原始输出是一堆 ``Cannot find module 'X'``，用户既不知道 X 是什么，也
+    不知道下一步执行什么。这里把它翻成一句能照着做的话（0.2.0 → 0.2.2 实测踩过）。
+    """
+    path = str(applying.get("log") or "")
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    # 只看尾部：构建输出可能很长，而报错集中在最后
+    tail = "\n".join(text.splitlines()[-80:])
+    declared = _frontend_deps()
+    if not declared:
+        return ""
+    # 只认 package.json 里声明过的包：`node:fs` 这类内置模块报找不到是另一回事
+    missing = sorted(
+        {_root_package(name) for name in _MISSING_MODULE_RE.findall(tail)} & declared
+    )
+    if not missing:
+        return ""
+    return i18n.pick(
+        "构建失败的原因看起来是前端依赖没装齐（缺 "
+        + "、".join(missing[:3])
+        + "）。在安装目录执行 npm install 后重试即可 —— "
+        "当前版本的更新流程每次都会检查依赖，正常情况下不会再遇到。",
+        "The build failed because frontend dependencies are missing ("
+        + ", ".join(missing[:3])
+        + "). Run npm install in the install directory and retry — "
+        "current versions check dependencies on every update.",
+    )
+
+
 def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
     """把「更新中」这个状态收干净。
 
@@ -527,6 +589,8 @@ def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
             "ok": False,
             "at": int(outcome.get("at") or time.time()),
             "log": str(applying.get("log") or ""),
+            # 失败时多给一句「该做什么」：原始日志是给开发者看的，用户只能来问
+            "hint": _failure_hint(applying),
         }
         state.pop("applying", None)
         return {}
@@ -536,6 +600,7 @@ def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
             "ok": False,
             "at": int(time.time()),
             "log": str(applying.get("log") or ""),
+            "hint": _failure_hint(applying),
         }
         state.pop("applying", None)
         return {}
@@ -971,6 +1036,8 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         await save_state(state)
     return {
         "current": __version__,
+        # 前端产物与后端是不是同一个版本（见 app.buildinfo）：界面据此提示「产物陈旧」
+        "build": buildinfo.status(),
         "latest": version,
         "tag": str(latest.get("tag") or ""),
         "release_name": str(latest.get("name") or ""),

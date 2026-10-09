@@ -303,8 +303,7 @@ declare -A MSG_EN=(
   # ---- 前端构建 ----
   ['[3/5] 准备前端构建产物']='[3/5] Preparing the frontend build'
   ['跳过构建，复用已有 dist/']='Skipping the build, reusing the existing dist/'
-  ['安装前端依赖（首次较慢）']='Installing frontend dependencies (slow the first time)'
-  ['复用已有 node_modules（要强制重装请先删除该目录）']='Reusing the existing node_modules (delete the directory to force a reinstall)'
+  ['安装前端依赖（已满足时很快）']='Installing frontend dependencies (quick when already satisfied)'
 
   # ---- systemd ----
   ['[4/5] 跳过 systemd（--no-systemd）']='[4/5] Skipping systemd (--no-systemd)'
@@ -1305,14 +1304,15 @@ if [ "$SKIP_FRONTEND" -eq 1 ]; then
   [ -f "$ROOT/dist/index.html" ] || die "--skip-frontend 要求 dist/index.html 已存在，请先构建或去掉该参数。"
   info "跳过构建，复用已有 dist/"
 else
-  # npm ci 只在 lock 与 package.json 完全一致时可用，且会**清空** node_modules；
-  # 这里用 install，配合 .npmrc 里的国内镜像，首次约几分钟。
-  if [ ! -d "$ROOT/node_modules" ]; then
-    info "安装前端依赖（首次较慢）"
-    (cd "$ROOT" && npm install --no-audit --no-fund)
-  else
-    info "复用已有 node_modules（要强制重装请先删除该目录）"
-  fi
+  # 每次都跑，不拿「node_modules 目录在不在」当判断依据 —— 目录在，不代表依赖齐。
+  # 跳版本升级时（如 0.2.0 → 0.2.2）新加的包永远装不上，构建会直接报「找不到
+  # 模块」，而这一步的输出看起来完全正常。依赖没变时 npm 只做一次解析就返回
+  # （几秒），这点代价换掉一整类问题很划算；后端那一步一直是这么做的
+  # （pip install -r requirements.txt，已满足时秒退）。
+  # 注：npm ci 只在 lock 与 package.json 完全一致时可用，且会**清空** node_modules，
+  # 所以这里仍用 install（配合 .npmrc 里的国内镜像）。
+  info "安装前端依赖（已满足时很快）"
+  (cd "$ROOT" && npm install --no-audit --no-fund)
   info "构建：npm run build → dist/"
   (cd "$ROOT" && npm run build)
   [ -f "$ROOT/dist/index.html" ] || die "构建结束但 dist/index.html 不存在，请检查上面的构建输出。"

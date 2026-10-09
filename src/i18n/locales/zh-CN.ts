@@ -5997,6 +5997,12 @@ export const zhCN = {
   'update.doneOk': '已更新到 {tag}',
   'update.doneFailTitle': '上次更新未完成',
   'update.doneFail': '更新到 {tag} 没有成功，请查看日志：',
+  'update.buildStaleTitle': '前端产物与后端版本不一致',
+  'update.buildStale':
+    '界面上跑的是 v{frontend}，后端是 v{backend} —— 界面可能缺少新功能或行为不对。在安装目录执行 npm install && npm run build，然后重启面板。',
+  'update.buildUnknownTitle': '前端产物没有版本标记',
+  'update.buildUnknown':
+    '这份 dist/ 是用旧版本的构建方式产出的，无法确认它和后端是否配套。执行 npm run build 重新构建即可（0.2.2 起的构建会带上标记）。',
   'update.deployForm': '部署形态',
   'update.form.git': '源码 + systemd',
   'update.form.docker': 'Docker 容器',

@@ -1,9 +1,46 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
 
+/*
+  把版本号写进构建产物（dist/build-info.json）。后端启动时读它与 __version__
+  比对，不一致就在日志与「设置 → 面板版本与更新」里说明「界面跑的是旧前端」
+  （见 backend/app/buildinfo.py）。
+
+  为什么放进 vite 插件、而不是一个独立的 node 脚本：构建链路只有一处，才不会
+  出现「加了脚本，却忘了让别的构建环境也拿到它」。踩过 —— Dockerfile 的 frontend
+  阶段只 COPY 了 src / public 与配置文件，独立脚本在那里根本不存在，镜像构建直接
+  失败（而 npm run build 在开发机上好好的）。
+*/
+function writeBuildInfo(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'proxcenter-build-info',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const pkg = JSON.parse(
+        readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'),
+      );
+      const info = {
+        version: pkg.version,
+        // 秒级时间戳：与项目其它地方的时间口径一致
+        built_at: Math.floor(Date.now() / 1000),
+      };
+      writeFileSync(
+        fileURLToPath(new URL(`./${outDir}/build-info.json`, import.meta.url)),
+        `${JSON.stringify(info, null, 2)}\n`,
+      );
+      console.log(`build-info.json → v${info.version}`);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), writeBuildInfo()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

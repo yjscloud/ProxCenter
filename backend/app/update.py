@@ -763,6 +763,9 @@ fi'''
 if ! git fetch --tags --prune origin; then echo "git fetch 失败（网络或凭据问题），放弃更新"; exit 1; fi
 if ! git rev-parse --verify --quiet "{tag}^{{commit}}" >/dev/null; then echo "远端找不到 {tag}，放弃更新"; exit 1; fi
 echo "PROGRESS 30 switch"
+# 先记下当前所在的分支：更新完要回到它。detached（正停在某个 tag 上）时为空，
+# 那种情况下面回落到远端默认分支。
+BRANCH="$(git symbolic-ref --short -q HEAD || true)"
 # 工作区有未提交改动时 checkout 会被挡住：先 stash 起来，事后 `git stash list` 能原样
 # 找回 —— 更新面板不该顺手弄丢用户手里的改动。这里用**普通** checkout 而不是
 # `--force`：真遇到冲突就报错退出，而不是把本地文件覆盖掉。
@@ -773,6 +776,26 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   git stash push -m "proxcenter-update-{tag}" || echo "stash 失败，继续尝试切换版本"
 fi
 if ! git checkout "{tag}"; then echo "切到 {tag} 失败，放弃更新（本地改动已在 stash 里）"; exit 1; fi
+# 挂回分支：`git checkout <tag>` 会把仓库留在 **detached HEAD**（HEAD 不挂在任何分支
+# 上），而 README / wiki 教用户升级时执行 `git pull` —— 那在 detached 下直接报
+# "You are not currently on a branch"，把人卡在第一句。
+# 做法是把分支**快进**到刚检出的 tag 再切回去 —— 代码内容一模一样，只是 HEAD 重新
+# 挂回分支。只在「分支确实是该 tag 的祖先」（纯粹的落后）时才动；分支上有本地提交
+# 时保持原样并说明该怎么办，不替用户决定要不要丢掉那些提交。
+TARGET_BRANCH="${{BRANCH}}"
+if [ -z "$TARGET_BRANCH" ]; then
+  TARGET_BRANCH="$(git symbolic-ref --short -q refs/remotes/origin/HEAD | sed 's|^origin/||')"
+fi
+[ -n "$TARGET_BRANCH" ] || TARGET_BRANCH=main
+if git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH" && git merge-base --is-ancestor "$TARGET_BRANCH" "{tag}"; then
+  if git branch -f "$TARGET_BRANCH" "{tag}" && git checkout "$TARGET_BRANCH"; then
+    echo "[$(date -Is)] 已挂回分支 $TARGET_BRANCH（现指向 {tag}）"
+  fi
+else
+  echo "[$(date -Is)] 注意：当前处于 detached HEAD（停在 {tag} 上）。"
+  echo "            分支 $TARGET_BRANCH 不在它的祖先链上（本地有额外提交？），没有替你决定。"
+  echo "            想挂回分支：git checkout $TARGET_BRANCH"
+fi
 echo "[$(date -Is)] 代码已切到 {tag}（commit $(git rev-parse --short HEAD)）"'''
 
     return f"""#!/usr/bin/env bash

@@ -12,7 +12,9 @@ import { Badge } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
 import { Input, Select } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
-import { EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
+import { EmptyState, Notice } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { CardSkeleton } from '../components/ui/Spinner';
 import { IpPoolPanel } from '../components/IpPoolPanel';
 import {
@@ -37,10 +39,14 @@ export function Networks() {
   const [typeFilter, setTypeFilter] = useState('');
   const [activeFilter, setActiveFilter] = useState('');
 
+  /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
+     （配好之后自动恢复） */
+  const pveReady = usePveReady();
+
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
-    refetchInterval: 20_000,
+    refetchInterval: pveReady ? 20_000 : false,
   });
 
   const nodes = nodesQuery.data ?? [];
@@ -78,7 +84,7 @@ export function Networks() {
       return results;
     },
     enabled: nodes.length > 0,
-    refetchInterval: 30_000,
+    refetchInterval: pveReady ? 30_000 : false,
   });
 
   const groups = netQueries.data ?? [];
@@ -323,9 +329,10 @@ export function Networks() {
           />
         </Card>
       ) : anyError && groups.every((g) => g.error) ? (
-        <ErrorState
+        <PveQueryError
           title={t('networks.loadErrorTitle')}
           message={t('networks.loadErrorMsg')}
+          error={netQueries.error}
           onRetry={() => void netQueries.refetch()}
         />
       ) : (

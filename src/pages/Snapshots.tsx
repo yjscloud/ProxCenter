@@ -13,7 +13,9 @@ import { Badge } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
 import { Input, Select } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
-import { ErrorState, Notice } from '../components/ui/EmptyState';
+import { Notice } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import {
   IconSnapshot,
@@ -73,6 +75,10 @@ export function Snapshots() {
   const [deleteTarget, setDeleteTarget] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
+     （配好之后自动恢复） */
+  const pveReady = usePveReady();
+
   /* 虚拟机列表 */
   const vmsQuery = useQuery({
     queryKey: ['vms', 'all'],
@@ -122,7 +128,7 @@ export function Snapshots() {
       return results.flat();
     },
     enabled: targetVms.length > 0,
-    refetchInterval: 60_000,
+    refetchInterval: pveReady ? 60_000 : false,
     retry: false,
   });
 
@@ -350,9 +356,10 @@ export function Snapshots() {
       </div>
 
       {snapshotsQuery.isError ? (
-        <ErrorState
+        <PveQueryError
           title={t('snapshots.loadErrorTitle')}
           message={t('snapshots.loadErrorMsg')}
+          error={snapshotsQuery.error}
           onRetry={() => void snapshotsQuery.refetch()}
         />
       ) : (

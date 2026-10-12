@@ -22,6 +22,8 @@ import { Button } from '../components/ui/Button';
 import { SegmentedControl } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
 import { ErrorState, EmptyState } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { DonutChart, CHART_COLORS } from '../components/MetricChart';
 import { CapacityCard } from '../components/CapacityCard';
 import type { CapacityTimeframe } from '../components/CapacityCard';
@@ -174,23 +176,27 @@ export function Dashboard() {
   /* 任务队列页属于「系统管理」，仅管理员可进入 */
   const { isAdmin } = useAuth();
 
+  /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
+     （配好之后自动恢复） */
+  const pveReady = usePveReady();
+
   /* ---- 数据查询（每 10 秒自动刷新）---- */
   const vmsQuery = useQuery({
     queryKey: ['vms', 'all'],
     queryFn: () => vmsApi.list(),
-    refetchInterval: REFRESH,
+    refetchInterval: pveReady ? REFRESH : false,
   });
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
-    refetchInterval: REFRESH,
+    refetchInterval: pveReady ? REFRESH : false,
   });
 
   const clusterQuery = useQuery({
     queryKey: ['cluster', 'status'],
     queryFn: clusterApi.status,
-    refetchInterval: REFRESH,
+    refetchInterval: pveReady ? REFRESH : false,
     retry: false,
   });
 
@@ -218,7 +224,7 @@ export function Dashboard() {
   const storagesQuery = useQuery({
     queryKey: ['storages', 'all'],
     queryFn: () => storagesApi.list(),
-    refetchInterval: REFRESH,
+    refetchInterval: pveReady ? REFRESH : false,
   });
 
   const tasksQuery = useQuery({
@@ -474,9 +480,10 @@ export function Dashboard() {
   if (hasError) {
     return (
       <PageShell title={t('nav.dashboard')}>
-        <ErrorState
+        <PveQueryError
           title={t('dashboard.loadErrorTitle')}
           message={t('dashboard.loadErrorMsg')}
+          error={vmsQuery.error}
           onRetry={() => {
             void vmsQuery.refetch();
             void nodesQuery.refetch();

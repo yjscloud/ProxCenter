@@ -20,7 +20,9 @@ import {
   storagesApi,
   vmsApi,
 } from '../api/endpoints';
-import { setPageConnection, errorMessage, isNotImplemented } from '../api/client';
+import { setPageConnection, isNotImplemented } from '../api/client';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import { AskAiButton } from '../components/AskAiButton';
 import { Breadcrumb } from '../components/Topbar';
@@ -219,11 +221,14 @@ export function VmDetail() {
      刻意关掉 react-query 的自动重试：默认会退避重试 3 次（约 7 秒），
      接口真出错时页面会先「卡」住再报错，看起来像卡死；本身已有 10 秒
      轮询兜底，不需要再加一层重试。 */
+  /* 未配置连接时不必发请求：页面会直接给出「去添加连接」的引导 */
+  const pveReady = usePveReady();
+
   const vmQuery = useQuery({
     queryKey: ['vm', node, vmid],
     queryFn: () => vmsApi.detail(node, vmid),
-    enabled: validParams,
-    refetchInterval: 10_000,
+    enabled: pveReady && validParams,
+    refetchInterval: pveReady ? 10_000 : false,
     retry: false,
   });
 
@@ -430,9 +435,9 @@ export function VmDetail() {
             { label: `${node} / ${vmid}` },
           ]}
         />
-        <ErrorState
+        <PveQueryError
           title={notImpl ? t('vmDetail.notAvailable') : t('vmDetail.loadFailed')}
-          message={errorMessage(vmQuery.error)}
+          error={vmQuery.error}
           notImplemented={notImpl}
           onRetry={() => void vmQuery.refetch()}
         />

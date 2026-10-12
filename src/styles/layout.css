@@ -290,6 +290,18 @@
   white-space: nowrap;
 }
 
+/* 面板还没接入 Proxmox 时，依赖 PVE 的入口右侧挂一颗小圆点。
+   这些入口点进去只会看到「去添加连接」的引导，先在导航里说一声，
+   省得用户一个个点过去试、还以为是页面坏了。 */
+.nav-item-flag {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
 .sidebar.is-collapsed .nav-item {
   justify-content: center;
   padding: 0;

@@ -53,11 +53,17 @@ class ProxmoxError(Exception):
         status_code: int = 500,
         endpoint: str = "",
         pve_status: Optional[int] = None,
+        code: Optional[str] = None,
     ):
         self.message = message
         self.status_code = status_code
         self.endpoint = endpoint
         self.pve_status = pve_status if pve_status is not None else status_code
+        # 机器可读的错误码，供前端区分「同一状态码下的不同原因」。
+        # 最需要它的是 428：既可能是「面板还没配置连接」（该去添加），
+        # 也可能是「没配控制台账号」（该去补账号），两者要做的事完全不同，
+        # 而 428 本身分不出来。
+        self.code = code
         super().__init__(message)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -65,7 +71,19 @@ class ProxmoxError(Exception):
             "detail": self.message,
             "pve_status": self.pve_status,
             "endpoint": self.endpoint,
+            "code": self.code,
         }
+
+
+def error_code_headers(exc: ProxmoxError) -> Optional[Dict[str, str]]:
+    """把 ``exc.code`` 放进响应头，供那些只能用 HTTPException 回错的路径使用。
+
+    为什么走响应头而不是响应体：这些路径（各 router 的 ``_raise``、控制台）用的是
+    FastAPI 的 HTTPException，它的 ``detail`` 只能是字符串，塞对象会把前端的
+    「取 detail 当文案」那套逻辑弄坏。``X-Step-Up`` 已经验证过这条路可行
+    （前端拦截器能读到该响应头），这里沿用同一套路子。
+    """
+    return {"X-Error-Code": exc.code} if exc.code else None
 
 
 def explain_clone_error(message: str, full: bool) -> str:
@@ -235,6 +253,7 @@ class ProxmoxClient:
                 "Open Settings and provide host + API token.",
                 status_code=428,
                 endpoint=f"{method} {path}",
+                code="pve_not_configured",
             )
 
         url = f"{self.conn.api_url}{path}"
@@ -1047,6 +1066,7 @@ class ProxmoxClient:
                 "in Settings. API tokens cannot open VNC consoles.",
                 status_code=428,
                 endpoint="POST /access/ticket",
+                code="console_credentials_missing",
             )
 
         client = await self._http()

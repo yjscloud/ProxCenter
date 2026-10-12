@@ -167,6 +167,8 @@ class TestAuthFlow:
         # The mock reports a PVE version, proving the connection works.
         assert body["pve_connected"] is True
         assert body["pve_version"] == "8.2.4"
+        # 配置状态与连通状态分开上报：前端据此区分「去添加」和「去排查」
+        assert body["pve_configured"] is True
 
 
 # ------------------------------------------------------- 登录图形验证码
@@ -2317,6 +2319,9 @@ class TestConnectionConfig:
         assert resp.status_code == 200
         body = resp.json()
         assert body["pve_connected"] is False
+        # 未配置时 pve_configured 必须是 false，前端才会显示「去添加连接」的引导，
+        # 而不是把它当成「连不上」的故障去报错
+        assert body["pve_configured"] is False
         assert "未配置" in body["error"]
 
     def test_pve_backed_routes_require_configuration(self, api) -> None:

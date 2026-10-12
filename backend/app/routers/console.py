@@ -27,7 +27,13 @@ import websockets
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from .. import i18n, security, store
-from ..pve import ProxmoxError, ProxmoxClient, get_client, set_request_connection
+from ..pve import (
+    ProxmoxError,
+    ProxmoxClient,
+    error_code_headers,
+    get_client,
+    set_request_connection,
+)
 from ..vm_scope import bind_vm_connection, resolve_vm_connection
 
 def _require_console_account() -> None:
@@ -45,6 +51,9 @@ def _require_console_account() -> None:
                 "API Token。请在「设置 → 连接配置」中填写 Proxmox 控制台账号与密码"
                 "（例如 root@pam）。"
             ),
+            # 同为 428，但这里缺的是「控制台账号」而不是「连接」：带上错误码，
+            # 前端才不会把它当成「面板还没配置」而显示「去添加连接」的引导。
+            headers={"X-Error-Code": "console_credentials_missing"},
         )
 
 
@@ -98,8 +107,11 @@ def _raise(exc: ProxmoxError) -> None:
         raise HTTPException(
             status_code=428,
             detail=i18n.tr("PVE 控制台凭据无效或权限不足：") + exc.message,
+            headers={"X-Error-Code": "console_credentials_missing"},
         )
-    raise HTTPException(status_code=status, detail=exc.message)
+    raise HTTPException(
+        status_code=status, detail=exc.message, headers=error_code_headers(exc)
+    )
 
 
 @router.post(

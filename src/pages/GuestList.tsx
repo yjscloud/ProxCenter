@@ -51,7 +51,9 @@ import {
 import { Table, type Column, type SortState } from '../components/ui/Table';
 import { useColumnSettings } from '../components/ui/ColumnSettings';
 import { InlineMeter } from '../components/ui/ProgressBar';
-import { ErrorState, Notice } from '../components/ui/EmptyState';
+import { Notice } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { UserSelect } from '../components/ui/UserSelect';
 import { VmCreateWizard } from '../components/VmCreateWizard';
@@ -539,6 +541,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
      两个页面各自的缓存键互不重叠：容器走 /lxc，虚拟机走 /vms?type=qemu。
      键里必须带 with-ip：仪表盘/模板/备份等页面用的是 ['vms','all'] 且不带
      with_ip，共用同一个键会导致先加载的那份缓存被复用，IP 列整列变空。 */
+  /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错；
+     配好之后这个值自动变回 true，轮询自己接上 */
+  const pveReady = usePveReady();
+
   const guestsQuery = useQuery({
     queryKey: isLxc
       ? ['lxc', 'with-ip', nodeFilter || 'all']
@@ -550,7 +556,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     /* 30 秒：这一枪并不便宜 —— with_ip 要逐台问 PVE 拿地址（并发扇出 + 等
        Guest Agent），10 秒一次等于让列表页常驻在一轮接一轮的轮询里。列表要的是
        「状态大致是新的」，半分钟足够。 */
-    refetchInterval: 30_000,
+    enabled: pveReady,
+    refetchInterval: pveReady ? 30_000 : false,
   });
 
   const nodesQuery = useQuery({
@@ -1336,7 +1343,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
      （两边的列不完全一样，共用一份配置会互相打架）。 */
   const cols = useColumnSettings(columns, isLxc ? 'lxc' : 'vms');
 
-  const hasError = guestsQuery.isError;
+  /* 未配置时查询被 enabled 关掉、不出错也不出数据：这里一并按「取不到数据」处理，
+     否则页面会渲染成一张空表，比报错更让人摸不着头脑 */
+  const hasError = !pveReady || guestsQuery.isError;
 
   return (
     <PageShell
@@ -1588,9 +1597,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
         {hasError ? (
           <div className="card" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
-            <ErrorState
+            <PveQueryError
               title={t('guestList.loadFailed', { noun: L.noun })}
-              message={errorMessage(guestsQuery.error)}
+              error={guestsQuery.error}
               onRetry={() => void guestsQuery.refetch()}
             />
           </div>

@@ -47,6 +47,9 @@ const queryClient = new QueryClient({
         if (error && typeof error === 'object' && 'status' in error) {
           const status = (error as { status: number }).status;
           if (status === 401 || status === 403 || status === 501) return false;
+          // 428 = 前提未满足（还没配置 Proxmox 连接）。重试不会让它变成已配置，
+          // 只会把报错晚几秒才显示出来，所以直接放弃。
+          if (status === 428) return false;
           // 502 / 503 / 504 来自 nginx：面板正在重启，或后端暂时不可用。
           // 重启通常十几秒，多试几次就能自己接上 —— 用户不必看到报错、
           // 更不必手动刷新（默认那 2 次、1s+2s 的退避是盖不住重启的）

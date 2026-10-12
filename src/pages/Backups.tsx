@@ -23,6 +23,7 @@ import { Input, Select, Switch, Textarea, Field } from '../components/ui/Input';
 import { Table, Pagination, type Column } from '../components/ui/Table';
 import { Modal } from '../components/ui/Modal';
 import { ErrorState, Notice, CollapsibleCard } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import {
   IconBackup,
@@ -853,9 +854,9 @@ function BackupFilesTab({
       </div>
 
       {listQuery.isError && !isNotImplemented(listQuery.error) ? (
-        <ErrorState
+        <PveQueryError
           title={t('backups.loadFailed')}
-          message={errorMessage(listQuery.error)}
+          error={listQuery.error}
           onRetry={() => void listQuery.refetch()}
         />
       ) : (
@@ -1201,9 +1202,9 @@ function BackupJobsTab({
           onRetry={() => void jobsQuery.refetch()}
         />
       ) : jobsQuery.isError ? (
-        <ErrorState
+        <PveQueryError
           title={t('backups.jobsLoadFailed')}
-          message={errorMessage(jobsQuery.error)}
+          error={jobsQuery.error}
           onRetry={() => void jobsQuery.refetch()}
         />
       ) : (

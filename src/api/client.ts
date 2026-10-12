@@ -30,6 +30,17 @@ const SAFE_METHODS = new Set(['get', 'head', 'options']);
    ApiError
    --------------------------------------------------------------------------- */
 
+/** 后端用 ``X-Error-Code`` 说明「同一状态码下的不同原因」；目前只有 428 用到。 */
+const CONSOLE_CREDENTIALS_MISSING = 'console_credentials_missing';
+
+/** 读取 ``X-Error-Code``；读不到就是空串（老后端、或响应头未 expose） */
+function readErrorCode(headers: unknown): string {
+  if (!headers || typeof headers !== 'object') return '';
+  const get = (headers as { get?: (name: string) => unknown }).get;
+  if (typeof get !== 'function') return '';
+  return String(get.call(headers, 'x-error-code') ?? '');
+}
+
 export class ApiError extends Error {
   status: number;
   detail: string;
@@ -39,21 +50,37 @@ export class ApiError extends Error {
   unauthorized: boolean;
   /** 服务不可用（网络层错误 / 5xx）*/
   unavailable: boolean;
+  /**
+   * 前提未满足（428）—— 面板还没配置 Proxmox 连接。
+   *
+   * 这不是「出故障了」，而是「还没设置好」。页面据此换成引导态（去添加连接）
+   * 而不是报错态，否则用户第一反应是「平台坏了」。
+   */
+  notConfigured: boolean;
+  /** 后端 ``X-Error-Code`` 响应头（区分同一状态码下的不同原因），无则空串 */
+  code: string;
   payload: unknown;
 
   constructor(
     message: string,
     status: number,
     payload?: unknown,
+    code?: string,
   ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.detail = message;
     this.payload = payload;
+    this.code = code ?? '';
     this.notImplemented = status === 501 || status === 404;
     this.unauthorized = status === 401 || status === 403;
     this.unavailable = status === 0 || status >= 500;
+    /* 428 有两种：没配连接（该去添加）和没配控制台账号（该去补账号）。
+       后者后端的文案已经说清了该做什么，再套一层「去添加连接」的引导反而是错的，
+       所以按错误码把它排除在外。老后端不带码 → 一律当「没配连接」，与从前一致。 */
+    this.notConfigured =
+      status === 428 && (code ?? '') !== CONSOLE_CREDENTIALS_MISSING;
   }
 }
 
@@ -312,7 +339,9 @@ http.interceptors.response.use(
       );
     }
 
-    return Promise.reject(new ApiError(message, status, data));
+    return Promise.reject(
+      new ApiError(message, status, data, readErrorCode(error.response.headers)),
+    );
   },
 );
 
@@ -413,6 +442,15 @@ export function isNotImplemented(err: unknown): boolean {
   return err instanceof ApiError && err.notImplemented;
 }
 
+/**
+ * 判断是否为「面板还没配置 Proxmox 连接」错误。
+ *
+ * 页面用它把「首次部署还没填连接」从错误态里摘出来，改渲染引导态。
+ */
+export function isNotConfigured(err: unknown): boolean {
+  return err instanceof ApiError && err.notConfigured;
+}
+
 /** 把任意错误转成可展示文案 */
 /* nginx 在后端没起来时回的是 HTML 错误页（<html>…502 Bad Gateway…），它被当成
    detail 直接显示出来的话，用户看到的是一整段 HTML，读不懂也帮不上忙 —— 这恰恰
@@ -421,6 +459,12 @@ const GATEWAY_BODY = /^\s*</;
 
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
+    /* 428（还没配置连接）后端的 detail 是给开发者看的英文技术文案，
+       直接显示出来用户只会以为面板坏了。这里统一换成一句「该去做什么」的人话，
+       所有沿用 errorMessage() 的页面无需改动就跟着变好。 */
+    if (err.notConfigured) {
+      return tStatic('api.pveNotConfigured');
+    }
     if (err.status >= 502 && err.status <= 504 && GATEWAY_BODY.test(err.detail)) {
       return tStatic('api.gatewayDown');
     }

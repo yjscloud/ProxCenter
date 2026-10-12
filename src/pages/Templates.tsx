@@ -113,12 +113,14 @@ export function Templates() {
   );
   const shown = tab === 'lxc' ? ctTemplates : vmTemplates;
 
-  /* 「从现有虚拟机转换为模板」仍需要虚拟机列表，且只在弹窗打开时拉取：
+  /* 「从现有虚拟机转换为模板」需要虚拟机列表，且只在要用到时才拉取 ——
+     转换弹窗和创建向导里都有这一个页签，两个开关都要算进去。
      普通用户在这里只会看到自己名下的虚拟机（这正是期望的范围）。 */
+  const convertCandidatesNeeded = convertOpen || wizardOpen;
   const vmsQuery = useQuery({
     queryKey: ['vms', 'all'],
     queryFn: () => vmsApi.list(),
-    enabled: convertOpen,
+    enabled: convertCandidatesNeeded,
     staleTime: 30_000,
   });
 
@@ -126,7 +128,7 @@ export function Templates() {
   const lxcQuery = useQuery({
     queryKey: ['lxc', 'all'],
     queryFn: () => lxcApi.list(),
-    enabled: convertOpen,
+    enabled: convertCandidatesNeeded,
     staleTime: 30_000,
   });
 
@@ -144,6 +146,33 @@ export function Templates() {
     void queryClient.invalidateQueries({ queryKey: ['lxc'] });
     void queryClient.invalidateQueries({ queryKey: ['templates'] });
     void queryClient.invalidateQueries({ queryKey: ['cluster'] });
+  };
+
+  /* 把一台非模板机器转成模板。
+     转换弹窗与创建向导里的那个页签共用这一份 —— 两条路径的行为、报错和刷新
+     必须一致，各写一份迟早会分叉。
+     注意：机器必须先关机，后端对运行中的机器直接回 409。 */
+  const convertToTemplate = async (vm: VmSummary) => {
+    setBusy(true);
+    try {
+      await runner.run(
+        /* 容器走 /lxc 那条（PVE 的 pct template），虚拟机走 /vms 那条 */
+        vm.type === 'lxc'
+          ? lxcApi.toTemplate(vm.node, vm.vmid, vm.connection_id)
+          : vmsApi.toTemplate(vm.node, vm.vmid, vm.connection_id),
+        {
+          title: t('templates.convertTask', { name: vm.name || vm.vmid }),
+          node: vm.node,
+          invalidate: [['vms'], ['lxc'], ['templates'], ['cluster']],
+        },
+      );
+      /* 两个入口都关掉：不管用户是从哪个弹窗点的，转换完都不该再留着它 */
+      setConvertOpen(false);
+      setWizardOpen(false);
+      invalidate();
+    } finally {
+      setBusy(false);
+    }
   };
 
   /* 列表视图：与卡片同信息量，操作列锁在最后（顺序不能让用户拖走） */
@@ -277,13 +306,25 @@ export function Templates() {
             {t('templates.refresh')}
           </Button>
           {canWrite ? (
-            <Button
-              variant="primary"
-              icon={<IconPlus size={15} />}
-              onClick={() => setWizardOpen(true)}
-            >
-              {t('templates.create')}
-            </Button>
+            <>
+              {/* 「从现有机器转换」必须常驻在页头。以前它只出现在列表为空的
+                  空状态里，于是模板库一旦有东西，用户就再也找不到这个入口了。 */}
+              <Button
+                variant="secondary"
+                icon={<IconVm size={15} />}
+                onClick={() => setConvertOpen(true)}
+                title={t('templates.convertDesc')}
+              >
+                {t('templates.convertFromVm')}
+              </Button>
+              <Button
+                variant="primary"
+                icon={<IconPlus size={15} />}
+                onClick={() => setWizardOpen(true)}
+              >
+                {t('templates.create')}
+              </Button>
+            </>
           ) : null}
         </>
       }
@@ -480,6 +521,9 @@ export function Templates() {
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
         onCreated={invalidate}
+        candidates={nonTemplates}
+        busy={busy}
+        onConvert={convertToTemplate}
       />
 
       {/* ---- 从现有 VM 转换 ---- */}
@@ -500,28 +544,7 @@ export function Templates() {
         <ConvertForm
           vms={nonTemplates}
           busy={busy}
-          onSubmit={async (vm) => {
-            setBusy(true);
-            try {
-              await runner.run(
-                /* 容器走 /lxc 那条（PVE 的 pct template），虚拟机走 /vms 那条 */
-                vm.type === 'lxc'
-                  ? lxcApi.toTemplate(vm.node, vm.vmid, vm.connection_id)
-                  : vmsApi.toTemplate(vm.node, vm.vmid, vm.connection_id),
-                {
-                  title: t('templates.convertTask', {
-                    name: vm.name || vm.vmid,
-                  }),
-                  node: vm.node,
-                  invalidate: [['vms'], ['lxc'], ['templates'], ['cluster']],
-                },
-              );
-              setConvertOpen(false);
-              invalidate();
-            } finally {
-              setBusy(false);
-            }
-          }}
+          onSubmit={convertToTemplate}
         />
       </Modal>
 
@@ -1079,16 +1102,29 @@ function TemplateCreateWizard({
   open,
   onClose,
   onCreated,
+  candidates,
+  busy,
+  onConvert,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
+  /** 「从现有 VM 转换」页签的候选：非模板的虚拟机与容器 */
+  candidates: VmSummary[];
+  busy: boolean;
+  onConvert: (vm: VmSummary) => void | Promise<void>;
 }) {
   const t = useT();
   const toast = useToast();
   const { canWrite } = useAuth();
 
   const [mode, setMode] = useState<CreateMode>('image');
+
+  /* 关掉时回到默认页签。向导的主线是「从镜像生成」，转换另有页头那个入口；
+     不复位的话，上次从「从现有 VM 转换」页签离开，下次打开就会停在那儿。 */
+  useEffect(() => {
+    if (!open) setMode('image');
+  }, [open]);
 
   /* 模式 A 表单 */
   const [node, setNode] = useState('');
@@ -1132,29 +1168,14 @@ function TemplateCreateWizard({
     staleTime: 60_000,
   });
 
-  /* 镜像文件（.img / .qcow2 / .raw） */
+  /* 可作模板系统盘来源的镜像。
+     这件事交给后端（/api/templates/images）：它要同时扫 import 与 iso 两种
+     存储内容，还得知道每种内容里 PVE 认哪些扩展名 —— 前端自己扫容易漏，
+     之前就漏掉了 import 目录，导致 .qcow2 永远选不到。 */
   const imagesQuery = useQuery({
-    queryKey: ['storages', 'content', 'images', node],
-    queryFn: async () => {
-      const list = (storagesQuery.data ?? []).filter((s) => s.active);
-      const results = await Promise.all(
-        list.map((s) =>
-          storagesApi
-            .content({ node, storage: s.storage, content: 'iso' })
-            .then((items) =>
-              items
-                .filter((it) =>
-                  /\.(img|qcow2|raw)$/i.test(it.volid) ||
-                  /\.(img|qcow2|raw)$/i.test(it.format ?? ''),
-                )
-                .map((it) => ({ storage: s.storage, item: it })),
-            )
-            .catch(() => []),
-        ),
-      );
-      return results.flat();
-    },
-    enabled: open && Boolean(node) && (storagesQuery.data?.length ?? 0) > 0,
+    queryKey: ['templates', 'images', node],
+    queryFn: () => templatesApi.images(node),
+    enabled: open && Boolean(node),
     retry: false,
   });
 
@@ -1413,17 +1434,19 @@ function TemplateCreateWizard({
             onChange={(e) => setImageVolId(e.target.value)}
             options={[
               { label: t('templates.fieldImageNone'), value: '' },
-              ...(imagesQuery.data ?? []).map(({ storage, item }) => ({
-                label: `${item.volid}（${formatBytes(item.size)}, ${storage}）`,
-                value: item.volid,
+              ...(imagesQuery.data ?? []).map((img) => ({
+                label: `${img.volid}（${formatBytes(img.size)}, ${img.storage}）`,
+                value: img.volid,
               })),
             ]}
             hint={
-              imagesQuery.isLoading
-                ? t('templates.fieldImageScanning')
-                : (imagesQuery.data ?? []).length === 0
-                  ? t('templates.fieldImageNoneFound')
-                  : t('templates.fieldImageHint')
+              !node
+                ? t('templates.fieldImagePickNode')
+                : imagesQuery.isLoading
+                  ? t('templates.fieldImageScanning')
+                  : (imagesQuery.data ?? []).length === 0
+                    ? t('templates.fieldImageNoneFound')
+                    : t('templates.fieldImageHint')
             }
           />
 
@@ -1546,16 +1569,11 @@ function TemplateCreateWizard({
         </div>
       ) : (
         <div className="wizard-section">
-          <Notice tone="info" title={t('templates.switchModeTitle')}>
-            {t('templates.switchModeBody')}
-          </Notice>
-          <ConvertForm
-            vms={[]}
-            busy={false}
-            onSubmit={() => {
-              /* 由主页面处理 */
-            }}
-          />
+          {/* 转换就是「选一台机器 → 关机 → 转模板」，没有别的参数，所以直接
+              复用同一个表单 —— 它自带「会先强制关机、转完无法再启动」的警告。
+              这里以前传的是空数组加一个不做事的 onSubmit，用户能看到的只有
+              一个选不出东西的下拉。 */}
+          <ConvertForm vms={candidates} busy={busy} onSubmit={onConvert} />
         </div>
       )}
     </Modal>

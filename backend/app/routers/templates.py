@@ -43,6 +43,24 @@ from ..schemas import (
 
 router = APIRouter(prefix="/api", tags=["templates"])
 
+#: 能当 cloud-init 镜像用的扩展名。
+#:
+#: ``.iso`` 是安装盘、``.ova`` 是整包（描述文件加多块盘），都不是「一块磁盘
+#: 镜像」，不能直接当模板的系统盘来源。
+CLOUD_IMAGE_EXT = (".img", ".qcow2", ".raw")
+
+#: cloud-init 镜像可能落在哪几种存储内容里。
+#:
+#: 两处都扫不是冗余：PVE 把存储内容按类型隔开，同一批扩展名在两边待遇不同 ——
+#:   · ``import`` 目录：PVE 明确接受 ova / qcow2 / raw / vmdk，上传与列举
+#:     都正常（「导入虚拟机」用的就是它）；
+#:   · ``iso`` 目录：只认 PVE 认定的 ISO 那几种，``.qcow2`` 放进去既传不上去、
+#:     也列不出来。
+#: 早先这里只扫 iso，于是界面一边提示「未找到 .img / .qcow2 镜像，请先上传」，
+#: 一边只认得 .img —— 手里是 .qcow2 的用户两头都撞墙：存储页上传被拒，
+#: 这里又永远看不到。现在 import 目录一并扫，.qcow2 / .raw 有了正经落点。
+CLOUD_IMAGE_CONTENTS = ("import", "iso")
+
 
 def _raise(exc: ProxmoxError) -> None:
     raise HTTPException(
@@ -178,10 +196,12 @@ async def list_cloud_images(
     node: str,
     user: Dict[str, Any] = Depends(security.require_permission("template.view")),
 ) -> List[Dict[str, Any]]:
-    """Cloud images (.img/.qcow2) available on a node's storages.
+    """Cloud images (.img/.qcow2/.raw) available on a node's storages.
 
-    Proxmox stores cloud images under the ``iso`` content type, so we scan
-    that and filter by extension.
+    Scans both the ``import`` and the ``iso`` content of each storage, because
+    the same extension is treated differently in each: ``import`` is where
+    Proxmox actually accepts disk images, while ``iso`` only lists what
+    Proxmox counts as an ISO.
     """
     client = get_client()
     try:
@@ -192,27 +212,36 @@ async def list_cloud_images(
     images: List[Dict[str, Any]] = []
     for storage in storages or []:
         name = storage.get("storage")
-        contents = (storage.get("content") or "").split(",")
-        if not name or "iso" not in contents:
+        if not name:
             continue
-        try:
-            items = await client.storage_content(node, name, content="iso")
-        except ProxmoxError:
-            continue
-        for item in items or []:
-            volid = item.get("volid", "")
-            lowered = volid.lower()
-            if not lowered.endswith((".img", ".qcow2", ".raw")):
+        supported = {
+            part.strip() for part in str(storage.get("content") or "").split(",")
+        }
+        for content in CLOUD_IMAGE_CONTENTS:
+            if content not in supported:
                 continue
-            images.append(
-                {
-                    "volid": volid,
-                    "storage": name,
-                    "name": volid.rsplit("/", 1)[-1],
-                    "size": item.get("size"),
-                    "format": item.get("format", ""),
-                }
-            )
+            try:
+                items = await client.storage_content(node, name, content=content)
+            except ProxmoxError:
+                # 单个存储读不到（未挂载 / 权限不足）就跳过它：让整份列表变空
+                # 会显示成「未找到镜像」，比直接报错更难查。
+                continue
+            for item in items or []:
+                volid = str(item.get("volid") or "")
+                if not volid.lower().endswith(CLOUD_IMAGE_EXT):
+                    continue
+                images.append(
+                    {
+                        "volid": volid,
+                        "storage": name,
+                        "name": volid.rsplit("/", 1)[-1],
+                        "size": item.get("size"),
+                        "format": item.get("format", ""),
+                        # 标出来源目录：import 与 iso 是两回事，出了问题能一眼
+                        # 看出该去哪个目录找这个文件。
+                        "content": content,
+                    }
+                )
     return images
 
 
@@ -255,8 +284,10 @@ async def build_template_from_image(
         "machine": payload.machine or "pc",
         "net0": f"{vmconfig.normalize_net_model(payload.net_model)},bridge={payload.bridge}",
         "agent": 1,
+        # 只挂串口，不改 vga：vga=serial0 会让虚拟机失去图形控制台，VNC（面板的
+        # 控制台）里就只剩客户机往 ttyS0 写的内容 —— 镜像 cmdline 没有
+        # console=ttyS0 时 GRUB 之后就全黑。保留默认图形控制台才能拿到 tty1 登录提示。
         "serial0": "socket",
-        "vga": "serial0",
         "onboot": 1 if payload.start_on_boot else 0,
         "description": payload.description or "由 ProxCenter 从 cloud 镜像构建的模板",
         "tags": payload.tags,
@@ -289,7 +320,9 @@ async def build_template_from_image(
     # 系统盘已经在创建时由 import-from 建好，这里只补启动顺序与 cloud-init
     attach: Dict[str, Any] = {
         "boot": "order=scsi0",
-        "ide2": "cloudinit",
+        # cloud-init 盘要带存储前缀（``<存储>:cloudinit``）：它是一块小 qcow2，
+        # 只写 ``cloudinit`` 会被 PVE 判为非法卷 ID 而拒绝。落在系统盘同一个存储上。
+        "ide2": f"{payload.storage}:cloudinit",
         "ciuser": payload.ci_user or "ubuntu",
         "ipconfig0": "ip=dhcp",
     }

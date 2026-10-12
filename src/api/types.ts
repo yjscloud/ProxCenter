@@ -1818,6 +1818,11 @@ export interface CloudImageItem {
   name: string;
   size?: number;
   format?: string;
+  /**
+   * 来自哪种存储内容：`import`（磁盘镜像）或 `iso`。
+   * PVE 对这两个目录的扩展名规则不同，出问题时得知道该去哪个目录找。
+   */
+  content?: string;
 }
 
 /** 任意可挂载的 ISO / 镜像卷 */

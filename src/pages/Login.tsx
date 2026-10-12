@@ -213,6 +213,10 @@ export function Login() {
 
   const backendUp = !health.isError;
   const pveConnected = health.data?.pve_connected ?? false;
+  /* 「没配连接」和「配了连不上」是两件事：登录前就能分开，省得管理员对着
+     「未连接」去查网络，其实只是从没填过连接。老后端不返回该字段时按已配置
+     处理 —— 只会少提示一次，不会误报。 */
+  const pveConfigured = health.data?.pve_configured ?? true;
 
   return (
     <AuthShell>
@@ -434,9 +438,11 @@ export function Login() {
           >
             {health.isLoading
               ? t('auth.health.checking')
-              : pveConnected
-                ? t('auth.health.connected')
-                : t('auth.health.disconnected')}
+              : !pveConfigured
+                ? t('auth.health.notConfigured')
+                : pveConnected
+                  ? t('auth.health.connected')
+                  : t('auth.health.disconnected')}
           </Badge>
         </div>
         {health.data?.version ? (
@@ -449,6 +455,8 @@ export function Login() {
         ) : null}
         {!backendUp ? (
           <div className="fs-xs text-muted mt-8">{t('auth.health.hint')}</div>
+        ) : !pveConfigured ? (
+          <div className="fs-xs text-muted mt-8">{t('auth.health.setupHint')}</div>
         ) : null}
       </div>
     </AuthShell>

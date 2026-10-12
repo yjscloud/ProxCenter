@@ -59,6 +59,10 @@ async def health() -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "status": "ok",
         "pve_connected": False,
+        # 与 pve_connected 分两个字段是有意的：前者是「连通」，这个是「填没填过」。
+        # 未配置和配了但连不上，用户要做的事完全不同（去添加 vs 去排查），
+        # 只给一个 false 的话前端只能把两者都渲染成报错。
+        "pve_configured": False,
         "version": __version__,
         "pve_version": None,
         "node_count": 0,
@@ -69,6 +73,8 @@ async def health() -> Dict[str, Any]:
     if not client.conn.configured:
         result["error"] = "Proxmox 连接未配置"
         return result
+
+    result["pve_configured"] = True
 
     try:
         version = await client.version()

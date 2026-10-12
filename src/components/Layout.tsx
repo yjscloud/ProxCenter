@@ -12,6 +12,8 @@ import {
 } from './Sidebar';
 import { Topbar } from './Topbar';
 import { UpdateNotice } from './UpdateNotice';
+import { PveSetupNotice } from './PveSetupNotice';
+import { SetupRedirect } from './SetupRedirect';
 import { CommandPalette } from './CommandPalette';
 import { ErrorBoundary } from './ErrorBoundary';
 import { Spinner } from './ui/Spinner';
@@ -128,6 +130,15 @@ export function Layout() {
 
         {/* 有面板新版本时的提示条（只对管理员出现，见组件内部判断） */}
         <UpdateNotice />
+
+        {/* 还没接入 Proxmox 时的引导条。这一条比上面那条重要得多：没配连接时
+            几乎每个业务页面都会报错，先在这里把「去添加」说清楚，用户就不会
+            以为是平台坏了 —— 同样是按角色区分文案，见组件内部。 */}
+        <PveSetupNotice />
+
+        {/* 全新部署时把管理员直接带到初始化流程（连接管理页）。只引导一次，
+            且只在确定没配置时才跳，详见组件内部的三条约束 */}
+        <SetupRedirect />
 
         <main className="app-content" id="main-content">
           {pathBlocked ? (

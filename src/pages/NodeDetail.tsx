@@ -31,6 +31,8 @@ import { Modal } from '../components/ui/Modal';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { DetailSkeleton } from '../components/ui/Spinner';
 import { ErrorState, Notice } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Table, type Column } from '../components/ui/Table';
 import {
@@ -165,10 +167,14 @@ export function NodeDetail() {
   const connProfile = (connectionsQuery.data ?? []).find((c) => c.id === conn);
   const connName = connProfile?.name || connProfile?.host || conn;
 
+  /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
+  const pveReady = usePveReady();
+
   const nodesQuery = useQuery({
     queryKey: ['nodes', conn],
     queryFn: () => nodesApi.list(conn),
-    refetchInterval: 10_000,
+    enabled: pveReady,
+    refetchInterval: pveReady ? 10_000 : false,
   });
 
   const nodeInfo: NodeInfo | undefined = useMemo(
@@ -201,6 +207,19 @@ export function NodeDetail() {
     return (
       <div className="page">
         <DetailSkeleton />
+      </div>
+    );
+  }
+
+  /* 读不到节点列表：可能是面板还没配置连接，也可能是 PVE 连不上 ——
+     交给 PveQueryError 去分辨，别一律当成「加载失败」。 */
+  if (!pveReady || nodesQuery.isError) {
+    return (
+      <div className="page">
+        <PveQueryError
+          error={nodesQuery.error}
+          onRetry={() => void nodesQuery.refetch()}
+        />
       </div>
     );
   }

@@ -54,6 +54,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'nav.section.observability': 'Observability & Integrations',
   'nav.section.system': 'Administration',
 
+  /* Tooltip for the dot shown next to PVE-backed entries when nothing is configured */
+  'nav.pveNotConfigured':
+    'No Proxmox host is connected yet; opening this page prompts you to add one',
+
   'nav.dashboard': 'Dashboard',
   'nav.vms': 'Virtual Machines',
   'nav.lxc': 'Containers',
@@ -399,6 +403,21 @@ export const en: Partial<Record<MessageKey, string>> = {
   'state.loadingCards': 'Loading cards',
   'state.loadingDetail': 'Loading details',
 
+  /* ------------------------------------------- Proxmox not configured yet */
+  'setup.pveTitle': 'No Proxmox host connected yet',
+  'setup.pveDesc':
+    'Enter the PVE address and an API token to get started. Use “Add node” below, or open “Nodes → Connections”.',
+  'setup.pveUserTitle': 'Setup is not complete yet',
+  'setup.pveUserDesc':
+    'An administrator has not configured the Proxmox connection yet. Please contact an administrator.',
+  'setup.pveAction': 'Add node',
+  'setup.pveManage': 'Connections',
+
+  /* ------------------------------------------------- Cannot reach Proxmox */
+  'pve.unreachableTitle': 'Cannot reach the Proxmox host',
+  'pve.unreachableDesc':
+    'The connection is configured, but the panel cannot read PVE data right now. Check that the host address is reachable over the network and that the API token is still valid.',
+
   /* ----------------------------------------------------------------- Auth */
   'auth.backToSite': 'Back to website',
   'auth.login.title': 'Sign in to the console',
@@ -443,6 +462,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'auth.health.checking': 'Checking…',
   'auth.health.connected': 'Connected',
   'auth.health.disconnected': 'Not connected',
+  'auth.health.notConfigured': 'Not configured',
+  'auth.health.setupHint':
+    'The panel has no Proxmox host yet: after signing in, an administrator can add one under “Nodes → Connections”.',
   'auth.health.hint': 'Hint: make sure the backend is running on http://localhost:8080.',
 
   /* -------------------------------------------------------- Command palette */
@@ -3718,6 +3740,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'api.httpFailed': 'Request failed (HTTP {status})',
   'api.sessionExpired': 'Your session has expired; please sign in again',
   'api.notImplemented': 'This feature requires backend support (not implemented)',
+  'api.pveNotConfigured':
+    'No Proxmox host is connected yet. Add a connection under “Nodes → Connections” first.',
   'api.tooLarge':
     'The file is too large — the server rejected it (upload size limit). For big images it is more reliable to put the file into a PVE storage import directory and pick it with "Choose a file" instead: that path never goes through the browser, so the limit does not apply.',
   'api.gatewayDown':
@@ -4961,6 +4985,8 @@ export const en: Partial<Record<MessageKey, string>> = {
     'The panel has no usable Proxmox host yet. Click "Add node" and fill in the PVE address and API token.',
   'nodes.emptyUser':
     'No nodes were detected in the cluster. Ask an administrator to check the Proxmox connection settings.',
+  'nodes.emptyPermission':
+    'The connected Proxmox host returned no nodes, which usually means the API token lacks privileges. Open "Connections" and use "Repair permissions" for that token.',
   'nodes.noMatchTitle': 'No matching nodes',
   'nodes.noMatchDesc': 'Try another search keyword or source-host filter.',
   'nodes.onlineRatio': '{online}/{total} online',

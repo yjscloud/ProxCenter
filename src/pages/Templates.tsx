@@ -32,7 +32,9 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { CardSkeleton } from '../components/ui/Spinner';
-import { CollapsibleCard, EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
+import { CollapsibleCard, EmptyState, Notice } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import {
   IconTemplate,
   IconCopy,
@@ -77,10 +79,14 @@ export function Templates() {
   /* 模板列表走专用接口 /api/templates：模板是共享资源，普通用户也必须能看到
      并用于部署。原先前端是用 /api/vms 自己筛 template，而该接口对普通用户按
      归属过滤，模板都归属管理员 → 普通用户看到的是空列表。 */
+  /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
+  const pveReady = usePveReady();
+
   const templatesQuery = useQuery({
     queryKey: ['templates', 'all'],
     queryFn: () => templatesApi.list(),
-    refetchInterval: 20_000,
+    enabled: pveReady,
+    refetchInterval: pveReady ? 20_000 : false,
   });
 
   const templates = useMemo(() => {
@@ -381,10 +387,10 @@ export function Templates() {
       {/* ---- 模板列表：卡片网格 或 表格 ---- */}
       {templatesQuery.isLoading ? (
         <CardSkeleton count={4} height={200} />
-      ) : templatesQuery.isError ? (
-        <ErrorState
+      ) : !pveReady || templatesQuery.isError ? (
+        <PveQueryError
           title={t('templates.loadFailed')}
-          message={errorMessage(templatesQuery.error)}
+          error={templatesQuery.error}
           onRetry={() => void templatesQuery.refetch()}
         />
       ) : shown.length === 0 ? (

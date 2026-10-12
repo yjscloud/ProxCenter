@@ -52,6 +52,9 @@ export const zhCN = {
   'nav.section.observability': '观测与集成',
   'nav.section.system': '系统管理',
 
+  /* 未配置 Proxmox 时，依赖 PVE 的导航项右侧那颗小圆点的悬停说明 */
+  'nav.pveNotConfigured': '面板还没接入 Proxmox 主机，点进去会提示你去添加',
+
   'nav.dashboard': '仪表盘',
   'nav.vms': '虚拟机',
   'nav.lxc': '容器',
@@ -382,6 +385,22 @@ export const zhCN = {
   'state.loadingCards': '加载卡片数据',
   'state.loadingDetail': '加载详情',
 
+  /* ------------------------------------------------- 未配置 Proxmox 引导 */
+  /* 「还没配置」不是故障：文案要说清「去做什么」，且管理员与普通用户看到的不一样 */
+  'setup.pveTitle': '面板还没有接入 Proxmox 主机',
+  'setup.pveDesc':
+    '填写 PVE 的访问地址与 API Token 即可开始管理。点下面的「添加节点」，或进入「节点 → 连接管理」。',
+  'setup.pveUserTitle': '系统尚未完成初始化',
+  'setup.pveUserDesc': '管理员还没有配置 Proxmox 连接，请联系管理员处理。',
+  'setup.pveAction': '添加节点',
+  'setup.pveManage': '连接管理',
+
+  /* --------------------------------------------------- PVE 连不上的提示 */
+  /* 与「还没配置」是两种事：这个是真故障，该给重试；文案要指向排查方向 */
+  'pve.unreachableTitle': '无法连接到 Proxmox 主机',
+  'pve.unreachableDesc':
+    '连接已配置，但面板暂时读不到 PVE 数据。请确认主机地址与网络是否可达，以及 API Token 是否仍然有效。',
+
   /* --------------------------------------------------------------- 认证 */
   'auth.backToSite': '返回官网',
   'auth.login.title': '登录控制台',
@@ -426,6 +445,9 @@ export const zhCN = {
   'auth.health.checking': '检测中…',
   'auth.health.connected': '已连接',
   'auth.health.disconnected': '未连接',
+  'auth.health.notConfigured': '未配置',
+  'auth.health.setupHint':
+    '面板还没有接入 Proxmox 主机：登录后由管理员在「节点 → 连接管理」里添加。',
   'auth.health.hint': '提示：请确认后端服务已在 http://localhost:8080 启动。',
 
   /* ----------------------------------------------------------- 命令面板 */
@@ -3342,6 +3364,8 @@ export const zhCN = {
   'api.httpFailed': '请求失败 (HTTP {status})',
   'api.sessionExpired': '登录已过期，请重新登录',
   'api.notImplemented': '该功能需要后端支持（未实现）',
+  'api.pveNotConfigured':
+    '面板还没有接入 Proxmox 主机，请先在「节点 → 连接管理」里添加连接。',
   'api.tooLarge':
     '文件太大，被服务器拒收了（超出上传上限）。镜像很大时更稳的做法是先把文件放进 PVE 存储的 import 目录，再用「选择文件」直接导入 —— 不经过浏览器，也就没有这个限制。',
   'api.gatewayDown': '面板正在重启或暂时不可用，请稍候几秒；页面会在恢复后自动接上。',
@@ -4883,6 +4907,8 @@ export const zhCN = {
   'nodes.emptyAdmin':
     '面板还没有接入可用的 Proxmox 主机。点「添加节点」填写 PVE 地址与 API Token 即可。',
   'nodes.emptyUser': '集群中没有检测到任何节点，请联系管理员检查 Proxmox 连接配置。',
+  'nodes.emptyPermission':
+    '已连接的 Proxmox 主机读不到任何节点，通常是 API Token 权限不足。可在「连接管理」里对该令牌执行「修复权限」。',
   'nodes.noMatchTitle': '没有匹配的节点',
   'nodes.noMatchDesc': '调整搜索关键词或来源主机筛选试试。',
   'nodes.onlineRatio': '{online}/{total} 在线',

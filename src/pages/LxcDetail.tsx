@@ -18,7 +18,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { lxcApi, storagesApi } from '../api/endpoints';
 import { guestPower } from '../api/guests';
-import { errorMessage } from '../api/client';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { Breadcrumb } from '../components/Topbar';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, InfoGrid, InfoRow, KpiCard } from '../components/ui/Card';
@@ -35,7 +36,7 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { DetailSkeleton } from '../components/ui/Spinner';
-import { ErrorState, Notice } from '../components/ui/EmptyState';
+import { Notice } from '../components/ui/EmptyState';
 import { Table, type Column } from '../components/ui/Table';
 import { CpuChart, MemoryChart, NetworkChart, DiskIoChart } from '../components/MetricChart';
 import { ConsoleTab } from '../components/ConsoleTab';
@@ -109,11 +110,14 @@ export function LxcDetail() {
 
   const queryKey = useMemo(() => ['lxc', node, ctId] as const, [node, ctId]);
 
+  /* 未配置连接时不必发请求：页面会直接给出「去添加连接」的引导 */
+  const pveReady = usePveReady();
+
   const ctQuery = useQuery({
     queryKey,
     queryFn: () => lxcApi.detail(node, ctId),
-    enabled: Boolean(node) && Number.isFinite(ctId),
-    refetchInterval: 10_000,
+    enabled: pveReady && Boolean(node) && Number.isFinite(ctId),
+    refetchInterval: pveReady ? 10_000 : false,
   });
 
   const rrdQuery = useQuery<RrdPoint[]>({
@@ -436,9 +440,9 @@ export function LxcDetail() {
   if (ctQuery.isError || !ct) {
     return (
       <div className="page">
-        <ErrorState
+        <PveQueryError
           title={t('lxcDetail.loadFailed')}
-          message={errorMessage(ctQuery.error)}
+          error={ctQuery.error}
           onRetry={() => void ctQuery.refetch()}
         />
       </div>

@@ -19,7 +19,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clusterApi, connectionsApi, nodesApi } from '../api/endpoints';
-import { errorMessage } from '../api/client';
+import { errorMessage, isNotConfigured } from '../api/client';
 import { PageShell } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -28,6 +28,7 @@ import { ProgressBar } from '../components/ui/ProgressBar';
 import { Input, SegmentedControl, Select } from '../components/ui/Input';
 import { CardSkeleton } from '../components/ui/Spinner';
 import { EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
+import { SetupRequired } from '../components/SetupRequired';
 import { NodeSubNav } from '../components/NodeSubNav';
 import {
   IconServer,
@@ -111,7 +112,10 @@ export function Nodes() {
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
-    refetchInterval: 10_000,
+    /* 面板还没配置连接时，后端对每个请求都回 428：继续 10 秒轮询只会刷一屏
+       没人看的报错（重试也已在 main.tsx 关掉）。配好之后自动恢复轮询。 */
+    refetchInterval: (query) =>
+      isNotConfigured(query.state.error) ? false : 10_000,
   });
 
   const clusterQuery = useQuery({
@@ -479,26 +483,51 @@ export function Nodes() {
       {nodesQuery.isLoading ? (
         <CardSkeleton count={3} height={220} />
       ) : nodesQuery.isError ? (
-        <ErrorState
-          title={t('nodes.loadFailed')}
-          message={errorMessage(nodesQuery.error)}
-          onRetry={() => void nodesQuery.refetch()}
-        />
+        /* 「还没配连接」不是故障：换成引导态（去添加），别给重试 ——
+           未配置时重试永远失败，只会让用户以为面板坏了。 */
+        isNotConfigured(nodesQuery.error) ? (
+          <SetupRequired />
+        ) : (
+          <ErrorState
+            title={t('nodes.loadFailed')}
+            message={errorMessage(nodesQuery.error)}
+            onRetry={() => void nodesQuery.refetch()}
+          />
+        )
       ) : list.length === 0 ? (
         <Card>
+          {/* 「列表空」有两种原因，不该共用一句文案：真没接主机（该去添加），
+              还是接了但令牌读不到节点（该去修权限）。后者提示「添加节点」会让人
+              往完全错误的方向走 —— 连接明明已经在那儿了。 */}
           <EmptyState
             title={t('nodes.emptyTitle')}
-            description={isAdmin ? t('nodes.emptyAdmin') : t('nodes.emptyUser')}
+            description={
+              !isAdmin
+                ? t('nodes.emptyUser')
+                : limitedConnections.length > 0
+                  ? t('nodes.emptyPermission')
+                  : t('nodes.emptyAdmin')
+            }
             icon={<IconServer size={30} />}
             action={
               isAdmin ? (
-                <Button
-                  variant="primary"
-                  icon={<IconPlus size={15} />}
-                  onClick={addNode}
-                >
-                  {t('nodes.addNode')}
-                </Button>
+                limitedConnections.length > 0 ? (
+                  <Button
+                    variant="secondary"
+                    icon={<IconPlug size={15} />}
+                    onClick={() => navigate('/nodes/connections')}
+                  >
+                    {t('setup.pveManage')}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    icon={<IconPlus size={15} />}
+                    onClick={addNode}
+                  >
+                    {t('nodes.addNode')}
+                  </Button>
+                )
               ) : undefined
             }
           />

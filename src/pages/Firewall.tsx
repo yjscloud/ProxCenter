@@ -14,7 +14,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { firewallApi, nodesApi, vmsApi } from '../api/endpoints';
-import { errorMessage } from '../api/client';
+import { errorMessage, isNotConfigured } from '../api/client';
+import { SetupRequired } from '../components/SetupRequired';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -741,9 +742,13 @@ export function Firewall() {
                 ) : null}
 
                 {optionsQuery.isError ? (
-                  <Notice tone="warning" title={t('firewall.optionsError')}>
-                    {errorMessage(optionsQuery.error)}
-                  </Notice>
+                  isNotConfigured(optionsQuery.error) ? (
+                    <SetupRequired />
+                  ) : (
+                    <Notice tone="warning" title={t('firewall.optionsError')}>
+                      {errorMessage(optionsQuery.error)}
+                    </Notice>
+                  )
                 ) : (
                   <>
                     <div className="fw-config-row">
@@ -843,9 +848,13 @@ export function Firewall() {
               />
 
               {rulesQuery.isError ? (
-                <Notice tone="warning" title={t('firewall.rulesLoadFailed')}>
-                  {errorMessage(rulesQuery.error)}
-                </Notice>
+                isNotConfigured(rulesQuery.error) ? (
+                  <SetupRequired />
+                ) : (
+                  <Notice tone="warning" title={t('firewall.rulesLoadFailed')}>
+                    {errorMessage(rulesQuery.error)}
+                  </Notice>
+                )
               ) : (
                 <Table
                   caption={t('firewall.rulesCaption')}

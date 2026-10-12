@@ -15,7 +15,9 @@ import { Modal } from '../components/ui/Modal';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { Table, type Column } from '../components/ui/Table';
 import { TableSkeleton } from '../components/ui/Spinner';
-import { EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
+import { EmptyState, Notice } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import {
   IconStorage,
@@ -92,10 +94,14 @@ export function Storages() {
     return [nodeFilter.slice(0, at), nodeFilter.slice(at + 2)] as const;
   }, [nodeFilter]);
 
+  /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
+  const pveReady = usePveReady();
+
   const storagesQuery = useQuery({
     queryKey: ['storages', filterConn ?? '', filterNode ?? 'all'],
     queryFn: () => storagesApi.list(filterNode, filterConn),
-    refetchInterval: 15_000,
+    enabled: pveReady,
+    refetchInterval: pveReady ? 15_000 : false,
   });
 
   const storages = storagesQuery.data ?? [];
@@ -440,11 +446,11 @@ export function Storages() {
           </div>
         </div>
 
-        {storagesQuery.isError ? (
+        {!pveReady || storagesQuery.isError ? (
           <div className="card" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
-            <ErrorState
+            <PveQueryError
               title={t('storages.loadFailed')}
-              message={errorMessage(storagesQuery.error)}
+              error={storagesQuery.error}
               notImplemented={isNotImplemented(storagesQuery.error)}
               onRetry={() => void storagesQuery.refetch()}
             />

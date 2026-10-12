@@ -16,6 +16,8 @@ import { Table, type Column } from '../components/ui/Table';
 import { PagerBar, usePaged } from '../hooks/usePaged';
 import { Drawer } from '../components/ui/Modal';
 import { EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
+import { PveQueryError } from '../components/SetupRequired';
+import { usePveReady } from '../hooks/usePveStatus';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import {
   IconTasks,
@@ -92,10 +94,14 @@ export function Tasks() {
   const [busy, setBusy] = useState(false);
 
   /* ---- 任务列表 ---- */
+  /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
+  const pveReady = usePveReady();
+
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', nodeFilter],
     queryFn: () => clusterApi.tasks({ node: nodeFilter || undefined, limit: 300 }),
-    refetchInterval: autoRefresh ? 5_000 : false,
+    enabled: pveReady,
+    refetchInterval: autoRefresh && pveReady ? 5_000 : false,
     staleTime: 2_000,
   });
 
@@ -451,10 +457,10 @@ export function Tasks() {
           message={t('tasks.notImplMsg')}
           onRetry={() => void tasksQuery.refetch()}
         />
-      ) : tasksQuery.isError ? (
-        <ErrorState
+      ) : !pveReady || tasksQuery.isError ? (
+        <PveQueryError
           title={t('tasks.loadFailed')}
-          message={errorMessage(tasksQuery.error)}
+          error={tasksQuery.error}
           onRetry={() => void tasksQuery.refetch()}
         />
       ) : (

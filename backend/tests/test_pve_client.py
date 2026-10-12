@@ -32,6 +32,7 @@ from app.pve import (  # noqa: E402
     PveConnection,
     ProxmoxClient,
     ProxmoxError,
+    error_code_headers,
     node_from_upid,
 )
 
@@ -846,6 +847,26 @@ class TestAuthentication:
             run(client.version())
         # 428 Precondition Required — the UI shows "configure the connection".
         assert exc.value.status_code == 428
+        # 带稳定错误码：前端靠它把「没配连接」和「没配控制台账号」两种 428 分开，
+        # 前者显示「去添加连接」的引导，后者必须原样说明缺的是控制台账号。
+        assert exc.value.code == "pve_not_configured"
+        assert error_code_headers(exc.value) == {"X-Error-Code": "pve_not_configured"}
+
+    def test_console_credentials_missing_has_its_own_code(self) -> None:
+        """同样是 428，缺控制台账号不能被当成「面板还没配置连接」。"""
+        client = ProxmoxClient(
+            PveConnection(host="pve.example.com", token_id="a@pve!t", token_secret="s")
+        )
+        with pytest.raises(ProxmoxError) as exc:
+            run(client._ensure_ticket())
+        assert exc.value.status_code == 428
+        assert exc.value.code == "console_credentials_missing"
+
+    def test_error_code_header_is_omitted_without_code(self) -> None:
+        # 没有错误码时不要凭空造一个响应头，否则前端会照着一个空值去分支
+        exc = ProxmoxError("boom", status_code=500, endpoint="GET /x")
+        assert exc.code is None
+        assert error_code_headers(exc) is None
 
 
 class TestResponseUnwrapping:

@@ -805,6 +805,14 @@ export interface SearchResult {
 export interface HealthStatus {
   status: string;
   pve_connected: boolean;
+  /**
+   * 面板是否已保存可用的 Proxmox 连接。
+   *
+   * 与 `pve_connected` 是两件事：`pve_configured=false` 表示「还没填过连接」，
+   * 该做的是去添加；`configured=true` 但 `connected=false` 才是「配了连不上」，
+   * 该做的是排查。老后端不返回该字段，因此是可选的。
+   */
+  pve_configured?: boolean;
   /** 面板自身版本 */
   version: string;
   /** 当前连接到的 Proxmox VE 版本 */

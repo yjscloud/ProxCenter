@@ -37,6 +37,7 @@ import {
 } from './Icons';
 import { useSiteInfo } from '../hooks/useSiteInfo';
 import { useUiPrefs } from '../hooks/useUiPrefs';
+import { usePveStatus } from '../hooks/usePveStatus';
 import { BrandLogo } from './BrandLogo';
 import { useT, type MessageKey } from '../i18n';
 
@@ -75,6 +76,31 @@ const COLLAPSED_SECTIONS_KEY = 'pve_nav_collapsed_sections';
 
 /** 首次进来时默认折叠的分组：低频、且正好在首屏之外 */
 const DEFAULT_COLLAPSED_SECTIONS = ['system'];
+
+/**
+ * 数据来自 Proxmox 的入口。
+ *
+ * 面板还没接入任何 PVE 时，这些页面点进去只会看到「去添加连接」的引导 ——
+ * 与其让用户一个个点过去试（然后怀疑页面坏了），不如在导航里先标出来。
+ *
+ * 用路径而不是给 NavItem 加字段：这份清单要回答的是「哪些页面的数据来自 PVE」，
+ * 按路径列出来一眼就能核对，也和 isPathDisabled / firstAvailableNavPath 的
+ * 判定方式保持一致。
+ */
+const PVE_NAV_PATHS = new Set([
+  '/dashboard',
+  '/vms',
+  '/lxc',
+  '/templates',
+  '/nodes',
+  '/storages',
+  '/networks',
+  '/snapshots',
+  '/backups',
+  '/incident',
+  '/firewall',
+  '/tasks',
+]);
 
 /**
  * 早期版本拿分组标题（中文）当折叠键，改成分组 id 后要迁移一次 ——
@@ -371,6 +397,8 @@ export function Sidebar({
   const { pathname } = useLocation();
   /* 被管理员关闭的入口：与权限过滤一样，属于「这一项该不该出现」的判断 */
   const disabledPaths = useUiPrefs().nav_disabled;
+  /* 面板还没接入 PVE：给依赖它的入口挂个小圆点（清单见 PVE_NAV_PATHS） */
+  const pveConfigured = usePveStatus().configured;
   const [collapsedSections, setCollapsedSections] = useState<string[]>(readCollapsedSections);
 
   /* 持久化折叠偏好 */
@@ -494,6 +522,14 @@ export function Sidebar({
                           ) : (
                             <span className="sr-only">{label}</span>
                           )}
+                          {/* 折叠态（64px）没有位置放它，也就不显示 */}
+                          {!collapsed && !pveConfigured && PVE_NAV_PATHS.has(item.to) ? (
+                            <span
+                              className="nav-item-flag"
+                              title={t('nav.pveNotConfigured')}
+                              aria-hidden="true"
+                            />
+                          ) : null}
                         </NavLink>
                       );
                     })

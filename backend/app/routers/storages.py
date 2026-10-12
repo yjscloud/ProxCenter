@@ -24,6 +24,36 @@ from .backups import assert_backup_access
 
 logger = logging.getLogger(__name__)
 
+#: PVE 拒绝上传文件时的扩展名话术。它只会说「扩展名不对」：没有中文，也不说
+#: 这个内容类型接受哪些格式 —— 用户在浏览器里等了几十分钟的几 GB ISO，
+#: 最后收到一句 ``filename: wrong file extension``，只能靠猜。
+_UPLOAD_EXT_ERR = ("wrong extension", "invalid filename")
+
+#: 各内容类型常见的文件扩展名。仅用于出错时提示，真正的裁决者是 PVE ——
+#: 所以这里宁含糊不过窄：写窄了会挡住用户，写宽了顶多少一句提示。
+_UPLOAD_EXT_HINT: Dict[str, str] = {
+    "iso": "ISO 安装镜像（.iso）或磁盘镜像（.img）",
+    # .qcow2 / .raw / .vmdk 只有 import 目录收 —— iso 目录会以扩展名为由拒掉，
+    # cloud 镜像与模板盘得传到这里才能被「从镜像建模板」选到。
+    "import": "磁盘镜像（.qcow2 / .raw / .vmdk / .ova）",
+    "vztmpl": "容器模板（.tar.gz / .tar.xz / .tar.zst / .tgz）",
+    "backup": "备份文件（.vma / .vma.gz / .vma.lzo / .tar 系列）",
+    "snippets": "片段文件（.yaml / .sh 等文本）",
+}
+
+
+def _upload_error_text(raw: str, content: str) -> str:
+    """把 PVE 的上传拒绝话术翻成「该传什么」。"""
+    lowered = str(raw).lower()
+    if not any(needle in lowered for needle in _UPLOAD_EXT_ERR):
+        return raw
+    hint = _UPLOAD_EXT_HINT.get(content)
+    detail = f"「{content}」通常放{hint}。" if hint else ""
+    return (
+        f"PVE 拒绝了这次上传：文件扩展名与所选内容类型不匹配。{detail}"
+        f"（PVE 原文：{raw}）"
+    )
+
 
 async def bind_node_connection(node: Optional[str] = None) -> None:
     """路由级依赖：只给了节点名时，把请求绑定到拥有该节点的 PVE。
@@ -275,14 +305,17 @@ async def upload_to_storage(
     if resp.status_code >= 400:
         from ..pve import _extract_error
 
-        message = _extract_error(resp)
+        raw = _extract_error(resp)
+        # 审计留原文（对照 PVE 版本差异要用），给用户的换成「该传什么」
         await security.audit(
             request, user, "storage.upload", target=f"{node}/{storage}/{filename}",
-            result="failed", detail=message,
+            result="failed", detail=raw,
         )
         # Proxmox 的 401/403 表示上游凭据问题，不能透传给前端当会话失效
         code = 502 if resp.status_code in (401, 403) else resp.status_code
-        raise HTTPException(status_code=code, detail=message)
+        raise HTTPException(
+            status_code=code, detail=_upload_error_text(raw, content)
+        )
 
     await security.audit(
         request, user, "storage.upload", target=f"{node}/{storage}/{filename}"

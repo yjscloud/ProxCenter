@@ -747,6 +747,7 @@ export const zhCN = {
   'status.content.images': 'VM 磁盘',
   'status.content.rootdir': '容器磁盘',
   'status.content.iso': 'ISO 镜像',
+  'status.content.import': '磁盘镜像',
   'status.content.backup': '备份',
   'status.content.vztmpl': '容器模板',
   'status.content.snippets': '代码片段',
@@ -1514,7 +1515,8 @@ export const zhCN = {
   'templates.modeFromImage': '从 cloud-init 镜像生成',
   'templates.modeFromVm': '从现有 VM 转换',
   'templates.pipelineTitle': '生成的流水线',
-  'templates.pipelineBody': '提交后后端将依次执行：创建虚拟机 → importdisk 导入镜像 → 配置 cloud-init 驱动 → 转换为模板。整个过程可在「任务队列」查看。',
+  'templates.pipelineBody':
+    '提交后将依次完成：创建虚拟机（云镜像直接作为系统盘导入，cloud-init 一并写入）→ 转换为模板。整个过程可在「任务队列」查看。',
   'templates.fieldNamePlaceholder': '如 tmpl-ubuntu-2404',
   'templates.nodePlaceholder': '请选择节点',
   'templates.nodeOffline': '（离线）',
@@ -1522,8 +1524,10 @@ export const zhCN = {
   'templates.fieldImage': 'cloud-init 镜像文件',
   'templates.fieldImageNone': '不指定（仅创建空模板）',
   'templates.fieldImageScanning': '正在扫描镜像文件…',
-  'templates.fieldImageNoneFound': '未找到 .img / .qcow2 镜像。请先到「存储」页上传，或用 wget 下载到节点的 iso 目录。',
-  'templates.fieldImageHint': '列表来自节点各存储的 ISO 目录，已筛选 img/qcow2/raw 文件',
+  'templates.fieldImagePickNode': '请先选择节点，再挑选镜像文件',
+  'templates.fieldImageNoneFound':
+    '未找到可用的 cloud-init 镜像（.img / .qcow2）。可以到「存储」页把磁盘镜像上传到 import 目录，或用「虚拟机 → 导入虚拟机」上传。',
+  'templates.fieldImageHint': '来自节点各存储的 import 与 ISO 目录，已筛选 .img / .qcow2 / .raw',
   'templates.secSpecs': '规格',
   'templates.fieldOstype': '操作系统类型',
   'templates.fieldBalloon': '最低保留内存（MB）',
@@ -1539,8 +1543,6 @@ export const zhCN = {
   'templates.fieldNetwork': '网络',
   'templates.fieldNetworkHint': '模板中固定为 DHCP，克隆后可在详情页改为静态',
   'templates.fieldSshKeysHint': '每行一个公钥；克隆出的虚拟机将自动注入这些密钥',
-  'templates.switchModeTitle': '切换到「从现有虚拟机 / 容器转换」',
-  'templates.switchModeBody': '请关闭本窗口后，在主页面点击「创建模板」旁的入口，或在空状态中选择「从现有 VM 转换」。',
   'templates.close': '关闭',
 
   /* =========================================================================
@@ -5068,6 +5070,8 @@ export const zhCN = {
   'storages.contentAll': '全部内容',
   'storages.contentVm': 'VM 磁盘 (vm)',
   'storages.contentIso': 'ISO 镜像 (iso)',
+  'storages.contentImport': '磁盘镜像 (import)',
+  'storages.contentVztmpl': '容器模板 (vztmpl)',
   'storages.contentBackup': '备份 (backup)',
   'storages.contentSnippets': '代码片段 (snippets)',
   'storages.notImplTitle': '该功能需要后端支持',
@@ -5098,7 +5102,7 @@ export const zhCN = {
   'storages.contentType': '内容类型',
   'storages.contentTypeHint': '决定文件存放的目录（iso 目录用于安装镜像）',
   'storages.dropHint': '点击选择文件，或将文件拖拽到此处',
-  'storages.dropFormats': '支持 .iso / .img / .qcow2 等格式',
+  'storages.dropFormats': '可接受：{formats}',
   'storages.pickFileAria': '选择要上传的文件',
   'storages.uploading': '上传中',
   'storages.completed': '已完成',
@@ -5115,6 +5119,9 @@ export const zhCN = {
   'storages.featureUnavailable': '功能暂不可用',
   'storages.uploadNotImpl': '后端尚未实现文件上传接口',
   'storages.uploadFailed': '上传失败',
+  'storages.uploadExtRejected': '文件类型不对',
+  'storages.uploadExtRejectedBody':
+    '「{name}」不是{kind}能用的格式，这里只接受 {accept}。',
 
   /* --------------------------------------------------------- 内网穿透 */
   'frp.title': '内网穿透',

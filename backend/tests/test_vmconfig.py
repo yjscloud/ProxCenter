@@ -270,8 +270,24 @@ class TestBuildVmConfig:
             vmid=101,
         )
         assert config["ide0"] == "local:iso/alpine.iso,media=cdrom"
-        assert config["ide1"] == "cloudinit"
+        assert config["ide1"] == "local-lvm:cloudinit"
         assert config["boot"] == "order=scsi0;ide0;net0"
+
+    def test_cloudinit_drive_carries_a_storage_prefix(self) -> None:
+        """cloud-init 盘必须是 ``<存储>:cloudinit``。
+
+        只写裸 ``cloudinit`` 会被 PVE 判成非法卷 ID（实测报错
+        ``ide0: invalid format - unable to parse volume ID 'cloudinit'``），
+        建机 / 建模板当场失败。存储取第一块磁盘所在的那个。
+        """
+        config = vmconfig.build_vm_config(
+            self._request(
+                disks=[DiskSpec(storage="local-zfs", size=32, interface="scsi0")],
+                cloudinit=CloudInitSpec(enabled=True, user="ubuntu"),
+            ),
+            vmid=101,
+        )
+        assert config["ide0"] == "local-zfs:cloudinit"
 
     def test_explicit_boot_order_wins(self) -> None:
         config = vmconfig.build_vm_config(
@@ -380,17 +396,36 @@ class TestBuildVmConfig:
             vmid=101,
         )
         # With no ISO mounted, the cloud-init drive takes ide0.
-        assert config["ide0"] == "cloudinit"
+        assert config["ide0"] == "local-lvm:cloudinit"
         assert config["serial0"] == "socket"
-        assert config["vga"] == "serial0"
         assert config["ciuser"] == "ubuntu"
 
-    def test_windows_cloudinit_keeps_graphical_display(self) -> None:
-        """Windows 走 Cloudbase-Init：云盘照挂，但不该把 vga 指到串口。
+    def test_cloudinit_keeps_the_graphical_console(self) -> None:
+        """启用 cloud-init 时**不能**把 vga 指到 serial0。
 
-        `serial0` + `vga=serial0` 是给 Linux 云镜像看的（内核日志打在 ttyS0）。
-        Windows 默认不往串口输出，对它这么设等于让图形控制台黑屏 —— 而用户装好
-        Cloudbase-Init、打开开关之后，第一件事正是去控制台装系统。
+        ``vga=serial0`` 会让虚拟机失去图形控制台，而面板的控制台走 VNC ——
+        VNC 显示的就是那块被指走的 VGA。此时能不能看到东西全看镜像 cmdline：
+        只有 ``console=tty1``（不少自制 / 精简 qcow2）的镜像会在 GRUB 之后彻底
+        黑屏（实测界面停在「starting serial terminal on interface serial0」），
+        连登录提示都没有，用户看到的现象就是「虚拟机开机正常、控制台全黑」。
+        保留默认图形控制台，tty1 的登录提示才在 VNC 里可见；要串口日志另有
+        serial0 socket 可用。
+        """
+        config = vmconfig.build_vm_config(
+            self._request(
+                cloudinit=CloudInitSpec(enabled=True, user="ubuntu"),
+            ),
+            vmid=101,
+        )
+        assert "vga" not in config
+        assert config["serial0"] == "socket"
+
+    def test_windows_cloudinit_keeps_graphical_display(self) -> None:
+        """Windows 走 Cloudbase-Init：云盘照挂，但不挂串口、也不动图形控制台。
+
+        Windows 默认不往串口输出，给它挂 serial0 socket 没有意义；图形控制台
+        更不该被动（用户装好 Cloudbase-Init、打开开关后，第一件事正是去控制台
+        装系统）。
         """
         config = vmconfig.build_vm_config(
             self._request(
@@ -399,7 +434,7 @@ class TestBuildVmConfig:
             ),
             vmid=101,
         )
-        assert config["ide0"] == "cloudinit"  # 元数据盘仍然要挂
+        assert config["ide0"] == "local-lvm:cloudinit"  # 元数据盘仍然要挂
         assert config["ciuser"] == "Administrator"
         assert "serial0" not in config
         assert "vga" not in config
@@ -656,9 +691,18 @@ class TestParseConfig:
         assert disks[1]["discard"] == "on"
 
     def test_skips_cdrom_and_cloudinit(self) -> None:
+        """cloud-init 盘的三种写法都不该被当成数据盘。
+
+        裸 ``cloudinit``、``<存储>:cloudinit`` 以及 PVE 解析后的
+        ``<存储>:vmid/vm-…-cloudinit.qcow2`` 都含 "cloudinit"。只比
+        ``== "cloudinit"`` 会把后两种解析成一块并不存在的磁盘，磁盘列表 /
+        磁盘计数因此全部错位。
+        """
         config = {
             "ide0": "local:iso/x.iso,media=cdrom",
-            "ide2": "cloudinit",
+            "ide1": "cloudinit",
+            "ide2": "local-lvm:cloudinit",
+            "ide3": "local-lvm:vm-100-cloudinit.qcow2,media=cdrom,size=4M",
             "scsi0": "local-lvm:vm-100-disk-0,size=8G",
         }
         disks = vmconfig.parse_config_disks(config)

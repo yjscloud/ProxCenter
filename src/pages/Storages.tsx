@@ -44,9 +44,67 @@ const CONTENT_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
   { label: 'storages.contentAll', value: '' },
   { label: 'storages.contentVm', value: 'vm' },
   { label: 'storages.contentIso', value: 'iso' },
+  { label: 'storages.contentImport', value: 'import' },
   { label: 'storages.contentBackup', value: 'backup' },
   { label: 'storages.contentSnippets', value: 'snippets' },
 ];
+
+/**
+ * 上传对话框里可选的内容类型。
+ *
+ * `value` 是**发给 PVE 的值**，必须是 PVE 的 `/storage/{id}/upload` 认的那种
+ * 存储内容名。以前这里复用页面筛选用的本地取值（`vm`），而 PVE 里磁盘镜像
+ * 叫 `images`——选了必然被 PVE 以非法枚举值拒掉；同时 PVE 真正支持的容器模板
+ * 与备份反倒一个都没给。
+ *
+ * `accept` 是该类型常见的扩展名，只用于两处引导：文件选择器的默认过滤，以及
+ * 选错文件时的当场提醒。真正的裁决者是 PVE，我们宁可放过一个少见的合法格式
+ * （让 PVE 去判断），也不要凭猜测把用户挡在外面 —— 白名单写窄了比写宽更糟。
+ */
+interface UploadContentRule {
+  value: string;
+  label: MessageKey;
+  accept: string;
+}
+
+const UPLOAD_CONTENTS: ReadonlyArray<UploadContentRule> = [
+  { value: 'iso', label: 'storages.contentIso', accept: '.iso,.img' },
+  {
+    /* 磁盘镜像（cloud 镜像 / 模板盘）落点。PVE 的 iso 目录只认 .iso/.img，
+       .qcow2 放进 iso 会被以「wrong extension」拒掉；import 目录才是它接受
+       ova/qcow2/raw/vmdk 的地方，也正好是「从 cloud 镜像建模板」读取的来源。 */
+    value: 'import',
+    label: 'storages.contentImport',
+    accept: '.qcow2,.raw,.vmdk,.ova',
+  },
+  {
+    value: 'vztmpl',
+    label: 'storages.contentVztmpl',
+    accept: '.tar.gz,.tar.xz,.tar.zst,.tgz',
+  },
+  {
+    value: 'backup',
+    label: 'storages.contentBackup',
+    accept: '.vma,.vma.gz,.vma.lzo,.tar,.tar.gz,.tar.zst,.tzst',
+  },
+  {
+    value: 'snippets',
+    label: 'storages.contentSnippets',
+    accept: '.yaml,.yml,.sh,.conf,.txt',
+  },
+];
+
+/** 文件名是否落在 accept 列出的扩展名里（大小写不敏感） */
+function matchesAccept(filename: string, accept: string): boolean {
+  const name = filename.trim().toLowerCase();
+  if (!name) return false;
+  return accept
+    .split(',')
+    .some((raw) => {
+      const ext = raw.trim().toLowerCase();
+      return ext.length > 0 && name.endsWith(ext);
+    });
+}
 
 export function Storages() {
   const t = useT();
@@ -719,37 +777,54 @@ function UploadDialog({
     }
   }, [open]);
 
-  /* ISO 存储池默认选 iso */
+  /* 默认内容类型：ISO 优先（最常见），否则取这台存储支持的第一项 */
   useEffect(() => {
-    if (storage) {
-      const types = storage.content.split(/[,;]/).map((c) => c.trim());
-      if (types.includes('iso') && !types.includes('images')) setContent('iso');
-      else if (types.includes('images')) setContent('vm');
-    }
+    if (!storage) return;
+    const types = new Set(storage.content.split(/[,;]/).map((c) => c.trim()));
+    const preferred = UPLOAD_CONTENTS.find(
+      (c) => c.value === 'iso' && types.has('iso'),
+    );
+    const fallback = UPLOAD_CONTENTS.find((c) => types.has(c.value));
+    setContent((preferred ?? fallback ?? UPLOAD_CONTENTS[0]).value);
   }, [storage]);
 
+  /* 可选的内容类型 = 上传接口接受的类型 ∩ 这台存储声明支持的类型。
+     不按存储过滤 PVE 也会拒，但给了就是白给：用户选了只收到一句报错，
+     还得自己猜哪里不对。 */
   const availableContents = useMemo(() => {
-    if (!storage)
-      return CONTENT_FILTERS.filter((c) => c.value).map((c) => ({
-        label: t(c.label),
-        value: c.value,
-      }));
-    const types = storage.content.split(/[,;]/).map((c) => c.trim());
-    const options = [
-      { label: t('storages.contentIso'), value: 'iso', key: 'iso' },
-      { label: t('storages.contentVm'), value: 'vm', key: 'images' },
-      { label: t('storages.contentSnippets'), value: 'snippets', key: 'snippets' },
-    ];
-    const filtered = options.filter((o) => types.includes(o.key));
-    return filtered.length > 0
-      ? filtered.map((o) => ({ label: o.label, value: o.value }))
-      : options.map((o) => ({ label: o.label, value: o.value }));
+    if (!storage) {
+      return UPLOAD_CONTENTS.map((c) => ({ label: t(c.label), value: c.value }));
+    }
+    const types = new Set(storage.content.split(/[,;]/).map((c) => c.trim()));
+    const matched = UPLOAD_CONTENTS.filter((c) => types.has(c.value));
+    /* 一个都不匹配（例如只支持 images 的存储）：退回第一项，否则下拉是空的，
+       用户连「选错类型」的机会都没有 */
+    const usable = matched.length > 0 ? matched : [UPLOAD_CONTENTS[0]];
+    return usable.map((c) => ({ label: t(c.label), value: c.value }));
   }, [storage, t]);
+
+  /* 当前内容类型接受的扩展名：文件选择器与「选错了当场说」都用它 */
+  const accept = UPLOAD_CONTENTS.find((c) => c.value === content)?.accept ?? '';
 
   const pickFile = (f: File | null | undefined) => {
     if (!f) return;
     if (f.size === 0) {
       toast.error(t('storages.fileInvalid'), t('storages.fileEmpty'));
+      return;
+    }
+    /* 扩展名对不上就当场说清楚。accept 只影响文件选择器的默认过滤，用户仍能
+       选「所有文件」、或者把文件直接拖进来 —— 等传到 PVE 那边被拒，几 GB 的
+       文件已经白传完了。 */
+    const rule = UPLOAD_CONTENTS.find((c) => c.value === content);
+    if (rule && !matchesAccept(f.name, rule.accept)) {
+      toast.error(
+        t('storages.uploadExtRejected'),
+        t('storages.uploadExtRejectedBody', {
+          name: f.name,
+          kind: t(rule.label),
+          accept: rule.accept,
+        }),
+      );
       return;
     }
     setFile(f);
@@ -863,7 +938,7 @@ function UploadDialog({
               <>
                 <div>{t('storages.dropHint')}</div>
                 <div className="fs-sm text-muted mt-8">
-                  {t('storages.dropFormats')}
+                  {t('storages.dropFormats', { formats: accept })}
                 </div>
               </>
             )}
@@ -873,7 +948,7 @@ function UploadDialog({
             type="file"
             hidden
             onChange={(e) => pickFile(e.target.files?.[0])}
-            accept=".iso,.img,.qcow2,.raw,.tar.gz,.tar.zst"
+            accept={accept}
           />
         </div>
 

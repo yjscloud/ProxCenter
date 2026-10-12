@@ -1123,6 +1123,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'status.content.images': 'VM disk',
   'status.content.rootdir': 'Container disk',
   'status.content.iso': 'ISO image',
+  'status.content.import': 'Disk images',
   'status.content.backup': 'Backup',
   'status.content.vztmpl': 'Container template',
   'status.content.snippets': 'Snippets',
@@ -1890,7 +1891,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'templates.modeFromImage': 'Generate from a cloud-init image',
   'templates.modeFromVm': 'Convert from an existing VM',
   'templates.pipelineTitle': 'The generated pipeline',
-  'templates.pipelineBody': 'After submitting, the backend runs in order: create the VM → importdisk the image → configure the cloud-init drive → convert to a template. The whole run is visible on the Tasks page.',
+  'templates.pipelineBody':
+    'After submitting, the VM is created first (the cloud image becomes its system disk directly, and cloud-init is written in the same step), then it is converted into a template. The whole run is visible on the Tasks page.',
   'templates.fieldNamePlaceholder': 'e.g. tmpl-ubuntu-2404',
   'templates.nodePlaceholder': 'Select a node',
   'templates.nodeOffline': ' (offline)',
@@ -1898,8 +1900,11 @@ export const en: Partial<Record<MessageKey, string>> = {
   'templates.fieldImage': 'cloud-init image file',
   'templates.fieldImageNone': 'None (create an empty template)',
   'templates.fieldImageScanning': 'Scanning image files…',
-  'templates.fieldImageNoneFound': 'No .img / .qcow2 image found. Upload one on the Storage page, or wget it into the node iso directory.',
-  'templates.fieldImageHint': 'The list comes from the iso directory of each node storage, filtered to img/qcow2/raw files',
+  'templates.fieldImagePickNode': 'Pick a node first, then choose an image',
+  'templates.fieldImageNoneFound':
+    'No usable cloud-init image (.img / .qcow2) found. Upload a disk image to an import directory on the Storage page, or under “Virtual Machines → Import a VM”.',
+  'templates.fieldImageHint':
+    'From the import and iso directories of the node storages, filtered to .img / .qcow2 / .raw',
   'templates.secSpecs': 'Specs',
   'templates.fieldOstype': 'OS type',
   'templates.fieldBalloon': 'Balloon minimum memory (MB)',
@@ -1915,8 +1920,6 @@ export const en: Partial<Record<MessageKey, string>> = {
   'templates.fieldNetwork': 'Network',
   'templates.fieldNetworkHint': 'Fixed to DHCP in the template; clones can switch to static on their detail page',
   'templates.fieldSshKeysHint': 'One key per line; VMs cloned from it get these keys injected automatically',
-  'templates.switchModeTitle': 'Switching to “Convert from an existing VM / container”',
-  'templates.switchModeBody': 'Close this window, then use the entry next to Create template on the main page, or pick Convert from an existing VM in the empty state.',
   'templates.close': 'Close',
 
   /* =========================================================================
@@ -5153,6 +5156,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'storages.contentAll': 'All content',
   'storages.contentVm': 'VM disks (vm)',
   'storages.contentIso': 'ISOs (iso)',
+  'storages.contentImport': 'Disk images (import)',
+  'storages.contentVztmpl': 'Container templates (vztmpl)',
   'storages.contentBackup': 'Backups (backup)',
   'storages.contentSnippets': 'Snippets (snippets)',
   'storages.notImplTitle': 'This feature needs backend support',
@@ -5188,7 +5193,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'storages.contentTypeHint':
     'Determines the target directory (the iso directory is for installation images)',
   'storages.dropHint': 'Click to choose a file, or drag one here',
-  'storages.dropFormats': 'Supports .iso / .img / .qcow2 and more',
+  'storages.dropFormats': 'Accepted: {formats}',
   'storages.pickFileAria': 'Choose a file to upload',
   'storages.uploading': 'Uploading',
   'storages.completed': 'Completed',
@@ -5206,6 +5211,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'storages.featureUnavailable': 'Feature unavailable',
   'storages.uploadNotImpl': 'The backend has not implemented file upload yet',
   'storages.uploadFailed': 'Upload failed',
+  'storages.uploadExtRejected': 'Wrong file type',
+  'storages.uploadExtRejectedBody':
+    '“{name}” is not a format {kind} can use; only {accept} are accepted here.',
 
   /* ----------------------------------------------------------- Tunnels */
   'frp.title': 'Tunnels',

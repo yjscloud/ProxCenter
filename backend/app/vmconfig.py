@@ -337,6 +337,23 @@ def format_tpmstate(spec: TpmSpec) -> str:
     return f"{spec.storage}:{int(spec.size)},version={version}"
 
 
+def _cloudinit_storage(req: VmCreateRequest) -> str:
+    """给 cloud-init 盘挑一个落地的存储。
+
+    cloud-init 盘是一块约 4MB 的 qcow2，需要 ``images`` 内容类型的存储。取第一块
+    磁盘所在的存储即可满足（VM 磁盘本来就落在支持 images 的存储上）；没有磁盘时
+    退到 EFI 变量盘 / TPM 盘的存储，再没有就返回空串，由调用方决定怎么处理。
+    """
+    for disk in req.disks:
+        if disk.storage:
+            return disk.storage
+    for spec in (req.efi_disk, req.tpm):
+        storage = getattr(spec, "storage", "") if spec else ""
+        if storage:
+            return storage
+    return ""
+
+
 # ------------------------------------------------------------------ builder
 def build_vm_config(
     req: VmCreateRequest,
@@ -460,22 +477,37 @@ def build_vm_config(
     # ---- cloud-init drive ----
     ci = req.cloudinit
     if ci and ci.enabled:
-        # Cloud-init needs a small serial device so the console shows output.
-        # ide2 must stay free for the cloud-init drive; skip if ISO took it.
+        # 值必须是 ``<存储>:cloudinit``。cloud-init 盘本身是一块小 qcow2，得先有
+        # 存储来放它；只写 ``cloudinit``（没有存储前缀）PVE 会判成非法卷 ID，
+        # 建机当场失败：``ide0: invalid format - unable to parse volume ID
+        # 'cloudinit'``。存储取第一块磁盘所在的那个 —— 它必然支持 images 内容，
+        # 也一定落在本节点上，不会因为选错主机而失败。
+        ci_storage = _cloudinit_storage(req)
+        if not ci_storage:
+            raise ValueError(
+                "启用 cloud-init 需要先指定一块磁盘（cloud-init 盘要落在支持镜像的存储上）"
+            )
+        # 光驱与 cloud-init 盘共用 IDE 槽位，谁先占由上面的顺序决定；这里取第一个空位。
         for slot in range(4):
             key = f"ide{slot}"
             if key not in config:
-                config[key] = "cloudinit"
+                config[key] = f"{ci_storage}:cloudinit"
                 break
         config.update(build_cloudinit_config(ci, network_count=len(req.networks)))
-        # 这段配置是给 Linux 云镜像看的：它们把内核日志打到 ttyS0，把 vga 指到
-        # serial0 才能在 VNC 控制台里看到启动过程。**Windows 不往串口输出**，对它
-        # 这么设只会让 VNC 控制台黑屏 —— 而 Windows 客户机的初始化是 Cloudbase-Init，
-        # 用户装好它、打开这个开关后第一件事就是去看控制台装系统。
-        # 云盘照旧挂载：Cloudbase-Init 也是从这块 config drive 读元数据的。
+        # 只挂串口，**绝不动 vga**。
+        #
+        # 把 vga 指到 serial0（PVE 的 ``--vga serial0``）会让虚拟机失去图形控制台：
+        # 面板的控制台走 VNC，而 VNC 显示的就是那块被指走的 VGA，屏幕上于是只剩
+        # 客户机往 ttyS0 写的内容。能看见什么完全取决于镜像的 cmdline ——
+        #   · 正式云镜像带 ``console=ttyS0``：还能看到启动日志；
+        #   · cmdline 只走 tty1 的镜像（不少自制 / 精简 qcow2）：GRUB 打完
+        #     「starting serial terminal on interface serial0」就彻底黑屏，连登录
+        #     提示都没有 —— 这正是「虚拟机开机正常、控制台一片黑」的来由。
+        # 保留默认图形控制台则两类镜像都能在 VNC 里拿到 tty1 的登录提示；要串口
+        # 日志时 serial0 已挂成 socket，PVE 的 xterm.js 控制台随时能接上。
+        # Windows 不往串口输出，给它挂这个 socket 没有意义，跳过。
         if not is_windows_ostype(req.ostype):
             config.setdefault("serial0", "socket")
-            config.setdefault("vga", "serial0")
 
     return config
 
@@ -558,7 +590,11 @@ def parse_config_disks(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not any(key.startswith(p) for p in SCSI_PREFIXES):
             continue
         # Skip optical/cloud-init entries.
-        if "media=cdrom" in value or value == "cloudinit":
+        # cloud-init 盘的值有三种可能：裸的 ``cloudinit``（面板写出去的形式）、
+        # ``<存储>:cloudinit``，以及 PVE 解析后的 ``<存储>:vmid/vm-…-cloudinit.qcow2``。
+        # 它们都含 "cloudinit"，统一按这个特征跳过 —— 只比 ``== "cloudinit"`` 会
+        # 把后两种当成数据盘解析出一块并不存在的磁盘。
+        if "media=cdrom" in value or "cloudinit" in value.lower():
             continue
         parsed = _parse_disk_value(key, value)
         if parsed:

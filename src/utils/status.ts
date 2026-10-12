@@ -275,6 +275,7 @@ const CONTENT_KEYS: Record<string, MessageKey> = {
   images: 'status.content.images',
   rootdir: 'status.content.rootdir',
   iso: 'status.content.iso',
+  import: 'status.content.import',
   backup: 'status.content.backup',
   vztmpl: 'status.content.vztmpl',
   snippets: 'status.content.snippets',

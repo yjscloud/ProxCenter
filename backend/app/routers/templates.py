@@ -269,6 +269,12 @@ async def build_template_from_image(
         steps.append({"step": name, "ok": ok, "detail": detail})
 
     # --- 1. create the shell VM ---------------------------------------
+    # 固件与机型要配套算一遍：OVMF 在 i440fx 上不可用（那样建出来的模板直接引导
+    # 失败），而默认机型**不写进配置** —— PVE 8 的 API 认 pc、PVE 9 只认 i440fx，
+    # 写死哪个都会在另一个版本上被驳回；模板的值还会被每个克隆体继承下去。
+    bios, machine = vmconfig.resolve_firmware(
+        payload.bios, payload.machine, needs_efi=payload.bios == "ovmf"
+    )
     create_config: Dict[str, Any] = {
         "vmid": vmid,
         "name": payload.name,
@@ -280,8 +286,7 @@ async def build_template_from_image(
         "cpu": vmconfig.normalize_cpu_type(payload.cpu_type),
         "ostype": vmconfig.normalize_ostype(payload.ostype),
         "scsihw": vmconfig.normalize_scsihw(payload.scsihw),
-        "bios": payload.bios if payload.bios in ("seabios", "ovmf") else "seabios",
-        "machine": payload.machine or "pc",
+        "bios": bios,
         "net0": f"{vmconfig.normalize_net_model(payload.net_model)},bridge={payload.bridge}",
         "agent": 1,
         # 只挂串口，不改 vga：vga=serial0 会让虚拟机失去图形控制台，VNC（面板的
@@ -296,6 +301,9 @@ async def build_template_from_image(
         # （实测 501），继续用它这条流水线会在第二步直接失败。
         "scsi0": f"{payload.storage}:0,import-from={payload.image},discard=on",
     }
+    # 只在显式要 q35 时才写机型（默认机型由 PVE 自己决定，见上面的说明）
+    if machine:
+        create_config["machine"] = machine
 
     try:
         # 创建这一步现在包含「把云镜像搬成系统盘」，几十 GB 的镜像可能跑十几分钟，
@@ -527,6 +535,15 @@ async def clone_template(
     # 只跳过 None —— 0 是有效值（显式关掉气球驱动）。
     if payload.balloon is not None:
         overrides["balloon"] = payload.balloon
+    # 机型：模板带的是**默认机型的旧写法**（面板早期写成 pc）时删掉它 —— 模板上的
+    # 值会被每一个克隆体继承，而 PVE 8 与 PVE 9 对默认机型的叫法不同（pc /
+    # i440fx），留着它新机器就带着一个目标 PVE 不认的机型。模板自带 q35（Win11
+    # 模板）时不动。判断与其它克隆入口共用，见 vmconfig.clone_machine_overrides。
+    try:
+        source_config = await client.qemu_config(target_node, newid) or {}
+    except ProxmoxError:
+        source_config = {}
+    overrides.update(vmconfig.clone_machine_overrides(source_config))
     overrides.update(
         vmconfig.build_cloudinit_for_clone(
             ci_user=payload.ci_user,

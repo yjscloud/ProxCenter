@@ -109,6 +109,7 @@ export function NodeDetail() {
   const t = useT();
   const { node = '' } = useParams<{ node: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const tabs = useMemo(
@@ -286,8 +287,15 @@ export function NodeDetail() {
             variant="secondary"
             icon={<IconRefresh size={15} />}
             onClick={() => {
-              void nodesQuery.refetch();
-              void statusQuery.refetch();
+              /* 按前缀失效：存储 / 任务 / 监控这几个 Tab 各自持有查询（在子组件
+                 里），头部拿不到它们的 refetch —— 原先只刷了节点列表与状态。 */
+              void queryClient.invalidateQueries({ queryKey: ['nodes', conn] });
+              void queryClient.invalidateQueries({
+                queryKey: ['storages', conn, node],
+              });
+              void queryClient.invalidateQueries({
+                queryKey: ['cluster', 'tasks', node],
+              });
             }}
             loading={statusQuery.isFetching && !statusQuery.isLoading}
           >

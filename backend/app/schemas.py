@@ -77,6 +77,10 @@ class ConnectionConfigIn(BaseModel):
     # 多连接：id/name 用于标识一条保存的 PVE 连接
     id: Optional[str] = None
     name: str = ""
+    #: 所属区域 / 机房。纯粹是**给界面分组用的标签**，不参与任何连接逻辑：
+    #: 多机房时节点列表按「区域 → 连接 → 节点」展开，否则所有节点会揉在一起。
+    #: 留空 = 未分区（界面上归进「未分区」一组）。
+    region: str = ""
     host: str = ""
     port: int = 8006
     token_id: str = ""
@@ -276,6 +280,10 @@ class CloneSpec(BaseModel):
     target_node: Optional[str] = None
     # 克隆完成后是否自动开机（默认开）。
     start: bool = True
+    # 系统盘目标大小（GB）。模板磁盘是模板自己的尺寸，而「资源规格」里的磁盘
+    # 是给新机器用的 —— 给了这个值就在克隆完成后把系统盘扩到它（**只增不减**，
+    # 缩小由 PVE 拒绝；失败不阻断创建，原因随响应回给前端）。
+    disk_size: Optional[int] = Field(default=None, gt=0)
 
 
 class NumaNodeSpec(BaseModel):
@@ -340,7 +348,10 @@ class VmCreateRequest(BaseModel):
     cpu_type: str = "host"
     ostype: str = "l26"
     bios: str = "seabios"
-    machine: str = "pc"
+    # 机型：留空 = 用 PVE 自己的默认机型（就是 i440fx）。**不要在这里写 pc 或
+    # i440fx** —— PVE 8 的 API 认 ``pc``、PVE 9 只认 ``i440fx``，写死哪个都会在
+    # 另一个版本上被 PVE 驳回。要 q35 时显式传 "q35"。见 vmconfig.normalize_machine。
+    machine: str = ""
     scsihw: str = Field(default="virtio-scsi-single", alias="scsi_hw")
     disks: List[DiskSpec] = Field(default_factory=list)
     networks: List[NetworkSpec] = Field(default_factory=list)
@@ -359,8 +370,13 @@ class VmCreateRequest(BaseModel):
     clone_from: Optional[CloneSpec] = None
     #: 是否把新建的这台机器自动接入安全管控：把面板公钥追加进 cloud-init 的
     #: ``sshkeys``，创建成功后登记成一台受管主机（origin=panel，首连自动信任）。
-    #: 只在「cloud-init + 静态 IP」下有意义 —— 面板得先知道它的地址才连得上去，
-    #: 所以没给静态 IP 时后端会直接拒绝，而不是登记一台永远连不上的空主机。
+    #:
+    #: 前提是**有 cloud-init**（公钥得有地方写）；没有它就没有登录凭据，后端跳过登记。
+    #: 地址分两种情形，两种都支持：
+    #: * 静态 IP：创建时地址就定了，立刻登记；
+    #: * DHCP：创建那一刻地址并不存在，只能等机器起来后由 Guest Agent 自报 ——
+    #:   创建时起的后台轮询 + 落库的待登记队列两条路兜底（最长 10 分钟）。
+    #:   镜像里没有 qemu-guest-agent 的机器永远等不到，那种才需要手工添加。
     manage: bool = False
 
     # ---- 高级硬件（都可选）-------------------------------------------------
@@ -776,6 +792,28 @@ class IpPool(BaseModel):
     start: str = ""           # 192.168.1.100
     end: str = ""             # 192.168.1.200
     dns: str = ""
+    #: 这套地址适用于集群里的哪些节点（节点名）。
+    #:
+    #: 集群里不同节点常常接的是不同网段 —— 同一个 vmbr0，node1 上可能是
+    #: 192.168.1.0/24、node2 上却是 10.0.0.0/24。池不绑定节点的话，在 node2 上
+    #: 也会把 node1 的池列出来，选中后地址根本不通。
+    #:
+    #: **空列表 = 不限节点**（任何节点都能用）。这也让老数据天然兼容：保存时还
+    #: 没有这个字段的池，读出来就是空列表，行为与改造前一致，不需要任何迁移。
+    nodes: List[str] = Field(default_factory=list)
+    #: 这套地址适用于哪些 PVE 连接（连接 id）。
+    #:
+    #: 只有节点名还不够：多套 PVE 上「同名节点」是常态（每台都可能叫 pve），
+    #: 只按节点名匹配的话，为 A 主机配的池会在 B 主机的同名节点上也被列出来。
+    #: 与 ``nodes`` 是**与**的关系；**空列表 = 不限连接**（同样是老数据的默认）。
+    connections: List[str] = Field(default_factory=list)
+    #: 这套地址属于哪个二层网络 —— 光有网桥不够：同一个 vmbr0 上可以挂多个 VLAN
+    #: 网段（tag=100 是 192.168.1.0/24、tag=200 是 10.0.0.0/24），不记 tag 就分不清
+    #: 池属于哪一个，下发时也容易把地址填到没打标签的网卡上。
+    #:
+    #: 取值就是 PVE 的 ``tag``（1~4094）。**None = 不限 VLAN**，老数据也是 None，
+    #: 行为与改造前一致，不需要迁移。
+    vlan: Optional[int] = None
 
 
 # ---------------------------------------------------------------- firewall
@@ -1286,7 +1324,8 @@ class TemplateFromImage(BaseModel):
     net_model: str = "virtio"
     scsihw: str = "virtio-scsi-single"
     bios: str = "seabios"
-    machine: str = "pc"
+    # 同上：留空 = PVE 默认机型。模板会被克隆继承，值写错了的模板会一直往下传
+    machine: str = ""
     ci_user: str = "ubuntu"
     ci_password: Optional[str] = None
     ssh_keys: Optional[str] = None

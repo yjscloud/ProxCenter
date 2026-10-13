@@ -329,6 +329,11 @@
     margin-top: 0;
   }
 
+  /* 适用范围弹窗里的复选框栅格：手机上退回单列，否则节点名被挤成两三个字 */
+  .chk-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   /* 防火墙配置行：标签独占一行，控件另起一行铺满 */
   .fw-config-row {
     flex-direction: column;

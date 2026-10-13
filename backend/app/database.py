@@ -287,6 +287,9 @@ async def _get_mysql_pool() -> Any:
             charset="utf8mb4",
             autocommit=False,
             maxsize=max(2, int(settings.db_pool_size)),
+            # 定时回收空闲连接：MySQL 的 wait_timeout 是 8 小时，但中间的
+            # 网络设备常常更早掐断空闲连接，借到一条死连接会报 OperationalError。
+            pool_recycle=max(0, int(settings.db_pool_recycle)),
         )
         logger.info("MySQL 连接池已建立：%s", describe())
     return _mysql_pool

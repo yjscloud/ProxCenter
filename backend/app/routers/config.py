@@ -140,13 +140,29 @@ async def list_connections(
     request: Request,
     user: Dict[str, Any] = Depends(security.get_current_user),
 ) -> List[Dict[str, Any]]:
-    """全部已保存的 PVE 连接（密钥只回传「是否已设置」）。"""
+    """全部已保存的 PVE 连接。
+
+    **按权限裁剪**：完整字段（主机地址 / 端口 / 令牌与控制台凭据的「是否已设置」）
+    只给管理员（``settings.manage``）。连接配置说的是「面板能碰哪些集群、拿什么
+    凭据碰」，属于管理信息 —— 它不该跟着 ``node.view`` 这类权限一起扩散出去，
+    更不该让没有任何节点权限的账号也看得到。
+
+    普通用户拿到的是精简版（id / 名称 / 区域 / 是否当前 / 是否配好），见
+    ``store.public_connection_brief``：他们确实需要它 —— 节点列表按「区域 →
+    连接 → 节点」分组、创建向导要选目标 PVE、地址池按连接限定适用范围 —— 但
+    这些只需要认得出是哪台。
+    """
     await security.audit_read(request, user, "config.connections.read")
     conns = store.get_connections()
     active_id = str(store.get_active_connection().get("id") or "")
+    can_manage = security.has_user_permission(user, "settings.manage")
     result: List[Dict[str, Any]] = []
     for c in conns:
-        pub = store.public_connection_config(c)
+        pub = (
+            store.public_connection_config(c)
+            if can_manage
+            else store.public_connection_brief(c)
+        )
         pub["active"] = str(c.get("id")) == active_id
         result.append(pub)
     return result

@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { useEffect, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useIsFetching, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { healthApi } from '../api/endpoints';
 import { useAuth } from '../hooks/useAuth';
@@ -61,6 +61,15 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
     refetchInterval: 30_000,
     retry: false,
   });
+
+  /* 「刷新全部数据」的转圈状态：**只在用户点过之后**才转，而不是看全局
+     isFetching —— 各页面都有自己的定时轮询，直接用它会让按钮自己转个不停、
+     还一直处于禁用状态（点不动）。 */
+  const anyFetching = useIsFetching() > 0;
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    if (refreshing && !anyFetching) setRefreshing(false);
+  }, [refreshing, anyFetching]);
 
   /* 点击外部关闭菜单 */
   useEffect(() => {
@@ -120,15 +129,19 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
 
         <NotificationBell />
 
-        {/* 手动刷新全局 query */}
+        {/* 刷新全部数据：健康检查就地重取，其余交给 Layout 失效所有查询
+            （见 Layout.tsx 对 ProxCenter:refresh 的监听）。转圈状态用「有没有
+            查询在取数」判断，否则点了要等好几秒、界面却毫无反应。 */}
         <IconButton
           label={t('topbar.refreshAll')}
+          disabled={refreshing}
           onClick={() => {
+            setRefreshing(true);
             void health.refetch();
             window.dispatchEvent(new CustomEvent('ProxCenter:refresh'));
           }}
         >
-          <IconRefresh size={16} />
+          <IconRefresh size={16} className={refreshing ? 'spin' : undefined} />
         </IconButton>
 
         {/* 语言切换：常驻顶栏。收进头像菜单里等于没有 —— 用户找不到就不会用 */}

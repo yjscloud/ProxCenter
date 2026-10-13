@@ -62,14 +62,30 @@ export { guestTypeOf };
    详情页路由
    --------------------------------------------------------------------------- */
 
-/** 容器走 /lxc/:node/:vmid，虚拟机走 /vms/:node/:vmid */
-export function guestPath(guest: GuestRef): string {
+/**
+ * 容器走 /lxc/:node/:vmid，虚拟机走 /vms/:node/:vmid。
+ *
+ * 额外的查询参数（如 `{ tab: 'console' }`）一并交给它拼。调用点自己接
+ * `?tab=console` 会在带上连接时拼成 `?connection=x?tab=console`，于是详情页
+ * `searchParams.get('connection')` 拿到的是 `x?tab=console` —— 拿这个去查连接
+ * 只会报「连接不存在」，控制台 / 快照因此打不开。
+ */
+export function guestPath(
+  guest: GuestRef,
+  extra?: Record<string, string | number | undefined>,
+): string {
   const family = isLxc(guest) ? 'lxc' : 'vms';
-  const base = `/${family}/${encodeURIComponent(guest.node)}/${guest.vmid}`;
+  const params = new URLSearchParams();
   /* 把连接 id 一起带到详情页：详情页里的接口只拿得到节点名，多连接部署下
      不带这个参数就可能把请求发到没有该节点的另一台 PVE 上。 */
   const conn = guest.connection_id || '';
-  return conn ? `${base}?connection=${encodeURIComponent(conn)}` : base;
+  if (conn) params.set('connection', conn);
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  const query = params.toString();
+  const base = `/${family}/${encodeURIComponent(guest.node)}/${guest.vmid}`;
+  return query ? `${base}?${query}` : base;
 }
 
 export function isContainer(guest: GuestRef): boolean {

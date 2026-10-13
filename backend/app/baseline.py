@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import glob
 import logging
 import os
@@ -39,9 +40,9 @@ import platform
 import re
 import shutil
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
-from . import localhost
+from . import localhost, taskpool
 from .formatters import short_hostname
 from .i18n import pick, tr
 
@@ -1311,7 +1312,8 @@ def _collect_sync() -> Dict[str, Any]:
 
 async def collect() -> Dict[str, Any]:
     """体检本机并给出评分报告（只读，不改系统）。"""
-    return await asyncio.to_thread(_collect_sync)
+    # 走专用线程池：本机体检是阻塞的子进程与文件读取，别占默认 executor
+    return await taskpool.run_blocking(_collect_sync)
 
 
 # ------------------------------------------------------- 采集：远程快照（SSH）
@@ -1564,9 +1566,40 @@ def _remote_error_report(row: Dict[str, Any], error: str) -> Dict[str, Any]:
     }
 
 
+def local_error_report(error: str) -> Dict[str, Any]:
+    """本机体检失败时的占位报告（结构同 :func:`_remote_error_report`）。
+
+    批量体检里本机失败会直接抛出去（面板自己的机器都读不到，这一轮结论本就不
+    完整）；但**流式体检**不能抛 —— 已经推了一半的事件没法收回，只能如实标出来。
+    """
+    row = local_host_row()
+    return {
+        "host_id": "local",
+        "local": True,
+        "name": row["name"],
+        "host": row["name"],
+        "address": "localhost",
+        "checked_at": int(time.time()),
+        "ok": False,
+        "error": tr(error[:300]),
+        "elevated": False,
+        "privilege": "none",
+        "score": 0,
+        "grade": "",
+        "grade_label": tr("未体检"),
+        "summary": _empty_summary(),
+        "categories": [],
+        "checks": [],
+        "os": {},
+    }
+
+
 async def collect_remote(row: Dict[str, Any]) -> Dict[str, Any]:
     """体检一台受管主机。任何失败都降级成 ok=False 的报告，绝不抛给调用方。"""
     remote = _sshremote()
+    # 快速可达性预探测：TCP 都不通就没必要再等 45 秒的命令超时（见 sshremote）
+    if not await remote.probe_reachable(row):
+        return _remote_error_report(row, remote.UNREACHABLE_ERROR)
     try:
         _ok, output = await remote.run_command(
             row, probe_command(remote._sudo_prefix(row)), timeout=PROBE_TIMEOUT
@@ -1715,39 +1748,60 @@ def compact_report(report: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def fleet_reports(
-    host_ids: Optional[Iterable[str]] = None,
-) -> List[Dict[str, Any]]:
-    """并发体检全部目标主机（本机 + 受管主机），返回**完整**报告列表。"""
-    from .pve import parallel
+def fleet_error_report(row: Optional[Dict[str, Any]], exc: BaseException) -> Dict[str, Any]:
+    """把一次体检失败收成占位报告（``row`` 为 ``None`` 表示本机）。"""
+    if row is None:
+        return local_error_report(str(exc))
+    return _remote_error_report(row, str(exc))
 
-    # 必须用 `is not None` 而不是真值判断：空集合表示「一台都不可见」（刚授权、
-    # 还没添加主机），用真值判断会把它当成 None = 不限，普通用户于是能看到
-    # 全部主机与面板本机。targets() 用的就是下面这种写法。
+
+async def fleet_plan(
+    host_ids: Optional[Iterable[str]] = None,
+) -> List[Tuple[Optional[Dict[str, Any]], Callable[[], Awaitable[Dict[str, Any]]]]]:
+    """本次体检的目标清单：``(受管主机行 or None(=本机), 协程工厂)``。
+
+    批量体检（:func:`fleet_reports`）与流式体检（见 :mod:`app.inspection`）共用
+    这一份目标构建 —— 两边的「体检范围」不会漂。
+
+    本机排在最前：原来的批量实现组装结果时就把本机提前，这里保持同一顺序，
+    对外的报告顺序不变。
+
+    必须用 `is not None` 而不是真值判断：空集合表示「一台都不可见」（刚授权、
+    还没添加主机），用真值判断会把它当成 None = 不限，普通用户于是能看到
+    全部主机与面板本机。targets() 用的就是这种写法。
+    """
     wanted = {str(item) for item in host_ids} if host_ids is not None else None
     rows = await managed_hosts()
     if wanted is not None:
         rows = [row for row in rows if row["id"] in wanted]
     include_local = (wanted is None or "local" in wanted) and await localhost.enabled()
 
-    # 本机也放进同一批：它跑的是本地子进程（ss / ps / 十几项检查），几秒量级，
-    # 单独 await 在整批之后等于白添一段串行时间。
-    tasks: List[Any] = [collect_remote(row) for row in rows]
+    plan: List[
+        Tuple[Optional[Dict[str, Any]], Callable[[], Awaitable[Dict[str, Any]]]]
+    ] = []
     if include_local:
-        tasks.append(collect())
-    done = await parallel(tasks, limit=PROBE_CONCURRENCY) if tasks else []
+        plan.append((None, collect))
+    plan.extend((row, functools.partial(collect_remote, row)) for row in rows)
+    return plan
+
+
+async def fleet_reports(
+    host_ids: Optional[Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
+    """并发体检全部目标主机（本机 + 受管主机），返回**完整**报告列表。"""
+    from .pve import parallel
+
+    plan = await fleet_plan(host_ids)
+    done = await parallel([factory() for _row, factory in plan], limit=PROBE_CONCURRENCY)
 
     reports: List[Dict[str, Any]] = []
-    if include_local:
-        local_item = done[len(rows)]
-        if isinstance(local_item, BaseException):
-            # 本机体检失败沿用原来的行为：抛出去。面板自己的机器都读不到，这一轮
-            # 的结论本来就不完整，返回一份「少了本机」的汇总只会误导。
-            raise local_item
-        reports.append(local_item)
-    for row, item in zip(rows, done[: len(rows)]):
+    for (row, _factory), item in zip(plan, done):
         if isinstance(item, BaseException):  # parallel 把异常原样返回
-            reports.append(_remote_error_report(row, str(item)))
+            if row is None:
+                # 本机体检失败沿用原来的行为：抛出去。面板自己的机器都读不到，这一轮
+                # 的结论本来就不完整，返回一份「少了本机」的汇总只会误导。
+                raise item
+            reports.append(fleet_error_report(row, item))
         else:
             reports.append(item)
     return reports
@@ -1765,15 +1819,10 @@ def _attention_rank(host: Dict[str, Any]) -> int:
     return 3
 
 
-async def fleet_overview(
-    host_ids: Optional[Iterable[str]] = None,
-) -> Dict[str, Any]:
-    """全平台体检总览：每台主机一行摘要，最需要处理的排最前。"""
-    hosts = [compact_report(report) for report in await fleet_reports(host_ids)]
-    hosts.sort(key=lambda h: (_attention_rank(h), h.get("score") or 0))
-
+def _summarize_fleet(hosts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """把一批主机摘要收成 totals。真扫与读快照共用，保证口径一致。"""
     reachable = [h for h in hosts if h["ok"]]
-    totals = {
+    return {
         "hosts": len(hosts),
         "reachable": len(reachable),
         "unreachable": len(hosts) - len(reachable),
@@ -1788,7 +1837,28 @@ async def fleet_overview(
         "worst_score": min((h["score"] for h in reachable), default=0),
         "healthy": sum(1 for h in reachable if h["grade"] in ("A", "B")),
     }
-    return {"hosts": hosts, "totals": totals, "generated_at": int(time.time())}
+
+
+def fleet_from_reports(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """把一批**完整**报告收成全平台总览，最需要处理的排最前。
+
+    真扫（``fleet_overview``）与读落库快照（``inspection.aggregate_reports``）
+    共用这一份聚合，totals 的口径不会漂。
+    """
+    hosts = [compact_report(report) for report in reports]
+    hosts.sort(key=lambda h: (_attention_rank(h), h.get("score") or 0))
+    return {
+        "hosts": hosts,
+        "totals": _summarize_fleet(hosts),
+        "generated_at": int(time.time()),
+    }
+
+
+async def fleet_overview(
+    host_ids: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """全平台体检总览：每台主机一行摘要，最需要处理的排最前。"""
+    return fleet_from_reports(await fleet_reports(host_ids))
 
 
 # --------------------------------------------------------------------- 加固

@@ -23,13 +23,15 @@ import json
 import logging
 import os
 import re
+import socket
+import threading
 import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import paramiko
 
-from . import alerting, crypto, database, i18n, localhost, sshguard, store
+from . import alerting, crypto, database, i18n, localhost, sshguard, store, taskpool
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +276,7 @@ async def _invalidate_report_cache() -> None:
     try:
         from . import reportcache
 
-        reportcache.clear()
+        await reportcache.clear()
     except Exception:  # noqa: BLE001
         logger.debug("清理巡检报告缓存失败", exc_info=True)
 
@@ -305,6 +307,8 @@ async def save_host(raw: Dict[str, Any], username: str = "") -> Dict[str, Any]:
         )
     # 新建 / 编辑（含「刚接入、指纹已采纳」）之后，总览缓存里的机器清单已经过时
     await _invalidate_report_cache()
+    # 地址 / 凭据可能变了：把池里的旧连接丢掉，下次用新配置重连
+    forget_connection(str(item.get("id") or ""))
     return item
 
 
@@ -319,6 +323,8 @@ async def delete_host(host_id: str) -> int:
     # 归属记录一并清掉：留着会让「同一个 id 又被创建出来」时继承到旧归属
     if removed:
         await ownership.delete_owner(ownership.KIND_SSH_HOST, host_id)
+        # 池里的连接也一并丢掉：主机都没了，留着只是占着一条 SSH
+        forget_connection(host_id)
     return removed
 
 
@@ -365,7 +371,7 @@ async def _drop_host_data(row: Dict[str, Any]) -> None:
             logger.warning("清理主机 %s 的活动告警失败", name, exc_info=True)
     # 报告缓存的 key 是「功能名 + 可见主机集合 + 语言」，没法按主机精确剔除；
     # 整体清空最省事 —— 代价只是下一次打开总览时多跑一轮巡检（TTL 只有 2 分钟）。
-    reportcache.clear()
+    await reportcache.clear()
 
 
 async def purge_host(host_id: str) -> int:
@@ -917,6 +923,13 @@ def _connect(row: Dict[str, Any], trust_first: bool = False) -> Tuple[paramiko.S
             "首次连接该主机，需要先确认指纹 " + fingerprint
             + "（在主机管理里点「确认并信任」）"
         )
+    # 池化复用的连接会长时间挂着：开 keepalive，免得空闲一会儿就被对端悄悄断开
+    try:
+        transport = client.get_transport()
+        if transport is not None:
+            transport.set_keepalive(30)
+    except Exception:  # noqa: BLE001 - 设置失败不影响本次连接
+        logger.debug("设置 SSH keepalive 失败", exc_info=True)
     return client, fingerprint
 
 
@@ -924,24 +937,206 @@ def _sudo_prefix(row: Dict[str, Any]) -> str:
     return "sudo -n " if row.get("use_sudo") else ""
 
 
+# ------------------------------------------------------------------ 连接复用
+# 每台主机每次 run_command 都新建一条 SSH：握手 + 认证要几百毫秒到几秒。巡检一轮
+# 对同一台主机只跑一条命令，但「告警 / 端口 / 基线 / 登录审计」几套作业会反复连
+# 同一批主机 —— 每条命令都重新握手纯属浪费。这里按主机复用一个连接池。
+#
+# 三条边界：
+# 1. **同一连接不并发使用**：每台主机一把锁，把它的命令串行化（paramiko 的连接
+#    不是为并发使用设计的）；
+# 2. **失效即重建**：借出时用 ``transport.is_active()`` 判断，断了就丢掉重连；
+# 3. **只管 run_command**：``open_command``（备份 / 终端流式）有自己的生命周期，
+#    不池化。
+
+class _PooledConnection:
+    """池里的一条 SSH 连接 + 它自己的串行锁。"""
+
+    __slots__ = ("client", "lock", "last_used")
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        self.lock = threading.Lock()
+        self.last_used = time.time()
+
+
+#: 空闲多久就关掉（秒）：太短失去复用意义，太长对端早已断开。
+POOL_IDLE_TTL = 180.0
+#: 池子上限：超过就淘汰最旧的连接。
+POOL_MAX = 32
+
+_pool: Dict[str, _PooledConnection] = {}
+_pool_guard = threading.Lock()
+
+
+def _pool_key(row: Dict[str, Any]) -> str:
+    return str(row.get("id") or "") or f"{row.get('host')}:{row.get('port')}"
+
+
+def _close_quietly(client: Any) -> None:
+    try:
+        client.close()
+    except Exception:  # noqa: BLE001 - 关闭失败无关紧要
+        pass
+
+
+def _sweep_pool() -> None:
+    """淘汰空闲过久与超上限的连接。惰性调用（借连接时顺手做一次）。"""
+    now = time.time()
+    with _pool_guard:
+        for key, entry in list(_pool.items()):
+            if now - entry.last_used > POOL_IDLE_TTL:
+                _pool.pop(key, None)
+                _close_quietly(entry.client)
+        while len(_pool) > POOL_MAX:
+            key, entry = min(_pool.items(), key=lambda kv: kv[1].last_used)
+            _pool.pop(key, None)
+            _close_quietly(entry.client)
+
+
+def _drop(row: Dict[str, Any]) -> None:
+    """把这台主机的连接从池里摘掉并关闭。"""
+    key = _pool_key(row)
+    with _pool_guard:
+        entry = _pool.pop(key, None)
+    if entry is not None:
+        _close_quietly(entry.client)
+
+
+def forget_connection(host_id: str) -> None:
+    """忘掉一台主机的池化连接（地址 / 凭据改了、或主机被删除时调）。"""
+    with _pool_guard:
+        entry = _pool.pop(str(host_id or ""), None)
+    if entry is not None:
+        _close_quietly(entry.client)
+
+
+def close_pool() -> None:
+    """关闭所有池化连接（进程退出时调用）。"""
+    with _pool_guard:
+        entries = list(_pool.values())
+        _pool.clear()
+    for entry in entries:
+        _close_quietly(entry.client)
+
+
+def _acquire_pooled(row: Dict[str, Any]) -> _PooledConnection:
+    """借一条可用连接；没有 / 已失效则新建（新建可能抛：未信任指纹、认证失败…）。"""
+    key = _pool_key(row)
+    _sweep_pool()
+
+    with _pool_guard:
+        entry = _pool.get(key)
+        if entry is not None:
+            transport = entry.client.get_transport()
+            if transport is not None and transport.is_active():
+                entry.last_used = time.time()
+                return entry
+            _pool.pop(key, None)
+            _close_quietly(entry.client)
+
+    client, _fingerprint = _connect(row)
+    entry = _PooledConnection(client)
+    with _pool_guard:
+        existing = _pool.get(key)
+        if existing is not None:
+            transport = existing.client.get_transport()
+            if transport is not None and transport.is_active():
+                # 竞态：别人抢先放进来了，用自己的即可
+                _close_quietly(client)
+                existing.last_used = time.time()
+                return existing
+            _pool.pop(key, None)
+            _close_quietly(existing.client)
+        _pool[key] = entry
+    return entry
+
+
+def _open_channel(
+    client: Any, command: str, timeout: float
+) -> Tuple[Any, Any, Any]:
+    """建立命令 channel。这一步失败说明**命令还没发出去**。"""
+    return client.exec_command(command, timeout=timeout)
+
+
+def _read_channel(stdout: Any, stderr: Any) -> Tuple[bool, str]:
+    out = stdout.read().decode("utf-8", "replace")
+    err = stderr.read().decode("utf-8", "replace")
+    code = stdout.channel.recv_exit_status()
+    try:
+        stdout.channel.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return code == 0, (out or "") + (err or "")
+
+
 def run_command_sync(
     row: Dict[str, Any], command: str, timeout: float = DEFAULT_TIMEOUT
 ) -> Tuple[bool, str]:
-    """在远程主机上跑一条命令（阻塞版本）。返回 (成功?, 输出)。"""
-    client, _ = _connect(row)
+    """在远程主机上跑一条命令（阻塞版本）。返回 (成功?, 输出)。
+
+    复用池里的连接（见上面「连接复用」）。只在 **channel 建立**那一步失败时重试
+    一次 —— 那一步失败说明命令根本没发出去，重试是安全的；读取阶段失败不重试，
+    因为命令可能已经执行过（重放会重复执行）。
+    """
+    entry = _acquire_pooled(row)
     try:
-        _, stdout, stderr = client.exec_command(command, timeout=timeout)
-        out = stdout.read().decode("utf-8", "replace")
-        err = stderr.read().decode("utf-8", "replace")
-        code = stdout.channel.recv_exit_status()
+        with entry.lock:
+            entry.last_used = time.time()
+            channel = _open_channel(entry.client, command, timeout)
+    except Exception:
+        # 连接层面失败：丢掉这条连接，重建后重试一次
+        _drop(row)
+        entry = _acquire_pooled(row)
+        with entry.lock:
+            entry.last_used = time.time()
+            channel = _open_channel(entry.client, command, timeout)
+
+    # 命令已发出 —— 之后的失败一律如实抛出，不重试
+    _stdin, stdout, stderr = channel
+    try:
+        return _read_channel(stdout, stderr)
     finally:
-        client.close()
-    text = (out or "") + (err or "")
-    return code == 0, text
+        entry.last_used = time.time()
 
 
 async def run_command(row: Dict[str, Any], command: str, timeout: float = DEFAULT_TIMEOUT) -> Tuple[bool, str]:
-    return await asyncio.to_thread(run_command_sync, row, command, timeout)
+    # 走巡检专用线程池：SSH 建立与读取全程阻塞，别占事件循环的默认 executor
+    return await taskpool.run_blocking(run_command_sync, row, command, timeout)
+
+
+#: 可达性预探测的超时（秒）。比 DEFAULT_TIMEOUT（20 秒）短得多：目的只是快速
+#: 判断「TCP 能不能连上」，连不上就没必要再等一条完整的 SSH 握手。
+REACHABLE_TIMEOUT = 3.0
+
+#: 预探测失败时写进报告的原因（安全基线 / 端口巡检共用）。
+UNREACHABLE_ERROR = "主机不可达：SSH 端口无响应（已跳过深度体检）"
+
+
+def _probe_sync(row: Dict[str, Any], timeout: float) -> None:
+    host = str(row.get("host") or "")
+    port = int(row.get("port") or 22)
+    with socket.create_connection((host, port), timeout=timeout):
+        return
+
+
+async def probe_reachable(
+    row: Dict[str, Any], timeout: float = REACHABLE_TIMEOUT
+) -> bool:
+    """快速判断主机的 SSH 端口是否可达（只做 TCP 连接，不做认证）。
+
+    深度体检对每台主机跑一条 45 秒超时的命令。主机宕机 / 网络不通时，那条命令要
+    一直等到超时才失败 —— 一轮下来被拖满。先用几秒钟的 TCP 探测挡在前面：不可达
+    的直接快速失败，可达的再进深度体检。
+
+    注意：TCP 通 ≠ SSH 认证通过。认证失败仍会在后续 :func:`run_command` 里如实
+    报错；这里只是把「连都连不上」这一类最慢的情况提前截断。
+    """
+    try:
+        await taskpool.run_blocking(_probe_sync, row, timeout)
+        return True
+    except Exception:  # noqa: BLE001 - 超时 / 拒绝连接 / DNS 失败都算不可达
+        return False
 
 
 async def open_command(

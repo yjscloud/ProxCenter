@@ -28,7 +28,14 @@ logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Connection-config keys that are safe to return to the frontend.
-PUBLIC_CONN_KEYS = {"host", "port", "verify_ssl", "node_default", "configured"}
+PUBLIC_CONN_KEYS = {
+    "host",
+    "port",
+    "verify_ssl",
+    "node_default",
+    "region",
+    "configured",
+}
 
 # 账号状态（users.status）。自助注册的账号先进 pending，管理员审批后才变 active。
 # 与 enabled 分工不同：enabled 是管理员事后「停用」某人，status 管的是「有没有进过门」。
@@ -1095,6 +1102,9 @@ def public_connection_config(config: Optional[Dict[str, Any]] = None) -> Dict[st
     return {
         "id": str(cfg.get("id", "")),
         "name": str(cfg.get("name", "")),
+        # 区域 / 机房：只用于界面分组（多机房时按区域 → 连接 → 节点展开）。
+        # 老连接没有这个字段 → 空串 = 未分区。
+        "region": str(cfg.get("region", "")),
         "host": cfg.get("host", ""),
         "port": int(cfg.get("port") or 8006),
         "token_id": cfg.get("token_id", ""),
@@ -1106,6 +1116,26 @@ def public_connection_config(config: Optional[Dict[str, Any]] = None) -> Dict[st
         "node_default": cfg.get("node_default", ""),
         "configured": bool(
             cfg.get("host") and cfg.get("token_id") and cfg.get("token_secret")
+        ),
+    }
+
+
+def public_connection_brief(config: Dict[str, Any]) -> Dict[str, Any]:
+    """连接的**精简视图**：只有标识、名称与区域。
+
+    普通用户也需要连接列表 —— 节点列表按「区域 → 连接 → 节点」分组、创建向导要
+    选目标 PVE、地址池要按连接限定适用范围 —— 但这些只需要「认得出是哪台」，不
+    需要它的地址、令牌或控制台凭据。
+
+    连接配置描述的是「面板能碰哪些集群、拿什么凭据碰」，属于管理信息，不该跟着
+    ``node.view`` 之类的权限扩散出去（裁剪点见 routers/config.list_connections）。
+    """
+    return {
+        "id": str(config.get("id", "")),
+        "name": str(config.get("name", "")),
+        "region": str(config.get("region", "")),
+        "configured": bool(
+            config.get("host") and config.get("token_id") and config.get("token_secret")
         ),
     }
 

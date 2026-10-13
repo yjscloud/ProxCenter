@@ -54,7 +54,7 @@ import { InlineMeter } from '../components/ui/ProgressBar';
 import { Notice } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { ConfirmDialog, useConfirm } from '../components/ui/ConfirmDialog';
 import { UserSelect } from '../components/ui/UserSelect';
 import { VmCreateWizard } from '../components/VmCreateWizard';
 import { LxcCreateWizard } from '../components/LxcCreateWizard';
@@ -94,6 +94,12 @@ import {
   toPercent,
 } from '../utils/format';
 import { isRunning, isStopped, isTransient, vmStatusMeta } from '../utils/status';
+import {
+  bulkPowerConfirmOptions,
+  isDestructivePower,
+  powerConfirmOptions,
+  type DestructivePower,
+} from '../utils/powerConfirm';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -523,6 +529,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   /* 重置客户机内用户口令（虚拟机走 Guest Agent / cloud-init，容器走宿主机 SSH） */
   const [passwordTarget, setPasswordTarget] = useState<VmSummary | null>(null);
   const [pendingAction, setPendingAction] = useState(false);
+  /* 关机 / 停止 / 重启前弹一次确认（见 utils/powerConfirm）：这三件事都会让机器上
+     的服务中断，而它们在列表里只是三个挨着的图标按钮 */
+  const [powerConfirmEl, confirmPower] = useConfirm();
   /* 手动填写 IP：平台识别不到时才开放（见 IP 列） */
   const [ipTarget, setIpTarget] = useState<VmSummary | null>(null);
   const [ipDraft, setIpDraft] = useState('');
@@ -553,11 +562,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       isLxc
         ? lxcApi.list(nodeFilter || undefined, { withIp: true })
         : vmsApi.list(nodeFilter || undefined, { withIp: true, type: 'qemu' }),
-    /* 30 秒：这一枪并不便宜 —— with_ip 要逐台问 PVE 拿地址（并发扇出 + 等
-       Guest Agent），10 秒一次等于让列表页常驻在一轮接一轮的轮询里。列表要的是
-       「状态大致是新的」，半分钟足够。 */
+    /* 60 秒：IP 列现在读后端的落库快照（后台作业预热，见 app.inspection），
+       请求本身已经很便宜；轮询周期放宽到一分钟，进一步减少无谓的重复请求。
+       列表要的是「状态大致是新的」，这个粒度足够。 */
     enabled: pveReady,
-    refetchInterval: pveReady ? 30_000 : false,
+    refetchInterval: pveReady ? 60_000 : false,
   });
 
   const nodesQuery = useQuery({
@@ -755,6 +764,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         toast.warning(t('guestList.noPermission'), t('guestList.powerDenied'));
         return;
       }
+      /* 关机 / 停止 / 重启先确认一次：列表里这三个图标紧挨着，误点一下机器就断
+         了服务。启动不拦 —— 它没有这个风险，多一步反而碍事。 */
+      if (isDestructivePower(action)) {
+        const ok = await confirmPower(
+          powerConfirmOptions(t, action, vm, isLxc ? 'lxc' : 'qemu'),
+        );
+        if (!ok) return;
+      }
       const labels: Record<typeof action, MessageKey> = {
         start: 'power.start',
         stop: 'power.stop',
@@ -787,7 +804,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         /* toast 已提示 */
       }
     },
-    [canWrite, runner, toast, isLxc, t],
+    [canWrite, runner, toast, isLxc, t, confirmPower],
   );
 
   /* ---- 批量操作 ----
@@ -847,6 +864,20 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       }
     },
     [selectedGuests, invalidateGuests, toast, t, L.unit],
+  );
+
+  /* 批量电源操作前的确认：一次点击打的是勾选里的每一台，代价比单台大得多，
+     标题里必须写清台数（「停止选中的 5 台虚拟机？」）。 */
+  const askBulkPower = useCallback(
+    async (action: DestructivePower) => {
+      const count = selectedGuests.length;
+      if (count === 0) return;
+      const ok = await confirmPower(
+        bulkPowerConfirmOptions(t, action, count, L.unit, L.noun),
+      );
+      if (ok) await runBulk(action);
+    },
+    [selectedGuests.length, confirmPower, t, L.unit, L.noun, runBulk],
   );
 
   /* 只重跑上一次批量里失败的那几台：此时选择已被换成失败清单 */
@@ -1311,7 +1342,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
             <IconButton
               label={t('guestList.consoleAria', { name: vm.name })}
-              onClick={() => navigate(`${guestPath(vm)}?tab=console`)}
+              /* 带上 tab 必须走 guestPath 的 extra：自己接 `?tab=console` 会在
+                 连接参数后多出一个问号，后端收到的连接 id 就带上了 `?tab=console` */
+              onClick={() => navigate(guestPath(vm, { tab: 'console' }))}
             >
               <IconConsole size={15} />
             </IconButton>
@@ -1385,7 +1418,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           <Button
             variant="secondary"
             icon={<IconRefresh size={15} />}
-            onClick={() => void guestsQuery.refetch()}
+            onClick={() => {
+              void guestsQuery.refetch();
+              /* 节点筛选下拉、受管主机对照表是另外两路查询：不刷的话，新增节点 /
+                 新登记的受管主机在这一页不会出现 */
+              void queryClient.invalidateQueries({ queryKey: ['nodes'] });
+              void queryClient.invalidateQueries({ queryKey: ['ssh', 'hosts'] });
+            }}
             loading={guestsQuery.isFetching && !guestsQuery.isLoading}
           >
             {t('common.refresh')}
@@ -1457,7 +1496,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               size="sm"
               icon={<IconPower size={14} />}
               disabled={pendingAction}
-              onClick={() => void runBulk('shutdown')}
+              onClick={() => void askBulkPower('shutdown')}
             >
               {t('power.shutdown')}
             </Button>
@@ -1466,7 +1505,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               size="sm"
               icon={<IconRestart size={14} />}
               disabled={pendingAction}
-              onClick={() => void runBulk('reboot')}
+              onClick={() => void askBulkPower('reboot')}
             >
               {t('power.reboot')}
             </Button>
@@ -1475,7 +1514,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               size="sm"
               icon={<IconStop size={14} />}
               disabled={pendingAction}
-              onClick={() => void runBulk('stop')}
+              onClick={() => void askBulkPower('stop')}
             >
               {t('guestList.bulkForceStop')}
             </Button>
@@ -1781,6 +1820,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           />
         </>
       ) : null}
+
+      {/* 电源操作确认（关机 / 停止 / 重启）：列表里这三个图标挨着，点哪个都
+          先问一次；启动不经过这里（见 doPower） */}
+      {powerConfirmEl}
 
       {/* ---- 删除确认 ---- */}
       <ConfirmDialog

@@ -611,9 +611,50 @@ class TestAdvancedHardware:
         """没要求 EFI 就不要乱改用户的 BIOS 选择。"""
         config = vmconfig.build_vm_config(self._request(), vmid=101)
         assert config["bios"] == "seabios"
-        assert config["machine"] == "pc"
         assert "efidisk0" not in config
         assert "tpmstate0" not in config
+
+    def test_default_machine_is_never_written(self) -> None:
+        """默认机型不写进 PVE 配置。
+
+        ``pc`` 是 PVE 8 的 API 叫法，PVE 9 只认 ``i440fx``（反过来 PVE 8 未必认
+        ``i440fx``）—— 写死任何一个都会在另一个版本上被 PVE 驳回，表现为机器建不
+        出来。留空 = 让 PVE 用它自己的默认机型。
+        """
+        for value in ("", "pc", "i440fx", "PC", "  i440fx "):
+            config = vmconfig.build_vm_config(self._request(machine=value), vmid=101)
+            assert "machine" not in config, value
+
+    def test_q35_machine_is_written(self) -> None:
+        """显式要 q35 时照写 —— 它是两个版本都认的值。"""
+        config = vmconfig.build_vm_config(self._request(machine="q35"), vmid=101)
+        assert config["machine"] == "q35"
+
+    # ---------------------------------------------------------- 克隆时的机型
+    def test_clone_drops_inherited_default_machine(self) -> None:
+        """模板带的是默认机型的旧写法时，克隆体上把它删掉。
+
+        模板上的 machine 会被**每一个**克隆体继承；面板早期写的是 ``pc``，而
+        PVE 9 只认 ``i440fx``，不删的话新机器台台都带着一个不认的机型。
+        """
+        for value in ("pc", "i440fx", "PC", " pc "):
+            assert vmconfig.clone_machine_overrides({"machine": value}) == {
+                "delete": "machine"
+            }, value
+
+    def test_clone_keeps_q35_template_untouched(self) -> None:
+        """模板自带 q35（Win11 模板）时不能删 —— 删了 OVMF 就起不来。"""
+        assert vmconfig.clone_machine_overrides({"machine": "q35"}) == {}
+
+    def test_clone_without_machine_does_nothing(self) -> None:
+        assert vmconfig.clone_machine_overrides({}) == {}
+        assert vmconfig.clone_machine_overrides({"machine": ""}) == {}
+
+    def test_clone_writes_explicit_machine(self) -> None:
+        """显式指定时照写，与模板里原来是什么无关。"""
+        assert vmconfig.clone_machine_overrides({"machine": "pc"}, "q35") == {
+            "machine": "q35"
+        }
 
     def test_advanced_hardware_survives_import_disk_mode(self) -> None:
         """模板流水线跳过分盘分配，但固件与 TPM 该照样下发。"""

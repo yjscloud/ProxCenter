@@ -14,9 +14,10 @@
 */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { lxcApi, storagesApi } from '../api/endpoints';
+import { setPageConnection } from '../api/client';
 import { guestPower } from '../api/guests';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
@@ -34,7 +35,7 @@ import {
   Textarea,
 } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { ConfirmDialog, useConfirm } from '../components/ui/ConfirmDialog';
 import { DetailSkeleton } from '../components/ui/Spinner';
 import { Notice } from '../components/ui/EmptyState';
 import { Table, type Column } from '../components/ui/Table';
@@ -57,6 +58,7 @@ import {
 } from '../components/Icons';
 import { formatBytes, formatDateTime, formatUptimeShort, parseTags, toPercent } from '../utils/format';
 import { isRunning, isTransient, vmStatusMeta } from '../utils/status'
+import { isDestructivePower, powerConfirmOptions } from '../utils/powerConfirm';
 import { useT } from '../i18n';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
@@ -82,11 +84,26 @@ export function LxcDetail() {
   const t = useT();
   const { node = '', vmid = '' } = useParams<{ node: string; vmid: string }>();
   const ctId = Number(vmid);
+  /* 这台容器属于哪条 PVE 连接（列表页跳转时带上）。设成页面级默认后，页面里所有
+     请求都跟着走 —— 多连接部署下光有节点名判断不出该打哪台 PVE，落到「当前连接」
+     会看到另一台机器上的同名容器，或者报 hostname lookup 失败。容器详情页原先
+     没有这一步，列表带过来的 ?connection= 等于白带。
+
+     旧链接兼容：跳控制台 / 快照时曾把 `?tab=…` 拼在连接 id 后面
+     （见 api/guests.guestPath），书签与历史里可能还留着这种地址。 */
+  const [searchParams] = useSearchParams();
+  const pageConnection = (searchParams.get('connection') ?? '').split('?')[0];
+  useEffect(() => {
+    setPageConnection(pageConnection);
+    return () => setPageConnection('');
+  }, [pageConnection]);
   const navigate = useNavigate();
   const toast = useToast();
   const runner = useTaskRunner();
   const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
+  /* 关机 / 停止 / 重启前弹一次确认（见 utils/powerConfirm） */
+  const [powerConfirmEl, confirmPower] = useConfirm();
 
   const tabs = useMemo(
     () => [
@@ -153,6 +170,14 @@ export function LxcDetail() {
 
   /* ---- 电源操作 ---- */
   const doPower = async (action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
+    /* 关机 / 停止 / 重启先确认：详情页里这三个按钮挨在一起，误点一下容器里的
+       服务就断了。启动不拦。 */
+    if (isDestructivePower(action)) {
+      const ok = await confirmPower(
+        powerConfirmOptions(t, action, { name: ct?.name, vmid: ctId }, 'lxc'),
+      );
+      if (!ok) return;
+    }
     const labels = {
       start: t('lxcDetail.powerStart'),
       stop: t('lxcDetail.powerStop'),
@@ -1231,6 +1256,9 @@ export function LxcDetail() {
           />
         </div>
       </Modal>
+
+      {/* 电源操作确认（关机 / 停止 / 重启）：启动不经过这里（见 doPower） */}
+      {powerConfirmEl}
 
       {/* ---- 删除确认 ---- */}
       <ConfirmDialog

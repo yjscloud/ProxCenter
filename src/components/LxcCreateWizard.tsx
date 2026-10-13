@@ -237,9 +237,11 @@ export function LxcCreateWizard({
   const connectionOptions = useMemo(
     () =>
       (connectionsQuery.data ?? []).map((c) => ({
+        /* 标签里**不放主机地址**：普通用户不需要直接连这台 PVE，而「面板接了哪些
+           主机、地址是什么」属于管理信息，不该从一个创建表单里漏出去 */
         label: `${c.name || c.host}${
           c.active ? t('lxcWizard.currentConn') : ''
-        } · ${c.host}:${c.port}`,
+        }`,
         value: c.id,
       })),
     [connectionsQuery.data, t],
@@ -553,13 +555,17 @@ export function LxcCreateWizard({
 
             <div className="wizard-section-title">{t('lxcWizard.sectionNodeName')}</div>
             <div className="form-grid">
-              <Select
-                label={t('lxcWizard.fieldConn')}
-                value={targetConn}
-                onChange={(e) => setTargetConn(e.target.value)}
-                options={connectionOptions}
-                hint={t('lxcWizard.fieldConnHint')}
-              />
+              {/* 限宽必须包在外层：给 Select 传 style 只会缩窄内层输入框，
+                  箭头（相对外层容器定位）会飘到框外 */}
+              <div className="field-compact">
+                <Select
+                  label={t('lxcWizard.fieldConn')}
+                  value={targetConn}
+                  onChange={(e) => setTargetConn(e.target.value)}
+                  options={connectionOptions}
+                  hint={t('lxcWizard.fieldConnHint')}
+                />
+              </div>
               <Field
                 label={t('lxcWizard.fieldNode')}
                 required

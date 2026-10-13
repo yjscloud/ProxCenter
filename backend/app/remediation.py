@@ -204,7 +204,7 @@ async def _apply_baseline(params: Dict[str, Any], user: Dict[str, Any]) -> Dict[
     keys = params.get("keys") or None
     result = await baseline.apply_fixes(keys, host_id)
     if result.get("fixed"):
-        reportcache.clear()
+        await reportcache.clear()
     return {"ok": not result.get("failed"), "detail": result}
 
 

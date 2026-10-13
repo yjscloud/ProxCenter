@@ -373,7 +373,11 @@ export function IncidentResponse() {
           variant="ghost"
           icon={<IconRefresh size={14} />}
           loading={protectedQuery.isFetching}
-          onClick={() => void protectedQuery.refetch()}
+          onClick={() => {
+            /* 按前缀失效：「待处理 / 受保护」与隔离表单里的机器清单是两路查询，
+               只刷前者会让目标下拉停在旧值 */
+            void queryClient.invalidateQueries({ queryKey: ['incident'] });
+          }}
         >
           {t('common.refresh')}
         </Button>

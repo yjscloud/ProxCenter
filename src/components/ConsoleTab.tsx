@@ -12,6 +12,7 @@ import { Button, IconButton } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
+import { useConfirm } from './ui/ConfirmDialog';
 import {
   IconConsole,
   IconExpand,
@@ -68,7 +69,13 @@ export function ConsoleTab({
   });
 
   const stageRef = useRef<HTMLDivElement>(null);
-  const shellRef = useRef<HTMLDivElement>(null);
+  /* 控制台外壳元素（同时是全屏元素）。用 state 而不是 ref 存：它有两个用途 ——
+     全屏、以及当确认框的挂载点（确认框要挂在控制台自己的容器里，而不是默认的
+     body：全屏时浏览器只显示全屏元素及其后代，挂到 body 的弹窗会被挡在外面，
+     用户点了 Ctrl+Alt+Del 既没看到确认框、也没发出按键，像按钮坏了）。 */
+  const [shellEl, setShellEl] = useState<HTMLDivElement | null>(null);
+  const attachShell = useCallback((el: HTMLDivElement | null) => setShellEl(el), []);
+  const [cadConfirmEl, confirmCad] = useConfirm();
 
   /* 切换机器时重置连接状态 */
   useEffect(() => {
@@ -95,7 +102,7 @@ export function ConsoleTab({
   }, [compact]);
 
   const toggleFullscreen = useCallback(async () => {
-    const el = shellRef.current;
+    const el = shellEl;
     if (!el) return;
     try {
       if (document.fullscreenElement) {
@@ -107,7 +114,7 @@ export function ConsoleTab({
       /* 某些浏览器/权限下会失败，静默处理 */
       console.warn('全屏切换失败', err);
     }
-  }, []);
+  }, [shellEl]);
 
   const reconnect = () => setReconnectKey((k) => k + 1);
 
@@ -119,7 +126,7 @@ export function ConsoleTab({
     );
 
   return (
-    <div className={`console-shell${compact ? ' is-compact' : ''}`} ref={shellRef}>
+    <div className={`console-shell${compact ? ' is-compact' : ''}`} ref={attachShell}>
       {/* ---- 工具栏 ---- */}
       <div className="console-toolbar">
         <div className="console-toolbar-left">
@@ -141,8 +148,19 @@ export function ConsoleTab({
               size="sm"
               icon={<IconPower size={14} />}
               onClick={() => {
-                // 通过自定义事件把 CAD 发送给 VNC 会话
-                window.dispatchEvent(new CustomEvent('ProxCenter:vnc-cad'));
+                /* 先确认再发：客户机收到的是「安全注意序列」，Windows 一般只是回到
+                   安全选项，Linux / GRUB 却往往直接重启 —— 按下去之前得知道这一下
+                   会让机器上的服务停掉。确认框挂在全屏容器内（见上面的 shellEl）。 */
+                void confirmCad({
+                  title: t('console.cadConfirmTitle', { name: vmName || vmid }),
+                  message: t('console.cadConfirmMessage'),
+                  confirmText: t('console.sendCad'),
+                  container: shellEl,
+                }).then((ok) => {
+                  if (!ok) return;
+                  // 通过自定义事件把 CAD 发送给 VNC 会话
+                  window.dispatchEvent(new CustomEvent('ProxCenter:vnc-cad'));
+                });
               }}
               title={t('console.sendCad')}
             >
@@ -232,6 +250,9 @@ export function ConsoleTab({
           </Notice>
         </div>
       ) : null}
+
+      {/* Ctrl+Alt+Del 的确认框：挂在控制台容器内（见 shellEl），全屏时也看得见 */}
+      {cadConfirmEl}
     </div>
   );
 }

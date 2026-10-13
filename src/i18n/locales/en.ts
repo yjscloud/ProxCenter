@@ -1147,6 +1147,27 @@ export const en: Partial<Record<MessageKey, string>> = {
   'power.resume': 'Resume',
   'power.task': '{action} “{name}”',
   'power.denied': 'Your role does not allow power operations',
+  /* Confirmation before shutdown / stop / reboot / suspend — each one cuts the
+     services on that machine, and the list & detail pages put them behind a row of
+     icon buttons. Start / resume carry no such risk and stay one-click.
+     Shared by the list page, the VM detail page and the container detail page. */
+  'power.confirmKindVm': 'virtual machine',
+  'power.confirmKindLxc': 'container',
+  'power.confirmShutdownTitle': 'Shut down {kind} “{name}”?',
+  'power.confirmShutdownMessage':
+    'A shutdown signal is sent to the guest, forced off if it has not stopped within 60 seconds; services on this machine are interrupted meanwhile.',
+  'power.confirmSuspendTitle': 'Suspend {kind} “{name}”?',
+  'power.confirmSuspendMessage':
+    'The guest is suspended (its memory state goes to disk); services on this machine stop and only continue after you run “Resume”.',
+  'power.confirmStopTitle': 'Stop {kind} “{name}”?',
+  'power.confirmStopMessage':
+    'Powered off immediately without waiting for the OS to shut down; anything the guest has not flushed to disk is lost.',
+  'power.confirmRebootTitle': 'Reboot {kind} “{name}”?',
+  'power.confirmRebootMessage':
+    'The guest restarts immediately; services on this machine are briefly interrupted.',
+  'power.confirmBulkTitle': '{action} the {count} selected {unit}?',
+  'power.confirmBulkMessage':
+    'This is a {action} action across several machines; once submitted it cannot be cancelled per machine.',
 
   /* -------------------------------------------------- Detail page: virtual machine */
   'common.name': 'Name',
@@ -1216,6 +1237,11 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmDetail.ipDhcp': 'IP via DHCP',
   'vmDetail.agentNics': 'Guest interfaces (via Guest Agent)',
   'vmDetail.noAddress': 'no address',
+  /* Marks loopback / link-local addresses. The agent reports 127.0.0.1 and fe80::
+     along with everything else; unlabelled they read as "this machine has an IP",
+     while the list page's IP column (business addresses only) stays empty. */
+  'vmDetail.addrLoopback': 'loopback',
+  'vmDetail.addrLinkLocal': 'link-local',
   'vmDetail.recentTasks': 'Recent tasks',
   'vmDetail.recentTasksCaption': 'Recent tasks for virtual machine {vmid}',
   'vmDetail.noTasks': 'No tasks',
@@ -1248,6 +1274,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmDetail.hwAffinity': 'CPU affinity',
   'vmDetail.hwAffinityValue': 'unrestricted',
   'vmDetail.hwMachine': 'Machine type',
+  /* No machine key in the PVE config means PVE's own default (i440fx). Do not show
+     "pc" here — that is the PVE 8 spelling and does not exist on PVE 9. */
+  'vmDetail.machineDefault': 'Default (i440fx)',
   'vmDetail.hwScsihw': 'SCSI controller',
   'vmDetail.hwBoot': 'Boot order',
   'vmDetail.hwEfi': 'EFI variable disk',
@@ -1333,6 +1362,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmDetail.addNicVlanPlaceholder': 'Leave empty for untagged',
   'vmDetail.addNicVlanRange': '1 - 4094',
   'vmDetail.addNicVlanInvalid': 'VLAN ID must be between 1 and 4094',
+  'vmDetail.addNicRate': 'Rate limit (MB/s)',
+  'vmDetail.addNicRatePlaceholder': 'Blank = unlimited',
+  'vmDetail.addNicRateHint': 'Maps to PVE’s rate, in MB/s',
+  'vmDetail.addNicRateInvalid': 'The rate must be a non-negative number',
   'vmDetail.addNicFirewall': 'Enable firewall',
   'vmDetail.addNicFirewallHint': 'Governed by the Proxmox firewall rules for this network device',
   'vmDetail.addNicNoticeTitle': 'How it takes effect',
@@ -1544,7 +1577,6 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmCreate.storageOption': '{storage} ({type}, {avail} free)',
   'vmCreate.connCurrent': 'current connection',
   'vmCreate.connCurrentTag': ' (current)',
-  'vmCreate.connOption': '{name} · {host}:{port}',
   'vmCreate.cloneSourcePlaceholder': 'Select a clone source',
   'vmCreate.templateName': 'Template {vmid}',
   'vmCreate.cloneSourceOption': '{name} · {vmid} @ {node}',
@@ -1684,6 +1716,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmCreate.nicVlanPlaceholder': 'empty = no VLAN',
   'vmCreate.nicMac': 'MAC address',
   'vmCreate.nicMacPlaceholder': 'empty = generate automatically',
+  'vmCreate.nicRate': 'Rate limit (MB/s)',
+  'vmCreate.nicRatePlaceholder': 'Blank = unlimited',
+  'vmCreate.nicRateHint': 'Cap this NIC’s bandwidth, in MB/s',
   'vmCreate.nicIp': 'IP address #{index}',
   'vmCreate.nicIpPlaceholder': 'dhcp or 192.168.1.10/24',
   'vmCreate.nicIpWinHint': 'Windows will not receive it automatically: enable Cloudbase-Init manually in step 5',
@@ -3108,6 +3143,11 @@ export const en: Partial<Record<MessageKey, string>> = {
   'conn.fieldName': 'Connection name',
   'conn.fieldNameHint': 'Used to tell multiple PVEs apart; blank uses the host address',
   'conn.namePlaceholder': 'e.g. Room A / Production cluster',
+  /* Region / site: a grouping label only; with several sites the node tree reads
+     region → connection → node */
+  'conn.fieldRegion': 'Region / site',
+  'conn.fieldRegionHint': 'Grouping in the UI only; blank falls under “Unassigned”',
+  'conn.regionPlaceholder': 'e.g. Guangzhou DC (blank = unassigned)',
   'conn.fieldHost': 'Cluster host',
   'conn.fieldHostHint': 'IP or domain name, without a scheme prefix or port',
   'conn.hostPlaceholder': '192.168.1.10 or pve.example.com',
@@ -3220,77 +3260,80 @@ export const en: Partial<Record<MessageKey, string>> = {
   'quickDeploy.storageOption': '{name} ({type}, {avail} free)',
   'quickDeploy.errName': 'Please enter an instance name',
   'quickDeploy.errSpec': 'Please select a resource plan',
-  'quickDeploy.errBalloonInt': 'The minimum balloon memory must be an integer of at least 0',
-  'quickDeploy.errBalloonMin': 'The minimum balloon memory cannot be less than 128 MB',
-  'quickDeploy.errBalloonMax': 'The minimum balloon memory must be below the plan’s memory limit',
   'quickDeploy.errNode': 'Please select a node',
   'quickDeploy.errTemplate': 'Please select a template',
   'quickDeploy.errOsTemplate': 'Please select an OS template',
   'quickDeploy.errStorage': 'Please select storage',
   'quickDeploy.errStaticIp': 'Please enter a static IP',
+  'quickDeploy.errVlan': 'The VLAN tag must be an integer between 1 and 4094',
   'quickDeploy.errQuota': 'The {label} quota is exhausted',
   'quickDeploy.quotaFallback': 'selected',
   'quickDeploy.created': 'Creation submitted',
   'quickDeploy.createdVmHint': 'VMID {vmid}; follow the progress in the task queue',
   'quickDeploy.createdLxcHint': 'CT {vmid}; follow the progress in the task queue',
   'quickDeploy.createFailed': 'Creation failed',
-  'quickDeploy.summaryVm': 'template disk reused',
-  'quickDeploy.summaryLxc': '{n}G disk',
+  'quickDeploy.summaryDisk': '{n}G disk',
   'quickDeploy.summary': '{cores}C · {mem}G memory · {disk}',
   'quickDeploy.noPermTitle': 'No provisioning permission',
-  'quickDeploy.noPermBody': 'Your account lacks the vm.create permission, so this page is read-only.',
+  'quickDeploy.noPermBody': 'The vm.create permission is required.',
   'quickDeploy.quotaBlockedTitle': 'The {label} quota is exhausted',
-  'quickDeploy.quotaBlockedBody': '{used} of {quota} used. Ask an administrator to adjust the quota under “Settings → Creation defaults”.',
+  'quickDeploy.quotaBlockedBody': '{used} of {quota} used; adjust it under “Settings → Creation defaults”.',
   'quickDeploy.noSpecTitle': 'No resource plan available yet',
-  'quickDeploy.noSpecPre': 'An administrator can add one under “Settings → Resource specs”, e.g. “Standard 2C4G”. Until then, use',
+  'quickDeploy.noSpecPre': 'Add one under “Settings → Resource specs”, or use',
   'quickDeploy.noSpecCustom': 'Custom deploy',
-  'quickDeploy.noSpecPost': ' and fill in the cores and memory yourself.',
+  'quickDeploy.noSpecPost': ' and set cores and memory yourself.',
   'quickDeploy.sectionName': 'Instance name',
-  'quickDeploy.nameSubtitleVm': 'The name is the VM name; it can also be changed later on the detail page',
-  'quickDeploy.nameSubtitleLxc': 'The name is the container hostname',
+  'quickDeploy.nameSubtitleVm': 'Can be changed later on the detail page',
+  'quickDeploy.nameSubtitleLxc': 'This is the container hostname',
   'quickDeploy.labelName': 'Name',
   'quickDeploy.namePlaceholderVm': 'e.g. web-01',
   'quickDeploy.namePlaceholderLxc': 'e.g. redis-01',
   'quickDeploy.labelTags': 'Tags (optional)',
   'quickDeploy.tagsPlaceholder': 'e.g. web;prod (semicolon separated)',
   'quickDeploy.sectionSpec': 'Resource plan',
-  'quickDeploy.specSubtitle': 'Defined by an administrator; good enough for standard machines without special hardware needs',
+  'quickDeploy.specSubtitle': 'Defined by an administrator; the system disk is grown to the plan size',
   'quickDeploy.specUnitCores': 'cores',
   'quickDeploy.specUnitMem': 'G memory',
   'quickDeploy.specUnitDisk': 'G disk',
-  'quickDeploy.labelBalloon': 'Minimum balloon memory (MB, optional)',
-  'quickDeploy.balloonHint': 'Blank = no reclaim (default); 1024 = keep at least 1G, the rest can be reclaimed by the host',
   'quickDeploy.sectionLocation': 'Location',
-  'quickDeploy.locationSubtitle': 'The node cards show their current CPU / memory / disk usage',
+  'quickDeploy.locationSubtitle': 'Cards show each node’s current usage',
   'quickDeploy.labelConn': 'Target PVE host',
-  'quickDeploy.connHint': 'Choose among the configured PVE hosts',
+  'quickDeploy.connHint': 'Pick one when several PVE hosts are configured',
   'quickDeploy.labelNode': 'Node',
-  'quickDeploy.nodeError': 'Failed to read the nodes; check this host’s connection',
+  'quickDeploy.nodeError': 'Failed to read the nodes; check the connection',
   'quickDeploy.sectionImage': 'System image',
-  'quickDeploy.imageSubtitleVm': 'Linked clone from a VM template: instant and without extra space',
-  'quickDeploy.imageSubtitleLxc': 'The container is created from a Proxmox OS template (vztmpl) with the plan’s disk size',
+  'quickDeploy.imageSubtitleVm': 'Linked clone from a template, done in seconds',
+  'quickDeploy.imageSubtitleLxc': 'Created from an OS template with the plan’s disk size',
   'quickDeploy.labelTemplate': 'Template',
-  'quickDeploy.templateHint': 'Lists VM templates only (matching the target host)',
+  'quickDeploy.templateHint': 'VM templates only',
   'quickDeploy.labelOsTemplate': 'OS template',
-  'quickDeploy.osTemplateHint': 'Container templates already downloaded on the node',
+  'quickDeploy.osTemplateHint': 'Container templates already on the node',
   'quickDeploy.labelStorage': 'Storage',
-  'quickDeploy.storageHint': 'Containers need storage that supports rootdir',
-  'quickDeploy.linkedCloneNote': 'A linked clone reuses the template disk and is not resized to the plan’s {n}G; the disk depends on the template, so deleting the template breaks these machines. Use “Custom deploy” for a full clone with an independent disk.',
+  'quickDeploy.storageHint': 'Must support rootdir',
+  'quickDeploy.linkedCloneNote': 'Linked clone: the system disk is grown to the plan’s {n}G (grow-only). These machines break if the template is deleted; use “Custom deploy” for a full clone.',
   'quickDeploy.sectionNetwork': 'Network',
-  'quickDeploy.networkSubtitleVm': 'Static by default: a free address is picked automatically from “Network → IP pools” and can be changed',
-  'quickDeploy.networkSubtitleLxc': 'The container’s IP is written directly on net0 and applies at boot',
+  'quickDeploy.networkSubtitleVm': 'Add as many NICs as you need; static addresses are auto-picked from “Network → IP pools”',
+  'quickDeploy.networkSubtitleLxc': 'Add as many NICs as you need; IPs are written on netN',
   'quickDeploy.labelBridge': 'Bridge',
+  'quickDeploy.labelVlan': 'VLAN tag',
+  'quickDeploy.vlanPlaceholder': 'Blank = untagged',
+  'quickDeploy.labelRate': 'Rate limit (MB/s)',
+  'quickDeploy.ratePlaceholder': 'Blank = unlimited',
+  'quickDeploy.rateHint': 'Maps to PVE’s rate',
+  'quickDeploy.addNic': 'Add NIC',
+  'quickDeploy.removeNic': 'Remove this NIC',
+  'quickDeploy.nicTitle': 'NIC {index}',
   'quickDeploy.labelIpMode': 'IP assignment',
   'quickDeploy.ipModeStatic': 'Static',
   'quickDeploy.labelPool': 'Subnet',
-  'quickDeploy.poolHint': 'Already selected based on the current bridge; changing the subnet picks a new free address',
+  'quickDeploy.poolHint': 'Selected based on the bridge',
   'quickDeploy.labelIp': 'IP address',
-  'quickDeploy.ipPlaceholder': 'e.g. 172.16.149.50 or 172.16.149.50/24',
+  'quickDeploy.ipPlaceholder': 'e.g. 172.16.149.50',
   'quickDeploy.labelGateway': 'Gateway',
   'quickDeploy.gatewayPlaceholder': 'e.g. 172.16.149.1',
   'quickDeploy.sectionLogin': 'Login information',
-  'quickDeploy.loginSubtitleVm': 'Written via cloud-init; the template / image must support cloud-init',
-  'quickDeploy.loginSubtitleLxc': 'The root password is written when the container is created',
+  'quickDeploy.loginSubtitleVm': 'Written via cloud-init (the template must support it)',
+  'quickDeploy.loginSubtitleLxc': 'The root password is written at creation',
   'quickDeploy.labelUser': 'Username',
   'quickDeploy.labelPassword': 'Password',
   'quickDeploy.labelRootPassword': 'root password',
@@ -3440,6 +3483,12 @@ export const en: Partial<Record<MessageKey, string>> = {
   /* ---------------------------------------------------------------- Console */
   'console.mode': 'VNC graphical console',
   'console.sendCad': 'Send Ctrl+Alt+Del',
+  /* Confirm before sending: the guest gets the secure attention sequence and what
+     happens next is up to the guest — Windows usually falls back to the security
+     options / login screen, while Linux and GRUB tend to reboot outright. */
+  'console.cadConfirmTitle': 'Send Ctrl+Alt+Del to “{name}”?',
+  'console.cadConfirmMessage':
+    'The guest receives the secure attention sequence: Windows usually shows the security options or returns to the login screen, while Linux / GRUB typically reboots — services on this machine are interrupted.',
   'console.restoreHeight': 'Restore the normal height',
   'console.compactHeight': 'Shrink the console height',
   'console.reconnect': 'Reconnect the console',
@@ -3638,6 +3687,30 @@ export const en: Partial<Record<MessageKey, string>> = {
   'ippool.apiPost': ' endpoint only takes effect after a restart.',
   'ippool.colName': 'Name',
   'ippool.colBridge': 'Bridge',
+  /* A pool records which L2 network it belongs to: the bridge alone is not enough,
+     since one vmbr0 can carry several VLAN segments. Blank = any VLAN. */
+  'ippool.colVlan': 'VLAN',
+  'ippool.vlanPlaceholder': 'Any',
+  /* Which nodes a pool applies to: nodes in one cluster often sit on different
+     networks (same vmbr0, 192.168.1.0/24 on node1 and 10.0.0.0/24 on node2).
+     Blank = every node. */
+  'ippool.colScope': 'Scope',
+  'ippool.scopeAnyPve': 'All PVE hosts',
+  'ippool.scopeAnyNode': 'All nodes',
+  'ippool.nodesEditTitle': 'Choose where this pool applies',
+  'ippool.scopeTitle': 'Scope of “{name}”',
+  /* Controls and copy inside the scope dialog (a two-level tree, see ScopeTree). */
+  'ippool.scopeTreeTitle': 'Nodes this pool covers',
+  'ippool.scopeTreeHint':
+    'The pool is only offered when deploying to the checked nodes; check none to keep it available on every node of every host. Nodes added later are not included automatically — unless you check none.',
+  'ippool.scopeSelectedNodes': '{n}/{total} nodes selected',
+  'ippool.scopeSelectAll': 'Select all',
+  'ippool.scopeClear': 'Clear',
+  'ippool.scopeSearch': 'Search {n} nodes…',
+  'ippool.scopeNoMatch': 'No match',
+  'ippool.scopeCollapse': 'Collapse {name}',
+  'ippool.scopeExpand': 'Expand {name}',
+  'ippool.nodesEmpty': 'Could not read the node list (is a PVE host connected?)',
   'ippool.colSubnet': 'Subnet',
   'ippool.colGateway': 'Gateway',
   'ippool.colStart': 'Start IP',
@@ -3717,7 +3790,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'opt.netVirtio': 'VirtIO (paravirtualised, fastest)',
   'opt.biosSeabios': 'SeaBIOS (default)',
   'opt.biosOvmf': 'OVMF (UEFI)',
-  'opt.machinePc': 'i440fx (default)',
+  /* The default machine type is never written into the PVE config: PVE 8's API
+     accepts "pc" while PVE 9 only accepts "i440fx", so hard-coding either one is
+     rejected by the other version. Blank = let PVE use its own default (i440fx). */
+  'opt.machineDefault': 'Default (i440fx, best compatibility)',
   'opt.machineQ35': 'q35 (PCIe, recommended for Win11)',
   'opt.numaBind': 'bind (allocate only on the given host node)',
   'opt.numaInterleave': 'interleave (round-robin across host nodes)',
@@ -4046,6 +4122,12 @@ export const en: Partial<Record<MessageKey, string>> = {
   'nodesConnections.title': 'Proxmox connections',
   'nodesConnections.subtitle':
     'The panel reaches every Proxmox VE host through an API token; each connection is independent and equal',
+  /* Shown when a non-admin opens this page directly: the whole page needs
+     settings.manage */
+  'nodesConnections.noPermissionTitle': 'Administrator access required',
+  'nodesConnections.noPermissionBody':
+    'Connection settings contain the PVE host address, API tokens and console credentials — only administrators can view or change them.',
+  'nodesConnections.backToNodes': 'Back to the node list',
 
   /* ------------------------------------------------------- Feishu bot */
   'feishu.title': 'Feishu bot',
@@ -4456,6 +4538,15 @@ export const en: Partial<Record<MessageKey, string>> = {
   'networks.stateFilterAria': 'Filter by link state',
   'networks.ifaceCount': '{n} interfaces',
   'networks.inactiveCount': '{n} inactive',
+  /* PVE group header: how many nodes hang off that host */
+  'networks.nodeCount': '{n} nodes',
+  /* Groups start collapsed; these two act on every group */
+  'networks.expandAll': 'Expand all',
+  'networks.collapseAll': 'Collapse all',
+  /* Outermost grouping: region / site (a label on the connection; blank ones
+     fall into this bucket) */
+  'networks.regionUnassigned': 'Unassigned',
+  'networks.pveCount': '{n} PVE hosts',
   'networks.colIface': 'Interface',
   'networks.colType': 'Type',
   'networks.colActive': 'Active',
@@ -4473,10 +4564,6 @@ export const en: Partial<Record<MessageKey, string>> = {
   'networks.nodeLoadFailed': 'Could not load this node\u2019s network information',
   'networks.nodeCaption': 'Network interfaces of node {node}',
   'networks.nodeEmpty': 'This node has no matching interfaces',
-  'networks.manageTitle': 'Network management',
-  'networks.manageSubtitle':
-    'To add or edit NICs and apply configuration changes, open the node detail page',
-  'networks.nodeSettings': '{node} network settings',
 
   /* ------------------------------------------ SSH security: hosts & alerts */
   'sshConfig.title': 'Hosts & alerts',
@@ -4632,8 +4719,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmCreate.ciManage': 'Add to security monitoring',
   'vmCreate.ciManageHint':
     'Writes the panel public key into cloud-init and registers the VM as a managed host once it boots (the panel’s shared key pair is used, and the host key is trusted on first connect). The address is known, so it is registered right away. You can skip it — hosts can always be added by hand later.',
-  'vmCreate.ciManageNeedIp':
-    'DHCP works too: once the machine boots, the panel waits for it to report its address (via the guest agent) and registers it then — the image must include qemu-guest-agent. Without it, use a static IP or add the host by hand after it is created.',
+  'vmCreate.ciManageDhcpHint':
+    'DHCP works too: once the machine boots the panel waits for it to report its own address (via the guest agent) and registers it then — the image must include qemu-guest-agent. Usually 1–3 minutes, up to 10; if it never reports, add the host by hand afterwards.',
   'sshConfig.originPanel': 'Provisioned',
   'sshConfig.fieldGuest': 'Mapped virtual machine',
   'sshConfig.bindGuestHint':
@@ -4993,6 +5080,13 @@ export const en: Partial<Record<MessageKey, string>> = {
   'nodes.noMatchTitle': 'No matching nodes',
   'nodes.noMatchDesc': 'Try another search keyword or source-host filter.',
   'nodes.onlineRatio': '{online}/{total} online',
+  /* Outermost grouping: region / site (a label on the connection; blank ones
+     fall into this bucket) */
+  'nodes.regionUnassigned': 'Unassigned',
+  'nodes.pveCount': '{n} PVE hosts',
+  /* Groups start expanded; these two act on every group */
+  'nodes.expandAll': 'Expand all',
+  'nodes.collapseAll': 'Collapse all',
   'nodes.colNode': 'Node',
   'nodes.colCpu': 'CPU',
   'nodes.colMem': 'Memory',
@@ -5673,6 +5767,24 @@ export const en: Partial<Record<MessageKey, string>> = {
     '{fail} failing and {warn} improvable; handle the failing high-severity items first.',
   'baseline.conclusionWarns':
     'No failing items, and {warn} more could be tightened.',
+
+  /* --------------------------------------- Inspection trend & live streaming */
+  'trend.baselineTitle': 'Baseline trend',
+  'trend.baselineSubtitle': 'Hourly score and issue counts over the last {days} days',
+  'trend.portsTitle': 'Inspection trend',
+  'trend.portsSubtitle': 'Hourly issue counts over the last {days} days',
+  'trend.score': 'Score',
+  'trend.fail': 'Failing',
+  'trend.warn': 'Improvable',
+  'trend.issues': 'Total issues',
+  'trend.suspicious': 'Suspicious',
+  'trend.empty': 'Not enough trend data',
+  'trend.emptyDesc':
+    'Results are aggregated hourly; the curve appears once there are two points (about two hours).',
+  'trend.loadFailed': 'Could not load the trend',
+  'trend.loadFailedMsg': 'Trend data is temporarily unavailable; try again later.',
+  'trend.rescanning': 'Inspecting {done}/{total}',
+  'trend.rescanDone': 'Inspection finished',
 
   /* ----------------------------------------------------- Ports & processes */
   'ports.title': 'Ports & processes',

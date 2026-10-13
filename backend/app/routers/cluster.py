@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import security
+from .. import pvecache, security
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -17,6 +17,10 @@ from ..pve import (
 )
 
 router = APIRouter(prefix="/api", tags=["cluster"])
+
+#: 「探测已保存连接可达性」的缓存时长（秒）。这个接口逐台真实发请求，而首页会
+#: 定时轮询它 —— 多开标签 / 多人同时看时，同一轮探测被重复触发纯属浪费。
+CONNECTIONS_STATUS_TTL = 30.0
 
 
 def _raise(exc: ProxmoxError) -> None:
@@ -302,11 +306,17 @@ async def cluster_fleet_status(
     """
     pairs = all_connection_clients()
 
+    # 地址只给管理员：这个接口有 node.view 就能访问，而它会把每条连接的主机
+    # 列出来 —— 连接配置属于管理信息，与 /connections 同一口径。
+    can_manage = security.has_user_permission(user, "settings.manage")
+
     async def probe(profile: Dict[str, Any], client: Any) -> Dict[str, Any]:
         item: Dict[str, Any] = {
             "id": str(profile.get("id") or ""),
             "name": connection_label(profile),
-            "host": str(profile.get("host") or ""),
+            **(
+                {"host": str(profile.get("host") or "")} if can_manage else {}
+            ),
             "ok": False,
             "error": None,
             "version": "",
@@ -386,36 +396,52 @@ async def connections_status(
 
     「多台同时在线」下，列表里少了哪台主机需要能解释清楚，这个接口就是给
     顶部提示条用的：哪台通、哪台不通、不通的原因。
+
+    带一层短 TTL 缓存（见 :data:`CONNECTIONS_STATUS_TTL`）：它逐台真实发请求，
+    而首页会定时轮询 —— 多开标签时同一轮探测被重复触发纯属浪费。
     """
     # 这个接口会拿库里的 API Token 逐台真实发请求 —— 等于「用凭据打了哪些主机」，
     # 事后追溯时属于必看的一条。
     await security.audit_read(request, user, "config.connections_status.read")
-    result: List[Dict[str, Any]] = []
-    for profile, client in all_connection_clients():
-        item: Dict[str, Any] = {
-            "id": str(profile.get("id") or ""),
-            "name": connection_label(profile),
-            "host": profile.get("host"),
-            "port": profile.get("port"),
-            "ok": False,
-            "error": None,
-            "node_count": 0,
-            # 令牌权限不足时 PVE 不报错，而是把 CPU/内存等字段留空，
-            # 于是 /cluster/resources 也会返回空列表（模板/虚拟机「消失」）。
-            # 这里用节点指标是否可读来识别这种「连得上但没权限」的状态。
-            "node_metrics": False,
-        }
-        try:
-            nodes = await client.nodes() or []
-            item["ok"] = True
-            item["node_count"] = len(nodes)
-            item["node_metrics"] = bool(nodes) and any(
-                n.get("maxmem") is not None for n in nodes
-            )
-        except ProxmoxError as exc:
-            item["error"] = exc.message
-        result.append(item)
-    return result
+
+    # 这个接口只要求登录，而它会逐台回报「哪台通、哪台不通」—— 地址与端口
+    # 属于连接配置（管理信息），只给管理员，与 /connections 同一口径。
+    can_manage = security.has_user_permission(user, "settings.manage")
+
+    async def _build() -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for profile, client in all_connection_clients():
+            item: Dict[str, Any] = {
+                "id": str(profile.get("id") or ""),
+                "name": connection_label(profile),
+                **(
+                    {"host": profile.get("host"), "port": profile.get("port")}
+                    if can_manage
+                    else {}
+                ),
+                "ok": False,
+                "error": None,
+                "node_count": 0,
+                # 令牌权限不足时 PVE 不报错，而是把 CPU/内存等字段留空，
+                # 于是 /cluster/resources 也会返回空列表（模板/虚拟机「消失」）。
+                # 这里用节点指标是否可读来识别这种「连得上但没权限」的状态。
+                "node_metrics": False,
+            }
+            try:
+                nodes = await client.nodes() or []
+                item["ok"] = True
+                item["node_count"] = len(nodes)
+                item["node_metrics"] = bool(nodes) and any(
+                    n.get("maxmem") is not None for n in nodes
+                )
+            except ProxmoxError as exc:
+                item["error"] = exc.message
+            result.append(item)
+        return result
+
+    return await pvecache.cached(
+        "cluster:connections:status", CONNECTIONS_STATUS_TTL, _build
+    )
 
 
 @router.get("/nodes/{node}/status")

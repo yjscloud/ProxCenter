@@ -44,7 +44,7 @@ import {
 } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Card, CardHeader } from './ui/Card';
-import { Button } from './ui/Button';
+import { Button, IconButton } from './ui/Button';
 import {
   Field,
   Input,
@@ -55,11 +55,12 @@ import {
 import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
 import { NodePicker } from './NodePicker';
-import { IconCloud } from './Icons';
+import { IconCloud, IconPlus, IconTrash } from './Icons';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useT } from '../i18n';
 import { formatBytes } from '../utils/format';
+import { fitsPools } from '../utils/ippool';
 import type { VmCreateRequest } from '../api/types';
 
 /** 客户机类型：与向导的 kind 对齐（qemu = 虚拟机，lxc = 容器） */
@@ -69,6 +70,53 @@ type IpMode = 'dhcp' | 'static';
 
 /** GB → MB（规格里存 MB，界面上说 GB） */
 const gb = (mb: number) => Math.round(mb / 1024);
+
+/**
+ * 快速部署的一张网卡。
+ *
+ * 主网卡（列表第一张）额外走「IP 池自动挑地址」那套，附加网卡手填即可 ——
+ * 快速部署要的是「少填几个空就下单」，不是把自定义向导整个搬过来。
+ */
+interface QuickNic {
+  id: string;
+  bridge: string;
+  /** VLAN 标签（PVE 的 tag）；'' = 不划 VLAN */
+  vlan: string;
+  /** 速率上限（MB/s）；'' = 不限速 */
+  rate: string;
+  ipMode: IpMode;
+  ip: string;
+  gateway: string;
+  /** 选中的 IP 池（只有主网卡用） */
+  poolId: string;
+}
+
+let nicSeq = 0;
+
+function blankNic(ipMode: IpMode = 'static'): QuickNic {
+  nicSeq += 1;
+  return {
+    id: `nic-${nicSeq}`,
+    bridge: '',
+    vlan: '',
+    rate: '',
+    ipMode,
+    ip: '',
+    gateway: '',
+    poolId: '',
+  };
+}
+
+/** VLAN 标签：留空 = 不划；1~4094 的整数（PVE 的 tag 取值域） */
+function parseVlan(value: string): number | undefined {
+  const tag = Number(value.trim());
+  return Number.isInteger(tag) && tag >= 1 && tag <= 4094 ? tag : undefined;
+}
+
+/** 填了但不是 1~4094 的整数 —— 留空合法，写错要拦在提交前 */
+function vlanInvalid(value: string): boolean {
+  return Boolean(value.trim()) && parseVlan(value) === undefined;
+}
 
 export interface QuickDeployFormProps {
   /** 弹窗是否打开：关闭时停掉所有取数，打开时把表单重置为干净状态 */
@@ -101,19 +149,13 @@ export function QuickDeployForm({
   const [name, setName] = useState('');
   const [tags, setTags] = useState('');
   const [specId, setSpecId] = useState('');
-  /** 内存气球的最低保留量（MB），'' = 不下发该键（PVE 默认，不回收） */
-  const [balloon, setBalloon] = useState('');
   const [targetConn, setTargetConn] = useState('');
   const [node, setNode] = useState('');
   const [templateRef, setTemplateRef] = useState(''); // "node/vmid"
   const [osTemplate, setOsTemplate] = useState('');
   const [storage, setStorage] = useState('');
-  const [bridge, setBridge] = useState('');
   /* 默认静态：机器一般要固定地址；网段与地址由下面的 effect 自动挑 */
-  const [ipMode, setIpMode] = useState<IpMode>('static');
-  const [poolId, setPoolId] = useState('');
-  const [staticIp, setStaticIp] = useState('');
-  const [gateway, setGateway] = useState('');
+  const [nics, setNics] = useState<QuickNic[]>(() => [blankNic()]);
   const [ciUser, setCiUser] = useState('root');
   const [password, setPassword] = useState('');
   /* 接入安全管控：把面板公钥写进 cloud-init，机器起来后自动登记为受管主机。
@@ -123,10 +165,23 @@ export function QuickDeployForm({
 
   /** 用户自己点过 IP 获取方式：之后不再被「有没有可用网段」的自动判断覆盖 */
   const ipModeTouchedRef = useRef(false);
-  const pickIpMode = (next: IpMode) => {
-    ipModeTouchedRef.current = true;
-    setIpMode(next);
+
+  /** 主网卡：IP 池自动挑地址那套只作用于它 */
+  const primaryNic = nics[0];
+
+  const updateNic = (index: number, patch: Partial<QuickNic>) => {
+    setNics((prev) => prev.map((n, i) => (i === index ? { ...n, ...patch } : n)));
   };
+
+  const pickIpMode = (index: number, next: IpMode) => {
+    if (index === 0) ipModeTouchedRef.current = true;
+    updateNic(index, { ipMode: next });
+  };
+
+  const addNic = () => setNics((prev) => [...prev, blankNic('dhcp')]);
+
+  const removeNic = (index: number) =>
+    setNics((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
 
   /* 每次打开都从干净状态开始：弹窗关闭时组件并没有卸载，残留的字段会带到下一台 */
   useEffect(() => {
@@ -134,16 +189,11 @@ export function QuickDeployForm({
     setName('');
     setTags('');
     setSpecId('');
-    setBalloon('');
     setNode('');
     setTemplateRef('');
     setOsTemplate('');
     setStorage('');
-    setBridge('');
-    setIpMode('static');
-    setPoolId('');
-    setStaticIp('');
-    setGateway('');
+    setNics([blankNic()]);
     setCiUser('root');
     setPassword('');
     setManage(false);
@@ -213,7 +263,7 @@ export function QuickDeployForm({
   const poolsQuery = useQuery({
     queryKey: ['ip-pools'],
     queryFn: ipPoolsApi.get,
-    enabled: open && ipMode === 'static',
+    enabled: open && primaryNic?.ipMode === 'static',
     staleTime: 30_000,
     retry: false,
   });
@@ -238,9 +288,12 @@ export function QuickDeployForm({
     const list = connectionsQuery.data ?? [];
     if (list.length === 0) return [];
     return list.map((c) => ({
+      /* 标签里**不放主机地址**：普通用户不需要直接连这台 PVE，而「面板接了哪些
+         主机、地址是什么」属于管理信息，不该从一个创建表单里漏出去。连接名在
+         创建时默认就是主机地址，够认得出是哪台了。 */
       label: `${c.name || c.host}${
         c.active ? t('quickDeploy.currentConn') : ''
-      } · ${c.host}`,
+      }`,
       value: c.id,
     }));
   }, [connectionsQuery.data, t]);
@@ -267,13 +320,18 @@ export function QuickDeployForm({
     setOsTemplate('');
   }, [node]);
 
-  /* 网桥默认取节点上的第一个（通常是 vmbr0） */
+  /* 网桥默认取节点上的第一个（通常是 vmbr0），所有还没选网桥的网卡一起填上 */
   useEffect(() => {
-    if (bridge) return;
     const bridgesOnly = (bridgesQuery.data ?? []).filter((i) => i.type === 'bridge');
     const first = bridgesOnly.find((b) => b.iface?.startsWith('vmbr')) ?? bridgesOnly[0];
-    if (first?.iface) setBridge(first.iface);
-  }, [bridge, bridgesQuery.data]);
+    const iface = first?.iface;
+    if (!iface) return;
+    setNics((prev) =>
+      prev.some((n) => !n.bridge)
+        ? prev.map((n) => (n.bridge ? n : { ...n, bridge: iface }))
+        : prev,
+    );
+  }, [bridgesQuery.data]);
 
   /* 存储默认：容器建 rootfs 要 rootdir 存储 */
   useEffect(() => {
@@ -284,55 +342,67 @@ export function QuickDeployForm({
     if (first) setStorage(first.storage);
   }, [storage, storagesQuery.data, isVm]);
 
-  /* 可选网段：只列与当前网桥一致的池（不同网桥的池选了也不通） */
-  const usablePools = useMemo(() => {
-    const pools = poolsQuery.data?.pools ?? [];
-    return bridge ? pools.filter((p) => !p.bridge || p.bridge === bridge) : pools;
-  }, [poolsQuery.data, bridge]);
+  /* 可选网段：网桥与节点都要对得上（集群里同一个 vmbr0 在不同节点上常常是不同
+     网段，只看网桥会在错误的节点上把池列出来 —— 判定见 utils/ippool） */
+  const usablePools = useMemo(
+    () =>
+      fitsPools(poolsQuery.data?.pools ?? [], {
+        bridge: primaryNic?.bridge,
+        /* 池记着自己的 VLAN：网卡已经明确划了另一个 tag 时，这个池的地址就不在
+           那个二层网络里了（网卡还没划 tag 时不排除 —— 选中池会把 tag 带过来） */
+        vlan: parseVlan(primaryNic?.vlan ?? '') ?? null,
+        node,
+        /* 连接也要带上：多套 PVE 上同名节点是常态，只有它能区分「哪一台上的
+           那个节点」（池的适用 PVE 就是按连接 id 记的） */
+        connection: targetConn,
+      }),
+    [poolsQuery.data, primaryNic?.bridge, primaryNic?.vlan, node, targetConn],
+  );
 
   const poolOptions = useMemo(
     () => [
       { label: t('quickDeploy.selectPool'), value: '' },
       ...usablePools.map((p) => ({
-        label: t('quickDeploy.poolOption', {
+        /* 池标了自己的 VLAN 就一并显示：同一个网桥下可能挂着好几个 VLAN 网段，
+           只写「名称 · 子网」的话，两个池看起来像重复的 */
+        label: `${t('quickDeploy.poolOption', {
           name: p.name,
           subnet: p.subnet,
           n: p.free_count,
-        }),
+        })}${p.vlan != null ? ` · ${t('ippool.colVlan')} ${p.vlan}` : ''}`,
         value: p.id,
       })),
     ],
     [usablePools, t],
   );
 
-  /* 没选网段（或所选网段已不适用，例如换了网桥）时自动挑一个：用户不必先知道
-     「哪台机器的 IP 池在哪」。挑完由下一个 effect 填具体地址。 */
+  /* 主网卡没选网段（或所选网段已不适用，例如换了网桥）时自动挑一个：用户不必
+     先知道「哪台机器的 IP 池在哪」。挑完由下一个 effect 填具体地址。 */
   useEffect(() => {
-    if (!open || ipMode !== 'static' || !poolsQuery.data) return;
-    if (usablePools.some((p) => p.id === poolId)) return;
+    if (!open || !primaryNic || primaryNic.ipMode !== 'static' || !poolsQuery.data) return;
+    if (usablePools.some((p) => p.id === primaryNic.poolId)) return;
     const first = usablePools.find((p) => p.free_count > 0) ?? usablePools[0];
     if (!first) return;
-    setPoolId(first.id);
-    setStaticIp('');
-  }, [open, ipMode, poolId, usablePools, poolsQuery.data]);
+    updateNic(0, { poolId: first.id, ip: '' });
+  }, [open, primaryNic, usablePools, poolsQuery.data]);
 
-  /* 选好网段但还没填地址：取该网段的第一个空闲地址，用户仍可改 */
+  /* 选好网段但主网卡还没填地址：取该网段的第一个空闲地址，用户仍可改 */
   useEffect(() => {
-    if (ipMode !== 'static' || staticIp || !poolId) return;
-    const pool = (poolsQuery.data?.pools ?? []).find((p) => p.id === poolId);
+    if (!primaryNic || primaryNic.ipMode !== 'static' || !primaryNic.poolId) return;
+    if (primaryNic.ip.trim()) return;
+    const pool = (poolsQuery.data?.pools ?? []).find((p) => p.id === primaryNic.poolId);
     const next = pool?.free?.[0];
     if (!next) return;
-    setStaticIp(next);
-    if (pool?.gateway) setGateway(pool.gateway);
-  }, [ipMode, staticIp, poolId, poolsQuery.data]);
+    updateNic(0, { ip: next, gateway: pool?.gateway || primaryNic.gateway });
+  }, [primaryNic, poolsQuery.data]);
 
   /* 一个可用网段都没有（没配 IP 池、或池已满）：静态无从选起，退回 DHCP，
      而不是让用户对着空下拉框找原因。用户手动选过静态就不再干预。 */
   useEffect(() => {
-    if (!open || ipModeTouchedRef.current || ipMode !== 'static') return;
-    if (!poolsQuery.data) return;
-    if (usablePools.length === 0) setIpMode('dhcp');
-  }, [open, ipMode, poolsQuery.data, usablePools]);
+    if (!open || ipModeTouchedRef.current || !primaryNic) return;
+    if (primaryNic.ipMode !== 'static' || !poolsQuery.data) return;
+    if (usablePools.length === 0) updateNic(0, { ipMode: 'dhcp' });
+  }, [open, primaryNic, poolsQuery.data, usablePools]);
 
   const quota = quotaQuery.data;
   const quotaBlocked = Boolean(quota && !quota.can_create);
@@ -407,22 +477,16 @@ export function QuickDeployForm({
   const error = useMemo(() => {
     if (!name.trim()) return t('quickDeploy.errName');
     if (!spec) return t('quickDeploy.errSpec');
-    /* 内存气球：留空 = 不回收（不下发该键）；填了就必须低于规格的内存上限 */
-    if (balloon.trim()) {
-      const value = Number(balloon);
-      if (!Number.isFinite(value) || value < 0) {
-        return t('quickDeploy.errBalloonInt');
-      } else if (value > 0 && value < 128) {
-        return t('quickDeploy.errBalloonMin');
-      } else if (value > 0 && value >= spec.memory) {
-        return t('quickDeploy.errBalloonMax');
-      }
-    }
     if (!node) return t('quickDeploy.errNode');
     if (isVm && !templateRef) return t('quickDeploy.errTemplate');
     if (!isVm && !osTemplate) return t('quickDeploy.errOsTemplate');
     if (storageNeeded && !storage) return t('quickDeploy.errStorage');
-    if (ipMode === 'static' && !staticIp.trim()) return t('quickDeploy.errStaticIp');
+    if (nics.some((n) => vlanInvalid(n.vlan))) {
+      return t('quickDeploy.errVlan');
+    }
+    if (nics.some((n) => n.ipMode === 'static' && !n.ip.trim())) {
+      return t('quickDeploy.errStaticIp');
+    }
     if (quotaBlocked) {
       return t('quickDeploy.errQuota', {
         label: quota?.label ?? t('quickDeploy.quotaFallback'),
@@ -432,15 +496,13 @@ export function QuickDeployForm({
   }, [
     name,
     spec,
-    balloon,
+    nics,
     node,
     isVm,
     templateRef,
     osTemplate,
     storageNeeded,
     storage,
-    ipMode,
-    staticIp,
     quotaBlocked,
     quota,
     t,
@@ -452,13 +514,16 @@ export function QuickDeployForm({
     try {
       /* 静态时补 /24（云镜像默认掩码），网关留空就交给 DHCP/RA —— 后端对空
          网关不下发 gw=，与面板其它地方一致 */
-      const ipConfig =
-        ipMode === 'static'
+      const nicIp = (nic: QuickNic) =>
+        nic.ipMode === 'static'
           ? {
-              ip: staticIp.includes('/') ? staticIp : `${staticIp}/24`,
-              gateway: gateway || '',
+              ip: nic.ip.includes('/') ? nic.ip : `${nic.ip}/24`,
+              gateway: nic.gateway || '',
             }
           : { ip: 'dhcp', gateway: '' };
+
+      const nicRate = (nic: QuickNic) =>
+        nic.rate.trim() ? Number(nic.rate) : undefined;
 
       if (isVm) {
         const [tplNode, tplVmid] = templateRef.split('/');
@@ -470,30 +535,41 @@ export function QuickDeployForm({
           memory: spec.memory,
           cores: spec.cores,
           sockets: 1,
-          /* 留空就不下发：PVE 默认按整份内存算，宿主机收不回空闲内存 */
-          balloon: balloon.trim() ? Number(balloon) : undefined,
           disks: [],
-          networks: [{ bridge, model: 'virtio' }],
+          networks: nics.map((nic) => ({
+            bridge: nic.bridge,
+            model: 'virtio',
+            /* 留空 = 不划 VLAN。克隆后由后端把 net0/net1… 整体重写成
+               bridge=…,tag=…,rate=…（见 vmconfig.format_network_spec） */
+            vlan_tag: parseVlan(nic.vlan) ?? null,
+            rate: nicRate(nic),
+          })),
           tags: tags || undefined,
           cloudinit: {
             enabled: true,
             user: ciUser || 'root',
             password: password || undefined,
-            ip_configs: [ipConfig],
+            ip_configs: nics.map(nicIp),
           },
           manage,
           clone_from: {
             node: tplNode,
             vmid: Number(tplVmid),
-            /* 固定链接克隆：磁盘与新盘都留在模板所在存储，秒级完成、不额外占空间。
+            /* 固定链接克隆：磁盘留在模板所在存储，秒级完成、不额外占空间。
                需要独立磁盘（完整克隆）请用「自定义部署」。 */
             full: false,
+            /* 规格里的磁盘是给新机器用的：模板盘更小时由后端扩容系统盘 */
+            disk_size: spec.disk > 0 ? spec.disk : undefined,
           },
         };
         const result = await vmsApi.create(payload, targetConn);
+        /* 扩容结果如实带出来：「模板盘 20G ≥ 规格 20G」和「已扩到 100G」
+           必须让人看到，否则规格是否生效只能靠猜 */
         toast.success(
           t('quickDeploy.created'),
-          t('quickDeploy.createdVmHint', { vmid: result.vmid ?? '-' }),
+          result.disk_note
+            ? `${t('quickDeploy.createdVmHint', { vmid: result.vmid ?? '-' })} · ${result.disk_note}`
+            : t('quickDeploy.createdVmHint', { vmid: result.vmid ?? '-' }),
         );
         queryClient.invalidateQueries({ queryKey: ['vms'] });
         onCreated?.(result.vmid ?? 0);
@@ -513,15 +589,17 @@ export function QuickDeployForm({
             unprivileged: true,
             start: true,
             tags: tags || undefined,
-            networks: [
-              {
-                name: 'eth0',
-                bridge,
-                ip: ipMode === 'static' ? ipConfig.ip : 'dhcp',
-                gateway: ipMode === 'static' ? gateway || undefined : undefined,
-                firewall: true,
-              },
-            ],
+            networks: nics.map((nic, index) => ({
+              name: `eth${index}`,
+              bridge: nic.bridge,
+              ip: nic.ipMode === 'static' ? nicIp(nic).ip : 'dhcp',
+              gateway:
+                nic.ipMode === 'static' ? nic.gateway || undefined : undefined,
+              firewall: true,
+              /* 容器同样支持 VLAN 标签（后端 LxcNetworkSpec.vlan_tag → tag=） */
+              vlan_tag: parseVlan(nic.vlan) ?? null,
+              rate: nicRate(nic),
+            })),
             setup: {
               password: password || undefined,
             },
@@ -543,13 +621,13 @@ export function QuickDeployForm({
     }
   };
 
+  /* 磁盘现在两种类型都会按规格生效（VM 走克隆后扩容系统盘），所以摘要里
+     直接写实际大小 —— 不再有「虚拟机沿用模板磁盘」这个例外。 */
   const summary = spec
     ? t('quickDeploy.summary', {
         cores: spec.cores,
         mem: gb(spec.memory),
-        disk: isVm
-          ? t('quickDeploy.summaryVm')
-          : t('quickDeploy.summaryLxc', { n: spec.disk }),
+        disk: t('quickDeploy.summaryDisk', { n: spec.disk }),
       })
     : '';
 
@@ -655,21 +733,6 @@ export function QuickDeployForm({
             </div>
           )}
 
-          {/* 内存气球：PVE 没有这个键时按整份内存算，宿主机收不回客户机的空闲内存。
-              留空保持原行为，填了才有回收空间。容器没有气球，只给虚拟机。 */}
-          {isVm ? (
-            <div className="form-grid-2 mt-12">
-              <Input
-                label={t('quickDeploy.labelBalloon')}
-                type="number"
-                min={0}
-                step={256}
-                value={balloon}
-                onChange={(e) => setBalloon(e.target.value)}
-                hint={t('quickDeploy.balloonHint')}
-              />
-            </div>
-          ) : null}
         </Card>
 
         {/* ---- 3. 部署位置 ---- */}
@@ -680,28 +743,36 @@ export function QuickDeployForm({
           />
           {connectionOptions.length > 0 ? (
             <div className="form-grid-2">
-              <Select
-                label={t('quickDeploy.labelConn')}
-                value={targetConn}
-                onChange={(e) => setTargetConn(e.target.value)}
-                options={connectionOptions}
-                hint={t('quickDeploy.connHint')}
-              />
+              {/* 限宽要包在外层：直接给 Select 传 style 只会缩窄内层输入框，
+                  箭头（相对外层容器定位）会飘到框外 */}
+              <div className="field-compact">
+                <Select
+                  label={t('quickDeploy.labelConn')}
+                  value={targetConn}
+                  onChange={(e) => setTargetConn(e.target.value)}
+                  options={connectionOptions}
+                  hint={t('quickDeploy.connHint')}
+                />
+              </div>
             </div>
           ) : null}
-          <Field
-            label={t('quickDeploy.labelNode')}
-            required
-            error={nodesQuery.isError ? t('quickDeploy.nodeError') : undefined}
-            hint={nodesQuery.isError ? errorMessage(nodesQuery.error) : undefined}
-          >
-            <NodePicker
-              nodes={nodesQuery.data ?? []}
-              value={node}
-              onChange={setNode}
-              loading={nodesQuery.isLoading}
-            />
-          </Field>
+          <div className="field-compact">
+            <Field
+              label={t('quickDeploy.labelNode')}
+              required
+              error={nodesQuery.isError ? t('quickDeploy.nodeError') : undefined}
+              hint={
+                nodesQuery.isError ? errorMessage(nodesQuery.error) : undefined
+              }
+            >
+              <NodePicker
+                nodes={nodesQuery.data ?? []}
+                value={node}
+                onChange={setNode}
+                loading={nodesQuery.isLoading}
+              />
+            </Field>
+          </div>
         </Card>
 
         {/* ---- 4. 系统镜像 ---- */}
@@ -772,81 +843,167 @@ export function QuickDeployForm({
                 ? t('quickDeploy.networkSubtitleVm')
                 : t('quickDeploy.networkSubtitleLxc')
             }
+            actions={
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<IconPlus size={14} />}
+                onClick={addNic}
+              >
+                {t('quickDeploy.addNic')}
+              </Button>
+            }
           />
-          <div className="form-grid-2">
-            <Select
-              label={t('quickDeploy.labelBridge')}
-              value={bridge}
-              onChange={(e) => setBridge(e.target.value)}
-              options={
-                bridgeOptions.length
-                  ? bridgeOptions
-                  : [{ label: bridge || 'vmbr0', value: bridge || 'vmbr0' }]
-              }
-              hint={bridgesQuery.isError ? errorMessage(bridgesQuery.error) : undefined}
-            />
-            <Field label={t('quickDeploy.labelIpMode')}>
-              <SegmentedControl<IpMode>
-                value={ipMode}
-                onChange={pickIpMode}
-                ariaLabel={t('quickDeploy.labelIpMode')}
-                options={[
-                  { label: t('quickDeploy.ipModeStatic'), value: 'static' },
-                  { label: 'DHCP', value: 'dhcp' },
-                ]}
-              />
-            </Field>
+          {/* 每张网卡一张卡片：多张时才有边界，否则「移除」按钮会贴在下一张的
+              字段上（看起来像属于下面那张）；也标出「1 号网卡 / 2 号网卡」。 */}
+          <div className="dyn-list">
+            {nics.map((nic, index) => (
+              <div className="dyn-item" key={nic.id}>
+                <div className="dyn-item-fields">
+                  {nics.length > 1 ? (
+                    <div className="dyn-item-title">
+                      {t('quickDeploy.nicTitle', { index: index + 1 })}
+                    </div>
+                  ) : null}
+
+                  <div className="qd-nic-row">
+                    <Select
+                      label={t('quickDeploy.labelBridge')}
+                      value={nic.bridge}
+                      onChange={(e) => updateNic(index, { bridge: e.target.value })}
+                      options={
+                        bridgeOptions.length
+                          ? bridgeOptions
+                          : [{ label: nic.bridge || 'vmbr0', value: nic.bridge || 'vmbr0' }]
+                      }
+                      hint={
+                        index === 0 && bridgesQuery.isError
+                          ? errorMessage(bridgesQuery.error)
+                          : undefined
+                      }
+                    />
+                    <Input
+                      label={t('quickDeploy.labelVlan')}
+                      type="number"
+                      min={1}
+                      max={4094}
+                      value={nic.vlan}
+                      onChange={(e) => updateNic(index, { vlan: e.target.value })}
+                      placeholder={t('quickDeploy.vlanPlaceholder')}
+                    />
+                    <Input
+                      label={t('quickDeploy.labelRate')}
+                      type="number"
+                      min={0}
+                      step={10}
+                      value={nic.rate}
+                      onChange={(e) => updateNic(index, { rate: e.target.value })}
+                      placeholder={t('quickDeploy.ratePlaceholder')}
+                    />
+                  </div>
+
+                  <div className="dyn-row mt-12 qd-nic-mode">
+                    <Field label={t('quickDeploy.labelIpMode')}>
+                      <SegmentedControl<IpMode>
+                        value={nic.ipMode}
+                        onChange={(next) => pickIpMode(index, next)}
+                        ariaLabel={t('quickDeploy.labelIpMode')}
+                        options={[
+                          { label: t('quickDeploy.ipModeStatic'), value: 'static' },
+                          { label: 'DHCP', value: 'dhcp' },
+                        ]}
+                      />
+                    </Field>
+                  </div>
+
+                  {nic.ipMode === 'static' ? (
+                    <div className="dyn-row mt-12">
+                      {/* 只有主网卡能自动挑 IP 池：附加网卡手填地址 */}
+                      {index === 0 ? (
+                        <Select
+                          label={t('quickDeploy.labelPool')}
+                          value={nic.poolId}
+                          onChange={(e) => {
+                            /* 池记着它属于哪个二层网络（网桥 + VLAN）：选中后把这两项
+                               一起带到网卡上，省得用户再对一遍 —— 对不上的池本来也
+                               选不到（判定见 usablePools）。池没写 VLAN 时保留网卡
+                               当前的值，不擅自清掉。 */
+                            const picked = usablePools.find(
+                              (p) => p.id === e.target.value,
+                            );
+                            updateNic(index, {
+                              poolId: e.target.value,
+                              ip: '',
+                              ...(picked
+                                ? {
+                                    bridge: picked.bridge || nic.bridge,
+                                    vlan:
+                                      picked.vlan != null
+                                        ? String(picked.vlan)
+                                        : nic.vlan,
+                                  }
+                                : {}),
+                            });
+                          }}
+                          options={poolOptions}
+                          hint={
+                            poolsQuery.isError
+                              ? errorMessage(poolsQuery.error)
+                              : t('quickDeploy.poolHint')
+                          }
+                        />
+                      ) : null}
+                      <Input
+                        label={t('quickDeploy.labelIp')}
+                        required
+                        value={nic.ip}
+                        onChange={(e) => updateNic(index, { ip: e.target.value })}
+                        placeholder={t('quickDeploy.ipPlaceholder')}
+                      />
+                      <Input
+                        label={t('quickDeploy.labelGateway')}
+                        value={nic.gateway}
+                        onChange={(e) => updateNic(index, { gateway: e.target.value })}
+                        placeholder={t('quickDeploy.gatewayPlaceholder')}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+
+                {nics.length > 1 ? (
+                  <div className="dyn-item-remove">
+                    <IconButton
+                      label={t('quickDeploy.removeNic')}
+                      title={t('quickDeploy.removeNic')}
+                      variant="danger"
+                      onClick={() => removeNic(index)}
+                    >
+                      <IconTrash size={15} />
+                    </IconButton>
+                  </div>
+                ) : null}
+              </div>
+            ))}
           </div>
 
           {/* 接入安全管控：**只有虚拟机有这条能力**（与「自定义部署」向导里同一个
               开关）。快速部署走链接克隆，公钥由后端注入 cloud-init，机器起来后自动
-              登记为受管主机。容器没有 cloud-init，后端 /api/lxc 也不接受这个字段 ——
-              给容器露出这个开关只会让人白勾一下，所以这里按 kind 收掉。
-              包在与相邻字段一致的网格里 —— 否则它夹在两段 form-grid-2 之间既没有
-              上边距也不参与列对齐，看起来像浮在页面上。 */}
+              登记为受管主机。容器没有 cloud-init，后端 /api/lxc 也不接受这个字段。
+              与网卡列表用一条分隔线隔开 —— 它不属于「某一张网卡」，而是整台机器的
+              选项，挨着最后一张卡会让人以为在说那张卡。 */}
           {isVm ? (
-            <div className="form-grid-2 mt-12">
+            <div className="qd-divider">
               <Switch
                 label={t('vmCreate.ciManage')}
                 checked={manage}
                 onChange={setManage}
+                /* DHCP 与静态都能接入，差别只在登记时机（静态立刻登记，DHCP 等机器
+                   自报地址）—— 文案里说清这件事，别让人以为 DHCP 用不了 */
                 hint={
-                  ipMode === 'static'
+                  primaryNic?.ipMode === 'static'
                     ? t('vmCreate.ciManageHint')
-                    : t('vmCreate.ciManageNeedIp')
+                    : t('vmCreate.ciManageDhcpHint')
                 }
-              />
-            </div>
-          ) : null}
-
-          {ipMode === 'static' ? (
-            <div className="form-grid-2 mt-12">
-              <Select
-                label={t('quickDeploy.labelPool')}
-                value={poolId}
-                onChange={(e) => {
-                  setPoolId(e.target.value);
-                  setStaticIp('');
-                }}
-                options={poolOptions}
-                hint={
-                  poolsQuery.isError
-                    ? errorMessage(poolsQuery.error)
-                    : t('quickDeploy.poolHint')
-                }
-              />
-              <Input
-                label={t('quickDeploy.labelIp')}
-                required
-                value={staticIp}
-                onChange={(e) => setStaticIp(e.target.value)}
-                placeholder={t('quickDeploy.ipPlaceholder')}
-              />
-              <Input
-                label={t('quickDeploy.labelGateway')}
-                value={gateway}
-                onChange={(e) => setGateway(e.target.value)}
-                placeholder={t('quickDeploy.gatewayPlaceholder')}
               />
             </div>
           ) : null}

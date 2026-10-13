@@ -246,6 +246,49 @@ def normalize_cpuset(value: Optional[str]) -> Optional[str]:
     return text
 
 
+#: 「默认机型」的所有写法。面板**不把它写进 PVE 配置**：PVE 8 的 API 认 ``pc``，
+#: PVE 9 只认 ``i440fx``，写死任何一个都会在另一个版本上被 PVE 驳回。留空 = 让
+#: PVE 用自己的默认（对两个版本都正确）。
+DEFAULT_MACHINES = ("", "default", "pc", "i440fx")
+
+
+def is_default_machine(value: Any) -> bool:
+    """这个机型值是不是「默认机型」（``pc`` / ``i440fx`` / 空，大小写不敏感）。"""
+    return str(value or "").strip().lower() in DEFAULT_MACHINES
+
+
+def normalize_machine(value: Any) -> str:
+    """归一机型：默认机型返回**空串**（= 不要写这个键），其余原样返回（如 ``q35``）。"""
+    text = str(value or "").strip()
+    return "" if text.lower() in DEFAULT_MACHINES else text
+
+
+def clone_machine_overrides(
+    source_config: Optional[Dict[str, Any]], wanted: str = ""
+) -> Dict[str, Any]:
+    """克隆体上「机型」该怎么写（直接并入要发给 PVE 的 overrides）。
+
+    * 显式指定了机型（``q35``）：写进去；
+    * 来源（模板 / 母机）带的是**默认机型的旧写法**（``pc`` —— 面板早期写的就是
+      这个）：删掉它。各版本 PVE 对默认机型的叫法不同（PVE 8 的 API 认 ``pc``、
+      PVE 9 只认 ``i440fx``），而模板上的值会被**每一个克隆体**继承 —— 留着它，
+      新机器就带着一个目标 PVE 不认的机型；
+    * 来源是 ``q35``（Win11 模板）或压根没设置：什么都不做（删掉 q35 会让
+      OVMF 起不来）。
+
+    所有克隆入口共用这一个判断，免得各条路径各写一遍、漏掉一条就一直漏下去。
+    """
+    machine = normalize_machine(wanted)
+    if machine:
+        return {"machine": machine}
+    inherited = str((source_config or {}).get("machine") or "").strip()
+    if inherited and is_default_machine(inherited):
+        # 用 PVE 的 delete 参数删配置项（硬件删除用的也是它）：比传空串更明确，
+        # 也不受 machine 的格式校验影响
+        return {"delete": "machine"}
+    return {}
+
+
 def resolve_firmware(bios: str, machine: str, needs_efi: bool) -> tuple[str, str]:
     """按是否需要 EFI 校准固件，返回 ``(bios, machine)``。
 
@@ -253,12 +296,16 @@ def resolve_firmware(bios: str, machine: str, needs_efi: bool) -> tuple[str, str
     q35。三者不配套时虚拟机建出来直接起不来，因此这里与 ``normalize_ostype``
     等函数同一策略：**悄悄纠正**而不是抛错 —— 前端「Windows 11」预设会把它们
     一起设上，手写 API 的调用方漏掉一个也不该拿到一台废机器。
+
+    返回的 machine 为空串表示「默认机型，不要写这个配置键」：各版本 PVE 对默认
+    机型的叫法不同（见 ``DEFAULT_MACHINES``），写成具体的值反而会建不出机器。
     """
     resolved_bios = bios if bios in ("seabios", "ovmf") else "seabios"
-    resolved_machine = (machine or "pc").strip() or "pc"
+    resolved_machine = normalize_machine(machine)
     if needs_efi:
         resolved_bios = "ovmf"
-        if resolved_machine in ("pc", "pc-i440fx", "i440fx"):
+        # 默认机型与具体的 i440fx 型号上都用不了 OVMF，一律换成 q35
+        if not resolved_machine or resolved_machine.startswith(("pc", "i440fx")):
             resolved_machine = "q35"
     return resolved_bios, resolved_machine
 
@@ -384,11 +431,15 @@ def build_vm_config(
         "cpu": normalize_cpu_type(req.cpu_type),
         "ostype": normalize_ostype(req.ostype),
         "bios": bios,
-        "machine": machine,
         "scsihw": normalize_scsihw(req.scsihw),
         "agent": 1 if req.agent else 0,
         "onboot": 1 if req.start_on_boot else 0,
     }
+    # 机型只在**不是默认机型**时才写：默认机型的名字各版本 PVE 不一样（PVE 8 的
+    # API 写 pc、PVE 9 写 i440fx），写进去的那一个在另一个版本上会被 PVE 驳回，
+    # 表现为机器建不出来。不写 = PVE 用它自己的默认（就是 i440fx）。
+    if machine:
+        config["machine"] = machine
 
     # 内存气球：不写这个键时 PVE 按「整份内存」处理（balloon = memory），宿主机
     # 收不回客户机的空闲内存；写更低的值才有回收空间。0 也是有效值 —— PVE 用它

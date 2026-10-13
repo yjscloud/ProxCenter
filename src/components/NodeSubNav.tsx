@@ -12,25 +12,39 @@
 
 import { Link } from 'react-router-dom';
 import { IconPlug, IconServer } from './Icons';
+import { useAuth } from '../hooks/useAuth';
 import { useT } from '../i18n';
 
 export type NodeSubPage = 'nodes' | 'connections';
 
 export function NodeSubNav({ active }: { active: NodeSubPage }) {
   const t = useT();
-  const items: Array<{ key: NodeSubPage; to: string; label: string; icon: React.ReactNode }> = [
+  const { isAdmin } = useAuth();
+  const items: Array<{
+    key: NodeSubPage;
+    to: string;
+    label: string;
+    icon: React.ReactNode;
+  }> = [
     {
       key: 'nodes',
       to: '/nodes',
       label: t('nodeNav.labelNodes'),
       icon: <IconServer size={14} />,
     },
-    {
-      key: 'connections',
-      to: '/nodes/connections',
-      label: t('nodeNav.labelConnections'),
-      icon: <IconPlug size={14} />,
-    },
+    /* 「连接配置」是管理入口：非管理员看不到这个页签（直接敲 URL 进去也会被
+       挡在页面里，见 NodesConnections 的无权限态）。那一页列的是主机地址、
+       端口、凭据状态与令牌 —— 属于管理信息 */
+    ...(isAdmin
+      ? [
+          {
+            key: 'connections' as NodeSubPage,
+            to: '/nodes/connections',
+            label: t('nodeNav.labelConnections'),
+            icon: <IconPlug size={14} />,
+          },
+        ]
+      : []),
   ];
 
   return (

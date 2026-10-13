@@ -253,12 +253,11 @@ async def collect_vms(
         ]
 
         if with_ip and items:
-            # 并发解析，限制并发数避免拖垮 PVE；失败不影响列表返回。
-            resolved = await parallel(
-                (guestip.resolve(client, vm) for vm in items), limit=12
-            )
+            # 批量解析：先读落库的 IP 快照（后台作业预热，见 app.inspection），
+            # 缺失的才现场问 PVE 并写回 —— 列表不再为一台没装 Agent 的机器等满超时。
+            resolved = await guestip.resolve_batch(client, items, limit=12)
             for item, ip in zip(items, resolved):
-                item["ip"] = ip if isinstance(ip, str) else ""
+                item["ip"] = ip
 
         # 创建时间：缓存里没有的逐台读一次 config（每台一次请求 + 进程内缓存，
         # 一轮有预算上限），取不到就留空 —— 它不比 IP 重要，不值得拖慢列表。
@@ -1001,6 +1000,54 @@ def _audit_detail(fields: Dict[str, Any]) -> str:
     )
 
 
+async def _resize_cloned_rootfs(
+    client: Any,
+    node: str,
+    vmid: int,
+    target_gb: int,
+    interface_hint: str = "",
+) -> str:
+    """克隆完成后把系统盘扩到 ``target_gb``（只增不减），返回一句说明。
+
+    为什么必须有这一步：模板磁盘是**模板自己**的尺寸，而「资源规格」里的磁盘
+    是给新机器用的。少了它，规格里的 100G 只是界面上一个数字 —— 下发出来的
+    机器仍是模板的 20G。
+
+    三条边界：
+
+    * **只增不减**：PVE 拒绝把卷缩小；目标比模板还小时多半是「就按模板来」，
+      静默跳过比报错更合理；
+    * **失败不抛**：机器已经建好了，为一次扩容回滚整个创建更糟 —— 把原因
+      如实回给调用方（前端提示），机器仍可用；
+    * **挑系统盘**：给了 ``interface_hint`` 就用它，否则取第一块（PVE 的
+      config 里 scsi0 排在 scsi1 前，接口名排序即可）。
+    """
+    if target_gb <= 0:
+        return ""
+    try:
+        config = await client.qemu_config(node, vmid) or {}
+    except ProxmoxError as exc:
+        return f"系统盘未扩容：读不到配置（{exc.message}）"
+
+    disks = vmconfig.parse_config_disks(config)
+    if not disks:
+        return "系统盘未扩容：未找到磁盘"
+    disk = next(
+        (d for d in disks if interface_hint and d.get("interface") == interface_hint),
+        disks[0],
+    )
+    current = vmconfig.disk_size_to_gb(str(disk.get("size") or ""))
+    if current is not None and current >= target_gb:
+        return f"模板磁盘 {current:g}G ≥ 规格 {target_gb}G，保持原样"
+    try:
+        await client.qemu_resize(node, vmid, str(disk["interface"]), f"{target_gb}G")
+    except ProxmoxError as exc:
+        return f"系统盘扩容失败：{exc.message}"
+    if current is not None:
+        return f"系统盘已从 {current:g}G 扩到 {target_gb}G"
+    return f"系统盘已扩到 {target_gb}G"
+
+
 async def _create_from_clone(
     payload: VmCreateRequest,
     vmid: int,
@@ -1055,6 +1102,31 @@ async def _create_from_clone(
         overrides["tags"] = payload.tags
     if payload.description:
         overrides["description"] = payload.description
+    # 克隆体继承了模板的整套配置，所以先读一次模板配置：机型纠正与网卡覆盖都要它。
+    # 读不到就两件事都跳过 —— 宁可少改，也不要凭猜改配置。
+    try:
+        current_config = await client.qemu_config(target_node, vmid) or {}
+    except ProxmoxError:
+        current_config = {}
+
+    # 机型：显式指定了就写（q35）；模板带的是默认机型的旧写法就删掉它（判断与
+    # 其它克隆入口共用，见 vmconfig.clone_machine_overrides）。
+    overrides.update(
+        vmconfig.clone_machine_overrides(current_config, payload.machine)
+    )
+
+    # 网卡：模板自带的 netN 是**模板自己**的桥接与型号，而克隆出来的机器常常要落
+    # 到另一个网桥（不同环境不同桥），快速部署还要能在网卡上设速率。给了 networks
+    # 就整体覆盖 netN —— 模板里多出来的先删掉（PVE 用空串删配置项）。
+    # 不这么做的话，快速部署里选的网桥、速率都只是界面上的摆设。
+    if payload.networks:
+        extra_nics = vmconfig.parse_config_networks(current_config)[
+            len(payload.networks) :
+        ]
+        for nic in extra_nics:
+            overrides[str(nic["interface"])] = ""
+        for index, net in enumerate(payload.networks):
+            overrides[f"net{index}"] = vmconfig.format_network_spec(net)
     # NUMA 绑定与 CPU 亲和性是纯配置项，克隆出来的实例落在哪台宿主机上并不确定，
     # 必须能按实例重新指定。efidisk0 / tpmstate0 不在这里下发：它们会在目标存储上
     # 真的开卷，而 Win11 模板本身就该自带这两件套，克隆时已随模板继承。
@@ -1085,6 +1157,15 @@ async def _create_from_clone(
                 status_code=207,
                 detail=f"虚拟机 {vmid} 已克隆，但应用自定义配置失败：{exc.message}",
             ) from exc
+
+    # 按「资源规格」里的磁盘大小扩容系统盘（只增不减）。放在覆盖配置之后：
+    # 两者互不影响，而扩容会改 config，放最后能保证最终 config 就是我们要的。
+    disk_note = ""
+    if clone.disk_size:
+        hint = str(payload.disks[0].interface or "") if payload.disks else ""
+        disk_note = await _resize_cloned_rootfs(
+            client, target_node, vmid, int(clone.disk_size), hint
+        )
 
     # 克隆完成、覆盖配置已应用后按需自动开机（best-effort，失败不影响克隆结果）。
     started = False
@@ -1137,6 +1218,9 @@ async def _create_from_clone(
         "cloned_from": clone.vmid,
         "started": started,
         "post_steps": [],
+        # 系统盘扩容的结果（未请求扩容时为空串）：前端据此提示「已扩到 100G」
+        # 或「扩容失败：…」，而不是让人以为规格默默生效了。
+        "disk_note": disk_note,
         "template": False,
     }
 
@@ -1269,7 +1353,7 @@ async def delete_vm(
     # 比「显示 —」更难发现。
     await guest_created.drop_record(_op_connection(), node, vmid, "qemu")
     # IP 缓存同样要清：VMID 回收后，旧地址会贴着同号的新机器显示一分钟
-    guestip.forget(_op_connection(), node, vmid, "qemu")
+    await guestip.forget(_op_connection(), node, vmid, "qemu")
     # 面板为这台机器登记的受管主机（勾了「接入安全管控」才会有）也一并清掉，
     # 连同它在「SSH 安全 / 登录审计 / 端口与进程 / 安全基线」里的数据 ——
     # 机器都没了，再留着只会每轮巡检白拨一条 SSH。
@@ -1673,6 +1757,36 @@ async def clone_vm(
         _raise(exc)
 
     task = result if isinstance(result, str) else (result or {}).get("task", "")
+
+    # 克隆体继承母机的机型，而母机上可能是「默认机型的旧写法」（面板早期写成 pc）
+    # —— 那个名字在另一版本的 PVE 上不存在，新机器就带着一个不认的机型。
+    # 要改机型就得等克隆落定（克隆是异步任务，早改的配置会被覆盖），所以这里等
+    # 一次；超时不算失败，只是这一轮不纠它，机器本身已经建好了。
+    target_node = payload.target_node or node
+    if isinstance(task, str) and task.startswith("UPID:"):
+        try:
+            await client.wait_for_task(task, timeout=600)
+        except ProxmoxError:
+            pass
+    try:
+        source_config = await client.qemu_config(target_node, payload.newid) or {}
+    except ProxmoxError:
+        source_config = {}
+    machine_overrides = vmconfig.clone_machine_overrides(source_config)
+    if machine_overrides:
+        try:
+            await client.qemu_set_config(
+                target_node, payload.newid, machine_overrides
+            )
+        except ProxmoxError as exc:
+            # 机器已经建好了，机型没纠成不该让整个请求失败 —— 如实带出来即可
+            await security.audit(
+                request, user, "vm.clone",
+                target=f"{target_node}/{payload.newid}",
+                result="partial", detail=f"克隆成功但机型纠正失败: {exc.message}",
+            )
+            return {"task": task, "vmid": payload.newid, "warning": exc.message}
+
     await security.audit(
         request, user, "vm.clone", target=f"{node}/{vmid} -> {payload.newid}",
         detail={"name": payload.name, "full": payload.full},

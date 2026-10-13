@@ -4,6 +4,7 @@
 
 import { Suspense, useEffect, useState, type ReactNode } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Sidebar,
   canAccessNav,
@@ -30,6 +31,7 @@ export function Layout() {
   const t = useT();
   const location = useLocation();
   const { canWrite, user } = useAuth();
+  const queryClient = useQueryClient();
 
   /* 面板级开关（见 app/ui.py）：由管理员在「设置 → 导航栏功能开关」里逐项
      关闭入口，对所有用户生效。导航栏本身始终渲染，关的是里面的功能入口。 */
@@ -98,15 +100,16 @@ export function Layout() {
     setMobileOpen(false);
   }, [location.pathname]);
 
-  /* 全局刷新事件 → 触发所有 react-query 重取（由各页面监听） */
+  /* 顶栏「刷新全部数据」：直接失效所有查询（活跃的立刻重取，未挂载的标记过期）。
+     原先这里收到事件后又转派了一个 `ProxCenter:invalidate-all`，而那个事件名
+     **全仓没有任何监听者** —— 按钮实际只刷了 /health，页面数据纹丝不动。 */
   useEffect(() => {
     const handler = () => {
-      window.dispatchEvent(new CustomEvent('ProxCenter:invalidate-all'));
+      void queryClient.invalidateQueries();
     };
-    const onTopbarRefresh = () => handler();
-    window.addEventListener('ProxCenter:refresh', onTopbarRefresh);
-    return () => window.removeEventListener('ProxCenter:refresh', onTopbarRefresh);
-  }, []);
+    window.addEventListener('ProxCenter:refresh', handler);
+    return () => window.removeEventListener('ProxCenter:refresh', handler);
+  }, [queryClient]);
 
   /* 判断逻辑在 Sidebar.canAccessNav：命令面板也用同一份，避免两处不一致 */
   const canAccess = (item: { permission?: string; adminOnly?: boolean }) =>

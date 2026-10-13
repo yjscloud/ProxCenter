@@ -108,11 +108,17 @@ import type {
   BaselineFixResult,
   BaselineFleetReport,
   BaselineHost,
+  BaselineHostSummary,
+  BaselineFleetTotals,
+  InspectionStreamEvent,
+  InspectionTrend,
   BaselineReport,
   BulkRequest,
   BulkResponse,
   PortDisposition,
   PortDispositionItem,
+  PortFleetTotals,
+  PortHostSummary,
   PortOverview,
   PortPolicy,
   PortReport,
@@ -2037,6 +2043,29 @@ export const baselineApi = {
           ? '/baseline/fleet?stale=1'
           : '/baseline/fleet',
     ),
+  /**
+   * 流式体检（SSE）：每台一完成就推一条事件。
+   *
+   * 「重新体检」按钮走这条 —— 不必等整轮跑完就能逐台看到结果（边到边渲染）。
+   * 跑完后端照样把结果落库，所以下一次打开页面读的仍是快照。
+   */
+  fleetStream: (
+    onEvent: (
+      event: InspectionStreamEvent<BaselineHostSummary, BaselineFleetTotals>,
+    ) => void,
+    signal?: AbortSignal,
+  ) =>
+    streamSse<InspectionStreamEvent<BaselineHostSummary, BaselineFleetTotals>>(
+      '/baseline/fleet/stream',
+      {},
+      onEvent,
+      signal,
+    ),
+  /** 巡检趋势（按小时桶）；hostId 留空 = 全平台趋势 */
+  history: (hostId = '', days = 30) =>
+    get<InspectionTrend>(
+      `/baseline/history?days=${days}${hostId ? `&host_id=${encodeURIComponent(hostId)}` : ''}`,
+    ),
   /** 单台服务器的完整体检报告（hostId 为 local 或受管主机 id） */
   /**
    * 单台服务器的完整体检报告（hostId 为 local 或受管主机 id）。
@@ -2084,6 +2113,26 @@ export const portsApi = {
         : stale
           ? '/ports/overview?stale=1'
           : '/ports/overview',
+    ),
+  /**
+   * 流式巡检（SSE）：每台一完成就推一条事件。
+   *
+   * 「重新巡检」按钮走这条（与安全基线同一套）；跑完后端照样落库。
+   */
+  overviewStream: (
+    onEvent: (event: InspectionStreamEvent<PortHostSummary, PortFleetTotals>) => void,
+    signal?: AbortSignal,
+  ) =>
+    streamSse<InspectionStreamEvent<PortHostSummary, PortFleetTotals>>(
+      '/ports/overview/stream',
+      {},
+      onEvent,
+      signal,
+    ),
+  /** 巡检趋势（按小时桶）；hostId 留空 = 全平台趋势 */
+  history: (hostId = '', days = 30) =>
+    get<InspectionTrend>(
+      `/ports/history?days=${days}${hostId ? `&host_id=${encodeURIComponent(hostId)}` : ''}`,
     ),
   /**
    * 单台服务器详情（监听端口 + 可疑进程）。

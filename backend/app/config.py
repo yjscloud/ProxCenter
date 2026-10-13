@@ -183,6 +183,25 @@ class Settings(BaseSettings):
     # 保留天数。采样循环每小时清一次超期行；<= 0 表示永久保留（会一直涨）。
     metrics_retention_days: int = 30
 
+    # --- 巡检快照落库 ------------------------------------------------------
+    # 「端口与进程」「安全基线」的现场巡检结果按主机落一张快照表，读接口只读
+    # 快照、现场巡检交给后台作业。详见 app/inspection.py。
+    # 关掉即回到改造前行为：每次打开都现场巡检（调试 / 排查时可临时关闭）。
+    inspection_snapshot_enabled: bool = True
+    # 快照预热周期（秒）。与端口巡检同频（5 分钟）足够 —— 它决定「页面上的数据
+    # 最多旧多少」，而不是响应速度。
+    inspection_warm_interval: int = 300
+    # 预热要落哪些语言（逗号分隔）。面板只有中英两种语言，默认都落 —— 否则
+    # 英文界面的用户读不到对应语言的快照、每次都要回落真扫（等于没优化）。
+    # 代价是每轮多跑一遍巡检；只想优化中文时改成 "zh-CN" 即可。
+    inspection_warm_langs: str = "zh-CN,en"
+    # 巡检租约时长（秒）：多 worker / 多实例部署时，同一轮预热只让一个进程真正
+    # 去扫，其余跳过。单进程部署下它不起作用（也不会有副作用）。
+    inspection_lease_seconds: int = 900
+    # 客户机 IP 预热周期（秒）。与 guestip 的进程内缓存时长对齐（约 2 分钟），
+    # 让虚拟机列表的 IP 列基本总能命中落库结果。
+    guest_ip_warm_interval: int = 120
+
     # --- Database ----------------------------------------------------------
     # 面板只使用 MySQL：建表与补列在启动时自动完成。
     db_host: str = "127.0.0.1"
@@ -192,6 +211,9 @@ class Settings(BaseSettings):
     db_name: str = ""
     # 连接池上限（面板是单进程异步服务，8 足够）
     db_pool_size: int = 8
+    # 空闲连接回收秒数。MySQL 默认 wait_timeout 是 8 小时，但中间的网络设备
+    # 往往更早掐断空闲连接；定时回收一轮，避免借到一条已经死掉的连接。
+    db_pool_recycle: int = 3600
 
     @model_validator(mode="after")
     def _reject_weak_secret_key(self) -> "Settings":
@@ -220,6 +242,12 @@ class Settings(BaseSettings):
     def totp_required_role_list(self) -> List[str]:
         """必须开启两步验证的角色（TOTP_REQUIRED_ROLES，逗号分隔）。"""
         return [r.strip() for r in self.totp_required_roles.split(",") if r.strip()]
+
+    @property
+    def inspection_warm_lang_list(self) -> List[str]:
+        """巡检快照预热要落库的语言（INSPECTION_WARM_LANGS，逗号分隔）。"""
+        langs = [item.strip() for item in self.inspection_warm_langs.split(",") if item.strip()]
+        return langs or ["zh-CN"]
 
     @property
     def secure_cookie(self) -> bool:

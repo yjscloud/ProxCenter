@@ -44,7 +44,7 @@ import {
   Switch,
 } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { ConfirmDialog, useConfirm } from '../components/ui/ConfirmDialog';
 import { DetailSkeleton } from '../components/ui/Spinner';
 import { EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
 import { ProgressBar } from '../components/ui/ProgressBar';
@@ -99,7 +99,8 @@ import {
   taskStatusMeta,
   vmStatusMeta,
 } from '../utils/status'
-import { tStatic, useT, type MessageKey } from '../i18n';;
+import { tStatic, useT, type MessageKey, type TFunc } from '../i18n';
+import { isDestructivePower, powerConfirmOptions } from '../utils/powerConfirm';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -141,6 +142,22 @@ const TABS: Array<{ key: TabKey; labelKey: MessageKey; icon: React.ReactNode }> 
   { key: 'config', labelKey: 'vmDetail.tab.config', icon: <IconLayers size={15} /> },
 ];
 
+/**
+ * 回环 / 链路本地地址的标注（返回空串 = 是业务地址，不标注）。
+ *
+ * Guest Agent 会把 `lo` 的 127.0.0.1 与网卡的 fe80:: 一并报上来。它们在任何机器上
+ * 都长这样，直接列出来很容易被读成「这台机器已经有 IP 了」—— 而列表页的 IP 列
+ * 只显示业务地址、此时是空的，两边口径不一致，看起来就像面板坏了。
+ */
+function localAddressNote(ip: string | undefined, t: TFunc): string {
+  const value = String(ip || '').trim().toLowerCase();
+  if (value.startsWith('127.') || value === '::1') return t('vmDetail.addrLoopback');
+  if (value.startsWith('fe80') || value.startsWith('169.254.')) {
+    return t('vmDetail.addrLinkLocal');
+  }
+  return '';
+}
+
 /* ==========================================================================
    主页面
    ========================================================================== */
@@ -157,18 +174,28 @@ export function VmDetail() {
   const toast = useToast();
   const runner = useTaskRunner();
   const { canWrite } = useAuth();
+  /* 关机 / 停止 / 重启前弹一次确认（见 utils/powerConfirm） */
+  const [powerConfirmEl, confirmPower] = useConfirm();
 
   const [searchParams, setSearchParams] = useSearchParams();
 
   /* 这台机器属于哪条 PVE 连接（列表页跳转时带上）。设成页面级默认后，
      详情页里所有请求都会自动跟随 —— 否则请求会打到「当前连接」，
      而那台 PVE 上没有这个节点时会报 hostname lookup 失败。 */
-  const pageConnection = searchParams.get('connection') ?? '';
+  /* 旧链接兼容：跳控制台时曾把 `?tab=console` 拼在连接 id 后面
+     （`…?connection=x?tab=console`，见 api/guests.guestPath）。浏览器书签与历史
+     里可能还留着这种地址，把连接和那个 tab 一起救回来，免得一打开就报
+     「目标 PVE 连接不存在」。 */
+  const rawConnection = searchParams.get('connection') ?? '';
+  const [connectionParam, ...stuck] = rawConnection.split('?');
+  const pageConnection = connectionParam;
+  const stuckTab = stuck.length ? stuck.join('?').replace(/^tab=/, '') : '';
   useEffect(() => {
     setPageConnection(pageConnection);
     return () => setPageConnection('');
   }, [pageConnection]);
-  const tabParam = (searchParams.get('tab') as TabKey | null) ?? 'overview';
+  const tabParam =
+    ((searchParams.get('tab') || stuckTab) as TabKey | null) ?? 'overview';
   const tab: TabKey = TABS.some((t) => t.key === tabParam) ? tabParam : 'overview';
 
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -370,6 +397,13 @@ export function VmDetail() {
       }
       if (!vm) return;
 
+      /* 关机 / 停止 / 重启先确认：详情页里这三个按钮挨在一起，误点一下这台机器
+         上的服务就断了。启动 / 恢复 / 挂起没有这个风险，不拦。 */
+      if (isDestructivePower(action)) {
+        const ok = await confirmPower(powerConfirmOptions(t, action, vm, 'qemu'));
+        if (!ok) return;
+      }
+
       const labels: Record<typeof action, MessageKey> = {
         start: 'power.start',
         stop: 'power.stop',
@@ -401,7 +435,7 @@ export function VmDetail() {
         /* toast 已处理 */
       }
     },
-    [canWrite, vm, node, vmid, runner, toast],
+    [canWrite, vm, node, vmid, runner, toast, t, confirmPower],
   );
 
   /* ---- 加载 / 错误 ---- */
@@ -616,6 +650,12 @@ export function VmDetail() {
             onClick={() => {
               void vmQuery.refetch();
               invalidate();
+              /* 快照与备份是各自独立的缓存（不挂在 ['vm',…] 前缀下）：
+                 停在这两个 Tab 时点刷新，界面原本一动不动 */
+              void queryClient.invalidateQueries({
+                queryKey: ['snapshots', node, vmid],
+              });
+              void queryClient.invalidateQueries({ queryKey: ['backups'] });
             }}
           >
             <IconRefresh size={16} />
@@ -733,6 +773,9 @@ export function VmDetail() {
           })}
         />
       </Modal>
+
+      {/* 电源操作确认（关机 / 停止 / 重启）：启动不经过这里（见 power） */}
+      {powerConfirmEl}
 
       {/* ---- 删除确认 ---- */}
       <ConfirmDialog
@@ -1094,7 +1137,9 @@ function OverviewTab({
             </div>
           )}
 
-          {/* Guest Agent 网卡信息（容错） */}
+          {/* Guest Agent 网卡信息（容错）。回环与链路本地地址照常列出，但标注出来：
+              它们不是业务地址，混在里面会让人以为「这台机器已经有 IP 了」，而列表页
+              的 IP 列（只显示业务地址）却是空的。 */}
           {vm.agent_available && (vm.agent_interfaces?.length ?? 0) > 0 ? (
             <div className="mt-16">
               <div className="wizard-section-title">{t('vmDetail.agentNics')}</div>
@@ -1105,8 +1150,20 @@ function OverviewTab({
                       <div className="hw-item-text">
                         <span className="hw-item-label">{iface.name}</span>
                         <span className="hw-item-value mono">
-                          {iface.ip_addresses?.map((a) => a.ip_address).join(', ') ||
-                            t('vmDetail.noAddress')}
+                          {iface.ip_addresses?.length
+                            ? iface.ip_addresses.map((a, index) => {
+                                const note = localAddressNote(a.ip_address, t);
+                                return (
+                                  <span key={`${a.ip_address}-${index}`}>
+                                    {index > 0 ? ', ' : ''}
+                                    {a.ip_address}
+                                    {note ? (
+                                      <span className="text-muted">（{note}）</span>
+                                    ) : null}
+                                  </span>
+                                );
+                              })
+                            : t('vmDetail.noAddress')}
                         </span>
                       </div>
                     </div>
@@ -1472,7 +1529,13 @@ function HardwareTab({
             <HwRow
               label="machine"
               title={t('vmDetail.hwMachine')}
-              value={String(vm.config.machine ?? 'pc')}
+              /* 配置里没有 machine 就是「PVE 的默认机型」（i440fx）。以前这里兜底
+                 显示成 pc —— 那是 PVE 8 的叫法，在 PVE 9 上根本不存在这个机型，
+                 会让人以为机器的机型有问题。 */
+              value={
+                String(vm.config.machine ?? '').trim() ||
+                t('vmDetail.machineDefault')
+              }
               editable={canEdit}
               onEdit={() => {
                 setEditKey('machine');
@@ -2012,6 +2075,8 @@ function AddNetworkModal({
   const [bridge, setBridge] = useState('vmbr0');
   const [model, setModel] = useState('virtio');
   const [vlan, setVlan] = useState('');
+  /* 速率上限（MB/s）；'' = 不限速 */
+  const [rate, setRate] = useState('');
   const [firewall, setFirewall] = useState(true);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -2040,6 +2105,7 @@ function AddNetworkModal({
     if (!open) return;
     setModel('virtio');
     setVlan('');
+    setRate('');
     setFirewall(true);
     setErrors({});
   }, [open]);
@@ -2056,9 +2122,13 @@ function AddNetworkModal({
   const submit = () => {
     const next: Record<string, string> = {};
     const tag = vlan.trim();
+    const rateText = rate.trim();
     if (!bridge) next.bridge = t('vmDetail.addNicBridgePlaceholder');
     if (tag && (!/^\d+$/.test(tag) || Number(tag) < 1 || Number(tag) > 4094)) {
       next.vlan = t('vmDetail.addNicVlanInvalid');
+    }
+    if (rateText && (!/^\d+(\.\d+)?$/.test(rateText) || Number(rateText) < 0)) {
+      next.rate = t('vmDetail.addNicRateInvalid');
     }
     setErrors(next);
     if (Object.keys(next).length > 0) return;
@@ -2068,6 +2138,7 @@ function AddNetworkModal({
       model,
       vlan_tag: tag ? Number(tag) : null,
       firewall,
+      rate: rateText ? Number(rateText) : null,
     });
   };
 
@@ -2132,6 +2203,17 @@ function AddNetworkModal({
           placeholder={t('vmDetail.addNicVlanPlaceholder')}
           mono
           hint={t('vmDetail.addNicVlanRange')}
+        />
+        <Input
+          label={t('vmDetail.addNicRate')}
+          type="number"
+          min={0}
+          value={rate}
+          onChange={(e) => setRate(e.target.value)}
+          error={errors.rate}
+          placeholder={t('vmDetail.addNicRatePlaceholder')}
+          hint={t('vmDetail.addNicRateHint')}
+          mono
         />
         <Switch
           checked={firewall}

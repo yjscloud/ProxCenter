@@ -26,6 +26,8 @@ export interface ConfirmDialogProps {
   requireText?: string;
   /** 确认按钮 loading */
   loading?: boolean;
+  /** 挂载容器，默认 document.body（全屏控制台里需要挂到全屏元素内，见 Modal） */
+  container?: HTMLElement | null;
 }
 
 export function ConfirmDialog({
@@ -40,6 +42,7 @@ export function ConfirmDialog({
   danger = false,
   requireText,
   loading = false,
+  container,
 }: ConfirmDialogProps) {
   const t = useT();
   const [typed, setTyped] = useState('');
@@ -94,6 +97,7 @@ export function ConfirmDialog({
           </Button>
         </>
       }
+      container={container}
     >
       <div className="confirm-body">
         {danger ? (
@@ -136,6 +140,8 @@ export interface ConfirmOptions {
   cancelText?: string;
   danger?: boolean;
   requireText?: string;
+  /** 挂载容器：在会全屏的界面里（如控制台）传全屏元素，否则弹窗会被全屏挡住 */
+  container?: HTMLElement | null;
 }
 
 /**
@@ -178,6 +184,7 @@ export function useConfirm(): [
       cancelText={state.options.cancelText}
       danger={state.options.danger}
       requireText={state.options.requireText}
+      container={state.options.container}
       onCancel={() => close(false)}
       onConfirm={() => close(true)}
     >

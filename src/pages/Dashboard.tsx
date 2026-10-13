@@ -2,9 +2,9 @@
    ProxCenter — 仪表盘
    ========================================================================== */
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   clusterApi,
   dashboardApi,
@@ -60,7 +60,10 @@ import {
 } from '../hooks/useDashboardLayout';
 import { useT } from '../i18n';
 
-const REFRESH = 10_000;
+/* 仪表盘各卡片的自动刷新间隔。原先 10 秒：多路接口（虚拟机 / 节点 / 集群 / 存储 /
+   任务 / TopN）都会在这么短的周期里重复打后端与 PVE，属于无谓的常驻轮询。30 秒
+   对「看一眼集群概览」足够，节点 KPI 那条实时曲线走 WebSocket，不受这里影响。 */
+const REFRESH = 30_000;
 
 /* 「集群节点」卡片最多列几个节点。
    节点一多，卡片里再一行行堆下去就是半屏滚动条 —— 这块是「扫一眼健康度」
@@ -179,6 +182,14 @@ export function Dashboard() {
   /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
      （配好之后自动恢复） */
   const pveReady = usePveReady();
+  const queryClient = useQueryClient();
+  /* 手动刷新按钮的转圈状态：**只在用户点过之后**才转，而不是看全局 isFetching ——
+     这一页每 30 秒自动轮询一次，用全局值会让按钮自己转个不停、还点不动。 */
+  const anyFetching = useIsFetching() > 0;
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    if (refreshing && !anyFetching) setRefreshing(false);
+  }, [refreshing, anyFetching]);
 
   /* ---- 数据查询（每 10 秒自动刷新）---- */
   const vmsQuery = useQuery({
@@ -935,13 +946,18 @@ export function Dashboard() {
             variant="secondary"
             icon={<IconRefresh size={15} />}
             onClick={() => {
-              void vmsQuery.refetch();
-              void nodesQuery.refetch();
-              void storagesQuery.refetch();
-              void tasksQuery.refetch();
-              void clusterQuery.refetch();
+              setRefreshing(true);
+              /* 按前缀失效，而不是逐个 refetch：这个页面有 8 路查询（vms / nodes /
+                 storages / cluster.status / cluster.tasks / cluster.ha-status /
+                 dashboard.capacity / dashboard.top），逐个列一定会有漏 —— 原先就
+                 漏了 HA、容量预测、Top 排行三路，点刷新后它们停在旧值不动。 */
+              void queryClient.invalidateQueries({ queryKey: ['vms'] });
+              void queryClient.invalidateQueries({ queryKey: ['nodes'] });
+              void queryClient.invalidateQueries({ queryKey: ['storages'] });
+              void queryClient.invalidateQueries({ queryKey: ['cluster'] });
+              void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
             }}
-            loading={vmsQuery.isFetching && !vmsQuery.isLoading}
+            loading={refreshing}
           >
             {t('dashboard.refresh')}
           </Button>

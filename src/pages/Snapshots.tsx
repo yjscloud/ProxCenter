@@ -170,7 +170,10 @@ export function Snapshots() {
             if (s.node && s.vmid) {
               // 容器快照要跳到容器页：虚拟机页拿不到 /lxc 的配置
               navigate(
-                `${guestPath({ node: s.node, vmid: s.vmid, type: s.vm_type })}?tab=snapshots`,
+                guestPath(
+                  { node: s.node, vmid: s.vmid, type: s.vm_type },
+                  { tab: 'snapshots' },
+                ),
               );
             }
           }}

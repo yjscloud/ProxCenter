@@ -771,6 +771,24 @@ export const zhCN = {
   'power.resume': '恢复',
   'power.task': '{action}「{name}」',
   'power.denied': '当前角色不允许执行电源操作',
+  /* 关机 / 停止 / 重启 / 挂起前的二次确认：这四件事都会让机器上的服务中断，而
+     列表与详情把它们做成一排图标按钮，误点一次就是一次事故。启动 / 恢复没有这个
+     风险，一律不拦。三处（列表、虚拟机详情、容器详情）共用这几条文案。 */
+  'power.confirmKindVm': '虚拟机',
+  'power.confirmKindLxc': '容器',
+  'power.confirmShutdownTitle': '关闭{kind}「{name}」？',
+  'power.confirmShutdownMessage':
+    '会向客户机发送关机信号，60 秒内没关掉就强制断电；期间这台机器上的服务会中断。',
+  'power.confirmSuspendTitle': '挂起{kind}「{name}」？',
+  'power.confirmSuspendMessage':
+    '客户机会被挂起（内存状态写回磁盘），这台机器上的服务会中断，要手动「恢复」才会继续运行。',
+  'power.confirmStopTitle': '停止{kind}「{name}」？',
+  'power.confirmStopMessage':
+    '直接断电，不等系统自己关闭；客户机来不及落盘的数据会丢失。',
+  'power.confirmRebootTitle': '重启{kind}「{name}」？',
+  'power.confirmRebootMessage': '客户机会立刻重启，这台机器上的服务短暂中断。',
+  'power.confirmBulkTitle': '{action}选中的 {count} {unit}{noun}？',
+  'power.confirmBulkMessage': '这是对多台机器的{action}操作，提交后没法逐台取消。',
 
   /* ----------------------------------------------------- 详情页：虚拟机 */
   'common.name': '名称',
@@ -840,6 +858,11 @@ export const zhCN = {
   'vmDetail.ipDhcp': 'IP 自动获取（DHCP）',
   'vmDetail.agentNics': '客户机内网卡（Guest Agent）',
   'vmDetail.noAddress': '无地址',
+  /* 回环 / 链路本地地址的标注：Agent 会把 127.0.0.1 与 fe80:: 一起报上来，不标注
+     的话很容易被读成「这台机器已经有 IP 了」，而列表页的 IP 列是空的（它只显示
+     业务地址），两边口径不一致会让人以为面板坏了。 */
+  'vmDetail.addrLoopback': '回环',
+  'vmDetail.addrLinkLocal': '链路本地',
   'vmDetail.recentTasks': '最近任务',
   'vmDetail.recentTasksCaption': '虚拟机 {vmid} 的最近任务',
   'vmDetail.noTasks': '暂无任务',
@@ -872,6 +895,9 @@ export const zhCN = {
   'vmDetail.hwAffinity': 'CPU 亲和性',
   'vmDetail.hwAffinityValue': '未限制',
   'vmDetail.hwMachine': '机型',
+  /* PVE 配置里没有 machine 键 = 用它自己的默认机型（i440fx）。别显示成 pc ——
+     那是 PVE 8 的叫法，在 PVE 9 上不存在，会被当成配置有问题。 */
+  'vmDetail.machineDefault': '默认（i440fx）',
   'vmDetail.hwScsihw': 'SCSI 控制器',
   'vmDetail.hwBoot': '启动顺序',
   'vmDetail.hwEfi': 'EFI 变量盘',
@@ -957,6 +983,10 @@ export const zhCN = {
   'vmDetail.addNicVlanPlaceholder': '留空表示不打标签',
   'vmDetail.addNicVlanRange': '1 - 4094',
   'vmDetail.addNicVlanInvalid': 'VLAN ID 需在 1 - 4094 之间',
+  'vmDetail.addNicRate': '速率上限（MB/s）',
+  'vmDetail.addNicRatePlaceholder': '留空不限速',
+  'vmDetail.addNicRateHint': '对应 PVE 的 rate，单位 MB/s',
+  'vmDetail.addNicRateInvalid': '速率需为非负数字',
   'vmDetail.addNicFirewall': '启用防火墙',
   'vmDetail.addNicFirewallHint': '由 Proxmox 的防火墙规则管控这张网卡',
   'vmDetail.addNicNoticeTitle': '生效方式',
@@ -1168,7 +1198,6 @@ export const zhCN = {
   'vmCreate.storageOption': '{storage}（{type}，可用 {avail}）',
   'vmCreate.connCurrent': '当前连接',
   'vmCreate.connCurrentTag': '（当前连接）',
-  'vmCreate.connOption': '{name} · {host}:{port}',
   'vmCreate.cloneSourcePlaceholder': '请选择克隆源',
   'vmCreate.templateName': '模板 {vmid}',
   'vmCreate.cloneSourceOption': '{name} · {vmid} @ {node}',
@@ -1308,6 +1337,9 @@ export const zhCN = {
   'vmCreate.nicVlanPlaceholder': '留空表示无 VLAN',
   'vmCreate.nicMac': 'MAC 地址',
   'vmCreate.nicMacPlaceholder': '留空自动生成',
+  'vmCreate.nicRate': '速率上限（MB/s）',
+  'vmCreate.nicRatePlaceholder': '留空不限速',
+  'vmCreate.nicRateHint': '限制这张网卡的带宽，单位 MB/s',
   'vmCreate.nicIp': 'IP 地址 #{index}',
   'vmCreate.nicIpPlaceholder': 'dhcp 或 192.168.1.10/24',
   'vmCreate.nicIpWinHint': 'Windows 不会自动下发：需在第 5 步手动开启 Cloudbase-Init',
@@ -2731,6 +2763,10 @@ export const zhCN = {
   'conn.fieldName': '连接名称',
   'conn.fieldNameHint': '用于区分多台 PVE；留空则用主机地址',
   'conn.namePlaceholder': '如 机房A / 生产集群',
+  /* 区域 / 机房：纯分组标签，多机房时节点列表按「区域 → 连接 → 节点」展开 */
+  'conn.fieldRegion': '区域 / 机房',
+  'conn.fieldRegionHint': '只用于界面分组；留空归入「未分区」',
+  'conn.regionPlaceholder': '如 广州机房（留空 = 未分区）',
   'conn.fieldHost': '集群主机',
   'conn.fieldHostHint': 'IP 或域名，不带协议前缀与端口',
   'conn.hostPlaceholder': '192.168.1.10 或 pve.example.com',
@@ -2843,77 +2879,80 @@ export const zhCN = {
   'quickDeploy.storageOption': '{name}（{type}，可用 {avail}）',
   'quickDeploy.errName': '请填写实例名称',
   'quickDeploy.errSpec': '请选择资源规格',
-  'quickDeploy.errBalloonInt': '最低保留内存需为不小于 0 的整数',
-  'quickDeploy.errBalloonMin': '最低保留内存不能小于 128 MB',
-  'quickDeploy.errBalloonMax': '最低保留内存必须小于规格的内存上限',
   'quickDeploy.errNode': '请选择节点',
   'quickDeploy.errTemplate': '请选择模板',
   'quickDeploy.errOsTemplate': '请选择系统模板',
   'quickDeploy.errStorage': '请选择存储',
   'quickDeploy.errStaticIp': '请填写静态 IP',
+  'quickDeploy.errVlan': 'VLAN 标签需为 1~4094 之间的整数',
   'quickDeploy.errQuota': '{label}下发额度已用尽',
   'quickDeploy.quotaFallback': '该类',
   'quickDeploy.created': '已提交创建',
   'quickDeploy.createdVmHint': 'VMID {vmid}，可在任务队列查看进度',
   'quickDeploy.createdLxcHint': 'CT {vmid}，可在任务队列查看进度',
   'quickDeploy.createFailed': '创建失败',
-  'quickDeploy.summaryVm': '沿用模板磁盘',
-  'quickDeploy.summaryLxc': '{n}G 磁盘',
+  'quickDeploy.summaryDisk': '{n}G 磁盘',
   'quickDeploy.summary': '{cores}C · {mem}G 内存 · {disk}',
   'quickDeploy.noPermTitle': '没有下发权限',
-  'quickDeploy.noPermBody': '当前账号没有 vm.create 权限，只能查看本页。',
+  'quickDeploy.noPermBody': '需要 vm.create 权限。',
   'quickDeploy.quotaBlockedTitle': '{label}下发额度已用尽',
-  'quickDeploy.quotaBlockedBody': '已用 {used} / {quota}。请让管理员在「设置 → 创建默认值」里调整额度。',
+  'quickDeploy.quotaBlockedBody': '已用 {used} / {quota}，可在「设置 → 创建默认值」调整。',
   'quickDeploy.noSpecTitle': '还没有可用的资源规格',
-  'quickDeploy.noSpecPre': '管理员可在「设置 → 资源规格」里添加，例如「标准型 2C4G」。在此之前请用',
+  'quickDeploy.noSpecPre': '请在「设置 → 资源规格」添加，或改用',
   'quickDeploy.noSpecCustom': '自定义部署',
-  'quickDeploy.noSpecPost': '，那里的核数与内存自己填。',
+  'quickDeploy.noSpecPost': '自行填写核数与内存。',
   'quickDeploy.sectionName': '实例名称',
-  'quickDeploy.nameSubtitleVm': '名称即虚拟机名，创建后也可在详情页改',
-  'quickDeploy.nameSubtitleLxc': '名称即容器主机名（hostname）',
+  'quickDeploy.nameSubtitleVm': '创建后可在详情页改',
+  'quickDeploy.nameSubtitleLxc': '即容器主机名',
   'quickDeploy.labelName': '名称',
   'quickDeploy.namePlaceholderVm': '如 web-01',
   'quickDeploy.namePlaceholderLxc': '如 redis-01',
   'quickDeploy.labelTags': '标签（可选）',
   'quickDeploy.tagsPlaceholder': '如 web;prod（分号分隔）',
   'quickDeploy.sectionSpec': '资源规格',
-  'quickDeploy.specSubtitle': '由管理员定义；不含特殊硬件需求的标准机器选这里就够了',
+  'quickDeploy.specSubtitle': '由管理员定义；系统盘按规格大小扩容',
   'quickDeploy.specUnitCores': '核',
   'quickDeploy.specUnitMem': 'G 内存',
   'quickDeploy.specUnitDisk': 'G 磁盘',
-  'quickDeploy.labelBalloon': '最低保留内存（MB，可选）',
-  'quickDeploy.balloonHint': '留空 = 不回收（默认）；如 1024 = 至少保留 1G，余量可被宿主机收回',
   'quickDeploy.sectionLocation': '部署位置',
-  'quickDeploy.locationSubtitle': '节点卡片上是它当前的 CPU / 内存 / 磁盘占用',
+  'quickDeploy.locationSubtitle': '卡片上是节点当前占用',
   'quickDeploy.labelConn': '目标 PVE 主机',
-  'quickDeploy.connHint': '可在已配置的多台 PVE 之间选择',
+  'quickDeploy.connHint': '多台 PVE 时在这里选',
   'quickDeploy.labelNode': '节点',
-  'quickDeploy.nodeError': '读取节点失败，请检查该主机的连接',
+  'quickDeploy.nodeError': '读取节点失败，请检查连接',
   'quickDeploy.sectionImage': '系统镜像',
-  'quickDeploy.imageSubtitleVm': '从虚拟机模板链接克隆：秒级完成、不额外占用空间',
-  'quickDeploy.imageSubtitleLxc': '容器从 Proxmox 的 OS 模板（vztmpl）创建，磁盘按规格大小',
+  'quickDeploy.imageSubtitleVm': '从模板链接克隆，秒级完成',
+  'quickDeploy.imageSubtitleLxc': '从 OS 模板创建，磁盘按规格',
   'quickDeploy.labelTemplate': '模板',
-  'quickDeploy.templateHint': '只列虚拟机模板（与目标主机一致）',
+  'quickDeploy.templateHint': '只列虚拟机模板',
   'quickDeploy.labelOsTemplate': '系统模板',
   'quickDeploy.osTemplateHint': '节点上已下载的容器模板',
   'quickDeploy.labelStorage': '存储',
-  'quickDeploy.storageHint': '容器需要支持 rootdir 的存储',
-  'quickDeploy.linkedCloneNote': '链接克隆沿用模板磁盘，不按规格的 {n}G 调整；磁盘依赖模板，模板被删这些机器就起不来。要独立磁盘请用「自定义部署」做完整克隆。',
+  'quickDeploy.storageHint': '需支持 rootdir',
+  'quickDeploy.linkedCloneNote': '链接克隆：系统盘将扩到规格的 {n}G（只增不减）。模板被删后这些机器起不来；要独立磁盘请用「自定义部署」。',
   'quickDeploy.sectionNetwork': '网络',
-  'quickDeploy.networkSubtitleVm': '默认静态地址：从「网络 → IP 地址池」里自动挑一个空闲地址，可改',
-  'quickDeploy.networkSubtitleLxc': '容器的 IP 直接写在 net0 上，开机即生效',
+  'quickDeploy.networkSubtitleVm': '可加多张网卡；静态地址从「网络 → IP 地址池」自动挑，可改',
+  'quickDeploy.networkSubtitleLxc': '可加多张网卡，IP 直接写在 netN 上',
   'quickDeploy.labelBridge': '网桥',
+  'quickDeploy.labelVlan': 'VLAN 标签',
+  'quickDeploy.vlanPlaceholder': '留空 = 不划 VLAN',
+  'quickDeploy.labelRate': '速率上限（MB/s）',
+  'quickDeploy.ratePlaceholder': '留空不限速',
+  'quickDeploy.rateHint': '对应 PVE 的 rate',
+  'quickDeploy.addNic': '添加网卡',
+  'quickDeploy.removeNic': '移除这张网卡',
+  'quickDeploy.nicTitle': '{index} 号网卡',
   'quickDeploy.labelIpMode': 'IP 获取方式',
   'quickDeploy.ipModeStatic': '静态',
   'quickDeploy.labelPool': '网段',
-  'quickDeploy.poolHint': '已按当前网桥自动选中；换网段会重新取空闲地址',
+  'quickDeploy.poolHint': '已按网桥自动选中',
   'quickDeploy.labelIp': 'IP 地址',
-  'quickDeploy.ipPlaceholder': '如 172.16.149.50 或 172.16.149.50/24',
+  'quickDeploy.ipPlaceholder': '如 172.16.149.50',
   'quickDeploy.labelGateway': '网关',
   'quickDeploy.gatewayPlaceholder': '如 172.16.149.1',
   'quickDeploy.sectionLogin': '登录信息',
-  'quickDeploy.loginSubtitleVm': '通过 cloud-init 写入；模板 / 镜像需带 cloud-init 才能生效',
-  'quickDeploy.loginSubtitleLxc': '容器创建时写入 root 密码',
+  'quickDeploy.loginSubtitleVm': '经 cloud-init 写入（模板需带 cloud-init）',
+  'quickDeploy.loginSubtitleLxc': '创建时写入 root 密码',
   'quickDeploy.labelUser': '用户名',
   'quickDeploy.labelPassword': '密码',
   'quickDeploy.labelRootPassword': 'root 密码',
@@ -3063,6 +3102,12 @@ export const zhCN = {
   /* ---------------------------------------------------------------- 控制台 */
   'console.mode': 'VNC 图形控制台',
   'console.sendCad': '发送 Ctrl+Alt+Del',
+  /* 发送前确认：客户机收到的是「安全注意序列」，具体表现由客户机决定 ——
+     Windows 大多只是回到安全选项 / 登录界面，而 Linux 与 GRUB 往往直接重启。
+     这个差异不说清，用户会以为它无害（或以为它没用）。 */
+  'console.cadConfirmTitle': '向「{name}」发送 Ctrl+Alt+Del？',
+  'console.cadConfirmMessage':
+    '客户机会收到「安全注意序列」：Windows 通常弹出安全选项或回到登录界面，Linux / GRUB 往往会直接重启 —— 这台机器上的服务会中断。',
   'console.restoreHeight': '恢复正常高度',
   'console.compactHeight': '收窄控制台高度',
   'console.reconnect': '重新连接控制台',
@@ -3261,6 +3306,30 @@ export const zhCN = {
   'ippool.apiPost': ' 接口需要先重启才能生效。',
   'ippool.colName': '名称',
   'ippool.colBridge': '网桥',
+  /* 池记着它属于哪个二层网络：光有网桥不够 —— 同一个 vmbr0 上可能挂着多个 VLAN
+     网段。留空 = 不限，靠这一项才能把池对应到正确的 VLAN 网卡上。 */
+  'ippool.colVlan': 'VLAN',
+  'ippool.vlanPlaceholder': '不限',
+  /* 适用节点：集群里不同节点接的网络往往不同（同一个 vmbr0，node1 是
+     192.168.1.0/24、node2 可能是 10.0.0.0/24），池限定节点后才不会在错误的
+     节点上被选出来。空 = 全部节点。 */
+  'ippool.colScope': '适用范围',
+  'ippool.scopeAnyPve': '全部 PVE',
+  'ippool.scopeAnyNode': '全部节点',
+  'ippool.nodesEditTitle': '选择这个地址池的适用范围',
+  'ippool.scopeTitle': '「{name}」的适用范围',
+  /* 适用范围弹窗（两级树，见 ScopeTree）里的控件与说明 */
+  'ippool.scopeTreeTitle': '适用的节点',
+  'ippool.scopeTreeHint':
+    '勾选的节点在下发虚拟机时才会列出这个地址池；一个都不勾 = 所有 PVE 的所有节点都可用。以后新增的节点不会自动纳入 —— 除非一个都不勾。',
+  'ippool.scopeSelectedNodes': '已选 {n}/{total} 个节点',
+  'ippool.scopeSelectAll': '全选',
+  'ippool.scopeClear': '清空',
+  'ippool.scopeSearch': '在 {n} 个节点里搜索…',
+  'ippool.scopeNoMatch': '没有匹配项',
+  'ippool.scopeCollapse': '收起 {name}',
+  'ippool.scopeExpand': '展开 {name}',
+  'ippool.nodesEmpty': '读不到节点列表（PVE 是否还没连接？）',
   'ippool.colSubnet': '子网',
   'ippool.colGateway': '网关',
   'ippool.colStart': '起始 IP',
@@ -3340,7 +3409,9 @@ export const zhCN = {
   'opt.netVirtio': 'VirtIO (半虚拟化，最快)',
   'opt.biosSeabios': 'SeaBIOS (默认)',
   'opt.biosOvmf': 'OVMF (UEFI)',
-  'opt.machinePc': 'i440fx (默认)',
+  /* 默认机型不写进 PVE 配置：PVE 8 的 API 认 pc、PVE 9 只认 i440fx，写死哪个都会
+     在另一个版本上被驳回（机器建不出来）。留空 = 让 PVE 用自己的默认（i440fx）。 */
+  'opt.machineDefault': '默认（i440fx，兼容性最好）',
   'opt.machineQ35': 'q35 (PCIe，推荐 Win11)',
   'opt.numaBind': 'bind（只在指定宿主节点上分配）',
   'opt.numaInterleave': 'interleave（在宿主节点间轮转）',
@@ -4016,6 +4087,11 @@ export const zhCN = {
   'nodesConnections.title': 'Proxmox 连接',
   'nodesConnections.subtitle':
     '面板通过 API Token 访问各台 Proxmox VE；每台连接相互独立、地位相同',
+  /* 非管理员直接访问这一页时的提示：整页属于 settings.manage */
+  'nodesConnections.noPermissionTitle': '需要管理员权限',
+  'nodesConnections.noPermissionBody':
+    '连接配置包含 PVE 主机地址、API 令牌与控制台凭据，只有管理员可以查看和修改。',
+  'nodesConnections.backToNodes': '返回节点列表',
 
   /* -------------------------------------------------------- 飞书机器人 */
   'feishu.title': '飞书机器人',
@@ -4406,6 +4482,14 @@ export const zhCN = {
   'networks.stateFilterAria': '按激活状态筛选',
   'networks.ifaceCount': '{n} 个接口',
   'networks.inactiveCount': '{n} 个未激活',
+  /* PVE 分组标题行：一台 PVE 下面挂着几个节点 */
+  'networks.nodeCount': '{n} 个节点',
+  /* 分组默认是收起的，这两个动作作用于全部分组 */
+  'networks.expandAll': '全部展开',
+  'networks.collapseAll': '全部收起',
+  /* 最外层分组：区域 / 机房（填在连接上的一个标签，没填的归到这里） */
+  'networks.regionUnassigned': '未分区',
+  'networks.pveCount': '{n} 个 PVE',
   'networks.colIface': '接口名',
   'networks.colType': '类型',
   'networks.colActive': '激活',
@@ -4423,9 +4507,6 @@ export const zhCN = {
   'networks.nodeLoadFailed': '该节点网络信息加载失败',
   'networks.nodeCaption': '节点 {node} 的网络接口',
   'networks.nodeEmpty': '该节点没有匹配的接口',
-  'networks.manageTitle': '网络管理操作',
-  'networks.manageSubtitle': '新增 / 修改网卡、应用配置变更请到节点详情页',
-  'networks.nodeSettings': '{node} 网络设置',
 
   /* --------------------------------------------- SSH 安全：主机与告警配置 */
   'sshConfig.title': '主机与告警配置',
@@ -4570,9 +4651,12 @@ export const zhCN = {
   'panelKey.rotateFailedHint': '请稍后重试；若一直失败请查看后端日志',
   'vmCreate.ciManage': '接入安全管控',
   'vmCreate.ciManageHint':
-    '把面板公钥写进 cloud-init，机器起来后自动登记为受管主机（凭据是面板统一密钥对，首次连接自动信任指纹）。不勾也可以，随时能在受管主机里手工添加。',
-  'vmCreate.ciManageNeedIp':
-    '需要给这台机器指定静态 IP：面板要 SSH 进去做采集，DHCP 模式下面板无从得知它的地址。',
+    '把面板公钥写进 cloud-init，机器起来后自动登记为受管主机；这台机器的地址已经确定，创建后立刻登记（凭据是面板统一密钥对，首次连接自动信任指纹）。不勾也可以，随时能在受管主机里手工添加。',
+  /* DHCP 的机器**也能**接入：地址要等机器自己报（Guest Agent），不像静态地址那样
+     当场就能登记。别再写「需要静态 IP」—— 后端两条路（创建时的后台轮询 + 待登记
+     队列兜底）都在等它自报，写错了等于让人白白放弃这个开关。 */
+  'vmCreate.ciManageDhcpHint':
+    'DHCP 也能接入：机器起来后会自己报出地址，面板拿到地址再登记（镜像里需要有 qemu-guest-agent）。通常 1~3 分钟，最长等 10 分钟；实在等不到，可以之后在「受管主机」里手工添加。',
   'sshConfig.originPanel': '面板下发',
   'sshConfig.fieldGuest': '对应的虚拟机',
   'sshConfig.bindGuestHint':
@@ -4914,6 +4998,12 @@ export const zhCN = {
   'nodes.noMatchTitle': '没有匹配的节点',
   'nodes.noMatchDesc': '调整搜索关键词或来源主机筛选试试。',
   'nodes.onlineRatio': '{online}/{total} 在线',
+  /* 最外层分组：区域 / 机房（填在连接上的一个标签，没填的归到这里） */
+  'nodes.regionUnassigned': '未分区',
+  'nodes.pveCount': '{n} 个 PVE',
+  /* 分组默认展开，这两个动作作用于全部分组 */
+  'nodes.expandAll': '全部展开',
+  'nodes.collapseAll': '全部收起',
   'nodes.colNode': '节点',
   'nodes.colCpu': 'CPU',
   'nodes.colMem': '内存',
@@ -5546,6 +5636,23 @@ export const zhCN = {
   'baseline.conclusionFails':
     '有 {fail} 项不合格、{warn} 项待改进，建议优先处理不合格的高危项。',
   'baseline.conclusionWarns': '没有不合格项，还有 {warn} 项可以再收紧一些。',
+
+  /* ------------------------------------------------- 巡检趋势与流式巡检 */
+  'trend.baselineTitle': '安全基线趋势',
+  'trend.baselineSubtitle': '近 {days} 天按小时汇总的评分与问题数',
+  'trend.portsTitle': '巡检趋势',
+  'trend.portsSubtitle': '近 {days} 天按小时汇总的问题数',
+  'trend.score': '评分',
+  'trend.fail': '不合格',
+  'trend.warn': '待改进',
+  'trend.issues': '问题合计',
+  'trend.suspicious': '可疑进程',
+  'trend.empty': '趋势数据不足',
+  'trend.emptyDesc': '巡检结果按小时汇总，攒够两个点（约两小时）后这里会画出曲线。',
+  'trend.loadFailed': '读取趋势失败',
+  'trend.loadFailedMsg': '趋势数据暂时读不到，稍后重试。',
+  'trend.rescanning': '正在逐台巡检 {done}/{total}',
+  'trend.rescanDone': '巡检完成',
 
   /* ----------------------------------------------------- 端口与进程 */
   'ports.title': '端口与进程',

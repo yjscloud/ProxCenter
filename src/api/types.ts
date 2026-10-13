@@ -347,6 +347,18 @@ export interface RoleInfo {
    连接配置
    --------------------------------------------------------------------------- */
 
+/**
+ * 一条已保存的 PVE 连接。
+ *
+ * **敏感字段只对管理员返回**：``host`` / ``port`` / ``token_id`` /
+ * ``console_user`` / ``verify_ssl`` / ``node_default`` 描述的是「面板能碰哪些
+ * 集群、拿什么凭据碰」，属于管理信息 —— 非管理员请求 ``/api/connections`` 时
+ * 后端**不会**返回它们（见后端 ``store.public_connection_brief``）。普通用户
+ * 拿到的是精简版：``id`` / ``name`` / ``region`` / ``active`` / ``configured``。
+ *
+ * 类型上没把这些标成可选（管理员视角的完整形状更好用），但**读取时一律按
+ * 「可能没有」处理** —— 各处取用都写了 ``?? ''`` 兜底。
+ */
 export interface ConnectionConfig {
   host: string;
   port: number;
@@ -366,6 +378,11 @@ export interface ConnectionConfig {
   /** 多连接：连接标识与名称 */
   id?: string;
   name?: string;
+  /**
+   * 所属区域 / 机房。只是**给界面分组用的标签**，不参与任何连接逻辑：
+   * 多机房时节点列表按「区域 → 连接 → 节点」展开。空串 = 未分区。
+   */
+  region?: string;
 }
 
 /** 一条已保存的 PVE 连接（多连接列表项） */
@@ -378,6 +395,8 @@ export interface ConnectionProfile extends ConnectionConfig {
 export interface ConnectionConfigInput {
   /** 连接显示名（多连接用） */
   name?: string;
+  /** 所属区域 / 机房（界面分组标签）；留空 = 未分区 */
+  region?: string;
   host: string;
   port: number;
   token_id: string;
@@ -1033,6 +1052,18 @@ export interface IpPool {
   start: string;
   end: string;
   dns: string;
+  /** 适用于集群里的哪些节点（节点名）；**空数组 = 不限节点**。判定见 utils/ippool.ts */
+  nodes: string[];
+  /**
+   * 适用于哪些 PVE 连接（连接 id）；**空数组 = 不限连接**。
+   * 多套 PVE 上「同名节点」是常态，只有它能把「哪一台上的那个节点」区分开。
+   */
+  connections: string[];
+  /**
+   * 这套地址属于哪个 VLAN（PVE 的 tag）；**null = 不限 VLAN**。
+   * 同一个网桥上可以挂多个 VLAN 网段，只记网桥分辨不出池属于哪一个。
+   */
+  vlan: number | null;
 }
 
 /** 带空闲地址信息的地址池（GET 返回） */
@@ -1355,6 +1386,8 @@ export interface VmCreateNetwork {
   vlan_tag?: number | null;
   firewall?: boolean;
   macaddr?: string;
+  /** 速率上限（MB/s）。留空 = 不限速；PVE 的 net 行里就是 `rate=`。 */
+  rate?: number | null;
 }
 
 /* ---- 高级硬件（NUMA 绑定 / EFI 盘 / 虚拟 TPM）----
@@ -2028,6 +2061,12 @@ export interface VmCreateRequest {
     target_storage?: string;
     /** 克隆完成后是否自动开机（默认 true） */
     start?: boolean;
+    /**
+     * 系统盘目标大小（GB）。模板磁盘是模板自己的尺寸；给了这个值，后端会在
+     * 克隆完成后把系统盘扩到它（**只增不减**）。失败不阻断创建，原因见
+     * `VmCreateResponse.disk_note`。
+     */
+    disk_size?: number;
   };
   tags?: string;
   description?: string;
@@ -2052,6 +2091,11 @@ export interface VmCreateRequest {
 export interface VmCreateResponse {
   task: string;
   vmid: number;
+  /**
+   * 系统盘扩容的结果说明：未请求扩容时为空串；成功是「系统盘已从 20G 扩到
+   * 100G」；失败（存储不支持、模板盘更大等）如实写明原因。
+   */
+  disk_note?: string;
 }
 
 export interface VmCloneRequest {
@@ -3530,6 +3574,72 @@ export interface PortPolicy {
   /** 进程白名单（正则，匹配命令行即忽略） */
   process_whitelist: string[];
 }
+
+/* ---------------------------------------------------------------------------
+   巡检趋势与流式巡检（SSE）
+   --------------------------------------------------------------------------- */
+
+/**
+ * 巡检趋势的一个时间桶（按小时归并）。
+ *
+ * 全平台趋势与单机趋势共用这个形状，靠字段有无区分：
+ * - 单机：`ok` / `issues` 有值，`score` 是该机评分；
+ * - 全平台：`hosts` / `reachable` 有值，`score` 是平均分。
+ *
+ * `fail` / `warn` 的口径跟着功能走：安全基线是「不合格 / 待改进」，
+ * 端口巡检是「可疑进程 / 非预期开放端口」。
+ */
+export interface InspectionTrendPoint {
+  ts: number;
+  score: number;
+  fail: number;
+  warn: number;
+  /** 单机：问题合计（不合格 + 待改进） */
+  issues?: number;
+  /** 全平台：参与统计的主机数 */
+  hosts?: number;
+  /** 全平台：其中可达的主机数 */
+  reachable?: number;
+  /** 单机：这一轮是否可达 */
+  ok?: boolean;
+}
+
+export interface InspectionTrend {
+  namespace: string;
+  /** 空串 = 全平台趋势 */
+  host_id: string;
+  /** 时间桶（秒） */
+  bucket: number;
+  days: number;
+  points: InspectionTrendPoint[];
+}
+
+/** 流式巡检事件：`start` → 若干 `host` → `done`（见后端 app.inspection.stream_fleet） */
+export interface InspectionStreamStart {
+  type: 'start';
+  namespace: string;
+  total: number;
+}
+
+export interface InspectionStreamHost<T> {
+  type: 'host';
+  host: T;
+  done: number;
+  total: number;
+}
+
+export interface InspectionStreamDone<T, Totals> {
+  type: 'done';
+  namespace: string;
+  hosts: T[];
+  totals: Totals;
+  generated_at: number;
+}
+
+export type InspectionStreamEvent<T, Totals> =
+  | InspectionStreamStart
+  | InspectionStreamHost<T>
+  | InspectionStreamDone<T, Totals>;
 
 /* ---------------------------------------------------------------------------
    应急响应：虚拟机隔离

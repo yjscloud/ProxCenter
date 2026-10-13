@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from . import crypto, defaults, store
+from . import crypto, defaults, store, vmconfig
 from .pve import ProxmoxError, get_client
 
 logger = logging.getLogger(__name__)
@@ -668,6 +668,13 @@ async def op_create(
     dns = await defaults.effective_dns(None)
     if dns:
         spec["nameserver"] = dns
+    # 机型：模板带的是默认机型的旧写法（面板早期写成 pc）时删掉它 —— 那个名字在
+    # 另一版本的 PVE 上不存在，而模板上的值会被每个克隆体继承下去。
+    try:
+        source_config = await client.qemu_config(node, int(template["vmid"])) or {}
+    except ProxmoxError:
+        source_config = {}
+    spec.update(vmconfig.clone_machine_overrides(source_config))
     if spec:
         await client.qemu_set_config(node, new_id, spec)
         if cpu or mem:

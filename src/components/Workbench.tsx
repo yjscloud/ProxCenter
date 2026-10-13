@@ -110,7 +110,10 @@ export function Workbench() {
   const connStatusQuery = useQuery({
     queryKey: ['connections', 'status'],
     queryFn: connectionsApi.status,
-    refetchInterval: 30_000,
+    /* 这个接口逐台真实探活，原先 30 秒一轮对「首页待办」来说过于频繁。
+       后端另有 30 秒缓存；这里放宽到 3 分钟，多开标签也不会反复打 PVE。 */
+    staleTime: 120_000,
+    refetchInterval: 180_000,
     enabled: isAdmin,
   });
 

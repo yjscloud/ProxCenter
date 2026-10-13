@@ -41,7 +41,9 @@ import {
   IconPlus,
   IconSearch,
   IconChevronRight,
+  IconChevronDown,
   IconPlug,
+  IconLayers,
 } from '../components/Icons';
 import {
   formatBytes,
@@ -150,7 +152,9 @@ export function Nodes() {
     queryFn: connectionsApi.list,
     staleTime: 300_000,
     retry: false,
-    enabled: isAdmin,
+    /* 这里**不按 isAdmin 关掉**：下面「读取哪台」的选择器只有管理员能操作，
+       但连接的**区域标签**所有用户都要用 —— 节点列表按「区域 → 连接 → 节点」
+       分组，拿不到连接就分不出区域。（该接口本身只要求登录） */
   });
   const conns = connectionsQuery.data ?? [];
   const defaultConnId = conns.find((item) => item.active)?.id ?? '';
@@ -250,6 +254,61 @@ export function Nodes() {
   }, [visible, t]);
   const grouped = groups.length > 1;
 
+  /* ---- 区域 / 机房（填在连接上的标签）----
+     多机房时它比连接更粗一级：否则七八条连接还是平铺在一起，只是平铺的单位从
+     节点变成了连接。一条连接都没填区域时这一层整个不渲染，页面与改动前一致。 */
+  const regionGroups = useMemo(() => {
+    const regionOf = (connId: string) => {
+      const hit = conns.find((item) => String(item.id) === connId);
+      return String(hit?.region || '').trim();
+    };
+    const map = new Map<
+      string,
+      { id: string; label: string; conns: typeof groups }
+    >();
+    for (const group of groups) {
+      const region = regionOf(group.id);
+      let hit = map.get(region);
+      if (!hit) {
+        hit = {
+          id: region,
+          label: region || t('nodes.regionUnassigned'),
+          conns: [],
+        };
+        map.set(region, hit);
+      }
+      hit.conns.push(group);
+    }
+    /* 未分区排最后：它是兜底分组，不该排在有名字的区域前面 */
+    return [...map.values()].sort((a, b) => {
+      if (Boolean(a.id) !== Boolean(b.id)) return a.id ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [groups, conns, t]);
+  const showRegion = regionGroups.some((group) => group.id !== '');
+
+  /* 收起来的组。默认**全部展开** —— 这一页是「看节点」的主界面，一进来就该看到
+     节点本身，而不是一层要点的标题（与网络页的接口表不同：那里是明细，先看概况
+     更合理）。id 带前缀区分两级：``region:`` / ``conn:``。 */
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  const toggleGroup = (id: string) => {
+    setCollapsedGroups((list) =>
+      list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
+    );
+  };
+
+  /* 所有可折叠的组（区域 + 连接），用于工具栏那个「全部展开 / 全部收起」 */
+  const allGroupIds = useMemo(
+    () => [
+      ...(showRegion ? regionGroups.map((g) => `region:${g.id}`) : []),
+      ...(grouped ? groups.map((g) => `conn:${g.id}`) : []),
+    ],
+    [regionGroups, groups, showRegion, grouped],
+  );
+  const allCollapsed =
+    allGroupIds.length > 0 &&
+    allGroupIds.every((id) => collapsedGroups.includes(id));
+
   const connectionOptions = useMemo(() => {
     const seen = new Map<string, string>();
     for (const n of list) {
@@ -294,6 +353,13 @@ export function Nodes() {
       /* 忽略 */
     }
   };
+
+  /* 一个连接分组里「几台在线」的文案（列表视图与卡片视图共用） */
+  const onlineRatioOf = (nodes: NodeInfo[]) =>
+    t('nodes.onlineRatio', {
+      online: nodes.filter((n) => n.status === 'online').length,
+      total: nodes.length,
+    });
 
   const openDetail = (node: NodeInfo) =>
     navigate(
@@ -476,6 +542,23 @@ export function Nodes() {
             <span className="fs-sm text-muted">
               {t('nodes.showing', { shown: visible.length, total: list.length })}
             </span>
+            {/* 分组默认展开；节点一多时给一个一键收起，省得一个个点 */}
+            {allGroupIds.length > 1 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={
+                  allCollapsed ? (
+                    <IconChevronDown size={14} />
+                  ) : (
+                    <IconChevronRight size={14} />
+                  )
+                }
+                onClick={() => setCollapsedGroups(allCollapsed ? [] : allGroupIds)}
+              >
+                {allCollapsed ? t('nodes.expandAll') : t('nodes.collapseAll')}
+              </Button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -542,66 +625,165 @@ export function Nodes() {
         </Card>
       ) : view === 'list' ? (
         <div className="node-groups">
-          {groups.map((group) => (
-            <Card key={group.id || 'default'} padded={false}>
-              {grouped ? (
-                <div className="node-group-head">
-                  <IconServer size={14} />
-                  <span className="fw-600">{group.label}</span>
-                  <span className="fs-xs text-muted">
-                    {t('nodes.onlineRatio', {
-                      online: group.nodes.filter((n) => n.status === 'online').length,
-                      total: group.nodes.length,
-                    })}
-                  </span>
-                </div>
-              ) : null}
+          {regionGroups.map((region) => {
+            const regionCollapsed = collapsedGroups.includes(
+              `region:${region.id}`,
+            );
+            return (
+              <div className="tree-group" key={`region:${region.id}`}>
+                {/* 一级：区域 / 机房。整条都是开关 */}
+                {showRegion ? (
+                  <button
+                    type="button"
+                    className="tree-head is-region"
+                    aria-expanded={!regionCollapsed}
+                    onClick={() => toggleGroup(`region:${region.id}`)}
+                  >
+                    <span className="tree-head-icon">
+                      <IconChevronDown size={15} />
+                    </span>
+                    <IconLayers size={15} />
+                    <span className="tree-name">{region.label}</span>
+                    <span className="tree-meta">
+                      <Badge variant="neutral" size="sm">
+                        {t('nodes.pveCount', { n: region.conns.length })}
+                      </Badge>
+                    </span>
+                  </button>
+                ) : null}
 
-              <div className="node-list" role="list">
-                <div className="node-list-row is-head" aria-hidden="true">
-                  <span>{t('nodes.colNode')}</span>
-                  <span>{t('common.status')}</span>
-                  <span>{t('nodes.colCpu')}</span>
-                  <span>{t('nodes.colMem')}</span>
-                  <span>{t('nodes.colDisk')}</span>
-                  <span>{t('nodes.colUptime')}</span>
-                  <span>{t('nodes.colNote')}</span>
-                  <span />
-                </div>
-                {group.nodes.map((node) => (
-                  <NodeListRow key={`${node.connection_id ?? ''}:${node.node}`} node={node} onOpen={() => openDetail(node)} />
-                ))}
+                {regionCollapsed ? null : (
+                  <div className={showRegion ? 'tree-body' : undefined}>
+                    {region.conns.map((group) => {
+                      const connCollapsed = collapsedGroups.includes(
+                        `conn:${group.id}`,
+                      );
+                      return (
+                        <Card key={group.id || 'default'} padded={false}>
+                          {/* 二级：连接。原先这一行是死的，现在整行可折叠 */}
+                          {grouped ? (
+                            <button
+                              type="button"
+                              className="node-group-head"
+                              aria-expanded={!connCollapsed}
+                              onClick={() => toggleGroup(`conn:${group.id}`)}
+                            >
+                              <span className="tree-head-icon">
+                                <IconChevronDown size={14} />
+                              </span>
+                              <IconServer size={14} />
+                              <span className="fw-600">{group.label}</span>
+                              <span className="fs-xs text-muted">
+                                {onlineRatioOf(group.nodes)}
+                              </span>
+                            </button>
+                          ) : null}
+
+                          {connCollapsed ? null : (
+                            <div className="node-list" role="list">
+                              <div
+                                className="node-list-row is-head"
+                                aria-hidden="true"
+                              >
+                                <span>{t('nodes.colNode')}</span>
+                                <span>{t('common.status')}</span>
+                                <span>{t('nodes.colCpu')}</span>
+                                <span>{t('nodes.colMem')}</span>
+                                <span>{t('nodes.colDisk')}</span>
+                                <span>{t('nodes.colUptime')}</span>
+                                <span>{t('nodes.colNote')}</span>
+                                <span />
+                              </div>
+                              {group.nodes.map((node) => (
+                                <NodeListRow
+                                  key={`${node.connection_id ?? ''}:${node.node}`}
+                                  node={node}
+                                  onOpen={() => openDetail(node)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </Card>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="node-groups">
-          {groups.map((group) => (
-            <div key={group.id || 'default'}>
-              {grouped ? (
-                <div className="node-group-title">
-                  <IconServer size={14} />
-                  {group.label}
-                  <span className="fs-xs text-muted">
-                    {t('nodes.onlineRatio', {
-                      online: group.nodes.filter((n) => n.status === 'online').length,
-                      total: group.nodes.length,
+          {regionGroups.map((region) => {
+            const regionCollapsed = collapsedGroups.includes(
+              `region:${region.id}`,
+            );
+            return (
+              <div className="tree-group" key={`region:${region.id}`}>
+                {showRegion ? (
+                  <button
+                    type="button"
+                    className="tree-head is-region"
+                    aria-expanded={!regionCollapsed}
+                    onClick={() => toggleGroup(`region:${region.id}`)}
+                  >
+                    <span className="tree-head-icon">
+                      <IconChevronDown size={15} />
+                    </span>
+                    <IconLayers size={15} />
+                    <span className="tree-name">{region.label}</span>
+                    <span className="tree-meta">
+                      <Badge variant="neutral" size="sm">
+                        {t('nodes.pveCount', { n: region.conns.length })}
+                      </Badge>
+                    </span>
+                  </button>
+                ) : null}
+
+                {regionCollapsed ? null : (
+                  <div className={showRegion ? 'tree-body' : undefined}>
+                    {region.conns.map((group) => {
+                      const connCollapsed = collapsedGroups.includes(
+                        `conn:${group.id}`,
+                      );
+                      return (
+                        <div key={group.id || 'default'}>
+                          {grouped ? (
+                            <button
+                              type="button"
+                              className="node-group-title"
+                              aria-expanded={!connCollapsed}
+                              onClick={() => toggleGroup(`conn:${group.id}`)}
+                            >
+                              <span className="tree-head-icon">
+                                <IconChevronDown size={14} />
+                              </span>
+                              <IconServer size={14} />
+                              <span>{group.label}</span>
+                              <span className="fs-xs text-muted">
+                                {onlineRatioOf(group.nodes)}
+                              </span>
+                            </button>
+                          ) : null}
+                          {connCollapsed ? null : (
+                            <div className="grid grid-auto-320">
+                              {group.nodes.map((node) => (
+                                <NodeCard
+                                  key={`${node.connection_id ?? ''}:${node.node}`}
+                                  node={node}
+                                  onOpen={() => openDetail(node)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
                     })}
-                  </span>
-                </div>
-              ) : null}
-              <div className="grid grid-auto-320">
-                {group.nodes.map((node) => (
-                  <NodeCard
-                    key={`${node.connection_id ?? ''}:${node.node}`}
-                    node={node}
-                    onOpen={() => openDetail(node)}
-                  />
-                ))}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </PageShell>

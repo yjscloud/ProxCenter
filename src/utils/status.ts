@@ -403,9 +403,12 @@ export function biosOptions(t: TFunc) {
   ];
 }
 
+/* 机型：默认机型**不写进 PVE 配置** —— PVE 8 的 API 认 pc、PVE 9 只认 i440fx，
+   写死哪个都会在另一个版本上被驳回（表现为机器建不出来）。这一项的值取空串 =
+   交给 PVE 用它自己的默认机型（就是 i440fx）。 */
 export function machineOptions(t: TFunc) {
   return [
-    { label: t('opt.machinePc'), value: 'pc' },
+    { label: t('opt.machineDefault'), value: '' },
     { label: t('opt.machineQ35'), value: 'q35' },
   ];
 }

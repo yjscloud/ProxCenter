@@ -61,6 +61,7 @@ import {
 } from '../utils/status'
 import { useT, type MessageKey, type TFunc } from '../i18n';
 import { formatBytes } from '../utils/format';
+import { fitsPools } from '../utils/ippool';
 import type {
   CloudInitConfig,
   NumaNodeSpec,
@@ -117,6 +118,8 @@ interface NetRow {
   ip: string;
   /** 静态 IP 对应的网关 */
   gateway: string;
+  /** 速率上限（MB/s）；'' = 不限速 */
+  rate: string;
 }
 
 /** 一个 NUMA 节点的绑定（对应一张 numaN 配置项） */
@@ -212,7 +215,9 @@ const initialState: FormState = {
 
   ostype: 'l26',
   bios: 'seabios',
-  machine: 'pc',
+  /* 空串 = 默认机型（i440fx），也就是不把 machine 写进 PVE 配置。理由见
+     utils/status.ts 的 machineOptions：各版本 PVE 对默认机型的叫法不同。 */
+  machine: '',
   scsihw: 'virtio-scsi-single',
   cpuType: 'host',
   cores: 2,
@@ -248,7 +253,7 @@ const initialState: FormState = {
     { key: uid(), storage: '', size: 20, interface: 'scsi0', format: 'qcow2' },
   ],
   networks: [
-    { key: uid(), bridge: 'vmbr0', model: 'virtio', vlan_tag: '', firewall: true, macaddr: '', ip: 'dhcp', gateway: '' },
+    { key: uid(), bridge: 'vmbr0', model: 'virtio', vlan_tag: '', firewall: true, macaddr: '', ip: 'dhcp', gateway: '', rate: '' },
   ],
   iso: '',
 
@@ -654,7 +659,16 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
 
   const poolIpOptions = useMemo(() => {
     const list: Array<{ label: string; value: string; gateway: string }> = [];
-    (poolsQuery.data?.pools ?? []).forEach((p) => {
+    /* 只列适用于当前节点的池：集群里同一个 vmbr0 在不同节点上可能是不同网段，
+       把别的节点的池列出来，用户选了地址也不通（判定见 utils/ippool）。
+       这里只按节点过滤、不看网桥 —— 这个候选列表是所有网卡共用的，没有
+       「当前是哪张网卡」的概念，按网桥过滤反而会误伤。 */
+    const usable = fitsPools(poolsQuery.data?.pools ?? [], {
+      node: form.node,
+      /* 连接一并纳入：多套 PVE 的节点可能同名，池的适用 PVE 按连接 id 记 */
+      connection: targetConn,
+    });
+    usable.forEach((p) => {
       const prefix = (p.subnet || '').split('/')[1] || '24';
       p.free.slice(0, 100).forEach((ip) => {
         list.push({
@@ -665,7 +679,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
       });
     });
     return list;
-  }, [poolsQuery.data]);
+  }, [poolsQuery.data, form.node, targetConn]);
 
   const storageOptions = useMemo(
     () => [
@@ -694,13 +708,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
   const connectionOptions = useMemo(
     () =>
       (connectionsQuery.data ?? []).map((c) => ({
-        label: t('vmCreate.connOption', {
-          name: `${c.name || c.host}${
-            c.active ? t('vmCreate.connCurrentTag') : ''
-          }`,
-          host: c.host,
-          port: c.port,
-        }),
+        /* 标签里**不放主机地址**：普通用户不需要直接连这台 PVE，而「面板接了哪些
+           主机、地址是什么」属于管理信息，不该从一个创建表单里漏出去 */
+        label: `${c.name || c.host}${
+          c.active ? t('vmCreate.connCurrentTag') : ''
+        }`,
         value: c.id,
       })),
     [connectionsQuery.data, t],
@@ -993,6 +1005,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         vlan_tag: n.vlan_tag ? Number(n.vlan_tag) : null,
         firewall: n.firewall,
         macaddr: n.macaddr || undefined,
+        rate: n.rate.trim() ? Number(n.rate) : undefined,
       }));
 
       payload = {
@@ -1010,7 +1023,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         iso: form.iso || undefined,
         scsi_hw: form.scsihw,
         bios: form.bios,
-        machine: form.machine,
+        /* 空串 = 默认机型：后端按「不写 machine」处理（见 vmconfig.normalize_machine） */
+        machine: form.machine || undefined,
         ...numaOptions,
         ...firmwareOptions,
         boot_order: form.bootOrder || undefined,
@@ -1083,6 +1097,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
           macaddr: '',
           ip: 'dhcp',
           gateway: '',
+          rate: '',
         },
       ],
     }));
@@ -1369,13 +1384,17 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     : t('vmCreate.vmidHint')
                 }
               />
-              <Select
-                label={t('vmCreate.fieldTargetConn')}
-                value={targetConn}
-                onChange={(e) => setTargetConn(e.target.value)}
-                options={connectionOptions}
-                hint={t('vmCreate.fieldTargetConnHint')}
-              />
+              {/* 限宽必须包在外层：给 Select 传 style 只会缩窄内层输入框，
+                  箭头（相对外层容器定位）会飘到框外 */}
+              <div className="field-compact">
+                <Select
+                  label={t('vmCreate.fieldTargetConn')}
+                  value={targetConn}
+                  onChange={(e) => setTargetConn(e.target.value)}
+                  options={connectionOptions}
+                  hint={t('vmCreate.fieldTargetConnHint')}
+                />
+              </div>
               <Field
                 label={t('common.node')}
                 required
@@ -2106,6 +2125,16 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                             mono
                           />
                           <Input
+                            label={t('vmCreate.nicRate')}
+                            type="number"
+                            min={0}
+                            value={net.rate}
+                            onChange={(e) => patchNet(net.key, { rate: e.target.value })}
+                            placeholder={t('vmCreate.nicRatePlaceholder')}
+                            hint={t('vmCreate.nicRateHint')}
+                            mono
+                          />
+                          <Input
                             label={t('vmCreate.nicIp', { index: i + 1 })}
                             value={net.ip}
                             onChange={(e) => patchNet(net.key, { ip: e.target.value })}
@@ -2289,11 +2318,12 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   checked={form.ciManage}
                   onChange={(v) => update('ciManage', v)}
                   hint={
-                    /* 面板得先知道地址才连得上去，所以只对静态 IP 有意义；
-                       DHCP 时后端会直接拒绝，这里提前说明免得用户白勾一下。 */
+                    /* 两种都能接入，差别只在登记时机：静态地址创建时就定了、立刻登记；
+                       DHCP 则等机器通过 Guest Agent 自报地址（创建时的后台轮询 +
+                       待登记队列两条路兜底）。这里只把差别讲清楚，不做任何限制。 */
                     hasStaticIpOnNics(form)
                       ? t('vmCreate.ciManageHint')
-                      : t('vmCreate.ciManageNeedIp')
+                      : t('vmCreate.ciManageDhcpHint')
                   }
                 />
 
@@ -2441,7 +2471,11 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   value={ostypeLabel(form.ostype, t)}
                 />
                 <SummaryRow label="BIOS" value={form.bios} mono />
-                <SummaryRow label={t('vmDetail.hwMachine')} value={form.machine} mono />
+                <SummaryRow
+                  label={t('vmDetail.hwMachine')}
+                  value={form.machine || t('vmDetail.machineDefault')}
+                  mono
+                />
                 <SummaryRow label={t('vmDetail.hwScsihw')} value={form.scsihw} mono />
                 <SummaryRow
                   label="CPU"

@@ -227,6 +227,8 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
       children,
       className,
       id,
+      /* style 单独取出来，不跟着 rest 落到 <select> 上（原因见下） */
+      style,
       ...rest
     },
     ref,
@@ -242,7 +244,11 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
         required={rest.required}
         htmlFor={selectId}
       >
-        <div className={`select-wrap ${error ? 'is-invalid' : ''}`}>
+        {/* style 挂在这一层：调用方写 ``style={{ maxWidth: 280 }}`` 的意图是
+            「这个下拉框多宽」，而右侧那个小箭头是相对这一层绝对定位的。挂到
+            <select> 上只会把输入框缩窄、箭头留在原处 —— 表现出来就是箭头飘到
+            框外面（框内留下一条空白）。 */}
+        <div className={`select-wrap ${error ? 'is-invalid' : ''}`} style={style}>
           <select
             ref={ref}
             id={selectId}

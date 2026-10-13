@@ -36,7 +36,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, Iterable, Optional, Set, Tuple
 
-from . import i18n
+from . import i18n, inspection
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,8 @@ _cache: Dict[Any, Tuple[float, Any]] = {}
 _locks: Dict[Any, asyncio.Lock] = {}
 # 后台重扫的任务引用：不留住会被 GC 掉（见 refresh_later）
 _tasks: Set[asyncio.Task] = set()
+# key -> 上次排后台重扫的时刻：用于给 refresh_later 做按 key 的时间节流
+_refresh_marks: Dict[Any, float] = {}
 
 
 def scope_key(
@@ -117,13 +119,25 @@ def peek_stale(key: ScopeKey, max_age: float = 0.0) -> Optional[Any]:
 
 
 def refresh_later(
-    key: ScopeKey, produce: Callable[[], Awaitable[Any]]
+    key: ScopeKey,
+    produce: Callable[[], Awaitable[Any]],
+    *,
+    min_interval: float = TTL_SECONDS,
 ) -> None:
     """后台重扫一轮：调用方先用旧值应答，这一轮的结果留给下一次请求。
 
     并发安全与去重交给 :func:`get_or_scan`（锁 + 命中检查）：缓存没过期时它
     **不会**真扫，所以反复调用也不会变成反复巡检。
+
+    再叠一层**按 key 的时间节流**：读接口现在会在「内存未命中、但读到了落库
+    快照」时也调用本函数（见 :func:`get_snapshot_or_scan`）。若不节流，页面上
+    每个请求都会排一个后台任务 —— 真扫仍然只有一次（有锁），但任务会堆积。
+    ``min_interval`` 内同一 key 只排一次。
     """
+    now = time.time()
+    if now - _refresh_marks.get(key, 0.0) < min_interval:
+        return
+    _refresh_marks[key] = now
 
     async def _runner() -> None:
         try:
@@ -163,7 +177,49 @@ async def get_or_scan(
         return payload, False
 
 
-def clear() -> None:
-    """清空缓存：策略 / 处置 / 加固变了之后，旧报告的判定口径已经不对了。"""
+async def get_snapshot_or_scan(
+    key: ScopeKey,
+    namespace: str,
+    host_ids: Optional[Iterable[str]],
+    produce: Callable[[], Awaitable[Any]],
+) -> Tuple[Any, bool]:
+    """读路径三级回落：内存 → 落库快照 → 现场真扫。
+
+    与 :func:`get_or_scan` 的区别只有一处：内存未命中时**先读 MySQL 快照**
+    （由后台作业预热 / 上次真扫写入），命中就直接返回、并把真扫丢到后台刷新。
+    这样面板重启、缓存过期、首次打开都只是「读一次快照」，不再现场 SSH。
+
+    ``produce`` 必须是「真扫 + 落库 + 聚合」的组合（见
+    :func:`app.inspection.scan_fleet`）—— 否则真扫结果不会进快照，下一次又得扫。
+
+    快照命中时**不写内存缓存**：内存只承载「本轮真扫的结果」（TTL 2 分钟），
+    DB 快照每次现查（只有几行 JSON，很便宜）。这样后台的 ``refresh_later``
+    才能正常生效（否则会被刚写入的内存条目顶回去、永不真扫）。
+    """
+    hit = peek(key)
+    if hit is not None:
+        return hit, True
+
+    reports = await inspection.load_reports(
+        namespace, host_ids, lang=i18n.current_language()
+    )
+    if reports:
+        payload = inspection.aggregate_reports(namespace, reports)
+        refresh_later(key, produce)
+        return payload, True
+
+    payload = await produce()
+    store(key, payload)
+    return payload, False
+
+
+async def clear() -> None:
+    """清空缓存：策略 / 处置 / 加固变了之后，旧报告的判定口径已经不对了。
+
+    内存与**落库快照**一起清：只清内存的话，下一次读会命中 DB 里的旧快照、
+    把已经失效的结论又端出来。清干净后下一次读会真扫一轮（与改造前一致）。
+    """
     _cache.clear()
     _locks.clear()
+    _refresh_marks.clear()
+    await inspection.purge_snapshots()

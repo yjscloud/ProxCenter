@@ -1453,6 +1453,16 @@
   flex-wrap: wrap;
 }
 
+/* 内容很短的字段（连接选择、节点选择这类）给个宽度上限：选项只有「连接名 +
+   （当前连接）」，铺满整行会空出一大片，看着像旁边漏了个控件。
+
+   注意它必须包在**字段外层**。给 <Select> 传 style 是不行的 —— 那个 style 落到
+   内层 <select> 上，而小箭头是相对外层 .select-wrap 绝对定位的，只缩窄输入框会
+   让箭头飘到框外面去。 */
+.field-compact {
+  max-width: 320px;
+}
+
 /* 字段按可用宽度均分；需要固定宽度的字段加 .field-fixed */
 .field-row > .field {
   flex: 1 1 200px;
@@ -2142,6 +2152,45 @@
   margin-top: 22px;
 }
 
+/* 动态列表项的标题：多张网卡 / 磁盘时标出「1 号」「2 号」，
+   只做弱化的小标签，不抢字段本身的注意力 */
+.dyn-item-title {
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+
+/* 快速部署：网卡的「IP 获取方式」独占一行时别把分段控件拉满整行 */
+.qd-nic-mode {
+  max-width: 360px;
+}
+
+/* 快速部署：网卡的「网桥 / VLAN 标签 / 速率上限」固定一行三列。
+   通用的 .dyn-row 是按 180px 自适应换行的，面板窄一点就会把第三项挤到
+   下一行；而这三项是同一组网络属性，分开看容易漏填。 */
+.qd-nic-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+/* 窄屏下退回单列，别让三个输入框挤成一团 */
+@media (max-width: 560px) {
+  .qd-nic-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 快速部署：网络卡片里「网卡列表 → 接入安全管控」之间的分隔。
+   那个开关说的是整台机器，不属于任何一张网卡，挨着最后一张卡会被误读 */
+.qd-divider {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-muted);
+}
+
 .summary-list {
   display: flex;
   flex-direction: column;
@@ -2391,6 +2440,46 @@
   font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+/* 树状分层（区域 → 连接 → 节点）之后，连接的那行标题变成了折叠开关。
+   这两个类原先只是静态标题行，现在整行可点，所以按按钮重置一遍外观。 */
+.node-group-head,
+.node-group-title {
+  width: 100%;
+  border: 0;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.node-group-head:hover,
+.node-group-title:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.node-group-head:focus-visible,
+.node-group-title:focus-visible {
+  /* 内描边：整行都是点击区，外描边会溢出到相邻元素上 */
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 折叠箭头要留住自己的弱化色 —— 上面那条「组标题里的图标用主色」是给服务器
+   图标定的，箭头跟着变蓝会让人以为它是个可点的独立按钮 */
+.node-group-head .tree-head-icon svg,
+.node-group-title .tree-head-icon svg {
+  color: var(--text-muted);
+}
+
+/* 收起时箭头从「向下」翻成「向右」（与卡片折叠按钮同一套语言） */
+.node-group-head[aria-expanded='false'] .tree-head-icon,
+.node-group-title[aria-expanded='false'] .tree-head-icon {
+  transform: rotate(-90deg);
 }
 
 .node-list {
@@ -6470,4 +6559,276 @@
     flex: none;
     height: 420px;
   }
+}
+
+/* ==========================================================================
+   集群网络页 — 节点总览
+   ==========================================================================
+   节点一多，这一页就是一长串表格卡片，三个问题同时出现：找不到（要一路滚）、
+   看不清（每张卡的表头重复、节点名旁边没有概况）、排不齐（标题栏是内联样式、
+   列宽写死导致内容忽宽忽窄）。下面几组样式分别对应这三件事。 */
+
+/* --- PVE → 节点 的两级树 ---------------------------------------------------
+   节点是连在某一台 PVE 上的，全平铺在一起就分不清谁属于谁（多套 PVE 上同名
+   节点更是常态）。一级是 PVE（可整组收起），二级是它下面的节点卡，用左侧一条
+   竖线把层级关系画出来 —— 缩进太深会让表格变窄，一条线就够了。 */
+.tree-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 一级：PVE 组标题。整条都是开关（点一下收起 / 展开它下面的全部节点） */
+.tree-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  font-family: inherit;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.tree-head:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-border);
+}
+
+.tree-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 箭头指向展开方向；收起时转成向右（与卡片折叠按钮同一套语言） */
+.tree-head-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+  transition: transform var(--transition);
+}
+
+.tree-head[aria-expanded='false'] .tree-head-icon {
+  transform: rotate(-90deg);
+}
+
+.tree-name {
+  font-weight: 600;
+}
+
+/* 统计靠右：左半边回答「这是谁」，右半边回答「里面什么情况」 */
+.tree-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* 二级：组内的节点卡。左侧竖线表示它们属于上面那台 PVE */
+.tree-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-left: 10px;
+  padding-left: 14px;
+  border-left: 2px solid var(--border-muted);
+}
+
+/* 最外层（区域 / 机房）比第二层（连接）再重一点。层级靠底色与字重区分，
+   而不是再套一层边框 —— 那只会让两层看起来一样重 */
+.tree-head.is-region {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+/* 两层缩进叠加后，节点卡要窄掉近 50px，而表格本来就很宽 —— 第二层收窄 */
+.tree-body .tree-body {
+  margin-left: 6px;
+  padding-left: 10px;
+}
+
+/* --- 表格卡片的标题栏内衬 ------------------------------------------------
+   ``padded={false}`` 的卡片（表格卡片都这么写：VmDetail / NodeDetail /
+   Storages / Networks）把四周留白交给内容自己管，标题栏因此会贴到卡片边上。
+   这里把左右与上方内衬补回来；展开态下方不留白，让分隔线直接贴着表头 ——
+   表格卡片本来就是「一行标题 + 一条线 + 一张表」的读法。 */
+.card.card-head-inset > .card-header {
+  padding: 14px 18px 0;
+  margin-bottom: 0;
+}
+
+/* 收起后只剩标题栏：那时它下面没有表格了，补回下内衬，否则文字贴着卡片下沿 */
+.card.card-head-inset.is-collapsed > .card-header {
+  padding-bottom: 14px;
+}
+
+/* ==========================================================================
+   适用范围选择（IP 地址池）
+   ==========================================================================
+   原先「适用 PVE」与「适用节点」是两组复选框一路平铺到底：十几个节点的集群
+   里，弹窗要滚好几屏，勾了哪几个也看不出来。现在两组各自框成一个区块，复选框
+   排成按宽度自适应的多列，标题行右侧给「已选 n + 全选 / 清空」，超过一屏只在
+   区块内滚动 —— 弹窗高度因此是稳定的。 */
+.scope-box {
+  padding: 12px 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.scope-box + .scope-box {
+  margin-top: 12px;
+}
+
+.scope-box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scope-box-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.scope-box-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.scope-box-hint {
+  margin-top: 4px;
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* 区块内的滚动区：节点再多，弹窗高度也不跟着涨 */
+.scope-scroll {
+  margin-top: 10px;
+  max-height: 208px;
+  overflow-y: auto;
+  /* 滚动条别贴着文字 */
+  padding-right: 4px;
+}
+
+/* 复选框栅格：按可用宽度自动排 2~3 列。用 auto-fill 而不是固定列数 —— 节点名
+   长短不一，写死列数总会让某几个名字被截得只剩两三个字 */
+.chk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
+  gap: 8px 14px;
+}
+
+.chk-grid .checkbox-field {
+  min-width: 0;
+}
+
+/* 名字过长时省略号收尾，而不是把整列撑开 */
+.chk-grid .checkbox-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- 适用范围的两级树（PVE → 节点）-----------------------------------------
+   一级是 PVE（可整组收起），二级是它下面的节点。用缩进而不是再套一层框：
+   区块本身已经有一圈边框，里面再框一层反而把层级糊掉。 */
+.scope-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scope-tree-group {
+  min-width: 0;
+}
+
+.scope-tree-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 展开箭头：给它一个 20×20 的方形点击区，比只点那个小三角好按 */
+.scope-tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.scope-tree-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.scope-tree-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.scope-tree-toggle svg {
+  transition: transform var(--transition);
+}
+
+.scope-tree-toggle[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+
+/* 「已选 n / 共 m」：组标题行右侧的进度，省得去数勾了几个 */
+.scope-tree-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding-left: 8px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  /* 等宽数字：几行的计数上下对齐，「3/12」和「11/12」不会左右跳 */
+  font-variant-numeric: tabular-nums;
+}
+
+/* 二级：节点缩进在 PVE 名下方，一条竖线把层级连过去 */
+.scope-tree-nodes {
+  margin: 8px 0 0 26px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-muted);
+}
+
+/* 组标题里的连接名由 Checkbox 的 label 承载：过长省略，并且比节点名重一点 */
+.scope-tree-head .checkbox-field {
+  min-width: 0;
+}
+
+.scope-tree-head .checkbox-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-primary);
 }

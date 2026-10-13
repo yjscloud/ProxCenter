@@ -23,7 +23,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
-from app import baseline, sshremote  # noqa: E402
+from app import baseline, reportcache, sshremote  # noqa: E402
 from app.config import settings  # noqa: E402
 from conftest import connect  # noqa: E402
 from test_api_routes import api, auth_headers, user_with_permissions  # noqa: E402,F401
@@ -447,6 +447,13 @@ class TestHostRowShaping:
 
         self._stub_hosts(monkeypatch)
         monkeypatch.setattr(sshremote, "run_command", _fake_run)
+
+        # 可达性预探测也要换成桩：否则会真的去连那个假地址，把报告判成「不可达」
+        async def _fake_probe(row: Dict[str, Any], timeout: float = 3.0) -> bool:
+            return True
+
+        monkeypatch.setattr(sshremote, "probe_reachable", _fake_probe)
+
         rows = asyncio.run(baseline.managed_hosts())
         report = asyncio.run(baseline.collect_remote(rows[0]))
         assert "secret" not in report
@@ -788,18 +795,23 @@ class TestApi:
         assert resp.status_code == 404
 
     def test_fleet_overview_is_audited(self, api, monkeypatch) -> None:
-        async def _fake(host_ids=None) -> Dict[str, Any]:
-            return {
-                "hosts": [],
-                "totals": {
-                    "hosts": 1, "reachable": 1, "unreachable": 0,
-                    "fail": 0, "warn": 0, "fixable": 0,
-                    "avg_score": 90, "worst_score": 90, "healthy": 1,
-                },
-                "generated_at": 1_790_000_000,
-            }
+        payload = {
+            "hosts": [],
+            "totals": {
+                "hosts": 1, "reachable": 1, "unreachable": 0,
+                "fail": 0, "warn": 0, "fixable": 0,
+                "avg_score": 90, "worst_score": 90, "healthy": 1,
+            },
+            "generated_at": 1_790_000_000,
+        }
 
-        monkeypatch.setattr(baseline, "fleet_overview", _fake)
+        # 读接口现在走「内存 → 落库快照 → 真扫」三级回落，真扫入口是
+        # inspection.scan_fleet。这里把三级回落整体换成桩，避免真的去 SSH
+        # （被测的是路由与审计留痕；回落本身由 test_reportcache 覆盖）。
+        async def _fake(_key, _namespace, _host_ids, _produce):
+            return payload, False
+
+        monkeypatch.setattr(reportcache, "get_snapshot_or_scan", _fake)
         resp = api.get("/api/baseline/fleet", headers=auth_headers(api))
         assert resp.status_code == 200, resp.text
         assert resp.json()["totals"]["hosts"] == 1

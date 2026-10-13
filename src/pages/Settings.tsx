@@ -353,8 +353,12 @@ export function Settings() {
           icon={<IconRefresh size={15} />}
           onClick={() => {
             void healthQuery.refetch();
-            void clusterQuery.refetch();
+            /* 用前缀 ['cluster'] 一次覆盖集群状态与机队状态（fleet-status）：
+               系统状态区两块都读它，只刷 status 那块会停在旧值 */
+            void queryClient.invalidateQueries({ queryKey: ['cluster'] });
             void queryClient.invalidateQueries({ queryKey: ['config'] });
+            /* 连接列表也在这个页面上（系统状态区显示「数据来自哪台」） */
+            void queryClient.invalidateQueries({ queryKey: ['connections'] });
           }}
           loading={
             (healthQuery.isFetching && !healthQuery.isLoading) ||

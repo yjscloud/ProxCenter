@@ -321,6 +321,11 @@ def identity_overrides(old_config: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for key, value in (old_config or {}).items():
         name = str(key)
+        # 默认机型不往回写：各版本 PVE 对它的叫法不同（PVE 8 的 API 认 pc、PVE 9
+        # 只认 i440fx），旧机器上留下的那个值在新版本上会被驳回。留空 = PVE 用
+        # 自己的默认（就是 i440fx），两个版本都对。
+        if name == "machine" and vmconfig.is_default_machine(value):
+            continue
         if name in _KEEP_KEYS or name.startswith(_KEEP_PREFIXES):
             out[name] = value
     return out

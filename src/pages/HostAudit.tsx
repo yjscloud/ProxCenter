@@ -270,6 +270,8 @@ export function HostAudit() {
               void loginsQuery.refetch();
               void sudoQuery.refetch();
               void cursorsQuery.refetch();
+              /* 主机下拉读的是 hostsQuery：漏了它，新增受管主机后这个下拉还是旧的 */
+              void hostsQuery.refetch();
             }}
           >
             <IconRefresh size={14} /> {t('common.refresh')}

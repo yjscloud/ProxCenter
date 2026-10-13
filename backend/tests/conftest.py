@@ -75,6 +75,12 @@ TABLES = (
     # 用户界面偏好：不清的话上一条用例存的仪表盘布局会出现在下一条用例里，
     # 「新用户默认没有任何偏好」这类断言就会误判。
     "user_prefs",
+    # 巡检快照 / 客户机 IP 落库 / 巡检租约：不清的话上一条用例写进去的快照会被
+    # 下一条用例读到，「读接口只读快照」这类断言就会命中旧数据而不是桩。
+    "inspection_host_report",
+    "inspection_history",
+    "guest_ip",
+    "inspection_lease",
 )
 
 
@@ -163,5 +169,20 @@ def clean_mysql_db(mysql_test_db):
     """空库：删掉所有表，交给应用启动时重建。"""
     drop_all_tables()
     database._mysql_pool = None
+    _clear_process_caches()
     yield
     database._mysql_pool = None
+
+
+def _clear_process_caches() -> None:
+    """清掉不落库的进程内缓存 —— 它们不随表清理，会跨用例串数据。
+
+    * ``reportcache``：巡检报告的内存 TTL 缓存；
+    * ``pvecache``：仪表盘 / 连接状态的只读缓存。
+    """
+    from app import pvecache, reportcache
+
+    reportcache._cache.clear()
+    reportcache._locks.clear()
+    reportcache._refresh_marks.clear()
+    pvecache.invalidate()

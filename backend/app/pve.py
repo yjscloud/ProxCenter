@@ -678,8 +678,21 @@ class ProxmoxClient:
 
     # ------------------------------------------------------- agent (optional)
     async def qemu_agent_network(self, node: str, vmid: int) -> List[Dict[str, Any]]:
+        """Guest Agent 的网卡列表。
+
+        PVE 在 agent 的结果外面**又套了一层**：``{"data": {"result": [...]}}``，
+        而 ``get()`` 只剥掉 ``data`` —— 拿到手的是 ``{"result": [...]}``，不是数组。
+        这里统一拆开，让调用方拿到同一个形状。
+
+        漏拆的后果很隐蔽：``formatters.normalize_agent_interfaces`` 两种都认（详情页
+        因此照常显示），而直接当数组遍历的地方会**静默拿到空**（列表页的 IP 列就是
+        这么对 DHCP 机器一直空着的）。
+        """
         data = await self.get(f"/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces")
-        return data or []
+        if isinstance(data, dict):
+            result = data.get("result")
+            return result if isinstance(result, list) else []
+        return data if isinstance(data, list) else []
 
     async def qemu_agent_ping(self, node: str, vmid: int) -> Dict[str, Any]:
         data = await self.post(f"/nodes/{node}/qemu/{vmid}/agent/ping")

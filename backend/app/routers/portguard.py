@@ -15,11 +15,13 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
+from typing import Any, AsyncIterator, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
-from .. import baseline, hostscope, portguard, reportcache, security
+from .. import baseline, hostscope, inspection, portguard, reportcache, security
 from ..schemas import PortDispositionIn, PortPolicyIn
 
 router = APIRouter(prefix="/api/ports", tags=["ports"])
@@ -58,8 +60,12 @@ async def overview(
     allowed = await hostscope.allowed_host_ids(user)
     key = reportcache.scope_key("ports", allowed)
 
+    def _scan() -> Any:
+        # 真扫 + 落库 + 聚合：读接口与后台刷新共用同一条入口（见 app.inspection）
+        return inspection.scan_fleet("ports", allowed)
+
     if refresh:
-        payload = await portguard.fleet_overview(allowed)
+        payload = await _scan()
         reportcache.store(key, payload)
         cached = False
     elif stale:
@@ -67,15 +73,16 @@ async def overview(
         # ``peek(key) or peek_stale(key)`` 反而会在过期那一刻退化成同步等一轮
         payload = reportcache.peek_stale(key, reportcache.STALE_MAX_AGE)
         if payload is None:
-            payload, cached = await reportcache.get_or_scan(
-                key, lambda: portguard.fleet_overview(allowed)
+            # 内存没有 → 读落库快照（后台预热的成果）；一条都没有才真扫
+            payload, cached = await reportcache.get_snapshot_or_scan(
+                key, "ports", allowed, _scan
             )
         else:
             cached = True
-            reportcache.refresh_later(key, lambda: portguard.fleet_overview(allowed))
+            reportcache.refresh_later(key, _scan)
     else:
-        payload, cached = await reportcache.get_or_scan(
-            key, lambda: portguard.fleet_overview(allowed)
+        payload, cached = await reportcache.get_snapshot_or_scan(
+            key, "ports", allowed, _scan
         )
 
     totals = payload["totals"]
@@ -93,6 +100,56 @@ async def overview(
     return payload
 
 
+@router.post("/overview/stream")
+async def overview_stream(
+    request: Request,
+    user: Dict[str, Any] = Depends(VIEW),
+) -> StreamingResponse:
+    """流式巡检（SSE）：每台一完成就推一条事件，页面边到边渲染。
+
+    与 ``GET /overview`` 的关系同安全基线：跑完照样落库，所以下次打开读快照。
+    """
+    allowed = await hostscope.allowed_host_ids(user)
+    await security.audit_read(
+        request, user, "ports.overview_read", target="fleet", detail="流式巡检"
+    )
+
+    async def gen() -> AsyncIterator[str]:
+        async for event in inspection.stream_fleet("ports", allowed):
+            yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # 面板前面有 nginx：不关缓冲的话事件会被攒着一起发，流式就没意义了
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/history")
+async def history(
+    host_id: str = "",
+    days: int = 30,
+    user: Dict[str, Any] = Depends(VIEW),
+) -> Dict[str, Any]:
+    """巡检趋势（按小时桶）。
+
+    ``host_id`` 留空 = 全平台趋势；普通用户只统计自己可见的主机。
+    """
+    allowed = await hostscope.allowed_host_ids(user)
+    if host_id and allowed is not None and str(host_id) not in allowed:
+        raise HTTPException(status_code=404, detail="主机不存在或无权访问")
+    return await inspection.history(
+        "ports",
+        host_id=host_id or None,
+        host_ids=allowed,
+        days=max(1, min(int(days), 365)),
+    )
+
+
 @router.get("/policy")
 async def get_policy(
     _user: Dict[str, Any] = Depends(VIEW),
@@ -108,8 +165,8 @@ async def put_policy(
 ) -> Dict[str, Any]:
     """保存巡检策略。预期端口与进程白名单是压掉误报的主要手段。"""
     policy = await portguard.save_policy(payload.model_dump())
-    # 判定口径变了：缓存里的报告已经不对，下一次必须真巡检
-    reportcache.clear()
+    # 判定口径变了：缓存与落库快照里的报告已经不对，下一次必须真巡检
+    await reportcache.clear()
     await security.audit(
         request,
         user,
@@ -140,14 +197,28 @@ async def host_detail(
     ``refresh=1`` 绕过缓存强制重巡检 —— 页面上的「巡检」按钮走这条。
     """
     key = reportcache.scope_key("ports:host", [host_id])
+
+    async def _collect() -> Dict[str, Any]:
+        # 单机真扫 + 落库：与总览共用同一张快照表，下次直接读快照
+        report = await portguard.collect_host(host_id)
+        await inspection.persist_reports("ports", [report])
+        return report
+
     try:
         if refresh:
-            payload = await portguard.collect_host(host_id)
+            payload = await _collect()
             reportcache.store(key, payload)
         else:
-            payload, _cached = await reportcache.get_or_scan(
-                key, lambda: portguard.collect_host(host_id)
-            )
+            payload = reportcache.peek(key)
+            if payload is None:
+                # 内存没有 → 读这台机器的落库快照；没有才真扫（首次 / 刚清过）
+                snapshot = await inspection.load_host_report("ports", host_id)
+                if snapshot is not None:
+                    payload = snapshot
+                    reportcache.refresh_later(key, _collect)
+                else:
+                    payload = await _collect()
+                    reportcache.store(key, payload)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     summary = payload.get("summary") or {}
@@ -209,8 +280,8 @@ async def add_disposition(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # 处置会改「待处理」的口径（加白还会写进策略），缓存里的报告不再准确
-    reportcache.clear()
+    # 处置会改「待处理」的口径（加白还会写进策略），缓存与快照里的报告不再准确
+    await reportcache.clear()
     label = {
         "ack": "已确认",
         "ignore": "已忽略",
@@ -245,8 +316,8 @@ async def remove_disposition(
     removed = await portguard.clear_disposition(host_id, fingerprint)
     if not removed:
         raise HTTPException(status_code=404, detail="这条处置不存在或已过期")
-    # 撤销后这条发现重新计入待处理，缓存里的报告不再准确
-    reportcache.clear()
+    # 撤销后这条发现重新计入待处理，缓存与快照里的报告不再准确
+    await reportcache.clear()
     await security.audit(
         request,
         user,

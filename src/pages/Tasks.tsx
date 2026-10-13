@@ -190,7 +190,9 @@ export function Tasks() {
 
   /* ---- 操作 ---- */
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['cluster', 'tasks'] });
+    /* 用前缀 ['cluster'] 一次覆盖任务列表与集群状态：节点筛选下拉读的是后者，
+       只刷任务列表的话，新增 / 改名节点之后那个下拉还是旧的 */
+    void queryClient.invalidateQueries({ queryKey: ['cluster'] });
   };
 
   const copyUpid = async (upid: string) => {

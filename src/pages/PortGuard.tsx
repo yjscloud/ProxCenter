@@ -39,6 +39,7 @@ import {
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
 import { formatDateTime } from '../utils/format';
+import { TrendCard, PORTS_TREND_SERIES } from '../components/TrendCard';
 import { useT, type MessageKey, type TFunc } from '../i18n';
 import type {
   BadgeVariant,
@@ -46,10 +47,41 @@ import type {
   PortDispositionItem,
   PortHostSummary,
   PortListener,
+  PortOverview,
   PortPolicy,
   PortSeverity,
   SuspiciousProcess,
 } from '../api/types';
+
+/**
+ * 流式巡检时把一台新到的结果并进总览缓存。
+ *
+ * 按 host_id 替换/追加（不重排）：排序由「done」事件给出的最终列表负责 ——
+ * 中途重排会让卡片在眼皮底下跳来跳去。
+ */
+function upsertOverviewHost(
+  prev: PortOverview | undefined,
+  host: PortHostSummary,
+): PortOverview {
+  const hosts = prev?.hosts ?? [];
+  const index = hosts.findIndex((item) => item.host_id === host.host_id);
+  const next =
+    index >= 0 ? hosts.map((h, i) => (i === index ? host : h)) : [...hosts, host];
+  return {
+    hosts: next,
+    totals:
+      prev?.totals ?? {
+        hosts: 0,
+        reachable: 0,
+        unreachable: 0,
+        exposed: 0,
+        unexpected: 0,
+        suspicious: 0,
+        no_firewall: 0,
+      },
+    generated_at: prev?.generated_at ?? Math.floor(Date.now() / 1000),
+  };
+}
 
 const SEVERITY_META: Record<
   PortSeverity,
@@ -402,6 +434,15 @@ export function PortGuard() {
     gcTime: SCAN_GC_TIME,
     retry: false,
   });
+
+  /* 趋势（按小时桶）：与总览分开取，不参与「扫描中」状态 */
+  const historyQuery = useQuery({
+    queryKey: ['ports', 'history'],
+    queryFn: () => portsApi.history('', 30),
+    enabled: view === 'fleet',
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
   const policyQuery = useQuery({
     queryKey: ['ports', 'policy'],
     queryFn: portsApi.policy,
@@ -574,19 +615,44 @@ export function PortGuard() {
     单机详情没有那层缓存，照旧 refetch。
   */
   const [rescanningAll, setRescanningAll] = useState(false);
+  /* 流式巡检进度：{done, total}。total 为 0 表示还没收到 start 事件。 */
+  const [scanProgress, setScanProgress] = useState({ done: 0, total: 0 });
 
   const rescanAll = async () => {
     setRescanningAll(true);
+    setScanProgress({ done: 0, total: 0 });
     try {
-      const fresh = await portsApi.overview(true);
-      queryClient.setQueryData(['ports', 'overview'], fresh);
-      toast.success(
-        t('ports.rescannedAll'),
-        t('ports.rescannedAllDetail', {
-          hosts: fresh.totals.hosts,
-          time: formatDateTime(fresh.generated_at),
-        }),
-      );
+      /* 流式（SSE）：每台跑完就写进查询缓存，页面边到边渲染 —— 不必等整轮
+         跑完（一轮要 SSH 每台主机，主机多时几十秒）。 */
+      await portsApi.overviewStream((event) => {
+        if (event.type === 'start') {
+          setScanProgress({ done: 0, total: event.total });
+          queryClient.setQueryData<PortOverview>(
+            ['ports', 'overview'],
+            (prev) => (prev ? { ...prev, hosts: [] } : prev),
+          );
+        } else if (event.type === 'host') {
+          setScanProgress((p) => ({ ...p, done: event.done }));
+          queryClient.setQueryData<PortOverview>(
+            ['ports', 'overview'],
+            (prev) => upsertOverviewHost(prev, event.host),
+          );
+        } else {
+          queryClient.setQueryData<PortOverview>(['ports', 'overview'], {
+            hosts: event.hosts,
+            totals: event.totals,
+            generated_at: event.generated_at,
+          });
+          toast.success(
+            t('ports.rescannedAll'),
+            t('ports.rescannedAllDetail', {
+              hosts: event.totals.hosts,
+              time: formatDateTime(event.generated_at),
+            }),
+          );
+          void queryClient.invalidateQueries({ queryKey: ['ports', 'history'] });
+        }
+      });
     } catch (err) {
       toast.error(t('ports.checkFailed'), errorMessage(err));
     } finally {
@@ -1095,6 +1161,16 @@ export function PortGuard() {
             </div>
           ) : null}
 
+          {/* 趋势：与总览分开的一张卡，看「这几周有没有在变好」 */}
+          <TrendCard
+            title={t('trend.portsTitle')}
+            subtitle={t('trend.portsSubtitle', { days: 30 })}
+            trend={historyQuery.data}
+            series={PORTS_TREND_SERIES}
+            loading={historyQuery.isLoading}
+            error={historyQuery.isError ? historyQuery.error : undefined}
+          />
+
           <Card collapsible={false}>
             <CardHeader
               title={
@@ -1119,7 +1195,12 @@ export function PortGuard() {
             {overviewQuery.isLoading ? (
               <>
                 <p className="fs-sm text-muted mb-16">
-                  {t('ports.scanningAll')}
+                  {scanProgress.total
+                    ? t('trend.rescanning', {
+                        done: scanProgress.done,
+                        total: scanProgress.total,
+                      })
+                    : t('ports.scanningAll')}
                 </p>
                 {/* 骨架沿用真卡片的外形（.baseline-host-card），
                     别在卡片里再套一排白卡 */}

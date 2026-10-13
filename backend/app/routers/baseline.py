@@ -12,11 +12,13 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
+from typing import Any, AsyncIterator, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
-from .. import baseline, hostscope, reportcache, security
+from .. import baseline, hostscope, inspection, reportcache, security
 from ..schemas import BaselineFixAllIn, BaselineFixIn
 
 router = APIRouter(prefix="/api/baseline", tags=["baseline"])
@@ -58,8 +60,12 @@ async def fleet(
     allowed = await hostscope.allowed_host_ids(user)
     key = reportcache.scope_key("baseline", allowed)
 
+    def _scan() -> Any:
+        # 真扫 + 落库 + 聚合：读接口与后台刷新共用同一条入口（见 app.inspection）
+        return inspection.scan_fleet("baseline", allowed)
+
     if refresh:
-        payload = await baseline.fleet_overview(allowed)
+        payload = await _scan()
         reportcache.store(key, payload)
         cached = False
     elif stale:
@@ -68,16 +74,16 @@ async def fleet(
         # 退化成同步等一轮 —— 正是这条通路要避免的。
         payload = reportcache.peek_stale(key, reportcache.STALE_MAX_AGE)
         if payload is None:
-            # 一条都没有（进程刚起来）：只能老实等一轮，待办区届时会补上
-            payload, cached = await reportcache.get_or_scan(
-                key, lambda: baseline.fleet_overview(allowed)
+            # 内存没有 → 读落库快照（后台预热的成果）；一条都没有才真扫
+            payload, cached = await reportcache.get_snapshot_or_scan(
+                key, "baseline", allowed, _scan
             )
         else:
             cached = True
-            reportcache.refresh_later(key, lambda: baseline.fleet_overview(allowed))
+            reportcache.refresh_later(key, _scan)
     else:
-        payload, cached = await reportcache.get_or_scan(
-            key, lambda: baseline.fleet_overview(allowed)
+        payload, cached = await reportcache.get_snapshot_or_scan(
+            key, "baseline", allowed, _scan
         )
 
     totals = payload["totals"]
@@ -93,6 +99,61 @@ async def fleet(
         ),
     )
     return payload
+
+
+@router.post("/fleet/stream")
+async def fleet_stream(
+    request: Request,
+    user: Dict[str, Any] = Depends(VIEW),
+) -> StreamingResponse:
+    """流式体检（SSE）：每台一完成就推一条事件，页面边到边渲染。
+
+    与 ``GET /fleet`` 的区别只是「什么时候能看到结果」：这里不必等整轮跑完。
+    跑完仍会把结果落库（与批量真扫同一张快照表），所以下一次打开页面照例读快照。
+
+    前端用 ``fetch`` 读流而不是 ``EventSource`` —— 后者只能发 GET，而这里要走
+    POST（带 CSRF 头）。事件格式与 ``/ai/inspect/stream`` 一致。
+    """
+    allowed = await hostscope.allowed_host_ids(user)
+    await security.audit_read(
+        request, user, "baseline.fleet_read", target="fleet", detail="流式体检"
+    )
+
+    async def gen() -> AsyncIterator[str]:
+        async for event in inspection.stream_fleet("baseline", allowed):
+            yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # 面板前面有 nginx：不关缓冲的话事件会被攒着一起发，流式就没意义了
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/history")
+async def history(
+    host_id: str = "",
+    days: int = 30,
+    user: Dict[str, Any] = Depends(VIEW),
+) -> Dict[str, Any]:
+    """巡检趋势（按小时桶）。
+
+    ``host_id`` 留空 = 全平台趋势；普通用户只统计自己可见的主机（本机默认不在
+    其可见集合里，因此不会把面板本机算进去）。
+    """
+    allowed = await hostscope.allowed_host_ids(user)
+    if host_id and allowed is not None and str(host_id) not in allowed:
+        raise HTTPException(status_code=404, detail="主机不存在或无权访问")
+    return await inspection.history(
+        "baseline",
+        host_id=host_id or None,
+        host_ids=allowed,
+        days=max(1, min(int(days), 365)),
+    )
 
 
 async def _host_report(
@@ -115,14 +176,28 @@ async def _host_report(
     是透明的 —— 不绕过的话按钮转一圈，拿回来的还是 TTL 内那份旧报告。
     """
     key = reportcache.scope_key("baseline:host", [host_id])
+
+    async def _collect() -> Dict[str, Any]:
+        # 单机真扫 + 落库：与总览共用同一张快照表，下次直接读快照
+        report = await baseline.collect_host(host_id)
+        await inspection.persist_reports("baseline", [report])
+        return report
+
     try:
         if refresh:
-            payload = await baseline.collect_host(host_id)
+            payload = await _collect()
             reportcache.store(key, payload)
         else:
-            payload, _cached = await reportcache.get_or_scan(
-                key, lambda: baseline.collect_host(host_id)
-            )
+            payload = reportcache.peek(key)
+            if payload is None:
+                # 内存没有 → 读这台机器的落库快照；没有才真扫（首次 / 刚清过）
+                snapshot = await inspection.load_host_report("baseline", host_id)
+                if snapshot is not None:
+                    payload = snapshot
+                    reportcache.refresh_later(key, _collect)
+                else:
+                    payload = await _collect()
+                    reportcache.store(key, payload)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await security.audit_read(
@@ -183,8 +258,8 @@ async def fix(
             detail=str(exc)[:500],
         )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # 这台机器的配置变了，缓存里的体检报告已经过时（旧分数会一直挂到 TTL 到期）
-    reportcache.clear()
+    # 这台机器的配置变了，缓存与落库快照里的体检报告已经过时
+    await reportcache.clear()
     await security.audit(
         request,
         user,
@@ -211,9 +286,9 @@ async def fix_all(
     await hostscope.assert_host_access(user, host_id)
     keys = [key for key in (payload.keys or []) if key] or None
     result = await baseline.apply_fixes(keys, host_id)
-    # 改成功了几项就足以让缓存里的报告过时（哪怕有失败项，成功的那几项也算数）
+    # 改成功了几项就足以让缓存与快照里的报告过时（哪怕有失败项，成功的那几项也算数）
     if result["fixed"]:
-        reportcache.clear()
+        await reportcache.clear()
     await security.audit(
         request,
         user,

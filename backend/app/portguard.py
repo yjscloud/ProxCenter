@@ -19,13 +19,14 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import re
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
-from . import alerting, baseline, i18n, localhost, store
+from . import alerting, baseline, i18n, inspection, localhost, store, taskpool
 from .formatters import short_hostname
 
 logger = logging.getLogger(__name__)
@@ -1009,7 +1010,8 @@ async def collect(policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """巡检本机（只读）。"""
     rule = policy or await load_policy()
     dispositions = (await load_dispositions()).get("local") or {}
-    return await asyncio.to_thread(_collect_sync, rule, dispositions)
+    # 走专用线程池：本机检查是阻塞的子进程，别占事件循环的默认 executor
+    return await taskpool.run_blocking(_collect_sync, rule, dispositions)
 
 
 def _remote_error_report(row: Dict[str, Any], error: str) -> Dict[str, Any]:
@@ -1033,6 +1035,40 @@ def _remote_error_report(row: Dict[str, Any], error: str) -> Dict[str, Any]:
     }
 
 
+def local_error_report(error: str) -> Dict[str, Any]:
+    """本机巡检失败时的占位报告（结构同 :func:`_remote_error_report`）。
+
+    批量巡检里本机失败会直接抛出去；**流式巡检**不能抛 —— 已经推了一半的事件
+    没法收回，只能如实标出来。
+    """
+    row = baseline.local_host_row()
+    return {
+        "host_id": "local",
+        "local": True,
+        "name": row["name"],
+        "host": row["name"],
+        "address": "localhost",
+        "checked_at": int(time.time()),
+        "ok": False,
+        "error": error[:300],
+        "elevated": False,
+        "os": {},
+        "listeners": [],
+        "exposed": [],
+        "unexpected": [],
+        "suspicious": [],
+        "firewall": {},
+        "summary": _empty_summary(),
+    }
+
+
+def fleet_error_report(row: Optional[Dict[str, Any]], exc: BaseException) -> Dict[str, Any]:
+    """把一次巡检失败收成占位报告（``row`` 为 ``None`` 表示本机）。"""
+    if row is None:
+        return local_error_report(str(exc))
+    return _remote_error_report(row, str(exc))
+
+
 async def collect_remote(
     row: Dict[str, Any],
     policy: Dict[str, Any],
@@ -1040,6 +1076,9 @@ async def collect_remote(
 ) -> Dict[str, Any]:
     """巡检一台受管主机。失败降级成 ok=False，不抛给调用方。"""
     remote = baseline._sshremote()
+    # 快速可达性预探测：TCP 都不通就没必要再等 45 秒的命令超时（见 sshremote）
+    if not await remote.probe_reachable(row):
+        return _remote_error_report(row, remote.UNREACHABLE_ERROR)
     try:
         _ok, output = await remote.run_command(
             row, port_probe_command(remote._sudo_prefix(row)), timeout=PROBE_TIMEOUT
@@ -1086,43 +1125,61 @@ async def collect_host(
     return await collect_remote(row, rule, dispositions)
 
 
-async def fleet_reports(
+async def fleet_plan(
     host_ids: Optional[Iterable[str]] = None,
-) -> List[Dict[str, Any]]:
-    """并发巡检全部目标主机（本机 + 受管主机）。"""
-    from .pve import parallel
+) -> List[Tuple[Optional[Dict[str, Any]], Callable[[], Awaitable[Dict[str, Any]]]]]:
+    """本次巡检的目标清单：``(受管主机行 or None(=本机), 协程工厂)``。
 
+    批量巡检（:func:`fleet_reports`）与流式巡检（见 :mod:`app.inspection`）共用
+    这一份目标构建，两边的巡检范围不会漂。本机排最前，与原来的报告顺序一致。
+
+    必须用 `is not None` 而不是真值判断：空集合表示「一台都不可见」（刚授权、
+    还没添加主机），用真值判断会把它当成 None = 不限，普通用户于是能看到
+    全部主机与面板本机。targets() / hostaudit 用的都是这种写法。
+    """
     policy = await load_policy()
     dispositions = await load_dispositions()
-    # 必须用 `is not None` 而不是真值判断：空集合表示「一台都不可见」（刚授权、
-    # 还没添加主机），用真值判断会把它当成 None = 不限，普通用户于是能看到
-    # 全部主机与面板本机。targets() / hostaudit 用的都是下面这种写法。
     wanted = {str(item) for item in host_ids} if host_ids is not None else None
     rows = await baseline.managed_hosts()
     if wanted is not None:
         rows = [row for row in rows if row["id"] in wanted]
     include_local = (wanted is None or "local" in wanted) and await localhost.enabled()
 
+    plan: List[
+        Tuple[Optional[Dict[str, Any]], Callable[[], Awaitable[Dict[str, Any]]]]
+    ] = []
+    if include_local:
+        plan.append((None, functools.partial(collect, policy)))
+    plan.extend(
+        (
+            row,
+            functools.partial(
+                collect_remote, row, policy, dispositions.get(str(row["id"])) or {}
+            ),
+        )
+        for row in rows
+    )
+    return plan
+
+
+async def fleet_reports(
+    host_ids: Optional[Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
+    """并发巡检全部目标主机（本机 + 受管主机）。"""
+    from .pve import parallel
+
     # 本机与远程放进同一批：本机巡检跑的是本地子进程（ss / ps），单独 await 等于
     # 在整批之后白添一段串行时间（与 baseline.fleet_reports 同一处改动）。
-    tasks: List[Any] = [
-        collect_remote(row, policy, dispositions.get(str(row["id"])) or {})
-        for row in rows
-    ]
-    if include_local:
-        tasks.append(collect(policy))
-    done = await parallel(tasks, limit=PROBE_CONCURRENCY) if tasks else []
+    plan = await fleet_plan(host_ids)
+    done = await parallel([factory() for _row, factory in plan], limit=PROBE_CONCURRENCY)
 
     reports: List[Dict[str, Any]] = []
-    if include_local:
-        local_item = done[len(rows)]
-        if isinstance(local_item, BaseException):
-            # 本机巡检失败沿用原来的行为：抛出去
-            raise local_item
-        reports.append(local_item)
-    for row, item in zip(rows, done[: len(rows)]):
+    for (row, _factory), item in zip(plan, done):
         if isinstance(item, BaseException):  # parallel 把异常原样返回
-            reports.append(_remote_error_report(row, str(item)))
+            if row is None:
+                # 本机巡检失败沿用原来的行为：抛出去
+                raise item
+            reports.append(fleet_error_report(row, item))
         else:
             reports.append(item)
     return reports
@@ -1194,15 +1251,10 @@ def _attention_rank(host: Dict[str, Any]) -> int:
     return 3
 
 
-async def fleet_overview(
-    host_ids: Optional[Iterable[str]] = None,
-) -> Dict[str, Any]:
-    """全平台端口/进程总览，最需要看的排最前。"""
-    hosts = [compact_report(report) for report in await fleet_reports(host_ids)]
-    hosts.sort(key=lambda h: (_attention_rank(h), -(h.get("summary") or {}).get("suspicious", 0)))
-
+def _summarize_fleet(hosts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """把一批主机摘要收成 totals。真扫与读快照共用，保证口径一致。"""
     reachable = [h for h in hosts if h["ok"]]
-    totals = {
+    return {
         "hosts": len(hosts),
         "reachable": len(reachable),
         "unreachable": len(hosts) - len(reachable),
@@ -1213,7 +1265,33 @@ async def fleet_overview(
             1 for h in reachable if not (h["summary"] or {}).get("firewall_active")
         ),
     }
-    return {"hosts": hosts, "totals": totals, "generated_at": int(time.time())}
+
+
+def fleet_from_reports(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """把一批**完整**报告收成全平台总览，最需要看的排最前。
+
+    真扫（``fleet_overview``）与读落库快照（``inspection.aggregate_reports``）
+    共用这一份聚合，totals 的口径不会漂。
+    """
+    hosts = [compact_report(report) for report in reports]
+    hosts.sort(
+        key=lambda h: (
+            _attention_rank(h),
+            -(h.get("summary") or {}).get("suspicious", 0),
+        )
+    )
+    return {
+        "hosts": hosts,
+        "totals": _summarize_fleet(hosts),
+        "generated_at": int(time.time()),
+    }
+
+
+async def fleet_overview(
+    host_ids: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """全平台端口/进程总览（现场巡检一轮）。"""
+    return fleet_from_reports(await fleet_reports(host_ids))
 
 
 # --------------------------------------------------------------- 联动告警
@@ -1353,6 +1431,10 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         return []
 
     reports = await fleet_reports()
+    # 顺手把本轮结果落库：读接口只读快照，不必自己再扫一遍（见 app.inspection）。
+    # 端口快照因此跟着这个作业的节奏更新，不需要单独的预热作业。
+    await inspection.persist_reports("ports", reports)
+
     reachable = [r for r in reports if r.get("ok")]
 
     target_owner = policy.get("notify_user") or await store.first_admin_username() or ""

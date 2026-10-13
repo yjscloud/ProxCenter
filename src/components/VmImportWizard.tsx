@@ -32,6 +32,7 @@ import { ProgressBar } from './ui/ProgressBar';
 import { IconTrash, IconUpload } from './Icons';
 import type { ImportMetadata, ImportSource, ImportWarning } from '../api/types';
 import { formatBytes } from '../utils/format';
+import { fitsPools } from '../utils/ippool';
 
 export interface VmImportWizardProps {
   open: boolean;
@@ -168,13 +169,11 @@ export function VmImportWizard({ open, onClose, onCreated }: VmImportWizardProps
     enabled: open && ipMode === 'static',
     staleTime: 30_000,
   });
-  /* 只列网桥对得上的池：网段不在这个桥上，地址填了也连不上 */
+  /* 只列「网桥 + 目标节点」都对得上的池：网段不在这个桥上、或这个节点接的不是
+     这个网段时，地址填了也连不上（判定见 utils/ippool） */
   const usablePools = useMemo(
-    () =>
-      (poolsQuery.data?.pools ?? []).filter(
-        (item) => !bridge || !item.bridge || item.bridge === bridge,
-      ),
-    [poolsQuery.data, bridge],
+    () => fitsPools(poolsQuery.data?.pools ?? [], { bridge, node }),
+    [poolsQuery.data, bridge, node],
   );
   /* 用户手填过 IP 之后就别再自动覆盖了 —— 自动填充是为了省事，不是为了抢方向盘 */
   const ipTouched = useRef(false);
@@ -894,10 +893,16 @@ export function VmImportWizard({ open, onClose, onCreated }: VmImportWizardProps
                     options={[
                       { label: t('vmCreate.poolManual'), value: '' },
                       ...usablePools.map((item) => ({
+                        /* 与快速部署同一口径：池标了 VLAN 就一起显示，否则同网桥
+                           下的多个网段看起来像重复的池 */
                         label: `${item.name || item.subnet} · ${item.subnet}（${t(
                           'ippool.freeCount',
                           { n: item.free_count },
-                        )}）`,
+                        )}）${
+                          item.vlan != null
+                            ? ` · ${t('ippool.colVlan')} ${item.vlan}`
+                            : ''
+                        }`,
                         value: item.id,
                       })),
                     ]}

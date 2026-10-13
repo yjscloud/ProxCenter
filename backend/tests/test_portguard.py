@@ -17,7 +17,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
-from app import backupguard, isolation, portguard  # noqa: E402
+from app import backupguard, isolation, portguard, reportcache  # noqa: E402
 from app.config import settings  # noqa: E402
 from conftest import connect  # noqa: E402
 from test_api_routes import api, auth_headers, user_with_permissions  # noqa: E402,F401
@@ -387,17 +387,21 @@ class TestApi:
         assert resp.json()["hosts"][0]["id"] == "local"
 
     def test_ports_overview_is_audited(self, api, monkeypatch) -> None:
-        async def _fake(host_ids=None):
-            return {
-                "hosts": [],
-                "totals": {
-                    "hosts": 1, "reachable": 1, "unreachable": 0, "exposed": 3,
-                    "unexpected": 1, "suspicious": 0, "no_firewall": 0,
-                },
-                "generated_at": 1_790_000_000,
-            }
+        payload = {
+            "hosts": [],
+            "totals": {
+                "hosts": 1, "reachable": 1, "unreachable": 0, "exposed": 3,
+                "unexpected": 1, "suspicious": 0, "no_firewall": 0,
+            },
+            "generated_at": 1_790_000_000,
+        }
 
-        monkeypatch.setattr(portguard, "fleet_overview", _fake)
+        # 与安全基线同一套：读接口走三级回落，这里把回落整体换成桩，
+        # 避免真的去 SSH（被测的是路由与审计留痕）。
+        async def _fake(_key, _namespace, _host_ids, _produce):
+            return payload, False
+
+        monkeypatch.setattr(reportcache, "get_snapshot_or_scan", _fake)
         resp = api.get("/api/ports/overview", headers=auth_headers(api))
         assert resp.status_code == 200, resp.text
         assert resp.json()["totals"]["unexpected"] == 1

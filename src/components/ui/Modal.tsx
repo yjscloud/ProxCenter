@@ -32,6 +32,14 @@ export interface ModalProps {
   /** 隐藏右上角关闭按钮（危险操作流程中）*/
   hideClose?: boolean;
   className?: string;
+  /**
+   * 挂载容器，默认 document.body。
+   *
+   * 需要它的场景只有一个但很硬：**从全屏元素里弹窗**。浏览器全屏时只有全屏
+   * 元素及其后代可见，渲染到 body 的弹窗会被挡在外面 —— 表现为「点了按钮没
+   * 反应」。控制台（会全屏）因此把确认框挂到自己的容器里。
+   */
+  container?: HTMLElement | null;
 }
 
 const FOCUSABLE =
@@ -49,6 +57,7 @@ export function Modal({
   closeOnEsc = true,
   hideClose = false,
   className,
+  container,
 }: ModalProps) {
   const t = useT();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -176,7 +185,7 @@ export function Modal({
         {footer ? <div className="modal-footer">{footer}</div> : null}
       </div>
     </div>,
-    document.body,
+    container ?? document.body,
   );
 }
 

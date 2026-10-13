@@ -51,16 +51,50 @@ import {
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
 import { formatDateTime } from '../utils/format';
+import { TrendCard, BASELINE_TREND_SERIES } from '../components/TrendCard';
 import { useT, type MessageKey, type TFunc } from '../i18n';
 import type {
   BadgeVariant,
   BaselineCheck,
+  BaselineFleetReport,
   BaselineHostSummary,
   BaselinePrivilege,
   BaselineReport,
   BaselineSeverity,
   BaselineStatus,
 } from '../api/types';
+
+/**
+ * 流式体检时把一台新到的结果并进总览缓存。
+ *
+ * 按 host_id 替换/追加（不重排）：排序由「done」事件给出的最终列表负责 ——
+ * 中途重排会让卡片在眼皮底下跳来跳去。
+ */
+function upsertFleetHost(
+  prev: BaselineFleetReport | undefined,
+  host: BaselineHostSummary,
+): BaselineFleetReport {
+  const hosts = prev?.hosts ?? [];
+  const index = hosts.findIndex((item) => item.host_id === host.host_id);
+  const next =
+    index >= 0 ? hosts.map((h, i) => (i === index ? host : h)) : [...hosts, host];
+  return {
+    hosts: next,
+    totals:
+      prev?.totals ?? {
+        hosts: 0,
+        reachable: 0,
+        unreachable: 0,
+        fail: 0,
+        warn: 0,
+        fixable: 0,
+        avg_score: 0,
+        worst_score: 0,
+        healthy: 0,
+      },
+    generated_at: prev?.generated_at ?? Math.floor(Date.now() / 1000),
+  };
+}
 
 const STATUS_META: Record<BaselineStatus, { variant: BadgeVariant; label: MessageKey }> = {
   pass: { variant: 'success', label: 'baseline.status.pass' },
@@ -482,6 +516,16 @@ export function SecurityBaseline() {
     retry: false,
   });
 
+  /* 趋势（按小时桶）：与总览分开取 —— 它不参与「扫描中」状态，也不会因为
+     重新体检而立刻过时（下一轮落库后失效即可）。 */
+  const historyQuery = useQuery({
+    queryKey: ['baseline', 'history'],
+    queryFn: () => baselineApi.history('', 30),
+    enabled: view === 'fleet',
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+
   const hostQuery = useQuery({
     queryKey: ['baseline', 'host', hostId],
     queryFn: () => baselineApi.host(hostId),
@@ -717,20 +761,48 @@ export function SecurityBaseline() {
     单机详情没有那层缓存，照旧 refetch。
   */
   const [rescanningAll, setRescanningAll] = useState(false);
+  /* 流式体检进度：{done, total}。total 为 0 表示还没收到 start 事件。 */
+  const [scanProgress, setScanProgress] = useState({ done: 0, total: 0 });
 
   const rescanAll = async () => {
     setRescanningAll(true);
+    setScanProgress({ done: 0, total: 0 });
     try {
-      const fresh = await baselineApi.fleet(true);
-      queryClient.setQueryData(['baseline', 'fleet'], fresh);
-      toast.success(
-        t('baseline.rescannedAll'),
-        t('baseline.rescannedAllDetail', {
-          hosts: fresh.totals.hosts,
-          avg: fresh.totals.avg_score,
-          time: formatDateTime(fresh.generated_at),
-        }),
-      );
+      /* 流式（SSE）：每台跑完就写进查询缓存，页面边到边渲染 —— 不必等整轮
+         跑完（一轮要 SSH 每台主机，主机多时几十秒）。跑完后端照样落库，
+         所以切走再回来读到的仍是快照。 */
+      await baselineApi.fleetStream((event) => {
+        if (event.type === 'start') {
+          setScanProgress({ done: 0, total: event.total });
+          // 重新体检：先把上一轮结果清空，避免新旧混在一起
+          queryClient.setQueryData<BaselineFleetReport>(
+            ['baseline', 'fleet'],
+            (prev) => (prev ? { ...prev, hosts: [] } : prev),
+          );
+        } else if (event.type === 'host') {
+          setScanProgress((p) => ({ ...p, done: event.done }));
+          queryClient.setQueryData<BaselineFleetReport>(
+            ['baseline', 'fleet'],
+            (prev) => upsertFleetHost(prev, event.host),
+          );
+        } else {
+          queryClient.setQueryData<BaselineFleetReport>(['baseline', 'fleet'], {
+            hosts: event.hosts,
+            totals: event.totals,
+            generated_at: event.generated_at,
+          });
+          toast.success(
+            t('baseline.rescannedAll'),
+            t('baseline.rescannedAllDetail', {
+              hosts: event.totals.hosts,
+              avg: event.totals.avg_score,
+              time: formatDateTime(event.generated_at),
+            }),
+          );
+          // 新一轮结果已落库：趋势图跟着刷新
+          void queryClient.invalidateQueries({ queryKey: ['baseline', 'history'] });
+        }
+      });
     } catch (err) {
       toast.error(t('baseline.checkFailed'), errorMessage(err));
     } finally {
@@ -950,6 +1022,16 @@ export function SecurityBaseline() {
             </div>
           ) : null}
 
+          {/* 趋势：与总览分开的一张卡，看「这几周有没有在变好」 */}
+          <TrendCard
+            title={t('trend.baselineTitle')}
+            subtitle={t('trend.baselineSubtitle', { days: 30 })}
+            trend={historyQuery.data}
+            series={BASELINE_TREND_SERIES}
+            loading={historyQuery.isLoading}
+            error={historyQuery.isError ? historyQuery.error : undefined}
+          />
+
           <Card collapsible={false}>
             <CardHeader
               title={
@@ -974,7 +1056,12 @@ export function SecurityBaseline() {
             {fleetQuery.isLoading ? (
               <>
                 <p className="fs-sm text-muted mb-16">
-                  {t('baseline.scanningAll')}
+                  {scanProgress.total
+                    ? t('trend.rescanning', {
+                        done: scanProgress.done,
+                        total: scanProgress.total,
+                      })
+                    : t('baseline.scanningAll')}
                 </p>
                 {/* 骨架沿用真卡片的外形（.baseline-host-card），
                     别在卡片里再套一排白卡 */}

@@ -366,6 +366,7 @@ PATTERNS: List[Tuple["re.Pattern[str]", str, Tuple[str, ...]]] = [
     (re.compile(r"^处理 (\d+) 项$"), "{n} processed", ("n",)),
     (re.compile(r"^导入 (\d+) 条$"), "{n} imported", ("n",)),
     (re.compile(r"^落库 (\d+) 个点$"), "{n} points stored", ("n",)),
+    (re.compile(r"^落库 (\d+) 项$"), "{n} items stored", ("n",)),
     (re.compile(r"^退避中（已连续失败 (\d+) 次）$"), "Backing off ({n} consecutive failures)", ("n",)),
     (re.compile(r"^清理 (\d+) 行$"), "{n} rows purged", ("n",)),
     (re.compile(r"^清理 (\d+) 台已删除主机$"), "{n} deleted hosts purged", ("n",)),
@@ -562,6 +563,8 @@ ZH_EN: Dict[str, str] = {
     "SSH 登录安全": "SSH login security",
     "受管主机 SSH 巡检": "Managed host SSH inspection",
     "端口与进程巡检": "Port & process inspection",
+    "安全基线快照预热": "Security baseline snapshot warm-up",
+    "客户机 IP 预热": "Guest IP warm-up",
     "备份完整性核对": "Backup integrity check",
     "主机登录审计导入": "Host login audit import",
     "监控历史采样": "Metrics history sampling",
@@ -569,6 +572,7 @@ ZH_EN: Dict[str, str] = {
     "内网穿透看护": "Tunnel watchdog",
     "受管主机核对": "Managed host reconciliation",
     "监控历史保留清理": "Metrics history retention purge",
+    "巡检快照保留清理": "Inspection snapshot retention purge",
     "站内通知保留清理": "Notification retention purge",
     "API Token 残留清理": "API token residue purge",
     # ---- 后台作业：说明 ----
@@ -584,6 +588,10 @@ ZH_EN: Dict[str, str] = {
         "Walk the registered managed hosts to spot SSH login anomalies and policy drift",
     "扫描监听端口与关键进程，发现新增对外暴露的服务":
         "Scan listening ports and key processes to spot newly exposed services",
+    "全量体检安全基线并落库，让页面读快照而不是现场 SSH":
+        "Scan the full security baseline and store it, so pages read a snapshot instead of running SSH live",
+    "后台解析客户机 IP 并落库，虚拟机列表不再在请求内等 Guest Agent":
+        "Resolve guest IPs in the background and store them, so the VM list no longer waits on the Guest Agent",
     "核对受保护备份是否仍然存在且未被篡改（防删 / 防篡改）":
         "Verify protected backups still exist and are untampered (anti-delete / anti-tamper)",
     "把各主机的 SSH 登录 / sudo 事件增量汇入面板审计日志":
@@ -596,6 +604,8 @@ ZH_EN: Dict[str, str] = {
         "Restart frpc when the process is gone (only when auto-restart is enabled)",
     "按 METRICS_RETENTION_DAYS 清理超期的指标采样行":
         "Purge metrics sample rows older than METRICS_RETENTION_DAYS",
+    "清理超过保留期的巡检快照行，避免主机 / 语言变更留下残行":
+        "Purge inspection snapshot rows past their retention, so host / language changes leave no residue",
     "核对「面板下发」的受管主机与 PVE 上的虚拟机是否一致，清掉已删除机器留下的安全数据":
         "Reconcile panel-provisioned managed hosts against PVE VMs and drop the security data "
         "left behind by deleted machines",
@@ -785,6 +795,8 @@ ZH_EN: Dict[str, str] = {
     "面板正用 root + 口令登录这台主机：禁止 root 直接登录会连同面板一起锁在门外。请先给一个普通用户配好 SSH 密钥再来加固。":
         "The panel signs in to this host as root with a password: disabling direct root login would lock the panel out too. Set up SSH keys for a regular user before hardening.",
     "远程命令没有返回任何数据": "The remote command returned no data",
+    "主机不可达：SSH 端口无响应（已跳过深度体检）":
+        "Host unreachable: the SSH port did not respond (deep inspection skipped)",
     # ---- 认证 / 授权 / 控制台 / 任务：全站错误文案 ----
     "权限不足": "Permission denied",
     "无效的认证凭据": "Invalid authentication credentials",

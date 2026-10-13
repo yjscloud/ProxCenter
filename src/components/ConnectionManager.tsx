@@ -71,6 +71,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
 
   const [form, setForm] = useState<ConnectionConfigInput>({
     name: '',
+    region: '',
     host: '',
     port: 8006,
     token_id: '',
@@ -167,6 +168,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
     setEditingId(active.id);
     setForm({
       name: active.name ?? '',
+      region: active.region ?? '',
       host: active.host ?? '',
       port: active.port ?? 8006,
       token_id: active.token_id ?? '',
@@ -310,6 +312,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
     setEditingId(p.id);
     setForm({
       name: p.name ?? '',
+      region: p.region ?? '',
       host: p.host ?? '',
       port: p.port ?? 8006,
       token_id: p.token_id ?? '',
@@ -331,6 +334,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
     setEditingId(null);
     setForm({
       name: '',
+      region: '',
       host: '',
       port: 8006,
       token_id: '',
@@ -416,6 +420,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       // token_secret / console_password 为空时不发送，后端据「字段缺失」保留原值。
       const payload: ConnectionConfigInput = {
         name: (form.name ?? '').trim() || form.host.trim(),
+        region: (form.region ?? '').trim(),
         host: form.host.trim(),
         port: Number(form.port),
         token_id: form.token_id.trim(),
@@ -727,6 +732,20 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
                   value={form.name ?? ''}
                   onChange={(e) => patch('name', e.target.value)}
                   placeholder={t('conn.namePlaceholder')}
+                  disabled={!isAdmin}
+                  autoComplete="off"
+                />
+              </Field>
+              {/* 区域 / 机房：纯分组标签，不参与连接逻辑。多机房时节点列表按
+                  「区域 → 连接 → 节点」展开，留空则归进「未分区」 */}
+              <Field
+                label={t('conn.fieldRegion')}
+                hint={t('conn.fieldRegionHint')}
+              >
+                <Input
+                  value={form.region ?? ''}
+                  onChange={(e) => patch('region', e.target.value)}
+                  placeholder={t('conn.regionPlaceholder')}
                   disabled={!isAdmin}
                   autoComplete="off"
                 />

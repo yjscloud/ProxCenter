@@ -30,9 +30,19 @@ from app import reportcache  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def clean():
-    reportcache.clear()
+    """只清**内存**缓存。
+
+    刻意不调 ``reportcache.clear()``：它现在会连数据库清落库快照，而测试环境的
+    连接池绑在 TestClient 的事件循环上 —— 用 ``asyncio.run`` 另起循环去碰它会把
+    池弄坏（后续用例报 "Event loop is closed"，见 test_sshremote 的说明）。
+    """
+    reportcache._cache.clear()
+    reportcache._locks.clear()
+    reportcache._refresh_marks.clear()
     yield
-    reportcache.clear()
+    reportcache._cache.clear()
+    reportcache._locks.clear()
+    reportcache._refresh_marks.clear()
 
 
 class _Counter:

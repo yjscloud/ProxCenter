@@ -13,16 +13,26 @@
    为什么不再有「当前连接 / 默认节点」：见 ConnectionManager 顶部说明。
    ========================================================================== */
 
+import { useNavigate } from 'react-router-dom';
 import { PageShell } from '../components/Layout';
 import { ConnectionManager } from '../components/ConnectionManager';
 import { NodeSubNav } from '../components/NodeSubNav';
+import { Card } from '../components/ui/Card';
+import { Button } from '../components/ui/Button';
+import { EmptyState } from '../components/ui/EmptyState';
 import { IconPlug } from '../components/Icons';
 import { useAuth } from '../hooks/useAuth';
 import { useT } from '../i18n';
 
 export function NodesConnections() {
   const t = useT();
-  /* 写连接需要 settings.manage；非管理员进来看只读视图（能看到地址等公开字段） */
+  const navigate = useNavigate();
+  /* 整页都是管理入口（settings.manage）：非管理员**连只读视图也不给** ——
+     这一页列的是主机地址、端口、令牌与控制台凭据的状态。原先只是把表单禁用了，
+     信息本身照样摊在页面上，等于给任何账号看了一份集群清单。
+
+     后端也已按角色裁剪字段（routers/config.list_connections），这里只是不让
+     人白跑一趟。 */
   const { isAdmin } = useAuth();
 
   return (
@@ -37,7 +47,22 @@ export function NodesConnections() {
     >
       <NodeSubNav active="connections" />
 
-      <ConnectionManager isAdmin={isAdmin} />
+      {isAdmin ? (
+        <ConnectionManager isAdmin />
+      ) : (
+        <Card>
+          <EmptyState
+            title={t('nodesConnections.noPermissionTitle')}
+            description={t('nodesConnections.noPermissionBody')}
+            icon={<IconPlug size={30} />}
+            action={
+              <Button variant="secondary" onClick={() => navigate('/nodes')}>
+                {t('nodesConnections.backToNodes')}
+              </Button>
+            }
+          />
+        </Card>
+      )}
     </PageShell>
   );
 }

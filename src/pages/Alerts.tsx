@@ -456,7 +456,14 @@ export function Alerts() {
           <Button
             variant="secondary"
             icon={<IconRefresh size={15} />}
-            onClick={() => void query.refetch()}
+            loading={query.isFetching}
+            onClick={() => {
+              /* 这一页除了告警列表，还拿节点与虚拟机当规则目标 —— 只刷列表的话，
+                 那两个下拉会停在旧值（原先也漏了 loading，点了看不到反馈） */
+              void query.refetch();
+              void qc.invalidateQueries({ queryKey: ["nodes"] });
+              void qc.invalidateQueries({ queryKey: ["vms"] });
+            }}
           >
             {t("common.refresh")}
           </Button>

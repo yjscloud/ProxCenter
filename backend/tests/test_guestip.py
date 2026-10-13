@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -129,6 +130,24 @@ class TestPickAddresses:
     def test_container_tolerates_missing_fields(self) -> None:
         assert guestip.pick_container_ip([{"name": "eth0"}, {}]) == ""
 
+    def test_agent_payload_wrapped_in_result_is_understood(self) -> None:
+        """PVE 的 agent 结果外面套了一层 ``result``，两种形状都要认。
+
+        漏拆的后果是**静默返回空**：遍历一个 dict 只会拿到它的键名，然后被
+        ``isinstance(item, dict)`` 全部跳过。列表页的 IP 列就是这么对 DHCP 机器
+        一直空着的（详情页走另一个函数、会拆 result，所以看着正常）。
+        """
+        interfaces = [
+            {
+                "name": "eth0",
+                "ip-addresses": [
+                    {"ip-address": "172.16.149.50", "ip-address-type": "ipv4"}
+                ],
+            }
+        ]
+        assert guestip.pick_agent_ip({"result": interfaces}) == "172.16.149.50"
+        assert guestip.pick_agent_ip(interfaces) == "172.16.149.50"
+
     def test_agent_skips_loopback_and_link_local(self) -> None:
         interfaces = [
             {
@@ -248,3 +267,110 @@ class TestResolveVmIpForAlerts:
         client = FakeClient()
         assert run(guestip.resolve_vm_ip(client, "", 0)) == ""
         assert client.calls == []
+
+
+# ------------------------------------------------------- 落库快照（预热成果）
+def _table(rows: Dict[Any, Any]):
+    """伪造 ``_load_many``：直接给出「落库表里已有的行」。"""
+
+    async def loader(_items: List[Dict[str, Any]]) -> Dict[Any, Any]:
+        return rows
+
+    return loader
+
+
+def _one(row: Any):
+    """伪造 ``_load_one``（单台查询）。"""
+
+    async def loader(_guest: Dict[str, Any]) -> Any:
+        return row
+
+    return loader
+
+
+class TestStoredSnapshot:
+    """列表读落库快照这一层：有地址直接用，**空地址有保鲜期**。
+
+    这里钉的是一条真实踩过的死锁：客户机刚建出来（DHCP，Agent 还没起来）时，那一轮
+    会往表里记一条**空**记录；空记录如果被当成有效缓存，列表以后就不再现场解析了，
+    而写这条记录的唯一途径恰恰是现场解析 —— 于是这台机器永远显示不出地址，尽管它
+    早就拿到 IP 了（详情页的网络页直接问 Agent，所以那边看着是正常的）。
+    """
+
+    #: 列表项要带连接 id：缓存与落库都以「连接 + 节点 + VMID」为键
+    ROW: Dict[str, Any] = {
+        "connection_id": "c1",
+        "node": "pve",
+        "vmid": 103,
+        "type": "qemu",
+        "status": "running",
+    }
+
+    AGENT = [
+        {
+            "name": "eth0",
+            "ip-addresses": [{"ip-address": "10.0.0.77", "ip-address-type": "ipv4"}],
+        }
+    ]
+
+    def test_stored_address_is_used_without_asking_pve(self, monkeypatch) -> None:
+        """刚写入的记录直接用 —— 不为一台机器白问一次 PVE。"""
+        guestip.clear()
+        monkeypatch.setattr(
+            guestip,
+            "_load_many",
+            _table({("c1", "pve", 103): ("10.0.0.9", int(time.time()))}),
+        )
+        client = FakeClient(agent=self.AGENT)
+        assert run(guestip.resolve_batch(client, [dict(self.ROW)])) == ["10.0.0.9"]
+        assert client.calls == []
+
+    def test_stale_address_is_resolved_again(self, monkeypatch) -> None:
+        """有地址的记录也会过期。
+
+        DHCP 的地址会变（续约、客户机重启），表里的值如果一旦写入就永不刷新，
+        列表会一直挂着那个旧地址。
+        """
+        guestip.clear()
+        stale = int(time.time()) - int(guestip.VALUE_TTL_SECONDS) - 60
+        monkeypatch.setattr(
+            guestip, "_load_many", _table({("c1", "pve", 103): ("10.0.0.9", stale)})
+        )
+        monkeypatch.setattr(guestip, "_load_one", _one(None))
+        client = FakeClient(agent=self.AGENT)
+        assert run(guestip.resolve_batch(client, [dict(self.ROW)])) == ["10.0.0.77"]
+        assert client.calls == ["qemu_agent_network"]
+
+    def test_fresh_empty_row_keeps_the_list_fast(self, monkeypatch) -> None:
+        """空记录还在保鲜期内：直接用它，不为一台没 Agent 的机器白等一次超时。"""
+        guestip.clear()
+        monkeypatch.setattr(
+            guestip,
+            "_load_many",
+            _table({("c1", "pve", 103): ("", int(time.time()))}),
+        )
+        client = FakeClient(agent=self.AGENT)
+        assert run(guestip.resolve_batch(client, [dict(self.ROW)])) == [""]
+        assert client.calls == []
+
+    def test_stale_empty_row_is_resolved_again(self, monkeypatch) -> None:
+        """过期的空记录必须重新解析 —— 这就是「DHCP 机器列表里永远没有 IP」的修复点。"""
+        guestip.clear()
+        stale = int(time.time()) - int(guestip.EMPTY_TTL_SECONDS) - 60
+        monkeypatch.setattr(
+            guestip, "_load_many", _table({("c1", "pve", 103): ("", stale)})
+        )
+        # 单台查询也一并伪造：真函数会去连数据库，单元测试不该依赖它
+        monkeypatch.setattr(guestip, "_load_one", _one(None))
+        client = FakeClient(agent=self.AGENT)
+        assert run(guestip.resolve_batch(client, [dict(self.ROW)])) == ["10.0.0.77"]
+        assert client.calls == ["qemu_agent_network"]
+
+    def test_single_lookup_also_retries_stale_empty_rows(self, monkeypatch) -> None:
+        """``resolve``（单台）与批量走同一套判断，不能只修批量那一条。"""
+        guestip.clear()
+        stale = int(time.time()) - int(guestip.EMPTY_TTL_SECONDS) - 60
+        monkeypatch.setattr(guestip, "_load_one", _one(("", stale)))
+        client = FakeClient(agent=self.AGENT)
+        assert run(guestip.resolve(client, dict(self.ROW))) == "10.0.0.77"
+        assert client.calls == ["qemu_agent_network"]

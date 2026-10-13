@@ -108,6 +108,12 @@ from . import buildinfo
 from . import portguard
 from . import database
 from . import guest_created
+# 巡检快照：把「端口与进程」「安全基线」的结果落库，读接口只读快照
+from . import inspection
+# 客户机 IP 落库缓存（虚拟机列表的 IP 列不再在请求内等 Guest Agent）
+from . import guestip
+# 巡检类阻塞调用的专用线程池，避免占满事件循环的默认 executor
+from . import taskpool
 from .store import init_db, purge_expired_tokens
 
 logging.basicConfig(
@@ -137,6 +143,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await password_reset.init_table()
     # 监控历史表：「监控历史采样」作业到点后开始往里写点
     await metrics_history.init_table()
+    # 巡检快照表：端口 / 基线的结果落库，读接口不再现场 SSH（见 app.inspection）
+    await inspection.init_table()
+    # 客户机 IP 落库缓存：虚拟机列表读它，不再在请求内逐台问 Guest Agent
+    await guestip.init_table()
     # 站内通知表：告警发生时由 alerting.record 往里写未读消息
     await notifications.init_table()
     # 个人 API Token 表（脚本 / 外部系统用的长期凭据，见 app.apitokens）
@@ -205,6 +215,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await aiterm.close_all()
     logger.info("正在停止：HTTP 客户端")
     await client.aclose()
+    logger.info("正在停止：池化 SSH 连接")
+    sshremote.close_pool()
+    logger.info("正在停止：巡检线程池")
+    taskpool.shutdown()
     logger.info("正在停止：数据库连接池")
     await database.close_pool()
     logger.info("Shutdown complete")
@@ -762,6 +776,15 @@ FRP_WATCHDOG_FIRST_DELAY = 20
 # 真正推送由告警指纹与冷却压制，同一批告警不会反复推
 ROOTCAUSE_INTERVAL = 5 * ALERT_INTERVAL
 ROOTCAUSE_FIRST_DELAY = 2 * ALERT_INTERVAL
+# 巡检快照预热：只跑**安全基线**（端口的落库由上面的「端口与进程巡检」作业顺带
+# 完成，避免同一批主机每轮扫两遍 SSH）。间隔与端口巡检一致 —— 它决定「页面上的
+# 数据最多旧多少」，而不是响应速度。
+INSPECTION_WARM_INTERVAL = max(int(settings.inspection_warm_interval), 60)
+# 首次延迟 30 秒：启动时先让数据库迁移、PVE 连接就绪，再去扫第一批
+INSPECTION_WARM_FIRST_DELAY = 30
+# 客户机 IP 预热：与 guestip 的进程内缓存时长对齐，让列表的 IP 列基本总能命中
+GUEST_IP_WARM_INTERVAL = max(int(settings.guest_ip_warm_interval), 60)
+GUEST_IP_WARM_FIRST_DELAY = 45
 
 
 def _job(
@@ -810,6 +833,14 @@ def _count(label: str) -> Callable[[Any], str]:
         return f"{label} {size} 项" if size else "无变化"
 
     return render
+
+
+def _warm_summary(result: Any) -> str:
+    """巡检快照预热 / 客户机 IP 预热的摘要：落库了多少项。"""
+    if not isinstance(result, dict):
+        return ""
+    count = int(result.get("stored") or 0) or int(result.get("resolved") or 0)
+    return f"落库 {count} 项" if count else "无变化"
 
 
 def _import_summary(result: Any) -> str:
@@ -916,6 +947,33 @@ scheduler.register(
         summarize=_count("命中"),
     )
 )
+# 安全基线快照预热：把全量体检结果落库，页面读快照而不是现场 SSH（见 app.inspection）。
+# 端口那边的落库由上面那个「端口与进程巡检」作业顺带完成，两者不重复扫同一批主机。
+scheduler.register(
+    _job(
+        "inspection_warm",
+        "安全基线快照预热",
+        "安全巡检",
+        "全量体检安全基线并落库，让页面读快照而不是现场 SSH",
+        inspection.warm_once,
+        INSPECTION_WARM_INTERVAL,
+        summarize=_warm_summary,
+        first_delay=INSPECTION_WARM_FIRST_DELAY,
+    )
+)
+# 客户机 IP 预热：后台把 IP 落库，虚拟机列表读表，不再在请求内逐台等 Guest Agent
+scheduler.register(
+    _job(
+        "guest_ip_warm",
+        "客户机 IP 预热",
+        "安全巡检",
+        "后台解析客户机 IP 并落库，虚拟机列表不再在请求内等 Guest Agent",
+        inspection.warm_guest_ip,
+        GUEST_IP_WARM_INTERVAL,
+        summarize=_warm_summary,
+        first_delay=GUEST_IP_WARM_FIRST_DELAY,
+    )
+)
 scheduler.register(
     _job(
         "backup_guard",
@@ -1003,6 +1061,17 @@ scheduler.register(
         "数据清理",
         "按 METRICS_RETENTION_DAYS 清理超期的指标采样行",
         metrics_history.purge_old,
+        PURGE_INTERVAL,
+        summarize=_purge_summary,
+    )
+)
+scheduler.register(
+    _job(
+        "inspection_purge",
+        "巡检快照保留清理",
+        "数据清理",
+        "清理超过保留期的巡检快照行，避免主机 / 语言变更留下残行",
+        inspection.purge_old,
         PURGE_INTERVAL,
         summarize=_purge_summary,
     )

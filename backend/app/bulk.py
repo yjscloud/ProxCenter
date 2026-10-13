@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, Request
 
-from . import ownership, security, vm_scope
+from . import ownership, quota, security, vm_scope
 from .pve import (
     ProxmoxError,
     client_for_connection,
@@ -41,15 +41,32 @@ CONCURRENCY = 6
 
 POWER_ACTIONS = ("start", "stop", "shutdown", "reboot", "suspend", "resume")
 
-# action -> 需要的权限
+# action -> 需要的权限（**虚拟机**侧）。容器侧见 ACTION_PERMISSION_CT。
 ACTION_PERMISSION: Dict[str, str] = {
     **{action: "vm.power" for action in POWER_ACTIONS},
     "delete": "vm.delete",
     "tag": "vm.config",
-    "migrate": "vm.config",
+    "migrate": "vm.migrate",
     "balloon": "vm.config",
     "snapshot": "vm.snapshot",
 }
+
+# action -> 需要的权限（**容器**侧）。与上面逐项对应：容器是独立的一套权限，
+# 一台容器上的「开机」「删除」不能靠虚拟机的 vm.* 权限放行。
+ACTION_PERMISSION_CT: Dict[str, str] = {
+    **{action: "ct.power" for action in POWER_ACTIONS},
+    "delete": "ct.delete",
+    "tag": "ct.config",
+    "migrate": "ct.migrate",
+    "balloon": "ct.config",  # 容器不支持气球，会逐台报错；权限点仍需占位
+    "snapshot": "ct.snapshot",
+}
+
+
+def permission_for(action: str, guest_type: str) -> str:
+    """该动作作用在指定类型的机器上时需要哪个权限。"""
+    mapping = ACTION_PERMISSION_CT if guest_type == "lxc" else ACTION_PERMISSION
+    return mapping.get(action) or ACTION_PERMISSION.get(action, "")
 
 # 需要二次确认（重输密码）的动作 —— 只放不可逆 / 高影响的
 STEP_UP_ACTIONS = frozenset({"delete"})
@@ -152,14 +169,20 @@ async def _resolve(conn_id_hint: str, node: str, vmid: int, owner: Optional[str]
     return resolved or _op_connection()
 
 
-async def _ensure_access(user: Dict[str, Any], node: str, vmid: int, conn_id: str) -> None:
-    """复刻 ``routers.vms.require_vm_access``：没有路径参数，只能显式判定。"""
+async def _ensure_access(
+    user: Dict[str, Any], node: str, vmid: int, conn_id: str, kind: str
+) -> None:
+    """复刻 ``routers.vms._require_guest_access``：没有路径参数，只能显式判定。
+
+    ``kind`` 是归属类别（虚拟机 ``KIND_VM`` / 容器 ``KIND_CT``），由目标类型决定。
+    """
     owner = security.visible_owner(user)
     if owner is None:
         return
     ref = ownership.vm_ref(conn_id, node, vmid)
-    if await ownership.get_owner(ownership.KIND_VM, ref) != owner:
-        raise PermissionError(f"{node}/{vmid} 不属于当前用户，无权操作")
+    if await ownership.get_owner_for(kind, ref) != owner:
+        noun = "容器" if kind == ownership.KIND_CT else "虚拟机"
+        raise PermissionError(f"{noun} {node}/{vmid} 不属于当前用户，无权操作")
 
 
 async def _detect_type(client: Any, node: str, vmid: int) -> str:
@@ -191,17 +214,29 @@ async def _run_one(
         "task": None,
         "error": None,
     }
+    # 审计动作前缀随类型走（vm.* / ct.*）。先按已知类型取初值，探测出真实类型后
+    # 再覆盖 —— 让异常分支（含权限拒绝）也能用到它。
+    action_prefix = "ct" if target.type == "lxc" else "vm"
 
     try:
         owner = security.visible_owner(user)
         conn_id = await _resolve(requested_connection(), node, vmid, owner)
-        await _ensure_access(user, node, vmid, conn_id)
         client = client_for_connection(conn_id)
 
+        # 先定类型：权限（vm.* / ct.*）与归属（KIND_VM / KIND_CT）都随类型走
         gtype = target.type if target.type in ("qemu", "lxc") else await _detect_type(
             client, node, vmid
         )
         item["type"] = gtype
+        action_prefix = "ct" if gtype == "lxc" else "vm"
+
+        permission = permission_for(action, gtype)
+        if permission and not security.has_user_permission(user, permission):
+            raise PermissionError(
+                f"没有执行「{ACTION_LABELS.get(action, action)}」的权限（需要 {permission}）"
+            )
+
+        await _ensure_access(user, node, vmid, conn_id, ownership.kind_for_type(gtype))
 
         result: Any = None
         if action in POWER_ACTIONS:
@@ -254,6 +289,10 @@ async def _run_one(
 
         elif action == "snapshot":
             name = (params.name or "").strip()
+            # 快照额度：批量建快照同样要按台判（逐台一次，超了只拒这一台）
+            await quota.enforce_snapshot(
+                user, request, "snapshot.create", gtype, node, vmid
+            )
             if gtype == "qemu":
                 result = await client.qemu_snapshot_create(
                     node, vmid, name, params.description, vmstate=params.vmstate
@@ -267,20 +306,28 @@ async def _run_one(
         item["task"] = _task_of(result)
         item["ok"] = True
         await security.audit(
-            request, user, f"vm.{action}", target=f"{node}/{vmid}",
+            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
             detail={"bulk": True, "type": gtype},
         )
 
     except ProxmoxError as exc:
         item["error"] = exc.message
         await security.audit(
-            request, user, f"vm.{action}", target=f"{node}/{vmid}",
+            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
             result="failed", detail={"bulk": True, "error": exc.message},
+        )
+    except HTTPException as exc:
+        # 额度拒绝（快照总数 / 单机快照数…）：detail 本来就是给人看的一句话，
+        # 原样带出去；掉到下面那个通用分支里会变成「403: …」这种没人读的东西。
+        item["error"] = str(exc.detail)
+        await security.audit(
+            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
+            result="denied", detail={"bulk": True, "error": str(exc.detail)},
         )
     except PermissionError as exc:
         item["error"] = str(exc)
         await security.audit(
-            request, user, f"vm.{action}", target=f"{node}/{vmid}",
+            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
             result="denied", detail={"bulk": True, "error": str(exc)},
         )
     except asyncio.CancelledError:
@@ -289,7 +336,7 @@ async def _run_one(
         logger.warning("批量操作 %s 在 %s/%s 失败", action, node, vmid, exc_info=True)
         item["error"] = str(exc) or exc.__class__.__name__
         await security.audit(
-            request, user, f"vm.{action}", target=f"{node}/{vmid}",
+            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
             result="failed", detail={"bulk": True, "error": item["error"]},
         )
 
@@ -309,10 +356,14 @@ async def run_bulk(
     action = payload.action.strip()
     validate_action(action, payload.params)
 
-    permission = ACTION_PERMISSION[action]
-    if not security.has_user_permission(user, permission):
+    # 一次批量可能同时包含虚拟机与容器，两台机器的权限各不相同，没法在这里定死
+    # 一个权限点。这里只要求「至少拥有其中一类」的权限作为整批门槛，逐台的真实
+    # 权限在 _run_one 里按目标类型各判一次（缺哪台就只判那台 failed/denied）。
+    candidates = {ACTION_PERMISSION[action], ACTION_PERMISSION_CT[action]}
+    if not any(security.has_user_permission(user, perm) for perm in candidates):
         raise HTTPException(
-            status_code=403, detail=f"没有执行「{ACTION_LABELS.get(action, action)}」的权限"
+            status_code=403,
+            detail=f"没有执行「{ACTION_LABELS.get(action, action)}」的权限",
         )
 
     # 不可逆动作整批要求一次二次确认，而不是每台弹一次

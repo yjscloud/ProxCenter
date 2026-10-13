@@ -811,7 +811,10 @@ function nodePercents(node: NodeInfo) {
 
 function NodeListRow({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
   const t = useT();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 节点备注写在面板自己的库里（见 node_notes.py），后端要 `node.view` ——
+     这里与它保持一致，不再用「是不是非只读用户」的角色粗判 */
+  const canEditNote = hasPermission('node.view');
   const pct = nodePercents(node);
   const meta = nodeStatusMeta(node.status, t);
   const offline = node.status !== 'online';
@@ -869,7 +872,7 @@ function NodeListRow({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
-        <NodeNoteField node={node.node} canEdit={canWrite} />
+        <NodeNoteField node={node.node} canEdit={canEditNote} />
       </div>
 
       <IconChevronRight size={14} />
@@ -904,7 +907,10 @@ function NodeListMetric({
 
 function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
   const t = useT();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 节点备注写在面板自己的库里（见 node_notes.py），后端要 `node.view` ——
+     这里与它保持一致，不再用「是不是非只读用户」的角色粗判 */
+  const canEditNote = hasPermission('node.view');
   const pct = nodePercents(node);
   const meta = nodeStatusMeta(node.status, t);
   const offline = node.status !== 'online';
@@ -981,7 +987,7 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
-        <NodeNoteField node={node.node} canEdit={canWrite} />
+        <NodeNoteField node={node.node} canEdit={canEditNote} />
       </div>
 
       <div className="node-card-foot">

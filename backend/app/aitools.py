@@ -1150,15 +1150,16 @@ def _clamp_int(value: Any, low: int, high: int, default: int) -> int:
 
 
 async def _owned_vm_refs(username: str, is_admin: bool) -> Optional[List[str]]:
-    """非管理员返回自己名下的虚拟机 ref（``<conn>:<node>:<vmid>``）；管理员 ``None``（不限）。
+    """非管理员返回自己名下的客户机 ref（``<conn>:<node>:<vmid>``）；管理员 ``None``（不限）。
 
     ref 的拼法与 :func:`metrics.query` 的 ``owned_refs`` 完全一致，直接透传即可完成隔离。
+    虚拟机与容器都算「自己名下的机器」，两类一并纳入（VMID 唯一，跨类型不冲突）。
     """
     if is_admin:
         return None
     from . import ownership
 
-    return await ownership.list_owned(ownership.KIND_VM, username or "")
+    return await ownership.list_owned_guests(username or "")
 
 
 def _stat(values: List[Any]) -> Optional[Dict[str, Any]]:

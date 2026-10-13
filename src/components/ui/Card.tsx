@@ -224,6 +224,14 @@ export interface KpiCardProps {
   /** 进度条颜色覆盖 */
   progressColor?: string;
   loading?: boolean;
+  /**
+   * 传了就把整张卡渲染成按钮（用于「点开看明细」这类卡片，如用户页的「总计」）。
+   * 只换了宿主元素，外观与普通卡完全一致（按钮默认样式的重置见 CSS 的
+   * ``button.kpi-card``）。
+   */
+  onClick?: () => void;
+  /** 可点时的悬停说明 */
+  title?: string;
 }
 
 export function KpiCard({
@@ -235,6 +243,8 @@ export function KpiCard({
   progress,
   progressColor,
   loading = false,
+  onClick,
+  title,
 }: KpiCardProps) {
   if (loading) {
     return (
@@ -252,8 +262,8 @@ export function KpiCard({
     );
   }
 
-  return (
-    <div className={`kpi-card kpi-${tone}`}>
+  const body = (
+    <>
       <div className="kpi-top">
         <span className="kpi-label">{label}</span>
         {icon ? (
@@ -277,6 +287,23 @@ export function KpiCard({
           />
         </div>
       ) : null}
-    </div>
+    </>
   );
+
+  /* 可点的那张换成 <button>：键盘（Enter / 空格）与焦点圈都是白拿的，
+     而点击语义本来就该由按钮承担（div + onClick 是「能点但读屏不知道」） */
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={`kpi-card kpi-${tone} is-clickable`}
+        onClick={onClick}
+        title={title}
+      >
+        {body}
+      </button>
+    );
+  }
+
+  return <div className={`kpi-card kpi-${tone}`}>{body}</div>;
 }

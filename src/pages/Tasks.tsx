@@ -78,7 +78,9 @@ export function Tasks() {
   const t = useT();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 停止 / 清理任务按 `task.manage` 判（后端 tasks.py 用的就是它） */
+  const canManageTask = hasPermission('task.manage');
 
   const [nodeFilter, setNodeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -311,7 +313,7 @@ export function Tasks() {
             <IconButton
               label={t('tasks.stopTaskLabel', { upid: task.upid })}
               variant="danger"
-              disabled={!canWrite}
+              disabled={!canManageTask}
               onClick={(e) => {
                 e.stopPropagation();
                 setStopTarget(task);
@@ -323,7 +325,7 @@ export function Tasks() {
             <IconButton
               label={t('tasks.clearTaskLabel')}
               variant="danger"
-              disabled={!canWrite}
+              disabled={!canManageTask}
               onClick={(e) => {
                 e.stopPropagation();
                 setDeleteTarget(task);

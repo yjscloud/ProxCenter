@@ -14,6 +14,7 @@ import { Suspense, lazy, type ComponentType, type ReactNode } from 'react';
 import { Layout } from './components/Layout';
 import { Spinner } from './components/ui/Spinner';
 import { useAuth } from './hooks/useAuth';
+import type { PermissionKey } from './api/permissions';
 import { useSiteInfo } from './hooks/useSiteInfo';
 import { useT } from './i18n';
 
@@ -128,13 +129,6 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/* 仅管理员可访问 */
-function RequireAdmin({ children }: { children: ReactNode }) {
-  const { isAdmin } = useAuth();
-  if (!isAdmin) return <Navigate to="/dashboard" replace />;
-  return <>{children}</>;
-}
-
 /**
  * 需要指定权限才能访问。
  *
@@ -146,11 +140,29 @@ function RequirePermission({
   perm,
   children,
 }: {
-  perm: string;
+  perm: PermissionKey;
   children: ReactNode;
 }) {
   const { hasPermission } = useAuth();
   if (!hasPermission(perm)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
+}
+
+/**
+ * 需要「其中任意一个」权限才能访问 —— 用于跨类型的汇总页（快照 / 备份），
+ * 它们同时覆盖虚拟机与容器，只认一侧会让另一侧的用户整页打不开。
+ */
+function RequireAnyPermission({
+  perms,
+  children,
+}: {
+  perms: PermissionKey[];
+  children: ReactNode;
+}) {
+  const { hasPermission } = useAuth();
+  if (!perms.some((perm) => hasPermission(perm))) {
+    return <Navigate to="/dashboard" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -247,10 +259,25 @@ export function App() {
             见 components/QuickDeployForm.tsx。旧书签 / 收藏仍会指到这里，
             转去虚拟机列表（「创建虚拟机」默认就是快速模式），不给 404。 */}
         <Route path="/deploy" element={<Navigate to="/vms" replace />} />
-        <Route path="/vms" element={<VirtualMachines />} />
+        {/* 虚拟机与容器是两套页面、也是两套权限：虚拟机要 vm.view，容器要 ct.view */}
+        <Route
+          path="/vms"
+          element={
+            <RequirePermission perm="vm.view">
+              <VirtualMachines />
+            </RequirePermission>
+          }
+        />
         <Route path="/vms/:node/:vmid" element={<VmDetail />} />
         {/* LXC 容器：与虚拟机完全独立的一套页面（PVE 上是两套端点） */}
-        <Route path="/lxc" element={<Containers />} />
+        <Route
+          path="/lxc"
+          element={
+            <RequirePermission perm="ct.view">
+              <Containers />
+            </RequirePermission>
+          }
+        />
         <Route path="/lxc/:node/:vmid" element={<LxcDetail />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/nodes" element={<Nodes />} />
@@ -262,13 +289,14 @@ export function App() {
         {/* 以下页面全部按「侧边栏可见 = 路由可达」对齐。
             原先它们只靠侧边栏隐藏，手输 URL 仍能进 —— 进去后接口一路 403，
             用户只会以为面板坏了。守卫用的 permission 与侧边栏逐字一致。 */}
-        {/* 防火墙：三个作用域 + 安全组 / IP 集合 / 规则模板 */}
+        {/* 防火墙：四个作用域（虚拟机 / 容器 / 节点 / 集群）+ 安全组 / IP 集合 / 规则模板。
+            虚拟机与容器是两套权限，任一侧都能进页面，页内再各看各的。 */}
         <Route
           path="/firewall"
           element={
-            <RequirePermission perm="firewall.view">
+            <RequireAnyPermission perms={['firewall.view', 'ct.firewall.view']}>
               <Firewall />
-            </RequirePermission>
+            </RequireAnyPermission>
           }
         />
         {/* SSH 登录安全：本机日志统计 + fail2ban 管控；配置单独一页。
@@ -336,14 +364,33 @@ export function App() {
             </RequirePermission>
           }
         />
-        <Route path="/snapshots" element={<Snapshots />} />
-        <Route path="/backups" element={<Backups />} />
+        {/* 快照 / 备份都是跨类型的汇总页（虚拟机 + 容器）：任一类权限即可进入 */}
+        <Route
+          path="/snapshots"
+          element={
+            <RequireAnyPermission perms={['vm.view', 'ct.view']}>
+              <Snapshots />
+            </RequireAnyPermission>
+          }
+        />
+        <Route
+          path="/backups"
+          element={
+            <RequireAnyPermission perms={['vm.backup', 'ct.backup']}>
+              <Backups />
+            </RequireAnyPermission>
+          }
+        />
+        {/* 「面板自身」的这几页：路由守卫用的权限与侧边栏菜单项、后端接口三处一致。
+            原先一律 RequireAdmin（只认 role == admin），而后端接口早就是按
+            task.view / users.view / audit.view / settings.manage 放行的 ——
+            结果是自定义角色「勾了也不生效、手输 URL 又进得去」。 */}
         <Route
           path="/tasks"
           element={
-            <RequireAdmin>
+            <RequirePermission perm="task.view">
               <Tasks />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         <Route path="/frp" element={<Frp />} />
@@ -363,42 +410,42 @@ export function App() {
         <Route
           path="/bot"
           element={
-            <RequireAdmin>
+            <RequirePermission perm="settings.manage">
               <FeishuBot />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         <Route
           path="/users"
           element={
-            <RequireAdmin>
+            <RequirePermission perm="users.view">
               <Users />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         <Route
           path="/audit"
           element={
-            <RequireAdmin>
+            <RequirePermission perm="audit.view">
               <AuditLog />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         <Route
           path="/settings"
           element={
-            <RequireAdmin>
+            <RequirePermission perm="settings.manage">
               <Settings />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
         {/* 后台任务：调度器里各巡检作业的状态与间隔 */}
         <Route
           path="/scheduler"
           element={
-            <RequireAdmin>
+            <RequirePermission perm="settings.manage">
               <Scheduler />
-            </RequireAdmin>
+            </RequirePermission>
           }
         />
       </Route>

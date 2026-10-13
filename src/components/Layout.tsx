@@ -10,6 +10,7 @@ import {
   canAccessNav,
   firstAvailableNavPath,
   isPathDisabled,
+  navItemForPath,
 } from './Sidebar';
 import { Topbar } from './Topbar';
 import { UpdateNotice } from './UpdateNotice';
@@ -21,6 +22,7 @@ import { Spinner } from './ui/Spinner';
 import { useAuth } from '../hooks/useAuth';
 import { useUiPrefs } from '../hooks/useUiPrefs';
 import { useTaskStream } from '../hooks/useWebSocket';
+import type { PermissionKey } from '../api/permissions';
 import { useT } from '../i18n';
 
 const COLLAPSE_KEY = 'pve_sidebar_collapsed';
@@ -37,10 +39,18 @@ export function Layout() {
      关闭入口，对所有用户生效。导航栏本身始终渲染，关的是里面的功能入口。 */
   const navDisabled = useUiPrefs().nav_disabled;
 
-  /* 当前所在的页面是不是已被关闭的入口。是的话不渲染它，弹回一个还开着的
-     页面 —— 与导航栏「看不见的项就是进不去」保持一致，避免出现「导航栏里
-     没有，手输 URL 却进得去」的两套规则。 */
-  const pathBlocked = isPathDisabled(location.pathname, navDisabled);
+  /* 当前页面该不该让这个人看。两个判据合起来：
+      1. 面板级开关（管理员关掉的入口）；
+      2. **角色权限** —— 与侧边栏的可见性用的是同一份 ``canAccessNav``。
+
+     只判开关的话，自定义角色（比如只勾了虚拟机权限）手输 /storages 就进去了，
+     然后在页面上吃一屏 403 —— 而侧边栏里它明明是藏起来的，等于两套规则。
+
+     命中就弹回「第一个当前用户有权看、且还开着」的入口（见 fallbackPath）。 */
+  const currentNav = navItemForPath(location.pathname);
+  const pathBlocked =
+    isPathDisabled(location.pathname, navDisabled) ||
+    Boolean(currentNav && !canAccessNav(currentNav, user));
   const fallbackPath = firstAvailableNavPath(navDisabled, user);
 
   /* 侧边栏折叠状态 */
@@ -112,7 +122,7 @@ export function Layout() {
   }, [queryClient]);
 
   /* 判断逻辑在 Sidebar.canAccessNav：命令面板也用同一份，避免两处不一致 */
-  const canAccess = (item: { permission?: string; adminOnly?: boolean }) =>
+  const canAccess = (item: { permission?: PermissionKey; adminOnly?: boolean }) =>
     canAccessNav(item, user);
 
   return (

@@ -89,7 +89,10 @@ async def cluster_status(
 @router.get("/cluster/resources")
 async def cluster_resources(
     type: Optional[str] = Query(default=None, description="vm | node | storage | sdn"),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    # 跨类型的资源清单（虚拟机与容器都走这里），任一类查看权限即可
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:
@@ -100,7 +103,10 @@ async def cluster_resources(
 
 @router.get("/cluster/nextid")
 async def next_id(
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    # 取下一个 VMID：虚拟机与容器的创建向导都会调，任一类查看权限即可
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
 ) -> Dict[str, int]:
     client = get_client()
     try:

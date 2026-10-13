@@ -1098,6 +1098,22 @@ async def put_lxc_quota(
     return await quota.usage(user, "lxc")
 
 
+@router.get("/quota/me")
+async def my_quota(
+    user: Dict[str, Any] = Depends(security.get_current_user),
+) -> Dict[str, Any]:
+    """我自己的资源额度与名下用量。
+
+    只要求登录：这是**自己的**读数，创建向导与列表页都要用它 —— 普通用户同样
+    应该知道「我还能建几台 / 还能用几核」。别人的读数在管理端
+    ``GET /api/users/{username}/quota``。
+
+    与上面两条全局额度（``/config/vm-quota`` 等）的区别：那些是**集群护栏**
+    （全集群台数、所有人共享），这里是**按人分配**的资源额度。
+    """
+    return await quota.resource_report(user)
+
+
 @router.post("/config/mail/test")
 async def test_mail_config(
     payload: MailTestIn,

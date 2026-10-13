@@ -5,7 +5,9 @@
 
    * 集群：默认策略与全局规则（影响所有主机，需要 firewall.cluster）
    * 节点：单台宿主机的规则
-   * 虚拟机 / 容器：某台机器的规则（普通用户只能碰自己名下的机器）
+   * 虚拟机 / 容器：某台机器的规则（普通用户只能碰自己名下的机器）。这两个是
+     **各自独立的作用域入口，各看各的**：清单分开（虚拟机只列虚拟机、容器只列
+     容器），权限也分开（虚拟机 firewall.*、容器 ct.firewall.*）
 
    外加集群级共享对象：安全组（groups）、IP 集合（ipset），以及面板侧的
    规则模板 —— 把一套规则一次刷到多台机器（见 FirewallTemplates）。
@@ -13,7 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { firewallApi, nodesApi, vmsApi } from '../api/endpoints';
+import { firewallApi, lxcApi, nodesApi, vmsApi } from '../api/endpoints';
 import { errorMessage, isNotConfigured } from '../api/client';
 import { SetupRequired } from '../components/SetupRequired';
 import { PageShell } from '../components/Layout';
@@ -81,16 +83,27 @@ export function Firewall() {
   const toast = useToast();
   const qc = useQueryClient();
 
-  const scopes = useMemo<Array<{ label: string; value: FirewallScope }>>(
-    () => [
-      { label: t('firewall.scopeVm'), value: 'vm' },
-      { label: t('firewall.scopeNode'), value: 'node' },
-      { label: t('firewall.scopeCluster'), value: 'cluster' },
-    ],
-    [t],
-  );
+  /* 作用域入口按权限给：虚拟机 / 节点 / 集群要 firewall.view，容器要
+     ct.firewall.view —— 两把钥匙互不顶替，没有哪一侧权限就不摆哪一侧的入口。 */
+  const canViewVm = hasPermission('firewall.view');
+  const canViewCt = hasPermission('ct.firewall.view');
+  const scopes = useMemo<Array<{ label: string; value: FirewallScope }>>(() => {
+    const list: Array<{ label: string; value: FirewallScope }> = [];
+    if (canViewVm) {
+      list.push({ label: t('firewall.scopeVm'), value: 'vm' });
+    }
+    if (canViewCt) {
+      list.push({ label: t('firewall.scopeCt'), value: 'ct' });
+    }
+    if (canViewVm) {
+      list.push({ label: t('firewall.scopeNode'), value: 'node' });
+      list.push({ label: t('firewall.scopeCluster'), value: 'cluster' });
+    }
+    return list;
+  }, [t, canViewVm, canViewCt]);
 
   const canManage = hasPermission('firewall.manage');
+  const canManageCt = hasPermission('ct.firewall.manage');
   const canCluster = hasPermission('firewall.cluster');
 
   const [tab, setTab] = useState<Tab>('rules');
@@ -120,9 +133,15 @@ export function Firewall() {
     queryFn: nodesApi.list,
     staleTime: 60_000,
   });
+  /* 虚拟机与容器各是一套列表接口（模板不参与防火墙规则） */
   const vmsQuery = useQuery({
     queryKey: ['vms', 'all'],
     queryFn: () => vmsApi.list(),
+    staleTime: 30_000,
+  });
+  const lxcQuery = useQuery({
+    queryKey: ['lxc', 'all'],
+    queryFn: () => lxcApi.list(),
     staleTime: 30_000,
   });
 
@@ -131,27 +150,48 @@ export function Firewall() {
     () => (vmsQuery.data ?? []).filter((vm) => !vm.template),
     [vmsQuery.data],
   );
+  const cts = useMemo(
+    () => (lxcQuery.data ?? []).filter((ct) => !ct.template),
+    [lxcQuery.data],
+  );
+  /** 当前作用域要看的机器：虚拟机作用域只列虚拟机，容器作用域只列容器 */
+  const guests = scope === 'ct' ? cts : vms;
 
-  /* 默认选中第一台机器 / 第一个节点，省掉「先选一次」的空屏 */
+  /* 默认选中第一台机器 / 第一个节点，省掉「先选一次」的空屏。
+     在虚拟机 ⇄ 容器之间换作用域后，原选中的那台不在新清单里（新清单甚至可能是
+     空的）——这时落回第一台或清空，否则会拿着虚拟机的 VMID 去查 lxc 的防火墙。 */
   useEffect(() => {
-    if (vmid === null && vms.length > 0) {
-      setVmid(vms[0].vmid);
-      setNode(vms[0].node);
+    if (scope !== 'vm' && scope !== 'ct') return;
+    if (guests.some((item) => item.vmid === vmid)) return;
+    if (guests.length > 0) {
+      setVmid(guests[0].vmid);
+      setNode(guests[0].node);
+    } else {
+      setVmid(null);
     }
-  }, [vms, vmid]);
+  }, [scope, guests, vmid]);
   useEffect(() => {
     if (scope === 'node' && !node && nodes.length > 0) setNode(nodes[0].node);
   }, [scope, node, nodes]);
 
+  /* 默认作用域可能是当前用户无权查看的那个（例如只被授予容器权限的自定义角色），
+     这时落到清单里的第一项，别让页面停在一个 403 的作用域上 */
+  useEffect(() => {
+    if (scopes.length > 0 && !scopes.some((item) => item.value === scope)) {
+      setScope(scopes[0].value);
+    }
+  }, [scopes, scope]);
+
   const scopeReady =
     scope === 'cluster' ||
     (scope === 'node' && Boolean(node)) ||
-    (scope === 'vm' && Boolean(node) && vmid !== null);
+    ((scope === 'vm' || scope === 'ct') && Boolean(node) && vmid !== null);
 
   const scopeParams = useMemo((): [FirewallScope, string, number | undefined] => {
     if (scope === 'cluster') return ['cluster', '', undefined];
     if (scope === 'node') return ['node', node, undefined];
-    return ['vm', node, vmid ?? undefined];
+    /* vm / ct 两个作用下各有各的机器清单，后端把 ct 钉死成 lxc 类型 */
+    return [scope, node, vmid ?? undefined];
   }, [scope, node, vmid]);
 
   const scopeLabel = useMemo(() => {
@@ -161,11 +201,14 @@ export function Firewall() {
         node: node || t('firewall.scopeNodeFallback'),
       });
     }
-    const vm = vms.find((item) => item.vmid === vmid);
+    const vm = guests.find((item) => item.vmid === vmid);
     return vm
       ? t('firewall.scopeVmLabel', { name: vm.name, vmid: vm.vmid })
-      : t('firewall.scopeVmFallback', { vmid: vmid ?? '' });
-  }, [scope, node, vmid, vms, t]);
+      : t('firewall.scopeVmFallback', {
+          vmid: vmid ?? '',
+          noun: t(scope === 'ct' ? 'firewall.scopeCt' : 'firewall.scopeVm'),
+        });
+  }, [scope, node, vmid, guests, t]);
 
   const rulesQuery = useQuery({
     queryKey: ['firewall', 'rules', ...scopeParams],
@@ -211,8 +254,12 @@ export function Firewall() {
   const options = optionsQuery.data ?? {};
   const currentIpset = ipsets.find((item) => item.name === activeIpset) ?? null;
 
+  /* 容器作用域单独一把钥匙（ct.firewall.manage）；集群作用域还要集群级权限；
+     虚拟机 / 节点作用域用 firewall.manage。 */
   const writable =
-    canManage && (scope !== 'cluster' || canCluster);
+    scope === 'ct'
+      ? canManageCt
+      : canManage && (scope !== 'cluster' || canCluster);
 
   const enabledCount = rules.filter((rule) => rule.enable).length;
 
@@ -392,7 +439,11 @@ export function Firewall() {
 
   const ruleColumns = (
     group: string,
-  ): Array<Column<FirewallRule>> => [
+  ): Array<Column<FirewallRule>> => {
+    /* 写权限分两种：安全组规则、虚拟机 / 节点 / 集群作用域走 firewall.manage；
+       容器作用域走 ct.firewall.manage（后端 require_guest_firewall 同款判定）。 */
+    const canEdit = group || scope !== 'ct' ? canManage : canManageCt;
+    return [
     {
       key: 'pos',
       header: '#',
@@ -484,7 +535,7 @@ export function Firewall() {
       align: 'right',
       render: (rule) => (
         <span className="row-actions">
-          {canManage ? (
+          {canEdit ? (
             <>
               {group ? null : (
                 <>
@@ -543,7 +594,8 @@ export function Firewall() {
         </span>
       ),
     },
-  ];
+    ];
+  };
 
   const ipsetEntryColumns: Array<Column<{ cidr: string; comment: string; nomatch: boolean }>> = [
     { key: 'cidr', header: t('firewall.colAddress'), mono: true, render: (e) => e.cidr },
@@ -645,8 +697,22 @@ export function Firewall() {
         {(
           [
             { key: 'rules', label: t('firewall.tabRules'), icon: <IconShield size={15} /> },
-            { key: 'groups', label: t('firewall.tabGroups'), icon: <IconLayers size={15} /> },
-            { key: 'ipsets', label: t('firewall.tabIpsets'), icon: <IconLock size={15} /> },
+            /* 安全组与 IP 集合是集群级共享对象，要 firewall.view —— 只有容器
+               权限的用户看不到它们（点进去也只会是一列 403） */
+            ...(canViewVm
+              ? ([
+                  {
+                    key: 'groups',
+                    label: t('firewall.tabGroups'),
+                    icon: <IconLayers size={15} />,
+                  },
+                  {
+                    key: 'ipsets',
+                    label: t('firewall.tabIpsets'),
+                    icon: <IconLock size={15} />,
+                  },
+                ] as Array<{ key: Tab; label: string; icon: React.ReactNode }>)
+              : []),
             { key: 'templates', label: t('firewall.tabTemplates'), icon: <IconPlus size={15} /> },
           ] as Array<{ key: Tab; label: string; icon: React.ReactNode }>
         ).map((item) => (
@@ -708,23 +774,33 @@ export function Firewall() {
                       </div>
                     ) : null}
 
-                    {scope === 'vm' ? (
+                    {scope === 'vm' || scope === 'ct' ? (
                       <>
                         <div className="fw-target">
                           <Select
                             value={vmid === null ? '' : String(vmid)}
                             onChange={(e) => {
                               const next = Number(e.target.value);
-                              const vm = vms.find((item) => item.vmid === next);
+                              const vm = guests.find((item) => item.vmid === next);
                               setVmid(next);
                               if (vm) setNode(vm.node);
                             }}
-                            options={vms.map((vm) => ({
+                            /* 清单已按作用域分开（虚拟机只列虚拟机、容器只列容器），
+                               这里不必再标类型 */
+                            options={guests.map((vm) => ({
                               label: `${vm.name}（${vm.node}/${vm.vmid}）`,
                               value: String(vm.vmid),
                             }))}
-                            placeholder={t('firewall.selectVmPlaceholder')}
-                            aria-label={t('firewall.selectVmAria')}
+                            placeholder={
+                              scope === 'ct'
+                                ? t('firewall.selectCtPlaceholder')
+                                : t('firewall.selectVmPlaceholder')
+                            }
+                            aria-label={
+                              scope === 'ct'
+                                ? t('firewall.selectCtAria')
+                                : t('firewall.selectVmAria')
+                            }
                           />
                         </div>
                         <span className="fw-config-note">{t('firewall.ownerOnlyNote')}</span>
@@ -1128,6 +1204,7 @@ export function Firewall() {
         {tab === 'templates' ? (
           <FirewallTemplates
             canManage={canManage}
+            canManageCt={canManageCt}
             currentRules={rules}
             currentLabel={scopeLabel}
           />

@@ -38,11 +38,12 @@ import {
   ipPoolsApi,
   lxcApi,
   nodesApi,
-  storagesApi,
+  quotaApi,
   templatesApi,
   vmsApi,
 } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { checkGuestSpec, remainingSummary, type QuotaViolation } from '../utils/quotaSpec';
 import { Card, CardHeader } from './ui/Card';
 import { Button, IconButton } from './ui/Button';
 import {
@@ -58,7 +59,8 @@ import { NodePicker } from './NodePicker';
 import { IconCloud, IconPlus, IconTrash } from './Icons';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
-import { useT } from '../i18n';
+import { useNodeStorages } from '../hooks/useNodeStorages';
+import { useT, type MessageKey } from '../i18n';
 import { formatBytes } from '../utils/format';
 import { fitsPools } from '../utils/ippool';
 import type { VmCreateRequest } from '../api/types';
@@ -70,6 +72,23 @@ type IpMode = 'dhcp' | 'static';
 
 /** GB → MB（规格里存 MB，界面上说 GB） */
 const gb = (mb: number) => Math.round(mb / 1024);
+
+/**
+ * 越界维度 → 界面词条。
+ *
+ * 单台封顶（``max_*``）与对应的总量维度并成一项：用户能做的动作都是「把这一项
+ * 调小」，分开列只会让提示变长。额度被顶掉时必须说清是**哪一项** —— 只说
+ * 「超出额度」的话，用户还得自己拿规格去对剩余读数。
+ */
+const QUOTA_FIELD_LABEL: Record<QuotaViolation, MessageKey> = {
+  count: 'quota.fieldLabel.count',
+  cores: 'quota.fieldLabel.cores',
+  max_cores: 'quota.fieldLabel.cores',
+  memory_mb: 'quota.fieldLabel.memory',
+  max_memory_mb: 'quota.fieldLabel.memory',
+  disk_gb: 'quota.fieldLabel.disk',
+  max_disk_gb: 'quota.fieldLabel.disk',
+};
 
 /**
  * 快速部署的一张网卡。
@@ -141,9 +160,10 @@ export function QuickDeployForm({
   const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const { hasPermission } = useAuth();
-  const canCreate = hasPermission('vm.create');
+  const { hasPermission, isAdmin } = useAuth();
   const isVm = kind === 'qemu';
+  /* 建机权限随类型走：虚拟机 vm.create、容器 ct.create */
+  const canCreate = hasPermission(isVm ? 'vm.create' : 'ct.create');
 
   /* ---- 选择项 ---- */
   const [name, setName] = useState('');
@@ -228,13 +248,9 @@ export function QuickDeployForm({
     staleTime: 60_000,
   });
 
-  /* 只有容器需要选存储（建 rootfs）：虚拟机的链接克隆不写任何存储，别白读一次 */
-  const storagesQuery = useQuery({
-    queryKey: ['storages', targetConn, node || 'all'],
-    queryFn: () => storagesApi.list(node || undefined, targetConn),
-    enabled: open && !isVm && Boolean(node),
-    staleTime: 60_000,
-  });
+  /* 只有容器需要选存储（建 rootfs）：虚拟机的链接克隆不写任何存储，别白读一次。
+     候选只列**所选节点上**的存储池（含显式带连接，见 useNodeStorages）。 */
+  const storagesQuery = useNodeStorages(node, targetConn, open && !isVm);
 
   const bridgesQuery = useQuery({
     queryKey: ['nodes', targetConn, node, 'network'],
@@ -405,7 +421,55 @@ export function QuickDeployForm({
   }, [open, primaryNic, poolsQuery.data, usablePools]);
 
   const quota = quotaQuery.data;
-  const quotaBlocked = Boolean(quota && !quota.can_create);
+
+  /* 按人分配的额度（资源池）：与上面那份全局台数上限是两层。
+     快速部署也要按选中的规格判一次，否则它会绕过自定义向导里的那套预检
+     （后端仍然会拒，但用户该在提交前就看到原因）。 */
+  const myQuotaQuery = useQuery({
+    queryKey: ['quota', 'me'],
+    queryFn: quotaApi.mine,
+    enabled: open,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const myGroup = myQuotaQuery.data?.groups[isVm ? 'vm' : 'ct'];
+  const quotaOver = useMemo(
+    () =>
+      checkGuestSpec(myGroup, {
+        count: 1,
+        cores: spec?.cores ?? null,
+        memory_mb: spec?.memory ?? null,
+        disk_gb: spec?.disk ?? null,
+      }),
+    [myGroup, spec?.cores, spec?.memory, spec?.disk],
+  );
+  /* 哪一项超了：同维度去重（核数同时踩上「总量」和「单台上限」时只报一次） */
+  const quotaOverLabels = useMemo(
+    () =>
+      Array.from(new Set(quotaOver.map((field) => t(QUOTA_FIELD_LABEL[field])))).join(
+        ' / ',
+      ),
+    [quotaOver, t],
+  );
+  /* 我名下还剩多少：与两个创建向导共用 remainingSummary，两处口径一致 */
+  const mySummary = remainingSummary(
+    myGroup,
+    {
+      count: t('quota.fieldLabel.count'),
+      cores: t('quota.fieldLabel.cores'),
+      memory: t('quota.fieldLabel.memory'),
+      disk: t('quota.fieldLabel.disk'),
+    },
+    {
+      count: isVm ? t('quota.unitGuest') : t('quota.unitItem'),
+      cores: t('quota.unitCore'),
+    },
+  );
+  /* 两层额度：全局台数上限（管理员在「设置 → 创建默认值」里配的）与按人分配的
+     资源池。要分别报，各报各的数字 —— 混成一条会把「个人额度超了」说成
+     「全局额度已用尽」，数字还是全局那份，用户看着只有困惑。 */
+  const globalQuotaBlocked = Boolean(quota && !quota.can_create);
+  const quotaBlocked = globalQuotaBlocked || quotaOver.length > 0;
 
   const templateOptions = useMemo(() => {
     const list = (templatesQuery.data ?? []).filter(
@@ -488,9 +552,11 @@ export function QuickDeployForm({
       return t('quickDeploy.errStaticIp');
     }
     if (quotaBlocked) {
-      return t('quickDeploy.errQuota', {
-        label: quota?.label ?? t('quickDeploy.quotaFallback'),
-      });
+      return quotaOver.length
+        ? t('quickDeploy.errQuotaSpec')
+        : t('quickDeploy.errQuota', {
+            label: quota?.label ?? t('quickDeploy.quotaFallback'),
+          });
     }
     return '';
   }, [
@@ -640,16 +706,37 @@ export function QuickDeployForm({
           </Notice>
         ) : null}
 
-        {quotaBlocked ? (
+        {/* 全局台数上限用尽。管理员要「已用 / 上限」和去哪儿改（就是他配的那一份）；
+            普通用户看了这两个数字只会困惑 —— 设置页是管理员的，他也改不了，
+            所以只留一句「找管理员」。 */}
+        {globalQuotaBlocked ? (
           <Notice
             tone="warning"
             title={t('quickDeploy.quotaBlockedTitle', {
               label: quota?.label ?? '',
             })}
           >
-            {t('quickDeploy.quotaBlockedBody', {
-              used: quota?.used,
-              quota: quota?.quota,
+            {isAdmin
+              ? t('quickDeploy.quotaBlockedBody', {
+                  used: quota?.used,
+                  quota: quota?.quota,
+                })
+              : t('quota.askAdmin')}
+          </Notice>
+        ) : null}
+
+        {/* 按人分配的额度超了：说清超的是哪一项、名下还剩多少。出口与上面那条
+            不同 —— 这不是用户在「设置」里能改的东西，得找管理员调额度。 */}
+        {quotaOver.length > 0 ? (
+          <Notice
+            tone="warning"
+            title={t('quickDeploy.quotaSpecTitle', {
+              label: quota?.label ?? t('quickDeploy.quotaFallback'),
+            })}
+          >
+            {t('quickDeploy.quotaSpecBody', {
+              over: quotaOverLabels,
+              summary: mySummary,
             })}
           </Notice>
         ) : null}

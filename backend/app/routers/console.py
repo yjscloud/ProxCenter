@@ -197,7 +197,7 @@ async def create_lxc_vnc_session(
     node: str,
     vmid: int,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.console")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.console")),
 ) -> Dict[str, Any]:
     """Create a VNC session for a container.
 
@@ -246,7 +246,7 @@ async def create_lxc_xterm_session(
     node: str,
     vmid: int,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.console")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.console")),
 ) -> Dict[str, Any]:
     """Create a terminal session for a container (the normal case)."""
     _require_console_account()
@@ -390,7 +390,8 @@ async def _proxy_console(
         await _reject(websocket, 4401, str(exc))
         return
 
-    permission = "vm.console"
+    # 容器的控制台是独立权限（ct.console），与虚拟机（vm.console）分开
+    permission = "ct.console" if guest == "lxc" else "vm.console"
     if not security.has_permission(identity["role"], permission):
         await _reject(websocket, 4403, i18n.tr("权限不足：需要控制台访问权限"))
         return

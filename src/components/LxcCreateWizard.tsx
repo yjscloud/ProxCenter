@@ -21,9 +21,10 @@ import {
   connectionsApi,
   lxcApi,
   nodesApi,
-  storagesApi,
+  quotaApi,
 } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { checkGuestSpec, remainingSummary } from '../utils/quotaSpec';
 import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import {
@@ -39,7 +40,9 @@ import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
 import { NodePicker } from './NodePicker';
 import { QuickDeployForm } from './QuickDeployForm';
+import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { useNodeStorages } from '../hooks/useNodeStorages';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useT, type TFunc } from '../i18n';
 import type { LxcCreateNetwork, LxcCreateRequest } from '../api/types';
@@ -143,6 +146,7 @@ export function LxcCreateWizard({
 }: LxcCreateWizardProps) {
   const t = useT();
   const toast = useToast();
+  const { isAdmin } = useAuth();
   const runner = useTaskRunner();
   const queryClient = useQueryClient();
 
@@ -281,12 +285,8 @@ export function LxcCreateWizard({
     staleTime: 60_000,
   });
 
-  const storagesQuery = useQuery({
-    queryKey: ['storages', 'lxc', targetConn, form.node || 'all'],
-    queryFn: () => storagesApi.list(form.node || undefined, targetConn),
-    enabled: open && Boolean(targetConn),
-    staleTime: 60_000,
-  });
+  /* 存储：只列**所选节点上**的存储池（含显式带连接，见 useNodeStorages） */
+  const storagesQuery = useNodeStorages(form.node, targetConn, open && Boolean(targetConn));
 
   const bridgesQuery = useQuery({
     queryKey: ['nodes', targetConn, form.node, 'network'],
@@ -304,8 +304,39 @@ export function LxcCreateWizard({
     retry: false,
   });
   const quota = quotaQuery.data;
+
+  /* 按人分配的额度（资源池）：核数 / 内存 / 磁盘也在这里把住 —— 上面那份只管台数 */
+  const myQuotaQuery = useQuery({
+    queryKey: ['quota', 'me'],
+    queryFn: quotaApi.mine,
+    enabled: open,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const myGroup = myQuotaQuery.data?.groups.ct;
+  const quotaOver = useMemo(
+    () =>
+      checkGuestSpec(myGroup, {
+        count: 1,
+        cores: form.cores || null,
+        memory_mb: form.memory || null,
+        disk_gb: form.rootfs || null,
+      }),
+    [myGroup, form.cores, form.memory, form.rootfs],
+  );
+  const mySummary = remainingSummary(
+    myGroup,
+    {
+      count: t('quota.fieldLabel.count'),
+      cores: t('quota.fieldLabel.cores'),
+      memory: t('quota.fieldLabel.memory'),
+      disk: t('quota.fieldLabel.disk'),
+    },
+    { count: t('quota.unitItem'), cores: t('quota.unitCore') },
+  );
+
   /* 额度用尽时直接禁掉最后一步：让用户先看到原因，而不是点完再被拒 */
-  const blocked = Boolean(quota && !quota.can_create);
+  const blocked = Boolean(quota && !quota.can_create) || quotaOver.length > 0;
 
   /* 容器只能装在支持 rootdir 内容的存储上（通常是 local-lvm / local / zfspool） */
   const storageOptions = useMemo(() => {
@@ -460,7 +491,17 @@ export function LxcCreateWizard({
                 onClick={submit}
                 loading={submitting}
                 disabled={blocked}
-                title={blocked ? t('lxcWizard.quotaBlocked') : undefined}
+                /* 被挡住的原因有两种，出口也不同：额度超限要说清是「规格太大」，
+                   全局用尽则分身份说（管理员去设置里改，普通用户找管理员） */
+                title={
+                  blocked
+                    ? quotaOver.length
+                      ? t('lxcWizard.quotaSpecOver')
+                      : isAdmin
+                        ? t('lxcWizard.quotaExhausted')
+                        : t('quota.askAdmin')
+                    : undefined
+                }
               >
                 {t('lxcWizard.create')}
               </Button>
@@ -534,15 +575,18 @@ export function LxcCreateWizard({
                     : t('lxcWizard.quotaExhausted')
                 }
               >
+                {/* 用尽时的「总量 / 已用」只给管理员（同虚拟机向导） */}
                 {quota.can_create
                   ? t('lxcWizard.quotaUsed', {
                       quota: quota.quota ?? 0,
                       used: quota.used,
                     })
-                  : t('lxcWizard.quotaUsedUp', {
-                      quota: quota.quota ?? 0,
-                      used: quota.used,
-                    })}
+                  : isAdmin
+                    ? t('lxcWizard.quotaUsedUp', {
+                        quota: quota.quota ?? 0,
+                        used: quota.used,
+                      })
+                    : t('quota.askAdmin')}
                 {/* 与虚拟机额度分开记账：说清楚，免得管理员以为被虚拟机占掉了 */}
                 {t('lxcWizard.quotaIndependent')}
                 {quota.count_error ? (
@@ -550,6 +594,14 @@ export function LxcCreateWizard({
                     {t('lxcWizard.quotaCountError', { err: quota.count_error })}
                   </>
                 ) : null}
+              </Notice>
+            ) : null}
+
+            {/* 按人分配的额度：与上面那份「全局台数上限」是两层，这里报的是「我名下」 */}
+            {mySummary ? (
+              <Notice tone={quotaOver.length ? 'warning' : 'info'}>
+                {t('lxcWizard.quotaSpecRemaining', { summary: mySummary })}
+                {quotaOver.length ? ` ${t('lxcWizard.quotaSpecOver')}` : ''}
               </Notice>
             ) : null}
 

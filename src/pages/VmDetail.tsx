@@ -104,6 +104,7 @@ import { isDestructivePower, powerConfirmOptions } from '../utils/powerConfirm';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useSnapshotQuota } from '../hooks/useSnapshotQuota';
 import type {
   BackupItem,
   RrdPoint,
@@ -173,9 +174,16 @@ export function VmDetail() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const runner = useTaskRunner();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
   /* 关机 / 停止 / 重启前弹一次确认（见 utils/powerConfirm） */
   const [powerConfirmEl, confirmPower] = useConfirm();
+  /* 电源按**具体权限**判（与容器详情页 canPower 同一口径）：canWrite 只是
+     「这个人不是纯只读」的粗判，拿它当电源许可会把只有 vm.view + vm.console
+     的角色也放进来 —— 点下去照样被后端 403。 */
+  const canPower = hasPermission('vm.power');
+  /* 改名属于「修改配置」（后端 vms.py 的改名接口要 vm.config）：与电源一样按
+     具体权限判，不再用「不是纯只读用户」的角色粗判 */
+  const canConfig = hasPermission('vm.config');
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -391,7 +399,7 @@ export function VmDetail() {
   /* ---- 电源操作 ---- */
   const power = useCallback(
     async (action: 'start' | 'stop' | 'shutdown' | 'reboot' | 'suspend' | 'resume') => {
-      if (!canWrite) {
+      if (!canPower) {
         toast.warning(t('vmDetail.noPermission'), t('power.denied'));
         return;
       }
@@ -435,7 +443,7 @@ export function VmDetail() {
         /* toast 已处理 */
       }
     },
-    [canWrite, vm, node, vmid, runner, toast, t, confirmPower],
+    [canPower, vm, node, vmid, runner, toast, t, confirmPower],
   );
 
   /* ---- 加载 / 错误 ---- */
@@ -487,7 +495,7 @@ export function VmDetail() {
   const stopped = isStopped(vm.status);
   const frozen = vm.status === 'paused' || vm.status === 'suspended';
   const busy = isTransient(vm.status) || Boolean(vm.lock);
-  const noWrite = !canWrite || busy;
+  const noWrite = !canPower || busy;
 
   /* Guest Agent 三态：区分「没开」「开了但没回话」「开着且正常」。
      以前只看 agent_available，配置开了却没回复时会显示成「不可用」，
@@ -527,7 +535,7 @@ export function VmDetail() {
             />
             {/* 改名放在标题旁：它修饰的就是这个名字本身，在概览卡片里再放一个
                 反而要用户先切回概览页 */}
-            {canWrite ? (
+            {canConfig ? (
               <IconButton
                 label={t('vmDetail.renameAction')}
                 onClick={() => {
@@ -700,7 +708,7 @@ export function VmDetail() {
             diskUsage={diskUsage}
             fsBusy={fsBusy}
             onRenameName={
-              canWrite
+              canConfig
                 ? () => {
                     setRenameValue(vm.name ?? '');
                     setRenameOpen(true);
@@ -1215,7 +1223,9 @@ function HardwareTab({
   const t = useT();
   const runner = useTaskRunner();
   const toast = useToast();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 改 CPU / 内存 / 磁盘 / 网卡都算「修改配置」（后端 vms.py 的 config 接口） */
+  const canEditConfig = hasPermission('vm.config');
 
   const [editKey, setEditKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -1418,7 +1428,7 @@ function HardwareTab({
     }
   };
 
-  const canEdit = canWrite && !busy;
+  const canEdit = canEditConfig && !busy;
 
   const configValue = (key: string): string => {
     const v = vm.config[key];
@@ -2686,9 +2696,13 @@ function SnapshotsTab({
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
   const t = useT();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 创建 / 回滚 / 删除快照统一按 vm.snapshot 判（后端 vms.py 用的就是它） */
+  const canSnapshot = hasPermission('vm.snapshot');
 
   const [createOpen, setCreateOpen] = useState(false);
+  /* 快照额度（提示用）：只有管理员配了总额度时才显示，单机上限由后端按精确数字拒 */
+  const snapQuota = useSnapshotQuota(createOpen);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [vmstate, setVmstate] = useState(isRunning(vm.status));
@@ -2792,7 +2806,7 @@ function SnapshotsTab({
             variant="secondary"
             size="sm"
             onClick={() => setRollbackTarget(s)}
-            disabled={!canWrite || busy}
+            disabled={!canSnapshot || busy}
           >
             {t('vmDetail.snapRollback')}
           </Button>
@@ -2800,7 +2814,7 @@ function SnapshotsTab({
             label={t('vmDetail.snapDeleteAria', { name: s.name })}
             variant="danger"
             onClick={() => setDeleteTarget(s)}
-            disabled={!canWrite || busy}
+            disabled={!canSnapshot || busy}
           >
             <IconTrash size={15} />
           </IconButton>
@@ -2835,7 +2849,7 @@ function SnapshotsTab({
             size="sm"
             icon={<IconPlus size={14} />}
             onClick={() => setCreateOpen(true)}
-            disabled={!canWrite}
+            disabled={!canSnapshot}
           >
             {t('vmDetail.snapCreate')}
           </Button>
@@ -2868,7 +2882,12 @@ function SnapshotsTab({
               variant="primary"
               onClick={create}
               loading={busy}
-              disabled={!name.trim()}
+              disabled={!name.trim() || snapQuota.blocked}
+              title={
+                snapQuota.blocked
+                  ? t('guestList.snap.quotaUsedUp', { limit: Number(snapQuota.limit) })
+                  : undefined
+              }
             >
               {t('common.create')}
             </Button>
@@ -2876,6 +2895,14 @@ function SnapshotsTab({
         }
       >
         <div className="flex flex-col gap-16">
+          {/* 快照额度：只在管理员配了总额度时出现 */}
+          {snapQuota.limited ? (
+            <Notice tone={snapQuota.blocked ? 'warning' : 'info'}>
+              {snapQuota.blocked
+                ? t('guestList.snap.quotaUsedUp', { limit: Number(snapQuota.limit) })
+                : t('guestList.snap.quotaRemaining', { n: Number(snapQuota.remaining ?? 0) })}
+            </Notice>
+          ) : null}
           <Input
             label={t('vmDetail.snapColName')}
             required
@@ -2994,7 +3021,9 @@ function BackupsTab({
   const runner = useTaskRunner();
   const toast = useToast();
   const t = useT();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 备份 / 恢复 / 删除备份统一按 vm.backup 判（后端 vms.py 用的就是它） */
+  const canBackup = hasPermission('vm.backup');
 
   const [backupOpen, setBackupOpen] = useState(false);
   const [restoreTarget, setRestoreTarget] = useState<BackupItem | null>(null);
@@ -3151,7 +3180,7 @@ function BackupsTab({
               setRestoreStart(false);
               setRestoreForce(false);
             }}
-            disabled={!canWrite || busy}
+            disabled={!canBackup || busy}
           >
             {t('vmDetail.backupRestore')}
           </Button>
@@ -3184,7 +3213,7 @@ function BackupsTab({
             label={t('vmDetail.backupDelete')}
             variant="danger"
             onClick={() => setDeleteTarget(b)}
-            disabled={!canWrite || busy}
+            disabled={!canBackup || busy}
           >
             <IconTrash size={15} />
           </IconButton>
@@ -3219,7 +3248,7 @@ function BackupsTab({
             size="sm"
             icon={<IconBackup size={14} />}
             onClick={() => setBackupOpen(true)}
-            disabled={!canWrite}
+            disabled={!canBackup}
           >
             {t('vmDetail.backupNow')}
           </Button>

@@ -482,8 +482,14 @@ ZH_EN: Dict[str, str] = {
     "配置巡检策略（预期端口 / 进程白名单）与立即巡检推送告警":
         "Configure inspection policy (expected ports / process allowlist) and run an inspection with alerts",
     "查看用户与角色": "View users and roles",
-    "增删改用户与角色": "Create, edit and delete users and roles",
-    "Proxmox 连接配置、节点备注等": "Proxmox connection settings, node notes, and more",
+    "增删改用户、角色与其资源额度（不含面板配置）": (
+        "Create, edit and delete users, roles and their resource quotas "
+        "(panel settings are separate)"
+    ),
+    "面板自身的配置：Proxmox 连接、邮件与通知、飞书机器人、AI、告警推送等": (
+        "Panel-level settings: Proxmox connections, mail and notifications, "
+        "Feishu bot, AI, alert delivery, and more"
+    ),
     "查看操作审计日志": "View the operation audit log",
     # ---- 内置角色 ----
     "超级管理员": "Super administrator",

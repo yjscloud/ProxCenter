@@ -9,9 +9,10 @@
 * 电源、快照、迁移、控制台这些**同名操作在 PVE 上是不同的端点**
   （``/nodes/{n}/lxc/{id}/...`` 而不是 ``/qemu/...``）。
 
-但**归属**与**权限**是共用的：容器同样用 ``ownership.KIND_VM`` 记归属、用
-``vm.*`` 权限校验，这样「用户管理 → 指派归属」「审计日志」「配额」三处
-不需要为容器单独开一条路子。
+**归属**与**权限**都是容器专用的：容器用 ``ownership.KIND_CT`` 记归属（与虚拟机
+的 ``KIND_VM`` 分开），用 ``ct.*`` 权限校验（与虚拟机的 ``vm.*`` 分开）。这样
+「用户管理 → 指派归属」「审计日志」「配额」三处各自记账，一个只被授予容器权限的
+用户既看不到也动不了虚拟机，反之亦然。审计动作也统一用 ``ct.*`` 前缀。
 """
 from __future__ import annotations
 
@@ -60,7 +61,7 @@ from .vms import (
     _op_connection,
     _raise,
     _require_snapshot_access,
-    require_vm_access,
+    require_ct_access,
 )
 
 # 容器允许增删的硬件键：网卡（netN）与挂载点（mpN）。
@@ -80,8 +81,8 @@ def _is_ct_hardware_key(key: str) -> bool:
 router = APIRouter(
     prefix="/api",
     tags=["lxc"],
-    # 与 vms 同一顺序：先绑定连接，再做归属校验
-    dependencies=[Depends(bind_vm_connection), Depends(require_vm_access)],
+    # 与 vms 同一顺序：先绑定连接，再做归属校验（容器用 KIND_CT）
+    dependencies=[Depends(bind_vm_connection), Depends(require_ct_access)],
 )
 
 
@@ -99,7 +100,7 @@ async def _resolve_ct_ip(client: Any, ct: Dict[str, Any]) -> str:
 async def list_containers(
     node: Optional[str] = None,
     with_ip: bool = Query(False),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.view")),
 ) -> List[Dict[str, Any]]:
     """所有容器。与 ``GET /vms`` 的口径保持一致（多连接聚合 + 归属过滤）。"""
     if requested_connection():
@@ -179,7 +180,7 @@ async def list_containers(
 
     owner = security.visible_owner(user)
     if owner is not None:
-        owners = await ownership.owners_map(ownership.KIND_VM)
+        owners = await ownership.owners_map_for(ownership.KIND_CT)
         result = [
             c
             for c in result
@@ -200,7 +201,7 @@ async def list_containers(
 @router.get("/lxc/templates")
 async def list_container_templates(
     node: str = Query(..., description="节点名"),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.create")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.create")),
 ) -> List[Dict[str, Any]]:
     """节点上可用的容器模板（``vztmpl``），供创建向导选择。
 
@@ -244,7 +245,7 @@ async def list_container_templates(
 async def get_container(
     node: str,
     vmid: int,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.view")),
 ) -> Dict[str, Any]:
     client = get_client()
 
@@ -310,7 +311,7 @@ async def get_container(
 async def get_container_pending(
     node: str,
     vmid: int,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.view")),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:
@@ -324,7 +325,7 @@ async def get_container_rrddata(
     node: str,
     vmid: int,
     timeframe: str = Query(default="hour", pattern="^(hour|day|week|month|year)$"),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.view")),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:
@@ -349,12 +350,23 @@ async def get_lxc_quota(
 async def create_container(
     payload: LxcCreateRequest,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.create")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.create")),
 ) -> Dict[str, Any]:
     client = get_client()
 
     # 容器走自己的额度（与虚拟机额度分开记账）
     await quota.enforce_for_create(user, request, "lxc")
+    # 资源额度（按所有者分配）：核数 / 内存 / 磁盘（rootfs + 各挂载点）
+    await quota.enforce_create(
+        user,
+        request,
+        "ct",
+        spec={
+            "cores": payload.cores,
+            "memory_mb": payload.memory,
+            "disk_gb": payload.rootfs + sum(mount.size for mount in payload.mounts),
+        },
+    )
 
     # 与虚拟机同口径：没单独填 DNS 就套面板默认 DNS，免得容器起来后
     # 只拿到路由器 RA 下发的「假 IPv6」DNS，域名全解析不了。
@@ -399,7 +411,7 @@ async def create_container(
     )
 
     await ownership.set_owner(
-        ownership.KIND_VM,
+        ownership.KIND_CT,
         ownership.vm_ref(_op_connection(), payload.node, vmid),
         str(user.get("username") or ""),
     )
@@ -443,7 +455,7 @@ async def container_power(
     action: str,
     request: Request,
     payload: Optional[PowerRequest] = None,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.power")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.power")),
 ) -> Dict[str, Any]:
     # 容器支持与虚拟机同一组动作；没有 qemu 的「hibernate」
     allowed = {"start", "stop", "shutdown", "reboot", "suspend", "resume"}
@@ -483,7 +495,7 @@ async def delete_container(
     request: Request,
     purge: bool = True,
     force: bool = False,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.delete")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.delete")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     client = get_client()
@@ -523,13 +535,13 @@ async def get_container_owner(
     node: str,
     vmid: int,
     connection_id: Optional[str] = Query(default=None),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.assign")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.assign")),
 ) -> Dict[str, Any]:
     ref = ownership.vm_ref(connection_id or _op_connection(), node, vmid)
     return {
         "node": node,
         "vmid": vmid,
-        "owner": await ownership.get_owner(ownership.KIND_VM, ref),
+        "owner": await ownership.get_owner_for(ownership.KIND_CT, ref),
     }
 
 
@@ -539,7 +551,7 @@ async def set_container_owner(
     vmid: int,
     payload: Dict[str, Any],
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.assign")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.assign")),
 ) -> Dict[str, Any]:
     """把容器指派给某个用户；``username`` 为空表示清除归属。"""
     username = str(payload.get("username") or "").strip()
@@ -550,13 +562,16 @@ async def set_container_owner(
 
     conn_id = payload.get("connection_id") or _op_connection()
     ref = ownership.vm_ref(conn_id, node, vmid)
+    # 一律带上 KIND_VM 一并清理：升级前容器的归属记在 KIND_VM 下，只动 KIND_CT
+    # 会留下一条「幽灵」旧记录（重新指派后旧归属人仍能看到这台容器）。
     if username:
-        await ownership.set_owner(ownership.KIND_VM, ref, username)
+        await ownership.set_owner(ownership.KIND_CT, ref, username)
     else:
-        await ownership.delete_owner(ownership.KIND_VM, ref)
+        await ownership.delete_owner(ownership.KIND_CT, ref)
+    await ownership.delete_owner(ownership.KIND_VM, ref)
 
     await security.audit(
-        request, user, "vm.assign" if username else "vm.unassign",
+        request, user, "ct.assign" if username else "ct.unassign",
         target=f"{node}/{vmid}",
         detail={"username": username or None, "type": "lxc"},
     )
@@ -570,12 +585,46 @@ async def update_container_config(
     vmid: int,
     payload: LxcConfigUpdate,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     client = get_client()
     data = payload.model_dump(exclude_none=True)
     if not data:
         raise HTTPException(status_code=400, detail="没有需要更新的配置项")
+
+    # --- 改核数 / 内存 / 顺手加个挂载点：同样吃额度 -----------------------
+    # 容器没有 sockets，读数里的 ``maxcpu`` 就是核数本身，所以请求里给的绝对值
+    # 就是改完之后的值，不必再读一次配置。
+    after: Dict[str, Any] = {}
+    for key, field in (("cores", "cores"), ("memory", "memory_mb")):
+        if key in data:
+            try:
+                after[field] = int(data[key])
+            except (TypeError, ValueError):
+                pass
+
+    add: Dict[str, Any] = {}
+    new_disk_keys = [
+        str(key) for key in data if key == "rootfs" or _has_digit_suffix(str(key), "mp")
+    ]
+    if new_disk_keys:
+        try:
+            current_config = await client.lxc_config(node, vmid) or {}
+        except ProxmoxError as exc:
+            _raise(exc)
+        # rootfs 一定已存在（PVE 也不接受从配置改容量），真正会新增的是 mpN
+        added_gb = sum(
+            vmconfig.disk_value_gb(data[key]) or 0.0
+            for key in new_disk_keys
+            if key not in current_config
+        )
+        if added_gb > 0:
+            add["disk_gb"] = int(round(added_gb))
+
+    if after or add:
+        await quota.enforce_grow(
+            user, request, "ct", "ct.config.update", node, vmid, add=add, after=after
+        )
 
     try:
         result = await client.lxc_set_config(node, vmid, data)
@@ -599,7 +648,7 @@ async def set_container_config_post(
     vmid: int,
     payload: LxcConfigUpdate,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     """Alias for clients that send the raw config as a POST body."""
     return await update_container_config(node, vmid, payload, request, user)
@@ -638,7 +687,7 @@ async def add_container_network(
     vmid: int,
     payload: LxcAddNetwork,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     client = get_client()
     try:
@@ -675,7 +724,7 @@ async def add_container_mount(
     vmid: int,
     payload: LxcAddMount,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     """给容器加一个挂载点（``mpN``）。
 
@@ -690,6 +739,11 @@ async def add_container_mount(
 
     if not (payload.mp or "").strip():
         raise HTTPException(status_code=400, detail="请填写容器内的挂载路径")
+
+    # 加挂载点就是把磁盘占用涨上去（增量就是这块盘的大小）
+    await quota.enforce_grow(
+        user, request, "ct", "ct.disk.add", node, vmid, add={"disk_gb": payload.size}
+    )
 
     if payload.interface:
         key = payload.interface
@@ -715,7 +769,7 @@ async def remove_container_hardware(
     vmid: int,
     key: str,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     """卸掉一张网卡或一个挂载点。
 
@@ -762,7 +816,7 @@ async def remove_container_hardware(
 async def container_password_methods(
     node: str,
     vmid: int,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     """这个容器现在能不能改口令、走哪条路。"""
     client = get_client()
@@ -778,7 +832,7 @@ async def reset_container_password(
     vmid: int,
     payload: GuestPasswordRequest,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     """重置容器内某个用户的口令。"""
@@ -816,10 +870,32 @@ async def resize_container_disk(
     vmid: int,
     payload: LxcResizeRequest,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     """扩容 rootfs / mpN。容器只支持**增**容，缩小会被 PVE 拒绝。"""
     client = get_client()
+
+    # --- 扩容同样吃额度：先算出这次要加多少 --------------------------------
+    # ``size`` 支持增量 ``+10G``（直接可得）与绝对值 ``20G``（得先知道这块盘现在
+    # 多大，读一次配置）。读不到就不查这一项 —— 不装作知道。
+    delta = quota.disk_grow_delta(payload.size, None)
+    if delta is None:
+        try:
+            config = await client.lxc_config(node, vmid) or {}
+        except ProxmoxError as exc:
+            _raise(exc)
+        entries = [vmconfig.parse_lxc_rootfs(config), *vmconfig.parse_lxc_mounts(config)]
+        target = next(
+            (item for item in entries if item.get("interface") == payload.disk), None
+        )
+        delta = quota.disk_grow_delta(
+            payload.size, vmconfig.disk_size_to_gb((target or {}).get("size") or "")
+        )
+    if delta:
+        await quota.enforce_grow(
+            user, request, "ct", "ct.disk.resize", node, vmid, add={"disk_gb": delta}
+        )
+
     try:
         result = await client.lxc_resize(node, vmid, payload.disk, payload.size)
     except ProxmoxError as exc:
@@ -843,7 +919,7 @@ async def move_container_volume(
     vmid: int,
     payload: LxcMoveRequest,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.config")),
 ) -> Dict[str, Any]:
     client = get_client()
     try:
@@ -867,7 +943,8 @@ async def migrate_container(
     vmid: int,
     payload: LxcMigrateRequest,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    # 与虚拟机的 vm.migrate 对应（原先共用 ct.config）
+    user: Dict[str, Any] = Depends(security.require_permission("ct.migrate")),
 ) -> Dict[str, Any]:
     client = get_client()
     try:
@@ -895,12 +972,14 @@ async def clone_container(
     vmid: int,
     payload: LxcCloneRequest,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.clone")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.clone")),
 ) -> Dict[str, Any]:
     client = get_client()
 
     # 克隆会实实在在多出一台机器，配额必须跟着算（算在容器额度上）
     await quota.enforce_for_create(user, request, "lxc")
+    # 资源额度：克隆体照抄来源容器，规格从读数里取
+    await quota.enforce_create(user, request, "ct", source=(node, vmid))
 
     try:
         result = await client.lxc_clone(
@@ -930,7 +1009,7 @@ async def clone_container(
 
     target_node = payload.target_node or node
     await ownership.set_owner(
-        ownership.KIND_VM,
+        ownership.KIND_CT,
         ownership.vm_ref(_op_connection(), target_node, payload.newid),
         str(user.get("username") or ""),
     )
@@ -992,15 +1071,15 @@ async def convert_container_to_template(
 async def list_container_snapshots(
     node: str,
     vmid: int,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.view")),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         snaps = await client.lxc_snapshots(node, vmid)
     except ProxmoxError as exc:
         _raise(exc)
-    # 与虚拟机共用快照归属逻辑：创建者标记优先，缺失时按机器归属回落
-    return await _filter_snapshots(user, node, vmid, snaps)
+    # 与虚拟机共用快照归属逻辑：创建者标记优先，缺失时按**容器**归属回落
+    return await _filter_snapshots(user, node, vmid, snaps, ownership.KIND_CT)
 
 
 @router.post("/lxc/{node}/{vmid}/snapshot")
@@ -1009,9 +1088,13 @@ async def create_container_snapshot(
     vmid: int,
     payload: SnapshotCreate,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.snapshot")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.snapshot")),
 ) -> Dict[str, Any]:
     client = get_client()
+
+    # 快照额度（总数 / 单机上限）：与建机那套分开记账，只看 snapshot 这一组
+    await quota.enforce_snapshot(user, request, "snapshot.create", "lxc", node, vmid)
+
     try:
         result = await client.lxc_snapshot_create(
             node, vmid, payload.name, payload.description
@@ -1042,9 +1125,9 @@ async def rollback_container_snapshot(
     vmid: int,
     name: str,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.snapshot")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.snapshot")),
 ) -> Dict[str, Any]:
-    await _require_snapshot_access(user, node, vmid, name)
+    await _require_snapshot_access(user, node, vmid, name, ownership.KIND_CT)
     client = get_client()
     try:
         result = await client.lxc_snapshot_rollback(node, vmid, name)
@@ -1068,9 +1151,9 @@ async def delete_container_snapshot(
     vmid: int,
     name: str,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.snapshot")),
+    user: Dict[str, Any] = Depends(security.require_permission("ct.snapshot")),
 ) -> Dict[str, Any]:
-    await _require_snapshot_access(user, node, vmid, name)
+    await _require_snapshot_access(user, node, vmid, name, ownership.KIND_CT)
     client = get_client()
     try:
         result = await client.lxc_snapshot_delete(node, vmid, name)

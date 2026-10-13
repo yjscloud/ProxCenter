@@ -194,8 +194,13 @@ async def require_local_admin(
     await assert_local_access(user)
 
 
-async def require_admin(
+async def require_host_admin(
     user: Dict[str, Any] = Depends(security.get_current_user),
 ) -> None:
-    """路由依赖：仅管理员，不要求本机已导入（本机状态查询用）。"""
+    """路由依赖：仅超级管理员，不要求本机已导入（本机状态查询用）。
+
+    名字里带 ``host`` 是为了和 ``security.require_admin`` 区分开：两者语义其实一致
+    （都只看 ``role == "admin"``），但一个是 Depends 函数、一个是依赖工厂，同名很容易
+    被当成同一个东西误用。本模块的判定一律从 :func:`_scope` 出发。
+    """
     assert_admin(user)

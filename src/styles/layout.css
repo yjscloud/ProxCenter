@@ -2593,27 +2593,6 @@
   }
 }
 
-/* 角色管理列表行 */
-.role-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
-  padding: 11px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-}
-
-.role-row-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
 /* 用户编辑里的权限勾选区 */
 .perm-block {
   display: flex;

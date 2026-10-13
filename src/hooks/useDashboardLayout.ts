@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { prefsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import type { DashboardLayout } from '../api/types';
+import type { PermissionKey } from '../api/permissions';
 import { useToast } from './useToast';
 import { useT, type MessageKey } from '../i18n';
 
@@ -34,6 +35,25 @@ export interface WidgetMeta {
   nameKey: MessageKey;
   /** half = 两张并排一行；full = 独占一行 */
   span: 'half' | 'full';
+  /**
+   * 看这张卡片需要的权限，**任意一个满足即可**；缺省 = 不限制。
+   *
+   * 权限**不参与**布局对账（见 reconcileLayout）：布局记的是「用户想要什么」，
+   * 权限说的是「此刻能看到什么」。如果按权限裁完再喂给对账，无权限期间随便
+   * 拖一下就会把「缺了几张卡」的顺序落库 —— 权限恢复后布局再也回不来。
+   * 所以注册表保持完整，只在渲染时过滤（见 Dashboard 的 allowedIds）。
+   */
+  permissions?: PermissionKey[];
+  /**
+   * 仅管理员可见。
+   *
+   * 与 `permissions` 是两回事：那个问「你有没有看这件事的权限」，这个问
+   * 「这件事跟你的身份相不相称」。集群节点负载、跨用户的资源榜单都属于后者 ——
+   * 一个只读用户凭 `node.view` 确实**能**看节点，但仪表盘是给自己机器看的
+   * 地方，不像集群运营台。规则放前端（见 Dashboard 的 canSee），后端仍照常
+   * 按权限放行。
+   */
+  adminOnly?: boolean;
 }
 
 function idsOf(widgets: WidgetMeta[]): string[] {

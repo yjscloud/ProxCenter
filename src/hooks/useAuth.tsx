@@ -8,6 +8,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -19,6 +20,7 @@ import {
   USER_KEY,
 } from '../api/client';
 import { authApi } from '../api/endpoints';
+import type { PermissionKey } from '../api/permissions';
 import type { LoginResponse, UserInfo } from '../api/types';
 
 /* ---------------------------------------------------------------------------
@@ -49,14 +51,51 @@ export interface AuthContextValue {
   logoutAll: () => Promise<void>;
   /** 重新拉取当前用户信息（改完个人信息后刷新缓存） */
   refresh: () => Promise<void>;
-  /** 权限判断 */
-  hasPermission: (perm: string) => boolean;
+  /** 权限判断（键取 ``api/permissions.ts``，写错编译不过） */
+  hasPermission: (perm: PermissionKey) => boolean;
   /** 角色判断 */
   hasRole: (...roles: string[]) => boolean;
   /** 是否为管理员 */
   isAdmin: boolean;
   /** 是否可写（admin/operator）*/
   canWrite: boolean;
+}
+
+/**
+ * 这个用户能不能做写操作（整块区域的**粗判**）。
+ *
+ * **不能按角色名判断**：自定义角色（管理员在「角色管理」里拼出来的那种）不等于
+ * ``operator``，但它完全可能有 ``vm.power`` / ``vm.snapshot`` 这类权限 —— 按角色
+ * 名判会把它们一律当成只读，表现就是「明明勾了权限却点不动」。
+ *
+ * 这里的口径是「拥有任意一个非 ``.view`` 权限」，只回答「这个人是不是纯只读」。
+ * **具体某一项操作该用哪个权限，仍要单独判断**（``hasPermission('vm.power')``）：
+ * 粗判为 true 只说明他不是只读用户，不代表他能做这一件事。
+ */
+function canWriteFor(user: UserInfo | null): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return (user.permissions ?? []).some((perm) => !perm.endsWith('.view'));
+}
+
+/**
+ * 权限判定的**唯一口径**：超管短路 + ``*`` 通配 + 具体键。
+ *
+ * 关于 ``*``：后端 ``_has()`` 认它（``"*" in perms``），而它不只在内置超管角色上
+ * 出现 —— 历史数据里，自定义角色或用户级覆盖都可能带着 ``["*"]``。前端只认具体键
+ * 的话，这类账号会「后端放行一切、界面一个菜单都看不到」，两边看到的不是同一个系统。
+ * （后端现在已拒绝写入这种权限，这里兜的是存量数据。）
+ *
+ * 侧边栏 / 命令面板的菜单可见性（``canAccessNav``）也调这一份，避免两处各判各的。
+ */
+export function userHasPermission(
+  user: { role?: string; permissions?: string[] } | null | undefined,
+  perm: PermissionKey,
+): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  const granted = user.permissions ?? [];
+  return granted.includes('*') || granted.includes(perm);
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -221,13 +260,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const hasPermission = useCallback(
-    (perm: string) => {
-      if (!user) return false;
-      if (user.role === 'admin') return true;
-      return user.permissions?.includes(perm) ?? false;
-    },
+    (perm: PermissionKey) => userHasPermission(user, perm),
     [user],
   );
+
+  /* --- 权限快照的保鲜 ---
+     界面判定用的是**登录那一刻**下发的 permissions，管理员改了角色之后，已登录用户
+     要等到重新登录才看得到变化。后端每次请求都重新查库（见 security._user_view），
+     所以不会越权，但会出现「按钮还在、点一下 403」——用户只会以为面板坏了。
+
+     切回这个标签页时重新拉一次即可，成本是一次轻请求。两条纪律：
+     * 掐一个下限，频繁切标签不该把 /me 打成心跳；
+     * 失败静默 —— 拉不到就继续用手上的快照，别把网络问题升级成权限问题。 */
+  const lastRefreshRef = useRef(0);
+  useEffect(() => {
+    if (!user) return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastRefreshRef.current < 60_000) return;
+      lastRefreshRef.current = Date.now();
+      void refresh().catch(() => undefined);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [user, refresh]);
 
   const hasRole = useCallback(
     (...roles: string[]) => {
@@ -249,7 +305,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasPermission,
       hasRole,
       isAdmin: user?.role === 'admin',
-      canWrite: user?.role === 'admin' || user?.role === 'operator',
+      canWrite: canWriteFor(user),
     }),
     [
       user,

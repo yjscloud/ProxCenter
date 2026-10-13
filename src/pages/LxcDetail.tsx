@@ -63,6 +63,7 @@ import { useT } from '../i18n';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useSnapshotQuota } from '../hooks/useSnapshotQuota';
 import type { RrdPoint, RrdTimeframe } from '../api/types';
 import type { LxcMountConfig, LxcNetworkConfig } from '../api/types';
 
@@ -120,10 +121,11 @@ export function LxcDetail() {
   const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
   const [pending, setPending] = useState(false);
 
-  const canPower = hasPermission('vm.power');
-  const canConfig = hasPermission('vm.config');
-  const canDelete = hasPermission('vm.delete');
-  const canSnapshot = hasPermission('vm.snapshot');
+  /* 容器是独立的一套权限（ct.*），与虚拟机的 vm.* 不通用 */
+  const canPower = hasPermission('ct.power');
+  const canConfig = hasPermission('ct.config');
+  const canDelete = hasPermission('ct.delete');
+  const canSnapshot = hasPermission('ct.snapshot');
 
   const queryKey = useMemo(() => ['lxc', node, ctId] as const, [node, ctId]);
 
@@ -377,6 +379,8 @@ export function LxcDetail() {
 
   /* ---- 快照 ---- */
   const [snapOpen, setSnapOpen] = useState(false);
+  /* 快照额度（提示用）：只有管理员配了总额度时才显示，单机上限由后端按精确数字拒 */
+  const snapQuota = useSnapshotQuota(snapOpen);
   const [snapName, setSnapName] = useState('');
   const [snapDesc, setSnapDesc] = useState('');
   const submitSnapshot = async () => {
@@ -1236,13 +1240,31 @@ export function LxcDetail() {
             <Button variant="secondary" onClick={() => setSnapOpen(false)}>
               {t('common.cancel')}
             </Button>
-            <Button variant="primary" loading={pending} onClick={() => void submitSnapshot()}>
+            <Button
+              variant="primary"
+              loading={pending}
+              onClick={() => void submitSnapshot()}
+              disabled={snapQuota.blocked}
+              title={
+                snapQuota.blocked
+                  ? t('guestList.snap.quotaUsedUp', { limit: Number(snapQuota.limit) })
+                  : undefined
+              }
+            >
               {t('common.create')}
             </Button>
           </div>
         }
       >
         <div className="form-grid">
+          {/* 快照额度：只在管理员配了总额度时出现 */}
+          {snapQuota.limited ? (
+            <Notice tone={snapQuota.blocked ? 'warning' : 'info'}>
+              {snapQuota.blocked
+                ? t('guestList.snap.quotaUsedUp', { limit: Number(snapQuota.limit) })
+                : t('guestList.snap.quotaRemaining', { n: Number(snapQuota.remaining ?? 0) })}
+            </Notice>
+          ) : null}
           <Input
             label={t('lxcDetail.snapshotName')}
             value={snapName}

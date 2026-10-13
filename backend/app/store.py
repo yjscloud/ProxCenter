@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS roles (
     permissions TEXT         NOT NULL,
     builtin     TINYINT      NOT NULL DEFAULT 0,
     created     DOUBLE       NOT NULL,
+    -- 角色默认资源额度（JSON，字段见 app.quota 的 LIMIT_GROUPS）。
+    -- TEXT 不能带 DEFAULT，所以允许 NULL：NULL = 这个角色没配默认额度，
+    -- 用户级额度也没配时就是「不限制」。
+    quota       TEXT,
     PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -173,6 +177,13 @@ async def init_db() -> None:
             if column not in columns:
                 await db.execute(ddl)
         await db.commit()
+
+        # 角色表补列：quota = 角色默认资源额度（JSON，见 app.quota）。
+        # NULL = 未配置；用户级额度也没配时按「不限制」处理，存量角色无需迁移。
+        role_columns = await database.table_columns(db, "roles")
+        if "quota" not in role_columns:
+            await db.execute("ALTER TABLE roles ADD COLUMN quota TEXT")
+            await db.commit()
 
         # 审计表补列：target_guest = target 里的「那台机器」（取 `a -> b` 的最后
         # 一段）。创建时间回填要按 node/vmid 查克隆记录，而 target 有两种形态

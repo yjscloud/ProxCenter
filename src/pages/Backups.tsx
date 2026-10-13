@@ -79,7 +79,13 @@ export function Backups() {
   const t = useT();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
-  const { canWrite, isAdmin } = useAuth();
+  const { hasPermission, isAdmin } = useAuth();
+  /* 备份能力（立即备份 / 恢复 / 删除卷 / 备份计划）按备份权限判 —— 后端
+     backups.py 允许 `vm.backup` **或** `ct.backup`（vzdump 归档里既有虚拟机
+     也有容器）。原先这里用 canWrite（按角色名粗判），自定义角色即使勾了
+     「备份」也点不动。 */
+  const canBackup =
+    hasPermission('vm.backup') || hasPermission('ct.backup');
 
   const tab = (params.get('tab') as TabKey | null) ?? 'files';
 
@@ -140,11 +146,11 @@ export function Backups() {
       </div>
 
       {tab === 'files' ? (
-        <BackupFilesTab canWrite={canWrite} onGoCreate={() => setTab('create')} />
+        <BackupFilesTab canBackup={canBackup} onGoCreate={() => setTab('create')} />
       ) : tab === 'jobs' ? (
-        <BackupJobsTab canWrite={canWrite} isAdmin={isAdmin} />
+        <BackupJobsTab canBackup={canBackup} isAdmin={isAdmin} />
       ) : (
-        <BackupCreateTab canWrite={canWrite} />
+        <BackupCreateTab canBackup={canBackup} />
       )}
     </PageShell>
   );
@@ -154,7 +160,7 @@ export function Backups() {
    Tab：立即备份
    --------------------------------------------------------------------------- */
 
-function BackupCreateTab({ canWrite }: { canWrite: boolean }) {
+function BackupCreateTab({ canBackup }: { canBackup: boolean }) {
   const t = useT();
   const runner = useTaskRunner();
 
@@ -234,7 +240,7 @@ function BackupCreateTab({ canWrite }: { canWrite: boolean }) {
   );
 
   const canSubmit =
-    canWrite && Boolean(node) && Boolean(storage) && (all || Boolean(vmid)) && !busy;
+    canBackup && Boolean(node) && Boolean(storage) && (all || Boolean(vmid)) && !busy;
 
   const submit = async () => {
     setBusy(true);
@@ -267,7 +273,7 @@ function BackupCreateTab({ canWrite }: { canWrite: boolean }) {
     }
   };
 
-  if (!canWrite) {
+  if (!canBackup) {
     return (
       <Notice tone="info" title={t('backups.readOnlyTitle')}>
         {t('backups.readOnlyBody')}
@@ -472,10 +478,10 @@ function BackupCreateTab({ canWrite }: { canWrite: boolean }) {
    --------------------------------------------------------------------------- */
 
 function BackupFilesTab({
-  canWrite,
+  canBackup,
   onGoCreate,
 }: {
-  canWrite: boolean;
+  canBackup: boolean;
   /** 跳到「立即备份」标签页：空列表时最需要的下一步 */
   onGoCreate: () => void;
 }) {
@@ -709,7 +715,7 @@ function BackupFilesTab({
           <IconButton
             label={t('backups.restoreAria', { volid: b.volid })}
             variant="primary"
-            disabled={!canWrite}
+            disabled={!canBackup}
             onClick={(e) => {
               e.stopPropagation();
               setRestoreTarget(b);
@@ -738,7 +744,7 @@ function BackupFilesTab({
           <IconButton
             label={t('backups.deleteAria', { volid: b.volid })}
             variant="danger"
-            disabled={!canWrite}
+            disabled={!canBackup}
             onClick={(e) => {
               e.stopPropagation();
               setDeleteTarget(b);
@@ -877,7 +883,7 @@ function BackupFilesTab({
                 : t('backups.emptyDesc')
             }
             emptyAction={
-              canWrite && !search ? (
+              canBackup && !search ? (
                 <Button
                   variant="primary"
                   icon={<IconPlus size={15} />}
@@ -974,10 +980,10 @@ function BackupFilesTab({
    --------------------------------------------------------------------------- */
 
 function BackupJobsTab({
-  canWrite,
+  canBackup,
   isAdmin,
 }: {
-  canWrite: boolean;
+  canBackup: boolean;
   isAdmin: boolean;
 }) {
   const t = useT();
@@ -1131,7 +1137,7 @@ function BackupJobsTab({
         <span className="row-actions">
           <IconButton
             label={t('backups.editPlanAria', { id: j.job_id })}
-            disabled={!canWrite}
+            disabled={!canBackup}
             onClick={(e) => {
               e.stopPropagation();
               setEditTarget(j);
@@ -1187,7 +1193,7 @@ function BackupJobsTab({
               setEditTarget(null);
               setEditorOpen(true);
             }}
-            disabled={!canWrite}
+            disabled={!canBackup}
           >
             {t('backups.newPlan')}
           </Button>
@@ -1218,7 +1224,7 @@ function BackupJobsTab({
           emptyTitle={t('backups.jobsEmpty')}
           emptyDescription={t('backups.jobsEmptyDesc')}
           emptyAction={
-            canWrite ? (
+            canBackup ? (
               <Button
                 variant="primary"
                 icon={<IconPlus size={15} />}

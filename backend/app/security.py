@@ -1,6 +1,7 @@
 """Panel authentication (JWT sessions) and role-based access control."""
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import time
@@ -15,6 +16,8 @@ from fastapi.security import OAuth2PasswordBearer
 
 from .config import settings
 from . import apitokens, i18n, store
+
+logger = logging.getLogger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -61,17 +64,37 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
         "vm.create",
         "vm.clone",
         "vm.config",
+        # 迁移：范围同上（只能迁自己名下的机器）。原先与 vm.config 合并，
+        # 结果是矩阵上写着「迁移仅管理员」、实际有 config 就能迁。
+        "vm.migrate",
         # 删除自己的虚拟机：范围由归属守卫保证（routers/vms.py 的
         # require_vm_access 只放行本人名下的机器），因此这里可以安全放开
         "vm.delete",
+        # 容器与虚拟机是两套权限（后端 routers/lxc.py 用 ct.*）。这里逐项对齐
+        # 上面的虚拟机权限：普通用户对「自己名下的容器」拥有同样的一组能力，
+        # 归属范围由 routers/lxc.py 的 require_ct_access 单独把关。
+        "ct.view",
+        "ct.power",
+        "ct.console",
+        "ct.snapshot",
+        "ct.backup",
+        "ct.create",
+        "ct.clone",
+        "ct.config",
+        "ct.migrate",
+        "ct.delete",
         "template.view",
         "template.clone",
         "storage.view",
         "network.view",
         # 防火墙：普通用户可以管自己名下虚拟机的规则；集群级（影响所有主机）
-        # 留给了 firewall.cluster，默认只有管理员有
+        # 留给了 firewall.cluster，默认只有管理员有。
+        # ct.firewall.* 是容器侧的同一件事（routers/firewall.py 会按目标类型
+        # 选用 vm 还是 ct 的权限点）。
         "firewall.view",
         "firewall.manage",
+        "ct.firewall.view",
+        "ct.firewall.manage",
         "node.view",
         "task.view",
         "frp.view",
@@ -82,6 +105,7 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
         "cert.manage",
         # 应急隔离：operator 本来就能删除 / 关机自己名下的机器，却唯独不能
         # 隔离它 —— 真遇到疑似被入侵时反而无从下手。这里补上。
+        # （隔离是 qemu 专有动作，容器不参与，所以没有 ct.isolate。）
         "vm.isolate",
         # 注意：ssh.view / baseline.view / ports.view **不**在普通角色里。
         # 这三项读的是「面板本机 + SSH 受管主机」的主机级数据（登录爆破记录、
@@ -91,10 +115,12 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
     ],
     "viewer": [
         "vm.view",
+        "ct.view",
         "template.view",
         "storage.view",
         "network.view",
         "firewall.view",
+        "ct.firewall.view",
         "node.view",
         "task.view",
         "frp.view",
@@ -107,15 +133,20 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
 
 ROLE_DESCRIPTIONS: Dict[str, str] = {
     "admin": "超级管理员：可见并管理全部资源（不受用户隔离限制），可管理用户、连接配置与宿主机网络。",
-    "operator": "普通用户：可创建、开关机、控制台、快照、备份、克隆，并删除「自己创建」的虚拟机；"
-    "只能看到自己名下的虚拟机，不能管理用户、连接配置或宿主机网络。",
+    "operator": "普通用户：可创建、开关机、控制台、快照、备份、克隆，并删除「自己创建」的"
+    "虚拟机与容器；只能看到自己名下的机器，不能管理用户、连接配置或宿主机网络。",
     "viewer": "只读用户：仅可查看自己名下的资源、监控与任务，不能执行任何变更操作。",
 }
 
 
 # 权限目录：供「创建用户 / 自定义角色」的勾选界面使用（按域分组 + 中文说明）。
 # 这里必须与 ROLE_PERMISSIONS 及各处 require_permission() 用到的字符串完全一致，
-# 否则界面上勾了却不生效。
+# 否则界面上勾了却不生效 —— 现在由 tests/test_permission_catalog.py 兜底，漏了会红。
+#
+# 命名约定：``<域>.<动作>``，动作优先复用已有的 view / manage / create / delete。
+# 三段式（``ct.firewall.manage``、``ai.terminal``）是**有意**的：同一项能力在虚拟机
+# 与容器下各有一套（首段是客户机类型），或者尾段本身是个子域。加权限点时先看同域里
+# 已有的键怎么拼，别自造同义词 —— "edit" 与 "manage" 混用会让勾选界面看起来像两件事。
 PERMISSION_CATALOG: List[Dict[str, Any]] = [
     {
         "key": "vm",
@@ -127,7 +158,13 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
             {"key": "vm.assign", "label": "指派归属", "desc": "把虚拟机指派给指定用户（含存量无主机）"},
             {"key": "vm.power", "label": "电源操作", "desc": "开机 / 关机 / 重启 / 挂起"},
             {"key": "vm.console", "label": "控制台", "desc": "打开 VNC 控制台"},
-            {"key": "vm.config", "label": "修改配置", "desc": "改 CPU / 内存 / 磁盘 / 网卡 / 迁移"},
+            {"key": "vm.config", "label": "修改配置", "desc": "改 CPU / 内存 / 磁盘 / 网卡等配置"},
+            {
+                "key": "vm.migrate",
+                "label": "迁移",
+                "desc": "在节点之间迁移虚拟机（在线或离线）。原先与「修改配置」共用 vm.config，"
+                "矩阵上写着仅管理员、实际有 config 就能迁 —— 现在单独成点。",
+            },
             {"key": "vm.snapshot", "label": "快照", "desc": "创建 / 回滚 / 删除快照"},
             {"key": "vm.backup", "label": "备份", "desc": "备份与恢复"},
             {"key": "vm.clone", "label": "克隆", "desc": "从模板或虚拟机克隆"},
@@ -141,6 +178,30 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
                 "label": "应急隔离",
                 "desc": "一键隔离可疑虚拟机（取证快照 + 断网 + 关机）与解除隔离",
             },
+        ],
+    },
+    {
+        # 容器（LXC）与虚拟机在 PVE 上是两套端点，权限也各自独立。
+        # 这一组与上面的「虚拟机」组逐项对应；差异只在容器没有的能力
+        # （重装系统、应急隔离是 qemu 专有，故不列出）。
+        "key": "ct",
+        "label": "容器",
+        "permissions": [
+            {"key": "ct.view", "label": "查看", "desc": "查看自己名下的容器"},
+            {"key": "ct.create", "label": "创建", "desc": "新建容器"},
+            {"key": "ct.delete", "label": "删除", "desc": "删除自己创建的容器"},
+            {"key": "ct.assign", "label": "指派归属", "desc": "把容器指派给指定用户（含存量无主机）"},
+            {"key": "ct.power", "label": "电源操作", "desc": "开机 / 关机 / 重启 / 挂起"},
+            {"key": "ct.console", "label": "控制台", "desc": "打开容器控制台（VNC / 终端）"},
+            {"key": "ct.config", "label": "修改配置", "desc": "改 CPU / 内存 / 磁盘 / 网卡 / 挂载点等配置"},
+            {
+                "key": "ct.migrate",
+                "label": "迁移",
+                "desc": "在节点之间迁移容器（在线或离线）。与 vm.migrate 对应，原先共用 ct.config。",
+            },
+            {"key": "ct.snapshot", "label": "快照", "desc": "创建 / 回滚 / 删除容器快照"},
+            {"key": "ct.backup", "label": "备份", "desc": "查看与恢复容器备份（备份页跨类型共用）"},
+            {"key": "ct.clone", "label": "克隆", "desc": "从容器或模板克隆"},
         ],
     },
     {
@@ -175,6 +236,16 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
             {"key": "firewall.view", "label": "查看", "desc": "查看集群 / 节点 / 虚拟机的防火墙规则、安全组与选项"},
             {"key": "firewall.manage", "label": "管理", "desc": "改自己名下虚拟机的规则、安全组规则与 IP 集合条目、下发模板"},
             {"key": "firewall.cluster", "label": "集群级", "desc": "改集群级规则与默认策略、建删安全组 / IP 集合（影响所有主机）"},
+            {
+                "key": "ct.firewall.view",
+                "label": "容器查看",
+                "desc": "查看自己名下容器的防火墙规则与选项（集群 / 节点级沿用上面的「查看」）",
+            },
+            {
+                "key": "ct.firewall.manage",
+                "label": "容器管理",
+                "desc": "改自己名下容器的防火墙规则与选项",
+            },
         ],
     },
     {
@@ -284,14 +355,22 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
         "label": "用户与角色",
         "permissions": [
             {"key": "users.view", "label": "查看", "desc": "查看用户与角色"},
-            {"key": "users.manage", "label": "管理", "desc": "增删改用户与角色"},
+            {
+                "key": "users.manage",
+                "label": "管理",
+                "desc": "增删改用户、角色与其资源额度（不含面板配置）",
+            },
         ],
     },
     {
         "key": "settings",
         "label": "系统设置",
         "permissions": [
-            {"key": "settings.manage", "label": "管理", "desc": "Proxmox 连接配置、节点备注等"},
+            {
+                "key": "settings.manage",
+                "label": "管理",
+                "desc": "面板自身的配置：Proxmox 连接、邮件与通知、飞书机器人、AI、告警推送等",
+            },
         ],
     },
     {
@@ -315,6 +394,44 @@ BUILTIN_ROLE_NAMES = {
 # 所以这里保留一份缓存；任何角色变更后调用 load_roles() 刷新即可。
 _role_cache: Dict[str, List[str]] = {k: list(v) for k, v in ROLE_PERMISSIONS.items()}
 
+# 内置角色的增量升级，按轮次列：``(一次性标记, {角色: 新增权限})``。
+#
+# 为什么要补：升级前 operator / viewer 只勾了 vm.*；拆分后容器接口改用 ct.*、迁移
+# 从 vm.config 独立成 vm.migrate，若不补一次，现网里早就存在的 operator 角色会对
+# 容器页与迁移整片 403（角色行已落库，load_roles() 只在「角色还不存在」时写库）。
+#
+# 一轮一个标记：升级是一次性的，而部署可能已经跑过上一轮 —— 共用一个标记会让后加
+# 的这一轮被直接跳过（旧角色补不上新权限）；只做增量合并（∪ 到现有权限上）而不是
+# 整体重写，是为了不抹掉管理员在内置角色上手工裁掉的权限
+# （见 :func:`_merge_builtin_additions`）。
+_BUILTIN_ROLE_ROUNDS: List[Tuple[str, Dict[str, List[str]]]] = [
+    (
+        # 第一轮：容器权限拆分（ct.* 从 vm.* 里分出来）
+        "roles_builtin_ct_split",
+        {
+            "operator": [
+                "ct.view",
+                "ct.power",
+                "ct.console",
+                "ct.snapshot",
+                "ct.backup",
+                "ct.create",
+                "ct.clone",
+                "ct.config",
+                "ct.delete",
+                "ct.firewall.view",
+                "ct.firewall.manage",
+            ],
+            "viewer": ["ct.view", "ct.firewall.view"],
+        },
+    ),
+    (
+        # 第二轮：迁移从「修改配置」里分出来（vm.migrate / ct.migrate）
+        "roles_builtin_migrate_split",
+        {"operator": ["vm.migrate", "ct.migrate"]},
+    ),
+]
+
 
 async def load_roles() -> Dict[str, List[str]]:
     """把内置角色补齐进库，并把全部角色读入缓存（启动时与角色变更后调用）。"""
@@ -329,11 +446,57 @@ async def load_roles() -> Dict[str, List[str]]:
                 builtin=True,
             )
 
+    await _upgrade_builtin_roles()
+
     roles = await store.list_roles()
     _role_cache.clear()
     for item in roles:
         _role_cache[str(item["id"])] = list(item.get("permissions") or [])
     return dict(_role_cache)
+
+
+async def _upgrade_builtin_roles() -> None:
+    """把 :data:`_BUILTIN_ROLE_ROUNDS` 里各轮的新增权限并进已存在的内置角色。"""
+    for flag, additions in _BUILTIN_ROLE_ROUNDS:
+        await _merge_builtin_additions(flag, additions)
+
+
+async def _merge_builtin_additions(
+    flag: str, additions: Dict[str, List[str]]
+) -> None:
+    """某一轮的增量合并：只加不减，跑过就记标记（存 settings KV）。
+
+    **只做增量**：管理员可能在内置角色上手工裁过权限（例如把 operator 的删除收
+    回去），整体重写成 ROLE_PERMISSIONS 会把它悄悄还原；这里只把「这一轮新加的
+    那几个权限」并进去。
+    """
+    try:
+        if await store.get_setting(flag):
+            return
+    except Exception:  # noqa: BLE001 - 读标记失败：宁可多合并一次也不漏补
+        pass
+
+    for role_id, perms in additions.items():
+        role = await store.get_role(role_id)
+        if not role:
+            continue
+        current = list(role.get("permissions") or [])
+        if "*" in current:
+            continue  # 超管无需逐项补
+        merged = sorted(set(current) | set(perms))
+        if merged == sorted(set(current)):
+            continue
+        await store.save_role(
+            role_id,
+            str(role.get("name") or BUILTIN_ROLE_NAMES.get(role_id, role_id)),
+            str(role.get("description") or ROLE_DESCRIPTIONS.get(role_id, "")),
+            merged,
+            builtin=True,
+        )
+    try:
+        await store.set_setting(flag, "1")
+    except Exception:  # noqa: BLE001
+        logger.warning("写入内置角色升级标记失败，下次启动会重跑", exc_info=True)
 
 
 def role_permissions(role: str) -> List[str]:
@@ -360,6 +523,41 @@ def effective_permissions(user: Dict[str, Any]) -> List[str]:
 
 def has_user_permission(user: Dict[str, Any], permission: str) -> bool:
     return _has(effective_permissions(user), permission)
+
+
+def permission_keys() -> set:
+    """权限目录里全部合法的键（``*`` 不在其中，见 :func:`validate_permissions`）。"""
+    return {
+        str(item.get("key") or "")
+        for group in PERMISSION_CATALOG
+        for item in group.get("permissions", [])
+    }
+
+
+def validate_permissions(perms: Optional[List[str]]) -> Optional[List[str]]:
+    """校验并规范化管理员提交的一组权限键；有未知项就报 400。
+
+    ``None`` 原样返回 —— 它的语义是「不设用户级覆盖，跟随角色」，与 ``[]``
+    （显式不给任何权限）是两件事，不能在规范化里被抹平。
+
+    为什么必须挡：这些字符串是前后端**唯一的约定**，而两边对错误的处理都是静默
+    失败 —— 拼错一个（``vm.powers``）表现为「勾了不生效」，谁都不报错，非常难查。
+
+    ``*`` 同样在这里被拒。后端把 ``*`` 当「全部权限」（见 :func:`_has`），而
+    内置超管角色的 ``["*"]`` 是**写死在常量表里**、由 :func:`load_roles` 直接入库的，
+    不经过这条路径；一旦让它从 ``POST /roles`` 或用户级覆盖进来，就等于凭空造了
+    第二个超管 —— 而且那个角色在前端还看不到菜单（前端只认 ``role == 'admin'``）。
+    """
+    if perms is None:
+        return None
+    submitted = {str(item) for item in perms}
+    unknown = sorted(submitted - permission_keys())
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"未知的权限项：{'、'.join(unknown)}",
+        )
+    return sorted(submitted)
 
 
 def is_admin(user: Dict[str, Any]) -> bool:
@@ -943,8 +1141,49 @@ def require_permission(permission: str) -> Callable[..., Any]:
     return _checker
 
 
+def require_any_permission(*permissions: str) -> Callable[..., Any]:
+    """FastAPI dependency factory：拥有其中**任意一个**权限即可放行。
+
+    给「跨类型」的汇总接口用 —— 快照 / 备份 / 批量操作这三个页面同时覆盖虚拟机
+    与容器，只认 ``vm.*`` 会让「只有容器权限」的用户连页面都打不开，只认 ``ct.*``
+    则反过来。逐台操作的细分权限仍在处理函数里按目标类型各自判一次。
+    """
+
+    async def _checker(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+        if any(has_user_permission(user, perm) for perm in permissions):
+            return user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=i18n.t(
+                "error.permission_denied_role",
+                permission=" / ".join(permissions),
+                role=user["role"],
+            ),
+        )
+
+    return _checker
+
+
 def require_admin() -> Callable[..., Any]:
-    return require_permission("users.manage")
+    """仅**超级管理员**（``role == "admin"``）。
+
+    这里以前等价于 ``require_permission("users.manage")``，于是「用户与角色 · 管理」
+    这一个勾选项顺带把飞书机器人、AI 配置、告警推送来源也给了出去（见
+    routers/feishu.py、routers/ai.py、routers/alerts.py 的历史用法）—— 管理员不可能
+    从「增删改用户与角色」这几个字里读出这一层。面板级配置现在归 ``settings.manage``，
+    这里恢复字面意思。
+
+    与 :func:`is_admin` 是同一个判据；用户隔离（:func:`visible_owner`）也用它。
+    """
+    async def _checker(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+        if not is_admin(user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="该操作仅超级管理员可用",
+            )
+        return user
+
+    return _checker
 
 
 # Backwards-compatible alias used by routers that predate permissions.

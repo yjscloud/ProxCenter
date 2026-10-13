@@ -13,6 +13,16 @@ import { useNavigate } from 'react-router-dom';
 import { IconSparkle } from './Icons';
 import { Button } from './ui/Button';
 import { useT } from '../i18n';
+import { useAuth } from '../hooks/useAuth';
+
+/**
+ * 使用「AI 排查助手」所需的权限。
+ *
+ * 必须与路由守卫和侧边栏用同一把钥匙（见 App.tsx 的 /ai-assistant、
+ * Sidebar 的 nav.aiAssistant）。没有它的人点进去只会被守卫弹回仪表盘 ——
+ * 那等于在各页面里摆了一堆走不通的按钮，所以入口本身要按它隐藏。
+ */
+export const AI_ASSISTANT_PERMISSION = 'baseline.view';
 
 export function AskAiButton({
   hostId,
@@ -36,12 +46,16 @@ export function AskAiButton({
 }) {
   const t = useT();
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
 
   // 面板本机**不是**助手的目标（见后端 ai.ai_targets：那是跑着面板、握着全部
   // 凭据的那台机器，不该从助手这条更放权的路径进来）。这里直接不渲染，而不是
   // 让它跳过去 —— 跳过去只会落到「请先确认要排查哪台机器」上，用户大概率随手
   // 选一台受管主机，而那台机器根本不是他刚才在看的那台。
   if (hostId === 'local') return null;
+
+  // 没被授予 AI 排查助手权限：入口不出现（与「面板本机」同理，摆着也走不通）
+  if (!hasPermission(AI_ASSISTANT_PERMISSION)) return null;
 
   return (
     <Button

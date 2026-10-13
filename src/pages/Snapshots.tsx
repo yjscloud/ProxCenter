@@ -5,7 +5,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { vmsApi } from '../api/endpoints';
+import { lxcApi, vmsApi } from '../api/endpoints';
 import { guestPath } from '../api/guests';
 import { PageShell } from '../components/Layout';
 import { Card } from '../components/ui/Card';
@@ -67,7 +67,11 @@ export function Snapshots() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 回滚 / 删除快照按**目标类型**判权限：虚拟机 vm.snapshot、容器 ct.snapshot
+     （后端 vms.py / lxc.py 就是两套），不再用「是不是非只读用户」的角色粗判。 */
+  const canSnapshotOf = (s: Snapshot) =>
+    hasPermission(s.vm_type === 'lxc' ? 'ct.snapshot' : 'vm.snapshot');
 
   const [search, setSearch] = useState('');
   const [nodeFilter, setNodeFilter] = useState('');
@@ -255,7 +259,7 @@ export function Snapshots() {
               e.stopPropagation();
               setRollbackTarget(s);
             }}
-            disabled={!canWrite || busy}
+            disabled={!canSnapshotOf(s) || busy}
           >
             <IconRestart size={15} />
           </IconButton>
@@ -266,7 +270,7 @@ export function Snapshots() {
               e.stopPropagation();
               setDeleteTarget(s);
             }}
-            disabled={!canWrite || busy}
+            disabled={!canSnapshotOf(s) || busy}
           >
             <IconTrash size={15} />
           </IconButton>
@@ -398,8 +402,11 @@ export function Snapshots() {
           if (!rollbackTarget?.node || !rollbackTarget.vmid) return;
           setBusy(true);
           try {
+            /* 容器与虚拟机是两套端点，按行里的类型分派 */
+            const isLxcRow = rollbackTarget.vm_type === 'lxc';
+            const api = isLxcRow ? lxcApi : vmsApi;
             await runner.run(
-              vmsApi.rollbackSnapshot(
+              api.rollbackSnapshot(
                 rollbackTarget.node,
                 rollbackTarget.vmid,
                 rollbackTarget.name,
@@ -412,8 +419,8 @@ export function Snapshots() {
                 node: rollbackTarget.node,
                 invalidate: [
                   ['snapshots'],
-                  ['vm', rollbackTarget.node, rollbackTarget.vmid],
-                  ['vms'],
+                  [isLxcRow ? 'lxc' : 'vm', rollbackTarget.node, rollbackTarget.vmid],
+                  [isLxcRow ? 'lxc' : 'vms'],
                 ],
                 destructive: true,
               },
@@ -443,8 +450,10 @@ export function Snapshots() {
           if (!deleteTarget?.node || !deleteTarget.vmid) return;
           setBusy(true);
           try {
+            const isLxcRow = deleteTarget.vm_type === 'lxc';
+            const api = isLxcRow ? lxcApi : vmsApi;
             await runner.run(
-              vmsApi.deleteSnapshot(
+              api.deleteSnapshot(
                 deleteTarget.node,
                 deleteTarget.vmid,
                 deleteTarget.name,
@@ -454,7 +463,7 @@ export function Snapshots() {
                 node: deleteTarget.node,
                 invalidate: [
                   ['snapshots'],
-                  ['vm', deleteTarget.node, deleteTarget.vmid],
+                  [isLxcRow ? 'lxc' : 'vm', deleteTarget.node, deleteTarget.vmid],
                 ],
                 destructive: true,
               },

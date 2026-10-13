@@ -351,7 +351,7 @@ async def panel_key_state(
     }
 
 
-@router.post("/panel-key/rotate", dependencies=[Depends(hostscope.require_admin)])
+@router.post("/panel-key/rotate", dependencies=[Depends(hostscope.require_host_admin)])
 async def rotate_panel_key(
     request: Request,
     user: Dict[str, Any] = Depends(SSH_MANAGE),
@@ -394,7 +394,7 @@ async def local_host_state(
 ) -> Dict[str, Any]:
     """面板本机的管控状态。
 
-    特意**不要求已导入**（组件用 ``require_admin`` 而非 ``require_local_admin``）——
+    特意**不要求已导入**（组件用 ``require_host_admin`` 而非 ``require_local_admin``）——
     否则未导入时前端连「该不该显示导入按钮」都问不出来。
     """
     hostscope.assert_admin(user)
@@ -407,7 +407,7 @@ async def local_host_state(
     }
 
 
-@router.post("/local", dependencies=[Depends(hostscope.require_admin)])
+@router.post("/local", dependencies=[Depends(hostscope.require_host_admin)])
 async def import_local_host(
     request: Request,
     user: Dict[str, Any] = Depends(SSH_MANAGE),
@@ -426,7 +426,7 @@ async def import_local_host(
     return {"ok": True, "local": {"id": hostscope.LOCAL_HOST_ID, **state}}
 
 
-@router.delete("/local", dependencies=[Depends(hostscope.require_admin)])
+@router.delete("/local", dependencies=[Depends(hostscope.require_host_admin)])
 async def remove_local_host(
     request: Request,
     user: Dict[str, Any] = Depends(SSH_MANAGE),

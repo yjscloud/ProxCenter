@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
 from app.config import settings  # noqa: E402
+from app.routers import firewall  # noqa: E402
 from test_api_routes import ADMIN, api, auth_headers, csrf_headers  # noqa: E402,F401
 
 
@@ -412,3 +414,47 @@ class TestPermissions:
         )
         assert denied.status_code == 403
         assert "firewall.cluster" in denied.json()["detail"]
+
+
+# ------------------------------------------------- 容器作用域（与虚拟机分开）
+def _run(coro):
+    """同步跑协程 —— 与 test_bulk / test_mailer 同一套路，不引入额外插件。"""
+    return asyncio.run(coro)
+
+
+class TestCtScope:
+    """「容器」是独立作用域入口：各看各的清单，权限也各是一套。
+
+    这些用例只碰纯函数（作用域 → PVE 路径 / 权限类型），不需要连库。
+    """
+
+    def test_scope_base_pins_lxc(self) -> None:
+        assert (
+            _run(firewall._scope_base("ct", node="pve1", vmid=100))
+            == "/nodes/pve1/lxc/100/firewall"
+        )
+
+    def test_vm_scope_still_honours_vtype(self) -> None:
+        assert (
+            _run(firewall._scope_base("vm", node="pve1", vmid=100, vtype="lxc"))
+            == "/nodes/pve1/lxc/100/firewall"
+        )
+        assert (
+            _run(firewall._scope_base("vm", node="pve1", vmid=100, vtype="qemu"))
+            == "/nodes/pve1/qemu/100/firewall"
+        )
+
+    def test_guest_scope_requires_node_and_vmid(self) -> None:
+        with pytest.raises(Exception):
+            _run(firewall._scope_base("ct", node="pve1"))
+
+    def test_target_kind_is_pinned_for_ct(self) -> None:
+        # 钉死成 lxc —— 权限因此落到 ct.firewall.*，归属落到 KIND_CT
+        assert _run(firewall._resolve_target_kind("ct", node="pve1", vmid=100)) == "lxc"
+        assert _run(firewall._resolve_target_kind("node", node="pve1")) == ""
+        assert _run(firewall._resolve_target_kind("cluster")) == ""
+
+    def test_ct_shares_vm_option_fields(self) -> None:
+        # 容器与虚拟机在 PVE 侧的选项字段一致，两套作用域共用一份清单
+        assert firewall._OPTION_FIELDS["ct"] == firewall._OPTION_FIELDS["vm"]
+        assert "dhcp" in firewall._OPTION_FIELDS["ct"]

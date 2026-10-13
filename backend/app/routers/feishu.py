@@ -18,9 +18,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/feishu", tags=["feishu"])
 
-# 仅管理员：飞书机器人页面与接口都不对普通用户开放
-BOT_VIEW = security.require_admin()
-BOT_MANAGE = security.require_admin()
+# 飞书机器人属于**面板自身**的配置（不是 PVE 侧的资源），与「系统设置」同一档：
+# 以前这里用 require_admin()（当时等价于 users.manage），于是勾了「用户与角色 · 管理」
+# 的人会在看不见这个页面的情况下，通过 API 改走机器人 —— 权限语义溢出。
+BOT_VIEW = security.require_permission("settings.manage")
+BOT_MANAGE = security.require_permission("settings.manage")
 
 # 配置页「可用指令」表格的数据源。cmd 是机器人匹配用的中文原文（必须保持稳定），
 # desc 与 cmd 仅用于展示，出口再按当前语言本地化，所以这里写中文。

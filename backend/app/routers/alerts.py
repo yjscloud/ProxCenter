@@ -138,7 +138,9 @@ async def get_alerts(
 async def save_notify_sources(
     payload: Dict[str, Any],
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_admin()),
+    # 面板级的推送策略（走哪些来源），与「系统设置」同一档。
+    # 原先用 require_admin()（= users.manage），会把用户管理权限顺带当成面板管理员。
+    user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
 ) -> Dict[str, Any]:
     """保存「哪些来源允许推送告警」。
 

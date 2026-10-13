@@ -26,7 +26,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from .. import ownership, security, sshremote, store, vmtransfer
+from .. import ownership, quota, security, sshremote, store, vmtransfer
 from ..pve import (
     ProxmoxError,
     get_client,
@@ -271,6 +271,24 @@ async def create_imported_vm(
     try:
         meta = await vmtransfer.import_metadata(
             client, payload.node, payload.storage, payload.volume
+        )
+        # 导入同样是「新增一台虚拟机」，额度必须跟着算。
+        # 核数 / 内存：请求里给了就按它（用户可以覆盖），没给就由 OVF 决定 ——
+        # 那种情况不查那一项；磁盘取元数据里各块盘的容量之和（PVE 给的是字节）。
+        disk_bytes = sum(
+            int(entry.get("size") or 0)
+            for entry in (meta.get("disks") or {}).values()
+            if isinstance(entry, dict)
+        )
+        await quota.enforce_create(
+            user,
+            request,
+            "vm",
+            spec={
+                "cores": payload.cores,
+                "memory_mb": payload.memory,
+                "disk_gb": quota.bytes_to_gb(disk_bytes) if disk_bytes else None,
+            },
         )
         vmid = payload.vmid
         if not vmid:

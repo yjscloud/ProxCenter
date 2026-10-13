@@ -192,6 +192,10 @@ import type {
   LxcMigrateRequest,
   VmDiskUsage,
   VmHardwareResult,
+  MyQuotaReport,
+  QuotaLimits,
+  RoleQuotaReport,
+  UserQuotaReport,
   GuestPasswordMethods,
   GuestPasswordRequest,
   GuestPasswordResult,
@@ -1205,7 +1209,14 @@ export const usersApi = {
     },
   ) => put<UserOut>(`/users/${username}`, body),
   remove: (username: string) => del<{ deleted?: boolean; username?: string }>(`/users/${username}`),
-  /** 角色目录（含 admin 自建角色） */
+  /**
+   * 角色目录（含管理员自建角色）：只有 id / name / description / permissions，
+   * **没有** user_count。
+   *
+   * 用户页要显示「N 个用户在用」，所以那边统一用 ``rolesApi.list()``
+   * （``/api/roles``，带计数）。这个接口留着是因为它只要求登录、不要求
+   * ``users.view`` —— 是唯一一个普通用户也能读到的角色清单。
+   */
   roles: () => get<RoleOut[]>('/users/roles'),
   /** 审批通过注册申请，同时定下角色与权限 */
   approve: (
@@ -1219,6 +1230,16 @@ export const usersApi = {
   /** 拒绝注册申请（账号保留，状态置为 rejected） */
   reject: (username: string, reason?: string) =>
     post<UserOut>(`/users/${username}/reject`, { reason: reason ?? '' }),
+  /**
+   * 资源额度：用户级配置 + 角色默认 + 最终生效值。
+   *
+   * 与全局台数上限（``configApi.getVmQuota``）不是一回事：那是集群护栏，
+   * 这里是按人分配。
+   */
+  getQuota: (username: string) => get<UserQuotaReport>(`/users/${username}/quota`),
+  /** 设置额度；``null`` = 清除这份配置，回到继承角色默认 */
+  saveQuota: (username: string, quota: QuotaLimits | null) =>
+    put<UserQuotaReport>(`/users/${username}/quota`, { quota }),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1240,6 +1261,24 @@ export const rolesApi = {
     body: { name?: string; description?: string; permissions: string[] },
   ) => put<RoleOut>(`/roles/${id}`, body),
   remove: (id: string) => del<{ deleted: string }>(`/roles/${id}`),
+  /** 角色默认额度：没单独配过的用户就按它走（超管角色不受额度限制，拒收） */
+  getQuota: (id: string) => get<RoleQuotaReport>(`/roles/${id}/quota`),
+  saveQuota: (id: string, quota: QuotaLimits | null) =>
+    put<RoleQuotaReport>(`/roles/${id}/quota`, { quota }),
+};
+
+/* ---------------------------------------------------------------------------
+   资源额度（用户侧读数）
+   --------------------------------------------------------------------------- */
+
+export const quotaApi = {
+  /**
+   * 我自己（当前登录用户）的额度与名下用量。
+   *
+   * 创建向导与列表页都靠它：普通用户同样该知道「还能建几台 / 还能用几核」。
+   * 看别人的额度是管理端的事（``usersApi.getQuota`` / ``rolesApi.getQuota``）。
+   */
+  mine: () => get<MyQuotaReport>('/quota/me'),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1593,7 +1632,8 @@ function fwScope(
 ): { params: Record<string, string | number> } {
   const params: Record<string, string | number> = {};
   if (scope !== 'cluster' && node) params.node = node;
-  if (scope === 'vm' && vmid !== undefined) params.vmid = vmid;
+  // vm 与 ct 都是「某台客户机」：都要带 vmid（后端按 scope 区分类型）
+  if ((scope === 'vm' || scope === 'ct') && vmid !== undefined) params.vmid = vmid;
   return { params };
 }
 

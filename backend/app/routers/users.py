@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import i18n, mailer, panel_url, prefs, security, store
-from ..schemas import ApprovalRequest, UserCreate, UserUpdate
+from .. import i18n, mailer, panel_url, prefs, quota, security, store
+from ..schemas import ApprovalRequest, QuotaIn, UserCreate, UserUpdate
 
 
 async def _notify_decision(
@@ -125,19 +125,23 @@ async def create_user(
     if not await store.get_role(role_id):
         raise HTTPException(status_code=400, detail=f"角色 {role_id} 不存在")
 
+    # None = 跟随角色权限；给了列表 = 用户级覆盖。两种都先过目录白名单 ——
+    # 这条路径同样是权限的写入口，拼错的键会静默失效、"*" 会凭空造超管
+    permissions = security.validate_permissions(payload.permissions)
+
     created = await store.create_user(
         payload.username,
         payload.password,
         role_id,
         payload.email,
-        permissions=payload.permissions,
+        permissions=permissions,
     )
 
     await security.audit(
         request, user, "user.create", target=payload.username,
         detail={
             "role": role_id,
-            "permissions": payload.permissions,
+            "permissions": permissions,
         },
     )
     return created
@@ -179,13 +183,21 @@ async def update_user(
             detail=f"未知的账号状态：{payload.status}",
         )
 
+    # 只有真的要设覆盖时才校验 —— 关闭覆盖时 payload.permissions 没有意义，
+    # store 也按 permissions_provided 决定写不写
+    permissions = (
+        security.validate_permissions(payload.permissions)
+        if payload.set_permissions
+        else None
+    )
+
     updated = await store.update_user(
         username,
         role=payload.role,
         email=payload.email,
         enabled=payload.enabled,
         password=payload.password,
-        permissions=payload.permissions,
+        permissions=permissions,
         permissions_provided=payload.set_permissions,
         status=payload.status,
     )
@@ -195,7 +207,7 @@ async def update_user(
         "enabled": payload.enabled,
         "status": payload.status,
         "password_changed": bool(payload.password),
-        "permissions": payload.permissions if payload.set_permissions else None,
+        "permissions": permissions,
     }
 
     # 动到「还能不能继续用这个凭据」的字段时，把对方的所有凭据一并作废：
@@ -213,6 +225,108 @@ async def update_user(
 
     await security.audit(request, user, "user.update", target=username, detail=detail)
     return updated
+
+
+# --------------------------------------------------------- 资源额度（用户级）
+async def _quota_report(existing: Dict[str, Any]) -> Dict[str, Any]:
+    """额度读数的统一形状：用户级配置 + 角色默认 + 最终生效值 + 名下用量。
+
+    ``bypass`` 表示这个人根本不受额度约束（超管，或带 ``*`` 的自定义角色）——
+    界面据此把整块置灰，免得管理员配完了以为会生效。
+
+    ``usage`` 是顺手带上的：管理员要知道「他名下已经用了多少」才配得准。读数
+    拿不到时给 ``None`` 而不是让整个请求失败 —— 「看额度」不该被一次 PVE 抖动
+    挡在门外（真正下发时的额度校验仍然是 fail-closed）。
+    """
+    username = str(existing["username"])
+    role = str(existing.get("role") or "")
+    user_row = await quota.get_user_limits(username)
+    role_row = await quota.get_role_limits(role)
+    effective, source = quota.resolve_limits(user_row["quota"], role_row["quota"])
+
+    usage: Optional[Dict[str, Any]] = None
+    try:
+        # 复用用户侧那份读数（/api/quota/me 的同一份）：三组用量的口径、以及
+        # 「没配快照额度就不去逐台枚举」的取舍都只在一处维护
+        report = await quota.resource_report(existing)
+        groups = report.get("groups") or {}
+        usage = {
+            "vm": (groups.get("vm") or {}).get("usage"),
+            "ct": (groups.get("ct") or {}).get("usage"),
+            "snapshot": (groups.get("snapshot") or {}).get("usage"),
+            "error": (groups.get("vm") or {}).get("error") or "",
+        }
+    except Exception:  # noqa: BLE001 - 读数拿不到不该让「看额度」失败
+        pass
+
+    return {
+        "username": username,
+        "role": role,
+        "quota": user_row["quota"],
+        "configured": user_row["configured"],
+        "updated": user_row["updated"],
+        "updated_by": user_row["updated_by"],
+        "role_quota": role_row["quota"],
+        "role_configured": role_row["configured"],
+        "effective": effective,
+        "source": source,
+        "bypass": "*" in security.effective_permissions(existing),
+        "usage": usage,
+    }
+
+
+@router.get("/users/{username}/quota")
+async def get_user_quota(
+    username: str,
+    user: Dict[str, Any] = Depends(security.require_permission("users.view")),
+) -> Dict[str, Any]:
+    """某个用户的资源额度（只读配置，不含用量）。
+
+    ``users.view`` 就够：能看用户列表的人本来就看得到角色与权限覆盖，
+    额度并不额外泄露什么。真正的用量读数是用户自己的 ``/api/quota/me``。
+    """
+    existing = await store.get_user(username)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"用户 {username} 不存在")
+    return await _quota_report(existing)
+
+
+@router.put("/users/{username}/quota")
+async def put_user_quota(
+    username: str,
+    payload: QuotaIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("users.manage")),
+) -> Dict[str, Any]:
+    """设置 / 清除某个用户的资源额度。
+
+    ``quota`` 传 ``null`` = 清除这份配置（回到继承角色默认）；传一份则整份覆盖，
+    其中没填的字段表示「这一项不限制」。
+
+    与改密码 / 改角色不同，这里**不要求二次确认**：它不动凭据，也不改变这个人
+    能做什么操作，只改他能占多少资源 —— 与全局额度那条路径（``settings.manage``）
+    的强度保持一致。
+    """
+    existing = await store.get_user(username)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"用户 {username} 不存在")
+
+    before = await quota.get_user_limits(username)
+    limits = payload.quota.model_dump() if payload.quota is not None else None
+    saved = await quota.set_user_limits(
+        username, limits, actor=str(user.get("username") or "")
+    )
+    await security.audit(
+        request,
+        user,
+        "quota.user.set",
+        target=username,
+        detail={
+            "before": before["quota"] if before["configured"] else "继承角色默认",
+            "after": saved["quota"] if saved["configured"] else "继承角色默认",
+        },
+    )
+    return await _quota_report(existing)
 
 
 @router.post("/users/{username}/revoke-sessions")
@@ -273,11 +387,17 @@ async def approve_user(
     if not await store.get_role(role_id):
         raise HTTPException(status_code=400, detail=f"角色 {role_id} 不存在")
 
+    permissions = (
+        security.validate_permissions(payload.permissions)
+        if payload.set_permissions
+        else None
+    )
+
     updated = await store.update_user(
         username,
         role=role_id,
         status=store.STATUS_ACTIVE,
-        permissions=payload.permissions,
+        permissions=permissions,
         permissions_provided=payload.set_permissions,
     )
 
@@ -290,7 +410,7 @@ async def approve_user(
         request, user, "user.approve", target=username,
         detail={
             "role": role_id,
-            "permissions": payload.permissions if payload.set_permissions else None,
+            "permissions": permissions,
             "mail": mail_note,
         },
     )

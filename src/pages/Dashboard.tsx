@@ -2,12 +2,13 @@
    ProxCenter — 仪表盘
    ========================================================================== */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   clusterApi,
   dashboardApi,
+  lxcApi,
   nodesApi,
   storagesApi,
   vmsApi,
@@ -82,12 +83,60 @@ const NODE_ROWS_IN_CARD = 6;
    「恢复默认布局」才看得见（也不需要动后端）。
    --------------------------------------------------------------------------- */
 const WIDGET_META: WidgetMeta[] = [
-  { id: 'kpi', nameKey: 'dashboard.widget.kpi', span: 'full' },
-  { id: 'nodes', nameKey: 'dashboard.widget.nodes', span: 'half' },
-  { id: 'distribution', nameKey: 'dashboard.widget.distribution', span: 'half' },
-  { id: 'capacity', nameKey: 'dashboard.widget.capacity', span: 'full' },
-  { id: 'top', nameKey: 'dashboard.widget.top', span: 'full' },
-  { id: 'tasks', nameKey: 'dashboard.widget.tasks', span: 'full' },
+  /* 每张卡片声明自己需要什么权限，与后端的守卫一一对上（括号里是接口）：
+     没权限的卡片整块不出现，也不去发那个注定 403 的请求。 */
+  {
+    id: 'kpi',
+    nameKey: 'dashboard.widget.kpi',
+    span: 'full',
+    /* 复合卡片：内部还要分身份、逐项裁（见 bodies.kpi 与 kpiCount）。
+       这里声明的是「最低门槛」—— 管理员行要有虚拟机数据，普通用户行则
+       虚拟机或容器任一类都行（他的台数卡、占用读数按各自权限出现）。 */
+    permissions: ['vm.view', 'ct.view'],
+  },
+  {
+    id: 'nodes',
+    nameKey: 'dashboard.widget.nodes',
+    span: 'half',
+    permissions: ['node.view'],
+    /* 宿主机负载是集群运营视角：普通用户的仪表盘只讲「我的机器」 */
+    adminOnly: true,
+  },
+  {
+    id: 'distribution',
+    nameKey: 'dashboard.widget.distribution',
+    span: 'half',
+    /* 统计口径只算虚拟机（vmsApi.list → vm.view），与 /dashboard/summary 那套
+       「vm 或 ct 任一类即可」不同，这里不能放宽到 ct.view */
+    permissions: ['vm.view'],
+  },
+  {
+    id: 'capacity',
+    nameKey: 'dashboard.widget.capacity',
+    span: 'full',
+    permissions: ['node.view'],
+    /* 磁盘写满的预测窗口是几个月量级的事，属于「运维这个集群」的判断 */
+    adminOnly: true,
+  },
+  {
+    id: 'top',
+    nameKey: 'dashboard.widget.top',
+    span: 'full',
+    /* 榜单跨虚拟机与容器两类（/dashboard/top 的守卫就是 require_any）。
+       接口那侧已经按归属过滤，普通用户即使请求也只拿到自己名下的机器；
+       这里再对普通用户整块拿掉 —— 他手上那几台机器排不出「榜」，
+       而这张卡片原本最容易让人以为「仪表盘显示的是全集群」。 */
+    permissions: ['vm.view', 'ct.view'],
+    adminOnly: true,
+  },
+  {
+    id: 'tasks',
+    nameKey: 'dashboard.widget.tasks',
+    span: 'full',
+    permissions: ['task.view'],
+    /* 任务队列里跑着别的节点 / 别人的操作，普通用户只需要他自己机器上的那份 */
+    adminOnly: true,
+  },
 ];
 
 interface WidgetShellProps {
@@ -177,7 +226,29 @@ export function Dashboard() {
   const t = useT();
   const navigate = useNavigate();
   /* 任务队列页属于「系统管理」，仅管理员可进入 */
-  const { isAdmin } = useAuth();
+  const { isAdmin, hasPermission } = useAuth();
+
+  /* ---- 权限开关：仪表盘按权限自适应 ----
+     「没权限就不请求、也不显示」是这一页与工作台（components/Workbench）共用的口径。
+     照样发请求只会换回一屏红色 403，而用户看到的「故障」其实只是「这块不给他看」。
+     每个开关同时喂两处：卡片渲染（要不要出现）与查询 enabled（要不要发送），
+     两者必须同源，否则又会出现「卡片在、数据是红的」。
+     （括号里是各接口在后端的守卫，见 backend/app/routers） */
+  const canVm = hasPermission('vm.view'); //       /vms list
+  const canCt = hasPermission('ct.view'); //       /lxc list
+  const canGuest = canVm || canCt; //              /dashboard/top
+  const canNode = hasPermission('node.view'); //   /nodes、/cluster/*、/dashboard/capacity
+  const canStorage = hasPermission('storage.view'); // /storages
+  const canTask = hasPermission('task.view'); //   /cluster/tasks
+
+  /* 集群级那几路再加一道**身份**门槛（卡片侧对应 WIDGET_META 里的 adminOnly）：
+     普通用户的仪表盘只剩「我的机器」那一摊，看不到节点 / 容量 / 任务 / 榜单，
+     请求也就不该发 —— 不然卡片裁掉了、轮询还在跑，每 30 秒白打六路接口，其中
+     最重的容量预测还要逐节点去读 PVE 的 rrddata。 */
+  const loadNodes = isAdmin && canNode;
+  const loadStorages = isAdmin && canStorage;
+  const loadTasks = isAdmin && canTask;
+  const loadTop = isAdmin && canGuest;
 
   /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
      （配好之后自动恢复） */
@@ -191,17 +262,33 @@ export function Dashboard() {
     if (refreshing && !anyFetching) setRefreshing(false);
   }, [refreshing, anyFetching]);
 
-  /* ---- 数据查询（每 10 秒自动刷新）---- */
+  /* ---- 数据查询（每 30 秒自动刷新）----
+     每路都挂权限开关：没权限的连接上就不发请求（见上面的 canXxx）。
+     另外 enabled 为 false 时 react-query 不会置 isLoading —— 被裁掉的卡片
+     连加载骨架都不会闪一下，这也是「自适应」需要的一半。 */
   const vmsQuery = useQuery({
     queryKey: ['vms', 'all'],
     queryFn: () => vmsApi.list(),
     refetchInterval: pveReady ? REFRESH : false,
+    enabled: canVm,
+  });
+
+  /* 容器是**另一套接口与权限**（/lxc → ct.view），不搭 /vms 的车：那条接口的
+     守卫是 vm.view，用它取容器等于绕开了 ct.view。
+     只有普通用户需要它 —— 管理员的指标行读的是宿主机与集群容量，
+     跟「我名下的容器」无关。 */
+  const ctsQuery = useQuery({
+    queryKey: ['lxc', 'dashboard'],
+    queryFn: () => lxcApi.list(),
+    refetchInterval: pveReady ? REFRESH : false,
+    enabled: !isAdmin && canCt,
   });
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
     refetchInterval: pveReady ? REFRESH : false,
+    enabled: canNode,
   });
 
   const clusterQuery = useQuery({
@@ -209,6 +296,7 @@ export function Dashboard() {
     queryFn: clusterApi.status,
     refetchInterval: pveReady ? REFRESH : false,
     retry: false,
+    enabled: canNode,
   });
 
   /* 集群仲裁与 HA：单节点恒为 quorate，多节点时掉仲裁意味着整群只读 */
@@ -217,6 +305,7 @@ export function Dashboard() {
     queryFn: clusterApi.haStatus,
     refetchInterval: REFRESH,
     retry: false,
+    enabled: loadNodes,
   });
 
   const haHint = (() => {
@@ -236,6 +325,7 @@ export function Dashboard() {
     queryKey: ['storages', 'all'],
     queryFn: () => storagesApi.list(),
     refetchInterval: pveReady ? REFRESH : false,
+    enabled: loadStorages,
   });
 
   const tasksQuery = useQuery({
@@ -243,6 +333,7 @@ export function Dashboard() {
     queryFn: () => clusterApi.tasks({ limit: 8 }),
     refetchInterval: REFRESH,
     retry: false,
+    enabled: loadTasks,
   });
 
   /* 容量预测：节点磁盘趋势外推，变化慢，30s 刷一次即可。
@@ -255,6 +346,7 @@ export function Dashboard() {
     queryFn: () => dashboardApi.capacity(capacityTimeframe),
     refetchInterval: 30_000,
     retry: false,
+    enabled: loadNodes,
   });
 
   /* Top N 资源占用排行（CPU / 内存），后端按指标排序 */
@@ -263,12 +355,16 @@ export function Dashboard() {
     queryFn: () => dashboardApi.top(8),
     refetchInterval: REFRESH,
     retry: false,
+    enabled: loadTop,
   });
 
   /* 实时节点指标流：后端把逐页轮询集中到一条 WebSocket 上，
      5s 推一次。连接正常时优先用实时值驱动 KPI 与节点行，
-     断线则回落到 10s 轮询，保证任何情况下都有数据。 */
-  const metrics = useMetricsStream(true);
+     断线则回落到 10s 轮询，保证任何情况下都有数据。
+     没有 node.view 就别连：这条 WS 也过 node.view，连上会被后端拒，
+     而 hook 是按指数退避「断线重连」的（它分不出拒绝与网络抖动），
+     结果就是这类账号在后台一直空转握手、服务端日志一路刷 403。 */
+  const metrics = useMetricsStream(loadNodes);
 
   /* ---- 统计计算 ---- */
   const stats = useMemo(() => {
@@ -289,6 +385,56 @@ export function Dashboard() {
       templates: vms.length - realVms.length,
     };
   }, [vmsQuery.data]);
+
+  /* 普通用户指标行的读数：**我名下**的虚拟机 + 容器一起算。
+     与上面的 stats 分开是有意的 —— 那个口径只统计虚拟机，要跟「资源分布」
+     那张卡（运行状态、中心读数）对齐；这里要的是「我这些机器一共占了多少」。
+     CPU 按核数加权，与集群那张同一口径：逐台简单平均会在机器核数悬殊时失真。 */
+  const myStats = useMemo(() => {
+    const vmList = (vmsQuery.data ?? []).filter((g) => !g.template);
+    const ctList = (ctsQuery.data ?? []).filter((g) => !g.template);
+    const all = [...vmList, ...ctList];
+    const sumOf = (list: typeof all, field: 'maxcpu' | 'maxmem' | 'maxdisk') =>
+      list.reduce((sum, g) => sum + (g[field] ?? 0), 0);
+    const runningCount = (list: typeof all) =>
+      list.filter((g) => g.status === 'running').length;
+
+    const totalCores = sumOf(all, 'maxcpu');
+    const usedCores = all.reduce(
+      (sum, g) => sum + (toPercent(g.cpu) / 100) * (g.maxcpu ?? 0),
+      0,
+    );
+    const totalMem = sumOf(all, 'maxmem');
+    const usedMem = all.reduce((sum, g) => sum + (g.mem ?? 0), 0);
+    const totalDisk = sumOf(all, 'maxdisk');
+    const usedDisk = all.reduce((sum, g) => sum + (g.disk ?? 0), 0);
+
+    return {
+      vms: vmList.length,
+      cts: ctList.length,
+      vmRunning: runningCount(vmList),
+      ctRunning: runningCount(ctList),
+      cpuPercent: totalCores > 0 ? (usedCores / totalCores) * 100 : 0,
+      usedCores,
+      totalCores,
+      memPercent: totalMem > 0 ? (usedMem / totalMem) * 100 : 0,
+      usedMem,
+      totalMem,
+      diskPercent: totalDisk > 0 ? (usedDisk / totalDisk) * 100 : 0,
+      usedDisk,
+      totalDisk,
+      /* PVE 的 disk（已用空间）不是每台都给得出：它来自存储层的块统计，
+         LVM 这类厚置备存储拿不到值，PVE 就回 0；容器走的是文件系统统计，
+         一般有值。所以「整批都为 0」要读作**这个读数取不到**，而不是
+         「磁盘是空的」—— 那种情况改报已分配容量，别显示成 0.0%。 */
+      diskUsageKnown: usedDisk > 0,
+    };
+  }, [vmsQuery.data, ctsQuery.data]);
+
+  /* 三张占用读数的加载态：两份列表**任一份**还在路上就得转圈。
+     只盯 vmsQuery 的话，只有 ct.view 的账号（vms 那路没发出去 → isLoading 恒
+     false）会先看到一片 0%，随后数字才跳上来。 */
+  const myLoading = vmsQuery.isLoading || ctsQuery.isLoading;
 
   /* ---- Top N 资源占用排行（CPU / 内存）----
      用后端 /dashboard/top 排序，比前端按单次采样排更稳：
@@ -480,13 +626,50 @@ export function Dashboard() {
   const [editing, setEditing] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
 
-  const rows = useMemo(
-    () => packRows(board.visibleOrder, WIDGET_META),
-    [board.visibleOrder],
+  /* 这张卡片此刻该不该出现（两条声明见 WIDGET_META，两处判断缺一不可）：
+       * permissions —— 有没有看这件事的权限；
+       * adminOnly   —— 这件事跟「普通用户」这个身份相不相称。集群节点、
+         跨用户榜单、任务队列都属于后者：普通用户的仪表盘只讲他自己那几台机器。
+     **只过滤渲染，不动布局数据**：无权限期间随便拖一下就会把「裁短后」的
+     顺序落库，权限恢复后卡片顺序再也回不来（见 useDashboardLayout 的说明）。 */
+  const canSee = useCallback(
+    (meta: WidgetMeta) =>
+      (!meta.adminOnly || isAdmin) &&
+      (!meta.permissions || meta.permissions.some((perm) => hasPermission(perm))),
+    [isAdmin, hasPermission],
   );
 
-  const hasError =
-    vmsQuery.isError && nodesQuery.isError && storagesQuery.isError;
+  const allowedIds = useMemo(
+    () => new Set(WIDGET_META.filter(canSee).map((w) => w.id)),
+    [canSee],
+  );
+
+  const rows = useMemo(
+    () =>
+      packRows(
+        board.visibleOrder.filter((id) => allowedIds.has(id)),
+        WIDGET_META,
+      ),
+    [board.visibleOrder, allowedIds],
+  );
+
+  /* 编辑布局时的「已隐藏卡片」同样过滤：没权限的卡片摆在「加回来」那一栏，
+     点一下只会得到一张空卡 */
+  const hiddenWidgets = useMemo(
+    () => board.hiddenWidgets.filter(canSee),
+    [board.hiddenWidgets, canSee],
+  );
+
+  /* 「该看的都失败了」才整页报错 —— 而「该看的有哪几路」随身份而变：
+     普通用户的仪表盘只剩「我的虚拟机」那一路，节点 / 存储两路压根没发出去
+     （enabled=false 的查询 isError 恒为 false）。照原样要求三路同时失败，
+     普通用户在真拿不到数据时就只会看到一片 0，连一句「加载失败」都等不到。 */
+  const dataQueries = [
+    vmsQuery,
+    ...(loadNodes ? [nodesQuery] : []),
+    ...(loadStorages ? [storagesQuery] : []),
+  ];
+  const hasError = dataQueries.every((query) => query.isError);
 
   if (hasError) {
     return (
@@ -509,28 +692,45 @@ export function Dashboard() {
      各卡片的内容。键必须与 WIDGET_META 里的 id 一一对应：布局只存 id，
      渲染时按 id 取这里的内容（见下面的 rows 循环）。
      ------------------------------------------------------------------ */
+  /* KPI 行是这一页唯一的**复合卡片**，而且两套身份下装的东西完全不同：
+     * 管理员 —— 集群视角：虚拟机总数 + 集群态势 + CPU / 内存（宿主机）+ 存储；
+     * 普通用户 —— 我的视角：我的虚拟机 / 我的容器 / 我这些机器占用的 CPU /
+       内存 / 硬盘。宿主机负载他不该看，那几路查询也压根没发出去。
+     所以张数分两套算。普通用户那三张占用读数没有数据源（两类机器权限都没有）
+     时整行也不渲染 —— 显示三张 0% 比不显示更容易让人以为「我的机器都没占用」。 */
+  const kpiCount = isAdmin
+    ? (canVm ? 1 : 0) + (loadNodes ? 3 : 0) + (loadStorages ? 1 : 0)
+    : canGuest
+      ? (canVm ? 1 : 0) + (canCt ? 1 : 0) + 3
+      : 0;
+  /* 列数跟实际张数走：写死 grid-5 的话，裁到 3 张就会三张挤在一格宽的位置、
+     右边空两格（原本想避免的「整行跳一下」会以另一种形式回来） */
+  const kpiCols = `grid-${Math.min(Math.max(kpiCount, 2), 5)}`;
+
   const bodies: Record<string, ReactNode> = {
-    /* ---- KPI 卡片（含集群态势，共 5 项）---- */
-    kpi: (
-      <div className="grid grid-5">
-        <KpiCard
-          label={t('dashboard.kpi.vms')}
-          value={stats.total}
-          icon={<IconVm size={16} />}
-          tone="accent"
-          loading={vmsQuery.isLoading}
-          hint={
-            <>
-              <span className="text-success">
-                {t('dashboard.kpi.running', { n: stats.running })}
-              </span>
-              <span className="text-muted">·</span>
-              <span className="text-secondary">
-                {t('dashboard.kpi.stopped', { n: stats.stopped })}
-              </span>
-            </>
-          }
-        />
+    /* ---- KPI 卡片（含集群态势，共 5 项，按权限裁剪）---- */
+    kpi: kpiCount === 0 ? null : isAdmin ? (
+      <div className={`grid ${kpiCols}`}>
+        {canVm ? (
+          <KpiCard
+            label={t('dashboard.kpi.vms')}
+            value={stats.total}
+            icon={<IconVm size={16} />}
+            tone="accent"
+            loading={vmsQuery.isLoading}
+            hint={
+              <>
+                <span className="text-success">
+                  {t('dashboard.kpi.running', { n: stats.running })}
+                </span>
+                <span className="text-muted">·</span>
+                <span className="text-secondary">
+                  {t('dashboard.kpi.stopped', { n: stats.stopped })}
+                </span>
+              </>
+            }
+          />
+        ) : null}
 
         {/* ---- 集群态势：紧挨「虚拟机总数」 ----
             这两张卡一起回答「现在有多少机器、整个集群健康不健康」，
@@ -542,65 +742,178 @@ export function Dashboard() {
             label / value / hint 结构，视觉才不会是「五张卡里混了个异类」。
             Quorum 作为主读数，HA 状态退到 hint 里。
 
-            这张卡**恒定渲染**：以前 HA 取不到数据时整张卡消失，grid-5 当场
-            变成四列，右边四个指标一起左移一格 —— 只是打开一次页面就能看到
-            整行跳一下。现在改成「加载中骨架 / 有数据正常态 / 拿不到写未知」，
-            卡片始终占住它那一格。 */}
-        <KpiCard
-          label={t('dashboard.kpi.posture')}
-          value={
-            haQuery.data ? (
-              <span className="posture-inline">
-                <span
-                  className={`posture-dot ${
-                    haQuery.data.quorum.quorate ? 'is-ok' : 'is-bad'
-                  }`}
-                />
-                {haQuery.data.quorum.quorate
-                  ? t('dashboard.kpi.quorate')
-                  : t('dashboard.kpi.lostQuorum')}
-              </span>
-            ) : (
-              /* 拿不到 quorum 时给一个明确的「未知」，而不是让整张卡消失 */
-              <span className="posture-inline">
-                <span className="posture-dot" />
-                {t('dashboard.kpi.unknown')}
-              </span>
-            )
-          }
-          icon={<IconServer size={16} />}
-          /* 与左右四个指标同一套配色逻辑：正常态用 accent（蓝），
-             只有真正出问题时才转 danger（红）—— CPU / 内存 / 存储
-             超阈值时也是这样变色的，保持整行读起来一致；
-             读不到状态则退成 neutral，不用红去吓人。 */
-          tone={
-            haQuery.data
-              ? haQuery.data.quorum.quorate
-                ? 'accent'
-                : 'danger'
-              : 'neutral'
-          }
-          loading={haQuery.isLoading}
-          /* HA 的几种状态要说清楚是哪一种，不能一律写成「未启用」：
-             单机根本不存在 HA（显示为「未启用」会让人以为配置漏了），
-             多节点集群跑着 HA 但没托管资源，也应该读作「已启用」。
-             多连接部署下这张卡只反映默认连接那一套，所以把连接名带上。 */
-          hint={haHint}
-        />
+            这张卡**恒定渲染**：以前 HA 取不到数据时整张卡消失，整行当场
+            少一格、右边几个指标一起左移 —— 只是打开一次页面就能看到整行跳一下。
+            现在改成「加载中骨架 / 有数据正常态 / 拿不到写未知」，卡片始终占住
+            它那一格。
+            三张节点类的卡（态势 / CPU / 内存）合成一组共用一个 loadNodes 判断：
+            它们同源，拆成三个判断只是把同一件事写三遍（loadNodes 即
+            isAdmin && canNode，与这三张卡的查询 enabled 是同一个值）。 */}
+        {loadNodes ? (
+          <>
+            <KpiCard
+              label={t('dashboard.kpi.posture')}
+              value={
+                haQuery.data ? (
+                  <span className="posture-inline">
+                    <span
+                      className={`posture-dot ${
+                        haQuery.data.quorum.quorate ? 'is-ok' : 'is-bad'
+                      }`}
+                    />
+                    {haQuery.data.quorum.quorate
+                      ? t('dashboard.kpi.quorate')
+                      : t('dashboard.kpi.lostQuorum')}
+                  </span>
+                ) : (
+                  /* 拿不到 quorum 时给一个明确的「未知」，而不是让整张卡消失 */
+                  <span className="posture-inline">
+                    <span className="posture-dot" />
+                    {t('dashboard.kpi.unknown')}
+                  </span>
+                )
+              }
+              icon={<IconServer size={16} />}
+              /* 与左右四个指标同一套配色逻辑：正常态用 accent（蓝），
+                 只有真正出问题时才转 danger（红）—— CPU / 内存 / 存储
+                 超阈值时也是这样变色的，保持整行读起来一致；
+                 读不到状态则退成 neutral，不用红去吓人。 */
+              tone={
+                haQuery.data
+                  ? haQuery.data.quorum.quorate
+                    ? 'accent'
+                    : 'danger'
+                  : 'neutral'
+              }
+              loading={haQuery.isLoading}
+              /* HA 的几种状态要说清楚是哪一种，不能一律写成「未启用」：
+                 单机根本不存在 HA（显示为「未启用」会让人以为配置漏了），
+                 多节点集群跑着 HA 但没托管资源，也应该读作「已启用」。
+                 多连接部署下这张卡只反映默认连接那一套，所以把连接名带上。 */
+              hint={haHint}
+            />
 
+            <KpiCard
+              label={t('dashboard.kpi.cpu')}
+              value={`${nodeStats.cpuAvg.toFixed(1)}%`}
+              icon={<IconCpu size={16} />}
+              tone={usageTone(nodeStats.cpuAvg)}
+              loading={nodesQuery.isLoading}
+              progress={nodeStats.cpuAvg}
+              progressColor={usageColor(nodeStats.cpuAvg)}
+              hint={
+                <span className="mono">
+                  {t('dashboard.kpi.cores', {
+                    used: nodeStats.usedCores.toFixed(2),
+                    total: nodeStats.totalCores,
+                  })}
+                </span>
+              }
+            />
+
+            <KpiCard
+              label={t('dashboard.kpi.mem')}
+              value={`${nodeStats.memPercent.toFixed(1)}%`}
+              icon={<IconMemory size={16} />}
+              tone={usageTone(nodeStats.memPercent)}
+              loading={nodesQuery.isLoading}
+              progress={nodeStats.memPercent}
+              progressColor={usageColor(nodeStats.memPercent)}
+              hint={
+                <span className="mono">
+                  {formatBytes(nodeStats.usedMem)} / {formatBytes(nodeStats.totalMem)}
+                </span>
+              }
+            />
+          </>
+        ) : null}
+
+        {loadStorages ? (
+          <KpiCard
+            label={t('dashboard.kpi.storage')}
+            value={`${storageStats.percent.toFixed(1)}%`}
+            icon={<IconStorage size={16} />}
+            tone={usageTone(storageStats.percent)}
+            loading={storagesQuery.isLoading}
+            progress={storageStats.percent}
+            progressColor={usageColor(storageStats.percent)}
+            hint={
+              <span className="mono">
+                {formatBytes(storageStats.used)} / {formatBytes(storageStats.total)}
+              </span>
+            }
+          />
+        ) : null}
+      </div>
+    ) : (
+      /* 普通用户那一行：只回答「我有什么、占了多少」。
+         两类机器的台数来自两份**已按归属过滤**的列表（/vms 与 /lxc），
+         后端已经把别人的机器拿掉了 —— 这里不需要前端再筛一遍。 */
+      <div className={`grid ${kpiCols}`}>
+        {canVm ? (
+          <KpiCard
+            label={t('dashboard.kpi.myVms')}
+            value={myStats.vms}
+            icon={<IconVm size={16} />}
+            tone="accent"
+            loading={vmsQuery.isLoading}
+            hint={
+              <>
+                <span className="text-success">
+                  {t('dashboard.kpi.running', { n: myStats.vmRunning })}
+                </span>
+                <span className="text-muted">·</span>
+                <span className="text-secondary">
+                  {t('dashboard.kpi.stopped', {
+                    n: myStats.vms - myStats.vmRunning,
+                  })}
+                </span>
+              </>
+            }
+          />
+        ) : null}
+
+        {canCt ? (
+          <KpiCard
+            label={t('dashboard.kpi.myCts')}
+            value={myStats.cts}
+            icon={<IconServer size={16} />}
+            tone="accent"
+            loading={ctsQuery.isLoading}
+            hint={
+              <>
+                <span className="text-success">
+                  {t('dashboard.kpi.running', { n: myStats.ctRunning })}
+                </span>
+                <span className="text-muted">·</span>
+                <span className="text-secondary">
+                  {t('dashboard.kpi.stopped', {
+                    n: myStats.cts - myStats.ctRunning,
+                  })}
+                </span>
+              </>
+            }
+          />
+        ) : null}
+
+        {/* 三张占用读数：虚拟机与容器**合在一起**算 —— 用户问的是「我这些机器
+            一共占了多少」，按类型拆开反而要多看两张卡才拼得出一个数。
+            CPU 按核数加权，与管理员那张宿主机口径一致。 */}
         <KpiCard
           label={t('dashboard.kpi.cpu')}
-          value={`${nodeStats.cpuAvg.toFixed(1)}%`}
+          value={`${myStats.cpuPercent.toFixed(1)}%`}
           icon={<IconCpu size={16} />}
-          tone={usageTone(nodeStats.cpuAvg)}
-          loading={nodesQuery.isLoading}
-          progress={nodeStats.cpuAvg}
-          progressColor={usageColor(nodeStats.cpuAvg)}
+          tone={usageTone(myStats.cpuPercent)}
+          loading={myLoading}
+          progress={myStats.cpuPercent}
+          progressColor={usageColor(myStats.cpuPercent)}
           hint={
             <span className="mono">
-              {t('dashboard.kpi.cores', {
-                used: nodeStats.usedCores.toFixed(2),
-                total: nodeStats.totalCores,
+              {/* 用 myCores 而不是管理员那张的 cores：「物理核心」说的是宿主机
+                  核数，这里是机器分配到的 vCPU */}
+              {t('dashboard.kpi.myCores', {
+                used: myStats.usedCores.toFixed(2),
+                total: myStats.totalCores,
               })}
             </span>
           }
@@ -608,33 +921,50 @@ export function Dashboard() {
 
         <KpiCard
           label={t('dashboard.kpi.mem')}
-          value={`${nodeStats.memPercent.toFixed(1)}%`}
+          value={`${myStats.memPercent.toFixed(1)}%`}
           icon={<IconMemory size={16} />}
-          tone={usageTone(nodeStats.memPercent)}
-          loading={nodesQuery.isLoading}
-          progress={nodeStats.memPercent}
-          progressColor={usageColor(nodeStats.memPercent)}
+          tone={usageTone(myStats.memPercent)}
+          loading={myLoading}
+          progress={myStats.memPercent}
+          progressColor={usageColor(myStats.memPercent)}
           hint={
             <span className="mono">
-              {formatBytes(nodeStats.usedMem)} / {formatBytes(nodeStats.totalMem)}
+              {formatBytes(myStats.usedMem)} / {formatBytes(myStats.totalMem)}
             </span>
           }
         />
 
-        <KpiCard
-          label={t('dashboard.kpi.storage')}
-          value={`${storageStats.percent.toFixed(1)}%`}
-          icon={<IconStorage size={16} />}
-          tone={usageTone(storageStats.percent)}
-          loading={storagesQuery.isLoading}
-          progress={storageStats.percent}
-          progressColor={usageColor(storageStats.percent)}
-          hint={
-            <span className="mono">
-              {formatBytes(storageStats.used)} / {formatBytes(storageStats.total)}
-            </span>
-          }
-        />
+        {/* 磁盘这张有两种形态（见 myStats.diskUsageKnown）：
+            拿得到已用空间就报使用率，拿不到就只报已分配容量。
+            后者绝不能显示成 0.0% —— 那读起来像「磁盘是空的」，
+            而事实是这个读数 PVE 给不出来。 */}
+        {myStats.diskUsageKnown ? (
+          <KpiCard
+            label={t('dashboard.kpi.myDisk')}
+            value={`${myStats.diskPercent.toFixed(1)}%`}
+            icon={<IconStorage size={16} />}
+            tone={usageTone(myStats.diskPercent)}
+            loading={myLoading}
+            progress={myStats.diskPercent}
+            progressColor={usageColor(myStats.diskPercent)}
+            hint={
+              <span className="mono">
+                {formatBytes(myStats.usedDisk)} / {formatBytes(myStats.totalDisk)}
+              </span>
+            }
+          />
+        ) : (
+          <KpiCard
+            label={t('dashboard.kpi.myDisk')}
+            value={formatBytes(myStats.totalDisk)}
+            icon={<IconStorage size={16} />}
+            tone="neutral"
+            loading={myLoading}
+            hint={
+              <span className="mono">{t('dashboard.kpi.myDiskAllocated')}</span>
+            }
+          />
+        )}
       </div>
     ),
 
@@ -737,7 +1067,15 @@ export function Dashboard() {
         <Card collapsible={false}>
           <CardHeader
             title={t('dashboard.dist.title')}
-            subtitle={t('dashboard.dist.subtitle', { n: stats.total })}
+            /* 普通用户的数字本来就只是他名下的（/vms 按归属过滤，见
+               security.visible_owner），但卡片长得和管理员那张一模一样 ——
+               「共 N 台」到底是他那几台还是整个集群，光看卡片分不出来。
+               副标题里写明「我名下」。 */
+            subtitle={
+              isAdmin
+                ? t('dashboard.dist.subtitle', { n: stats.total })
+                : t('dashboard.dist.subtitleMine', { n: stats.total })
+            }
             icon={<IconActivity size={16} />}
           />
           <div className="dist-body">
@@ -930,15 +1268,20 @@ export function Dashboard() {
     <PageShell
       title={t('dashboard.title')}
       subtitle={
-        clusterQuery.data
-          ? `Proxmox VE ${clusterQuery.data.version || ''} · ${
-              clusterQuery.data.quorate === true
-                ? t('dashboard.subtitle.quorate')
-                : clusterQuery.data.quorate === false
-                  ? t('dashboard.subtitle.notQuorate')
-                  : t('dashboard.subtitle.standalone')
-            }`
-          : t('dashboard.subtitle.loading')
+        /* 副标题读的是集群状态（/cluster/status → node.view）。没这个权限时
+           clusterQuery 不会发出去、data 永远是 undefined —— 照原样写就会一直
+           停在「加载中」，一个永远转不完的假象。那就干脆不显示。 */
+        !loadNodes
+          ? undefined
+          : clusterQuery.data
+            ? `Proxmox VE ${clusterQuery.data.version || ''} · ${
+                clusterQuery.data.quorate === true
+                  ? t('dashboard.subtitle.quorate')
+                  : clusterQuery.data.quorate === false
+                    ? t('dashboard.subtitle.notQuorate')
+                    : t('dashboard.subtitle.standalone')
+              }`
+            : t('dashboard.subtitle.loading')
       }
       actions={
         <>
@@ -981,13 +1324,17 @@ export function Dashboard() {
               {t('dashboard.resetLayout')}
             </Button>
           ) : null}
-          <Button
-            variant="primary"
-            icon={<IconVm size={15} />}
-            onClick={() => navigate('/vms')}
-          >
-            {t('dashboard.manageVms')}
-          </Button>
+          {/* 落地页是虚拟机 / 容器列表，两类都看不了就不给这个入口
+              （点进去只会撞上权限提示） */}
+          {canGuest ? (
+            <Button
+              variant="primary"
+              icon={<IconVm size={15} />}
+              onClick={() => navigate('/vms')}
+            >
+              {t('dashboard.manageVms')}
+            </Button>
+          ) : null}
         </>
       }
     >
@@ -1003,17 +1350,36 @@ export function Dashboard() {
           待办与快捷入口是固定引导区，不该被拖走或隐藏。 */}
       <Workbench />
 
-      {rows.map((row, index) =>
-        row.length === 2 ? (
-          <div key={`row-${index}`} className="grid grid-2 dashboard-split">
-            {row.map(renderWidget)}
-          </div>
+      {/* 一张卡片都渲染不出来时，给一句解释而不是留一片空白。
+          两种「空」要分开说，出口完全不同：
+            * 权限裁空 —— 这些数据本来就不对他开放，得找管理员开权限；
+            * 自己全隐藏了 —— 右上角「编辑布局」里能加回来。
+          两者混成一句，用户会照着错的出口去试。 */}
+      {rows.length === 0 ? (
+        board.visibleOrder.length === 0 ? (
+          <EmptyState
+            title={t('dashboard.emptyAllHidden')}
+            description={t('dashboard.emptyAllHiddenDesc')}
+          />
         ) : (
-          renderWidget(row[0])
-        ),
+          <EmptyState
+            title={t('dashboard.emptyNoAccess')}
+            description={t('dashboard.emptyNoAccessDesc')}
+          />
+        )
+      ) : (
+        rows.map((row, index) =>
+          row.length === 2 ? (
+            <div key={`row-${index}`} className="grid grid-2 dashboard-split">
+              {row.map(renderWidget)}
+            </div>
+          ) : (
+            renderWidget(row[0])
+          ),
+        )
       )}
 
-      {editing && board.hiddenWidgets.length > 0 ? (
+      {editing && hiddenWidgets.length > 0 ? (
         <Card collapsible={false}>
           <CardHeader
             title={t('dashboard.hiddenTitle')}
@@ -1021,7 +1387,7 @@ export function Dashboard() {
             icon={<IconEye size={16} />}
           />
           <div className="form-row">
-            {board.hiddenWidgets.map((meta) => (
+            {hiddenWidgets.map((meta) => (
               <Button
                 key={meta.id}
                 variant="ghost"

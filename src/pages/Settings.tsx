@@ -2286,7 +2286,11 @@ function SystemSection({
   currentRole?: string;
 }) {
   const t = useT();
-  const { isAdmin } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 改连接配置（默认读取哪一套 PVE）是面板自身配置：后端 /config/connection
+     的写接口用 settings.manage，这里跟它对齐 —— 早先按 role == admin 判，
+     自定义角色即使有 settings.manage 也点不动。 */
+  const canManage = hasPermission('settings.manage');
   const [lastChecked, setLastChecked] = useState<Date>(() => new Date());
 
   /* 全站合计：`/health` 与 `/cluster/status` 都只能读「默认连接」那一套 PVE，
@@ -2313,7 +2317,7 @@ function SystemSection({
     queryFn: connectionsApi.list,
     staleTime: 300_000,
     retry: false,
-    enabled: isAdmin,
+    enabled: canManage,
   });
   const [switching, setSwitching] = useState(false);
   const conns = connectionsQuery.data ?? [];
@@ -2620,7 +2624,7 @@ function SystemSection({
 
           {/* 多套 PVE 时，「读哪一套」必须能选：这几张卡一次只能读一台，
               默认由后端自动挑（第一条），而那往往不是想看的那台。 */}
-          {isAdmin && conns.length > 1 ? (
+          {canManage && conns.length > 1 ? (
             <div className="set-default-conn">
               <Select
                 label={t('settings.systemDefaultConnLabel')}
@@ -2645,7 +2649,7 @@ function SystemSection({
                 name={n.name}
                 online={Boolean(n.online)}
                 type={n.type}
-                canEdit={isAdmin}
+                canEdit={canManage}
               />
             ))}
           </div>

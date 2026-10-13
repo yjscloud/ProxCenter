@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { backupsApi, nodesApi, storagesApi } from '../api/endpoints';
+import { backupsApi, connectionsApi, nodesApi, storagesApi } from '../api/endpoints';
 import { errorMessage, isNotImplemented } from '../api/client';
 import { PageShell } from '../components/Layout';
 import { Card } from '../components/ui/Card';
@@ -27,6 +27,9 @@ import {
   IconFolder,
   IconSearch,
   IconClose,
+  IconChevronDown,
+  IconLayers,
+  IconServer,
 } from '../components/Icons';
 import {
   formatBytes,
@@ -163,6 +166,97 @@ export function Storages() {
   });
 
   const storages = storagesQuery.data ?? [];
+
+  /* ---- 区域 / 节点 / 存储 三层 ----
+     与「节点」页同一套层级：区域是填在连接上的标签（见连接配置），节点是存储实际
+     所在的主机，存储是叶子。以前是一张平表、节点只是其中一列，池子一多就分不清
+     哪块盘在哪台机器上；现在按层级收起来看。 */
+  const connectionsQuery = useQuery({
+    queryKey: ['connections'],
+    queryFn: () => connectionsApi.list(),
+    staleTime: 300_000,
+  });
+  const conns = connectionsQuery.data ?? [];
+
+  const regionGroups = useMemo(() => {
+    const regionOf = (connId: string) => {
+      const hit = conns.find((item) => String(item.id) === connId);
+      return String(hit?.region || '').trim();
+    };
+
+    // 先按「连接 + 节点」归拢：两台 PVE 上完全可能有同名节点，不能只按名字分
+    const nodeMap = new Map<
+      string,
+      {
+        key: string;
+        node: string;
+        connection_id: string;
+        connection_name: string;
+        storages: Storage[];
+      }
+    >();
+    for (const item of storages) {
+      const connId = item.connection_id ?? '';
+      const key = `${connId}::${item.node}`;
+      const hit = nodeMap.get(key);
+      if (hit) {
+        hit.storages.push(item);
+      } else {
+        nodeMap.set(key, {
+          key,
+          node: item.node,
+          connection_id: connId,
+          connection_name: item.connection_name ?? '',
+          storages: [item],
+        });
+      }
+    }
+    const nodes = [...nodeMap.values()].sort(
+      (a, b) =>
+        a.node.localeCompare(b.node) ||
+        a.connection_name.localeCompare(b.connection_name),
+    );
+
+    const regionMap = new Map<
+      string,
+      { id: string; label: string; nodes: typeof nodes }
+    >();
+    for (const node of nodes) {
+      const region = regionOf(node.connection_id);
+      let hit = regionMap.get(region);
+      if (!hit) {
+        hit = { id: region, label: region || t('nodes.regionUnassigned'), nodes: [] };
+        regionMap.set(region, hit);
+      }
+      hit.nodes.push(node);
+    }
+    /* 未分区排最后：它是兜底分组，不该排在有名字的区域前面 */
+    return [...regionMap.values()].sort((a, b) => {
+      if (Boolean(a.id) !== Boolean(b.id)) return a.id ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [storages, conns, t]);
+  /** 一个区域都没配时，这一层整个不渲染（页面与改动前一样平铺节点） */
+  const showRegion = regionGroups.some((group) => group.id !== '');
+  /** 两条以上连接才需要标出来「这个节点在哪台 PVE 上」 */
+  const multiConn = new Set(storages.map((item) => item.connection_id ?? '')).size > 1;
+
+  /* 收起来的组。默认**全部展开**：进这一页就是想看存储本身，不是先点一层标题。
+     id 带前缀区分两级：``region:`` / ``node:``。 */
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  const toggleGroup = (id: string) => {
+    setCollapsedGroups((list) =>
+      list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
+    );
+  };
+  const allGroupIds = useMemo(
+    () =>
+      regionGroups.flatMap((region) => [
+        `region:${region.id}`,
+        ...region.nodes.map((node) => `node:${node.key}`),
+      ]),
+    [regionGroups],
+  );
 
   /* 展开的存储内容 */
   const contentQuery = useQuery({
@@ -501,6 +595,25 @@ export function Storages() {
                 total: storages.length,
               })}
             </span>
+            {/* 与「节点」页同款：区域 / 节点都收起来时用得上 */}
+            <div className="flex items-center gap-8">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCollapsedGroups([])}
+                disabled={collapsedGroups.length === 0}
+              >
+                {t('nodes.expandAll')}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCollapsedGroups(allGroupIds)}
+                disabled={allGroupIds.length === 0}
+              >
+                {t('nodes.collapseAll')}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -513,42 +626,123 @@ export function Storages() {
               onRetry={() => void storagesQuery.refetch()}
             />
           </div>
+        ) : storagesQuery.isLoading ? (
+          <Card padded={false}>
+            <TableSkeleton rows={5} cols={Math.min(columns.length, 8)} />
+          </Card>
+        ) : storages.length === 0 ? (
+          <Card>
+            <EmptyState
+              title={t('storages.emptyTitle')}
+              description={
+                <>
+                  {t('storages.emptyDescPre')}
+                  <code className="mono">{t('storages.emptyDescPath')}</code>
+                  {t('storages.emptyDescPost')}
+                </>
+              }
+              action={
+                <Button
+                  variant="secondary"
+                  icon={<IconRefresh size={15} />}
+                  onClick={() => void storagesQuery.refetch()}
+                  loading={storagesQuery.isFetching}
+                >
+                  {t('storages.refreshList')}
+                </Button>
+              }
+              compact
+            />
+          </Card>
         ) : (
-          <Table<Storage>
-            columns={columns}
-            rows={storages}
-            rowKey={(s) => `${s.connection_id ?? ''}/${s.node}/${s.storage}`}
-            loading={storagesQuery.isLoading}
-            caption={t('storages.caption')}
-            onRowClick={(s) => {
-              setSelected(s);
-              setContentFilter('');
-              setSearch('');
-            }}
-            isRowSelected={(s) =>
-              selected?.storage === s.storage &&
-              selected?.node === s.node &&
-              selected?.connection_id === s.connection_id
-            }
-            emptyTitle={t('storages.emptyTitle')}
-            emptyDescription={
-              <>
-                {t('storages.emptyDescPre')}
-                <code className="mono">{t('storages.emptyDescPath')}</code>
-                {t('storages.emptyDescPost')}
-              </>
-            }
-            emptyAction={
-              <Button
-                variant="secondary"
-                icon={<IconRefresh size={15} />}
-                onClick={() => void storagesQuery.refetch()}
-                loading={storagesQuery.isFetching && !storagesQuery.isLoading}
-              >
-                {t('storages.refreshList')}
-              </Button>
-            }
-          />
+          /* 三层：区域 → 节点 → 该节点上的存储（与「节点」页同一套结构） */
+          <div className="node-groups">
+            {regionGroups.map((region) => {
+              const regionCollapsed = collapsedGroups.includes(`region:${region.id}`);
+              return (
+                <div className="tree-group" key={`region:${region.id}`}>
+                  {/* 一级：区域 / 机房（填在连接上的标签） */}
+                  {showRegion ? (
+                    <button
+                      type="button"
+                      className="tree-head is-region"
+                      aria-expanded={!regionCollapsed}
+                      onClick={() => toggleGroup(`region:${region.id}`)}
+                    >
+                      <span className="tree-head-icon">
+                        <IconChevronDown size={15} />
+                      </span>
+                      <IconLayers size={15} />
+                      <span className="tree-name">{region.label}</span>
+                      <span className="tree-meta">
+                        <Badge variant="neutral" size="sm">
+                          {t('storages.nodeCount', { n: region.nodes.length })}
+                        </Badge>
+                      </span>
+                    </button>
+                  ) : null}
+
+                  {regionCollapsed ? null : (
+                    <div className={showRegion ? 'tree-body' : undefined}>
+                      {region.nodes.map((group) => {
+                        const nodeCollapsed = collapsedGroups.includes(
+                          `node:${group.key}`,
+                        );
+                        return (
+                          <div key={group.key}>
+                            {/* 二级：节点（存储实际所在的主机） */}
+                            <button
+                              type="button"
+                              className="node-group-title"
+                              aria-expanded={!nodeCollapsed}
+                              onClick={() => toggleGroup(`node:${group.key}`)}
+                            >
+                              <span className="tree-head-icon">
+                                <IconChevronDown size={14} />
+                              </span>
+                              <IconServer size={14} />
+                              <span className="fw-600">{group.node}</span>
+                              {/* 多主机时才标出这一组属于哪台 PVE（同名节点靠它区分） */}
+                              {multiConn && group.connection_name ? (
+                                <span className="fs-xs text-muted">
+                                  {group.connection_name}
+                                </span>
+                              ) : null}
+                              <span className="fs-xs text-muted">
+                                {t('storages.storageCount', { n: group.storages.length })}
+                              </span>
+                            </button>
+
+                            {/* 三级：存储本身 */}
+                            {nodeCollapsed ? null : (
+                              <Table<Storage>
+                                /* 「节点」这一列在分层视图里是重复信息（组标题已经
+                                   写了），去掉，把横向空间留给容量 */
+                                columns={columns.filter((col) => col.key !== 'node')}
+                                rows={group.storages}
+                                rowKey={(s) => `${s.connection_id ?? ''}/${s.node}/${s.storage}`}
+                                caption={t('storages.caption')}
+                                onRowClick={(s) => {
+                                  setSelected(s);
+                                  setContentFilter('');
+                                  setSearch('');
+                                }}
+                                isRowSelected={(s) =>
+                                  selected?.storage === s.storage &&
+                                  selected?.node === s.node &&
+                                  selected?.connection_id === s.connection_id
+                                }
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 

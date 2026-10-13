@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import defaults, ownership, security, store, vmconfig
+from .. import defaults, ownership, quota, security, store, vmconfig
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -253,6 +253,18 @@ async def build_template_from_image(
     user: Dict[str, Any] = Depends(security.require_permission("template.manage")),
 ) -> Dict[str, Any]:
     """Build a cloud-init template from a cloud image, step by step."""
+    # 建模板也是一台新机器（模板同样计入用量），走同一套额度校验。
+    # ``disk_size`` 可能为空 —— 那样磁盘由镜像自身决定，这一项就不查。
+    await quota.enforce_create(
+        user,
+        request,
+        "vm",
+        spec={
+            "cores": payload.cores,
+            "memory_mb": payload.memory,
+            "disk_gb": payload.disk_size,
+        },
+    )
     client = get_client()
 
     # --- reserve a VMID ------------------------------------------------
@@ -489,6 +501,15 @@ async def clone_template(
 ) -> Dict[str, Any]:
     """Deploy a new VM from a template with cloud-init personalisation."""
     await _bind_source_connection(user, payload.source_node, payload.source_vmid)
+    # 从模板部署同样是「新增一台虚拟机」，额度必须跟着算。
+    # 规格照抄模板，模板本身在读数里（模板计入用量，这里取的是它的分配值）。
+    await quota.enforce_create(
+        user,
+        request,
+        "vm",
+        spec={"cores": payload.cores, "memory_mb": payload.memory},
+        source=(payload.source_node, payload.source_vmid),
+    )
     client = get_client()
 
     newid = payload.newid

@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 
-from .. import security, store
+from .. import i18n, security, store
 from ..pve import ProxmoxError, get_client
 from ..schemas import (
     FirewallApplyIn,
@@ -32,7 +32,7 @@ from ..schemas import (
     FirewallRuleIn,
     FirewallTemplateIn,
 )
-from .vms import require_vm_access
+from .vms import require_ct_access, require_vm_access
 
 router = APIRouter(prefix="/api", tags=["firewall"])
 
@@ -40,23 +40,31 @@ router = APIRouter(prefix="/api", tags=["firewall"])
 TEMPLATES_KEY = "firewall_templates"
 TEMPLATE_LIMIT = 100
 
-# 作用域 → 允许写的选项字段（PVE 三类作用域支持的字段并不相同）
+# 作用域 → 允许写的选项字段（PVE 三类作用域支持的字段并不相同）。
+# ``ct`` 是 ``vm`` 作用域在**容器**上的别名（面板把「虚拟机 / 容器」拆成两个入口，
+# 让人各看各的），PVE 侧的选项字段与虚拟机完全一致，因此共用同一份清单。
+_VM_OPTION_FIELDS: Tuple[str, ...] = (
+    "enable",
+    "policy_in",
+    "policy_out",
+    "log_level_in",
+    "log_level_out",
+    "dhcp",
+    "ipfilter",
+    "macfilter",
+    "ndp",
+    "radv",
+)
+
 _OPTION_FIELDS: Dict[str, Tuple[str, ...]] = {
     "cluster": ("enable", "policy_in", "policy_out", "log_level_in", "log_level_out", "ebtables"),
     "node": ("enable", "policy_in", "policy_out", "log_level_in", "log_level_out", "ebtables"),
-    "vm": (
-        "enable",
-        "policy_in",
-        "policy_out",
-        "log_level_in",
-        "log_level_out",
-        "dhcp",
-        "ipfilter",
-        "macfilter",
-        "ndp",
-        "radv",
-    ),
+    "vm": _VM_OPTION_FIELDS,
+    "ct": _VM_OPTION_FIELDS,
 }
+
+#: 指向「某台客户机」的作用域（其余是集群 / 节点级）
+_GUEST_SCOPES = ("vm", "ct")
 # 布尔型选项：提交时转成 PVE 的 0/1
 _OPTION_BOOLS = ("enable", "ebtables", "dhcp", "ipfilter", "macfilter", "ndp", "radv")
 
@@ -119,10 +127,13 @@ async def _scope_base(
         if not node:
             raise HTTPException(status_code=400, detail="节点级防火墙需要 node 参数")
         return f"/nodes/{node}/firewall"
-    if scope == "vm":
+    if scope in _GUEST_SCOPES:
         if not node or vmid is None:
-            raise HTTPException(status_code=400, detail="虚拟机防火墙需要 node 与 vmid")
-        kind = (vtype or "").strip().lower()
+            raise HTTPException(
+                status_code=400, detail="虚拟机 / 容器防火墙需要 node 与 vmid"
+            )
+        # ct 作用域直接钉死成 lxc，不必探测；vm 作用域优先用请求里的 vtype
+        kind = "lxc" if scope == "ct" else (vtype or "").strip().lower()
         if kind not in ("qemu", "lxc"):
             kind = await _vm_kind(node, vmid)
         return f"/nodes/{node}/{kind}/{vmid}/firewall"
@@ -136,6 +147,64 @@ def _require_scope_permission(user: Dict[str, Any], scope: str) -> None:
             status_code=403,
             detail="集群级防火墙需要 firewall.cluster 权限（默认仅管理员）",
         )
+
+
+async def _resolve_target_kind(
+    scope: str, node: str = "", vmid: Optional[int] = None, vtype: str = ""
+) -> str:
+    """防火墙目标是不是一台客户机、是哪种。
+
+    集群 / 节点级不属于任何一台机器，返回空串；``vm`` / ``ct`` 作用域返回
+    ``qemu`` / ``lxc``（``ct`` 恒为 ``lxc``；``vm`` 优先看请求里的 ``vtype``，
+    缺失时按集群资源探测）。
+    """
+    if scope == "ct":
+        return "lxc"
+    if scope != "vm":
+        return ""
+    kind = (vtype or "").strip().lower()
+    if kind in ("qemu", "lxc"):
+        return kind
+    if not node or vmid is None:
+        return ""
+    return await _vm_kind(node, vmid)
+
+
+def require_guest_firewall(action: str) -> Any:
+    """按作用域与目标类型选用正确的防火墙权限，并叠加归属校验。
+
+    权限点的取舍：
+
+    * 集群 / 节点级、以及**虚拟机**目标，用 ``firewall.view`` / ``firewall.manage``；
+    * **容器**目标用 ``ct.firewall.view`` / ``ct.firewall.manage``。
+
+    归属（普通用户只能动自己名下的机器）按目标类型选 ``KIND_VM`` / ``KIND_CT``。
+    这一步必须做成依赖：作用域与类型都在**请求参数**里，只有进到依赖才能解析。
+    """
+    async def _checker(
+        scope: str,
+        node: str = Query(default=""),
+        vmid: Optional[int] = Query(default=None),
+        vtype: str = Query(default=""),
+        user: Dict[str, Any] = Depends(security.get_current_user),
+    ) -> Dict[str, Any]:
+        kind = await _resolve_target_kind(scope, node, vmid, vtype)
+        perm = f"ct.firewall.{action}" if kind == "lxc" else f"firewall.{action}"
+        if not security.has_user_permission(user, perm):
+            raise HTTPException(
+                status_code=403,
+                detail=i18n.t(
+                    "error.permission_denied_role",
+                    permission=perm,
+                    role=user.get("role"),
+                ),
+            )
+        if kind in ("qemu", "lxc"):
+            checker = require_ct_access if kind == "lxc" else require_vm_access
+            await checker(user=user, node=node, vmid=vmid)
+        return user
+
+    return _checker
 
 
 def _norm_rule(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -224,7 +293,9 @@ async def _firewall_warning(kind: str, node: str, vmid: int) -> str:
         return ""
     nics = [v for k, v in (cfg or {}).items() if re.match(r"^net\d+$", str(k))]
     if nics and all("firewall=1" not in str(v) for v in nics):
-        return "该虚拟机的网卡未启用防火墙（net*.firewall=1），规则不会生效"
+        # 目标可能是虚拟机也可能是容器（规则模板批量下发两类都支持）
+        noun = "虚拟机" if kind == "qemu" else "容器"
+        return f"该{noun}的网卡未启用防火墙（net*.firewall=1），规则不会生效"
     return ""
 
 
@@ -235,8 +306,7 @@ async def list_rules(
     node: str = Query(default=""),
     vmid: Optional[int] = Query(default=None),
     vtype: str = Query(default=""),
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.view")),
-    _access: None = Depends(require_vm_access),
+    user: Dict[str, Any] = Depends(require_guest_firewall("view")),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     base = await _scope_base(scope, node, vmid, vtype)
@@ -255,8 +325,7 @@ async def create_rule(
     node: str = Query(default=""),
     vmid: Optional[int] = Query(default=None),
     vtype: str = Query(default=""),
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.manage")),
-    _access: None = Depends(require_vm_access),
+    user: Dict[str, Any] = Depends(require_guest_firewall("manage")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     _require_scope_permission(user, scope)
@@ -290,8 +359,7 @@ async def update_rule(
     node: str = Query(default=""),
     vmid: Optional[int] = Query(default=None),
     vtype: str = Query(default=""),
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.manage")),
-    _access: None = Depends(require_vm_access),
+    user: Dict[str, Any] = Depends(require_guest_firewall("manage")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     _require_scope_permission(user, scope)
@@ -328,8 +396,7 @@ async def delete_rule(
     node: str = Query(default=""),
     vmid: Optional[int] = Query(default=None),
     vtype: str = Query(default=""),
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.manage")),
-    _access: None = Depends(require_vm_access),
+    user: Dict[str, Any] = Depends(require_guest_firewall("manage")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     _require_scope_permission(user, scope)
@@ -354,8 +421,7 @@ async def move_rule(
     node: str = Query(default=""),
     vmid: Optional[int] = Query(default=None),
     vtype: str = Query(default=""),
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.manage")),
-    _access: None = Depends(require_vm_access),
+    user: Dict[str, Any] = Depends(require_guest_firewall("manage")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     """调整规则顺序。防火墙是「先匹配先生效」，顺序就是优先级。"""
@@ -382,7 +448,8 @@ def _target(scope: str, node: str, vmid: Optional[int], pos: Optional[int] = Non
     elif scope == "node":
         base = f"node:{node}"
     else:
-        base = f"vm:{node}/{vmid}"
+        # 「虚拟机」与「容器」拆成两个作用域后，审计目标里也带上类型前缀
+        base = f"{scope}:{node}/{vmid}"
     return f"{base}#{pos}" if pos is not None else base
 
 
@@ -393,8 +460,7 @@ async def get_options(
     node: str = Query(default=""),
     vmid: Optional[int] = Query(default=None),
     vtype: str = Query(default=""),
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.view")),
-    _access: None = Depends(require_vm_access),
+    user: Dict[str, Any] = Depends(require_guest_firewall("view")),
 ) -> Dict[str, Any]:
     client = get_client()
     base = await _scope_base(scope, node, vmid, vtype)
@@ -413,8 +479,7 @@ async def update_options(
     node: str = Query(default=""),
     vmid: Optional[int] = Query(default=None),
     vtype: str = Query(default=""),
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.manage")),
-    _access: None = Depends(require_vm_access),
+    user: Dict[str, Any] = Depends(require_guest_firewall("manage")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     _require_scope_permission(user, scope)
@@ -837,7 +902,11 @@ async def apply_template(
     tpl_id: str,
     payload: FirewallApplyIn,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("firewall.manage")),
+    # 目标可能是虚拟机也可能是容器：这里只要有一侧权限即可进；逐台的细分权限与
+    # 归属在下面的循环里按目标类型各判一次。
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("firewall.manage", "ct.firewall.manage")
+    ),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     """把模板规则下发到多台虚拟机。
@@ -869,11 +938,18 @@ async def apply_template(
             "error": "",
         }
         try:
-            # 普通用户只能操作自己名下的虚拟机
-            await require_vm_access(user=user, node=target.node, vmid=target.vmid)
             kind = (target.type or "").strip().lower()
             if kind not in ("qemu", "lxc"):
                 kind = await _vm_kind(target.node, target.vmid)
+            # 逐台判权限与归属：普通用户只能操作自己名下的机器，且容器用
+            # ct.firewall.manage + KIND_CT，虚拟机用 firewall.manage + KIND_VM
+            needed = "ct.firewall.manage" if kind == "lxc" else "firewall.manage"
+            if not security.has_user_permission(user, needed):
+                raise HTTPException(
+                    status_code=403, detail=f"权限不足：需要 {needed}"
+                )
+            checker = require_ct_access if kind == "lxc" else require_vm_access
+            await checker(user=user, node=target.node, vmid=target.vmid)
             base = f"/nodes/{target.node}/{kind}/{target.vmid}/firewall"
 
             if payload.replace:

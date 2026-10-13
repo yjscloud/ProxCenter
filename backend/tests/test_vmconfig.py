@@ -1021,6 +1021,57 @@ class TestPermissions:
         assert not security.has_permission("viewer", "vm.console")
         assert not security.has_permission("viewer", "vm.delete")
 
+    def test_container_permissions_are_separate_from_vm(self) -> None:
+        """容器是独立的一套权限（ct.*）：与虚拟机的 vm.* 互不顶替。
+
+        回归点：拆分前容器接口用的就是 vm.*，勾了虚拟机权限就顺带拿到容器能力；
+        拆分后 operator 仍两者都有，但**自定义角色只勾一侧**时必须各管各的。
+        """
+        assert security.has_permission("operator", "ct.view")
+        assert security.has_permission("operator", "ct.power")
+        assert security.has_permission("operator", "ct.console")
+        assert security.has_permission("operator", "ct.delete")
+        assert security.has_permission("operator", "ct.firewall.manage")
+        assert security.has_permission("viewer", "ct.view")
+        assert not security.has_permission("viewer", "ct.power")
+        # 只有容器权限的用户不该因此获得虚拟机能力（反之亦然）——
+        # 用 _has 直接验证「分别判定」这件事本身。
+        assert not security._has(["ct.view", "ct.power"], "vm.power")
+        assert not security._has(["vm.view", "vm.power"], "ct.power")
+
+    def test_migrate_is_its_own_permission(self) -> None:
+        """迁移与「修改配置」分开（原先后端 vms.py / lxc.py 的 migrate 用 config）。
+
+        回归点：矩阵上「迁移虚拟机」写着仅管理员，实际只要 config 就能迁 —— 权限点
+        独立后，operator 由 ROLE_PERMISSIONS 明确带上，viewer / 自定义角色不会因为
+        有 config 就顺带能迁移。
+        """
+        assert security.has_permission("operator", "vm.migrate")
+        assert security.has_permission("operator", "ct.migrate")
+        assert not security.has_permission("viewer", "vm.migrate")
+        assert not security.has_permission("viewer", "ct.migrate")
+        # 有 config 不代表能迁移（两者互不顶替）
+        assert not security._has(["vm.view", "vm.config"], "vm.migrate")
+        assert not security._has(["ct.config"], "ct.migrate")
+
+    def test_migrate_is_listed_in_the_catalog(self) -> None:
+        """权限目录（勾选界面用的那份）里必须有这两项，否则勾不上。"""
+        keys = {
+            perm["key"]
+            for group in security.PERMISSION_CATALOG
+            for perm in group["permissions"]
+        }
+        assert {"vm.migrate", "ct.migrate"} <= keys
+        # 说明文案不该再写着「迁移」属于「修改配置」
+        vm_config = next(
+            perm
+            for group in security.PERMISSION_CATALOG
+            if group["key"] == "vm"
+            for perm in group["permissions"]
+            if perm["key"] == "vm.config"
+        )
+        assert "迁移" not in vm_config["desc"]
+
     def test_unknown_role_falls_back_to_viewer(self) -> None:
         assert security.role_permissions("nonexistent") == security.role_permissions(
             "viewer"

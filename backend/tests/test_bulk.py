@@ -186,6 +186,26 @@ class TestValidateAction:
             bulk.validate_action("tag", BulkParams(tags="x", tag_mode="merge"))
 
 
+# --------------------------------------------------------------- 权限映射
+class TestPermissionMapping:
+    """容器与虚拟机各有各的动作权限（拆分后不再共用 vm.*）。"""
+
+    def test_container_actions_use_ct_permissions(self) -> None:
+        assert bulk.permission_for("start", "qemu") == "vm.power"
+        assert bulk.permission_for("start", "lxc") == "ct.power"
+        assert bulk.permission_for("delete", "lxc") == "ct.delete"
+        assert bulk.permission_for("snapshot", "lxc") == "ct.snapshot"
+        assert bulk.permission_for("tag", "qemu") == "vm.config"
+        assert bulk.permission_for("tag", "lxc") == "ct.config"
+        # 迁移是独立权限点（与「修改配置」分开）
+        assert bulk.permission_for("migrate", "qemu") == "vm.migrate"
+        assert bulk.permission_for("migrate", "lxc") == "ct.migrate"
+
+    def test_every_action_has_both_sides(self) -> None:
+        for action in bulk.ACTION_PERMISSION:
+            assert action in bulk.ACTION_PERMISSION_CT
+
+
 # --------------------------------------------------------------- 请求模型
 class TestBulkRequest:
     def test_empty_targets_rejected(self) -> None:

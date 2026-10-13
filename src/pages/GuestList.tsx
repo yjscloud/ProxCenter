@@ -8,7 +8,7 @@
 
 差异全部收在下面两处：
   * `KIND_META` —— 文案、量词、标题图标、创建按钮、空列表引导；
-  * `kind === 'lxc'` 分支 —— 容器没有的能力（转模板、链接克隆、快照内存状态）。
+  * `kind === 'lxc'` 分支 —— 容器没有的能力（链接克隆、快照内存状态）。
 
 数据来源也随 kind 分开：容器走 `GET /lxc`（只返回容器），虚拟机走
 `GET /vms?type=qemu`。两条链路各自的缓存键独立，互不串数据。
@@ -27,9 +27,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useT, type MessageKey } from '../i18n';
 import {
+  connectionsApi,
   exportUrl,
   lxcApi,
   nodesApi,
+  quotaApi,
   sshFleetApi,
   vmMetaApi,
   vmMetaKey,
@@ -52,10 +54,14 @@ import { Table, type Column, type SortState } from '../components/ui/Table';
 import { useColumnSettings } from '../components/ui/ColumnSettings';
 import { InlineMeter } from '../components/ui/ProgressBar';
 import { Notice } from '../components/ui/EmptyState';
+import { QuotaChip } from '../components/QuotaChip';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
 import { ConfirmDialog, useConfirm } from '../components/ui/ConfirmDialog';
 import { UserSelect } from '../components/ui/UserSelect';
+import { AI_ASSISTANT_PERMISSION } from '../components/AskAiButton';
+import { useSnapshotQuota } from '../hooks/useSnapshotQuota';
+import { useNodeStorages } from '../hooks/useNodeStorages';
 import { VmCreateWizard } from '../components/VmCreateWizard';
 import { LxcCreateWizard } from '../components/LxcCreateWizard';
 /* VMware 互操作：OVF/OVA 导入与镜像导出（只有虚拟机有这两件事，容器不参与） */
@@ -307,7 +313,30 @@ function RowMenu({
 }: RowMenuProps) {
   const t = useT();
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
   const L = useKindLabels(kind);
+  /* 逐个动作按**后端接口真正要求的那把钥匙**判：没权限的入口不摆出来，而不是
+     让人点进去吃 403（权限点随类型走：虚拟机 vm.*、容器 ct.*）。 */
+  const permPrefix = kind === 'lxc' ? 'ct' : 'vm';
+  const canCloneRow = hasPermission(`${permPrefix}.clone`);
+  /* 转模板是集群级能力（后端 vms.py / lxc.py 都要 template.manage） */
+  const canToTemplate = hasPermission('template.manage');
+  const canSnapshotRow = hasPermission(`${permPrefix}.snapshot`);
+  /* 迁移是独立权限点：后端 vms.py / lxc.py 的 migrate 接口要 vm.migrate / ct.migrate
+     （原先与「修改配置」共用 config，矩阵上却写着迁移仅管理员）。 */
+  const canMigrateRow = hasPermission(`${permPrefix}.migrate`);
+  const canDeleteRow = hasPermission(`${permPrefix}.delete`);
+  /* 菜单里有没有可做的事：一件都没有就把整个入口禁掉（点开是空壳） */
+  const anyAction =
+    canCloneRow ||
+    canToTemplate ||
+    canSnapshotRow ||
+    canExport ||
+    canMigrateRow ||
+    canAssign ||
+    canResetPassword ||
+    canDeleteRow ||
+    hasPermission(AI_ASSISTANT_PERMISSION);
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -409,7 +438,13 @@ function RowMenu({
       ref={anchorRef}
       onClick={(e) => e.stopPropagation()}
     >
-      <IconButton label={t('guestList.moreActions')} onClick={toggle} disabled={disabled}>
+      {/* 一个可做的动作都没有（例如只读用户）就别摆这个菜单：点开是个空壳。
+          这里的判断**不**依赖角色名 —— 自定义角色完全可能只有一个 power 权限。 */}
+      <IconButton
+        label={t('guestList.moreActions')}
+        onClick={toggle}
+        disabled={disabled || !anyAction}
+      >
         <IconMore size={16} />
       </IconButton>
       {open && pos ? (
@@ -424,31 +459,42 @@ function RowMenu({
             right: pos.right,
           }}
         >
-          {/* 放在最前：机器出问题时，「让 AI 看看」是最先想找的入口 */}
-          {readonlyItem(t('guestList.askAi'), <IconSparkle size={15} />, () => {
-            const params = new URLSearchParams();
-            if (askHostId) params.set('host', askHostId);
-            params.set(
-              'question',
-              t('guestList.askAiQuestion', {
-                noun: L.noun,
-                name: vm.name || String(vm.vmid),
-              }),
-            );
-            navigate(`/ai-assistant?${params.toString()}`);
-          })}
+          {/* 放在最前：机器出问题时，「让 AI 看看」是最先想找的入口。
+              但要先有 AI 排查助手的权限 —— 没有的人点进去只会被路由守卫弹回
+              仪表盘，等于摆了个走不通的按钮（AskAiButton 用的是同一把钥匙）。 */}
+          {hasPermission(AI_ASSISTANT_PERMISSION)
+            ? readonlyItem(t('guestList.askAi'), <IconSparkle size={15} />, () => {
+                const params = new URLSearchParams();
+                if (askHostId) params.set('host', askHostId);
+                params.set(
+                  'question',
+                  t('guestList.askAiQuestion', {
+                    noun: L.noun,
+                    name: vm.name || String(vm.vmid),
+                  }),
+                );
+                navigate(`/ai-assistant?${params.toString()}`);
+              })
+            : null}
           <div className="user-dropdown-divider" />
-          {item(t('guestList.cloneTitle', { noun: L.noun }), <IconCopy size={15} />, onClone)}
-          {/* 容器没有「转模板」：PVE 的 pct 不提供这个能力 */}
-          {kind === 'qemu' && !vm.template
+          {canCloneRow
+            ? item(t('guestList.cloneTitle', { noun: L.noun }), <IconCopy size={15} />, onClone)
+            : null}
+          {/* 转模板两边都有：虚拟机走 qemu → template，容器走 pct template
+              （后端 lxc.py 的 /lxc/{node}/{vmid}/template），都要求机器已关机 */}
+          {!vm.template && canToTemplate
             ? item(t('guestList.toTemplate'), <IconTemplate size={15} />, onTemplate)
             : null}
-          {item(t('guestList.newSnapshot'), <IconSnapshot size={15} />, onSnapshot)}
+          {canSnapshotRow
+            ? item(t('guestList.newSnapshot'), <IconSnapshot size={15} />, onSnapshot)
+            : null}
           {/* 导出：导的是磁盘镜像（VMDK/QCOW2/RAW/OVA），只有虚拟机有这个概念 */}
           {canExport
             ? item(t('vmExport.menuItem'), <IconDownload size={15} />, onExport)
             : null}
-          {item(t('guestList.migrate'), <IconLayers size={15} />, onMigrate)}
+          {canMigrateRow
+            ? item(t('guestList.migrate'), <IconLayers size={15} />, onMigrate)
+            : null}
           {canAssign
             ? item(t('guestList.assign'), <IconUser size={15} />, onAssign)
             : null}
@@ -456,7 +502,9 @@ function RowMenu({
             ? item(t('guestList.resetPassword'), <IconKey size={15} />, onResetPassword)
             : null}
           <div className="user-dropdown-divider" />
-          {item(t('guestList.deleteTitle', { noun: L.noun }), <IconTrash size={15} />, onDelete, true)}
+          {canDeleteRow
+            ? item(t('guestList.deleteTitle', { noun: L.noun }), <IconTrash size={15} />, onDelete, true)
+            : null}
         </div>
       ) : null}
     </span>
@@ -477,10 +525,26 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const runner = useTaskRunner();
-  const { canWrite, isAdmin, hasPermission } = useAuth();
-  /* 后端的重置口令接口要 vm.config；没这个权限就别把入口摆出来（点进去只会 403） */
-  const canConfig = hasPermission('vm.config');
-  /* 导出会把整块磁盘镜像交出去，与备份同一口径（vm.backup） */
+  const { isAdmin, hasPermission } = useAuth();
+  /* 权限点随类型走：虚拟机是 vm.*、容器是 ct.* —— 后端也是两套接口分别校验
+     （routers/vms.py 用 vm.*，routers/lxc.py 用 ct.*）。 */
+  const permPrefix = isLxc ? 'ct' : 'vm';
+  /* 「新建虚拟机 / 容器」与「从 OVF 导入」都要 create */
+  const canCreate = hasPermission(`${permPrefix}.create`);
+  /* 后端的重置口令接口要 config；没这个权限就别把入口摆出来（点进去只会 403） */
+  const canConfig = hasPermission(`${permPrefix}.config`);
+  /* 批量快照同样按权限给（后端 bulk 的 snapshot 动作要 snapshot） */
+  const canSnapshot = hasPermission(`${permPrefix}.snapshot`);
+  /* 批量迁移要 migrate 这个独立权限点（后端 bulk.py 的 migrate 动作） */
+  const canMigrate = hasPermission(`${permPrefix}.migrate`);
+  /* 批量条上有没有可做的事（与行菜单同一套口径）：只读用户选中一行时，
+     别弹出一条点不动的操作栏 */
+  const canBulkPower = hasPermission(`${permPrefix}.power`);
+  const canBulkDelete = hasPermission(`${permPrefix}.delete`);
+  const bulkAny =
+    canBulkPower || canBulkDelete || canConfig || canSnapshot || canMigrate;
+  const bulkMore = canConfig || canSnapshot || canMigrate;
+  /* 导出会把整块磁盘镜像交出去，与备份同一口径（只有虚拟机有导出这件事） */
   const canExport = kind === 'qemu' && hasPermission('vm.backup');
 
   const copyText = async (text: string) => {
@@ -494,6 +558,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
   /* ---- 筛选状态 ---- */
   const [search, setSearch] = useState('');
+  /* 连接点（来源 PVE）在节点之前：多台 PVE 合并展示时同名节点会撞车，
+     先选定这台主机，节点选择器才收窄成它自己的节点 */
+  const [connFilter, setConnFilter] = useState('');
   const [nodeFilter, setNodeFilter] = useState('');
   // 默认显示全部状态。只看运行中会把「刚建完没起来」「关机待排查」「关机待维护」
   // 这些恰恰需要被看见的机器一起藏掉，而页面看着像个空列表 —— 用户的第一反应是
@@ -512,11 +579,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
     if (searchParams.get('new') !== '1') return;
-    if (canWrite) setCreateOpen(true);
+    if (canCreate) setCreateOpen(true);
     const next = new URLSearchParams(searchParams);
     next.delete('new');
     setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams, canWrite]);
+  }, [searchParams, setSearchParams, canCreate]);
 
   /* ---- 弹窗状态 ---- */
   const [deleteTarget, setDeleteTarget] = useState<VmSummary | null>(null);
@@ -556,12 +623,19 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
   const guestsQuery = useQuery({
     queryKey: isLxc
-      ? ['lxc', 'with-ip', nodeFilter || 'all']
-      : ['vms', 'with-ip', nodeFilter || 'all'],
+      ? ['lxc', 'with-ip', connFilter || 'all', nodeFilter || 'all']
+      : ['vms', 'with-ip', connFilter || 'all', nodeFilter || 'all'],
     queryFn: () =>
       isLxc
-        ? lxcApi.list(nodeFilter || undefined, { withIp: true })
-        : vmsApi.list(nodeFilter || undefined, { withIp: true, type: 'qemu' }),
+        ? lxcApi.list(nodeFilter || undefined, {
+            withIp: true,
+            connectionId: connFilter || undefined,
+          })
+        : vmsApi.list(nodeFilter || undefined, {
+            withIp: true,
+            type: 'qemu',
+            connectionId: connFilter || undefined,
+          }),
     /* 60 秒：IP 列现在读后端的落库快照（后台作业预热，见 app.inspection），
        请求本身已经很便宜；轮询周期放宽到一分钟，进一步减少无谓的重复请求。
        列表要的是「状态大致是新的」，这个粒度足够。 */
@@ -569,9 +643,20 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     refetchInterval: pveReady ? 60_000 : false,
   });
 
+  /* 连接点列表：节点选择器的选项要靠它圈定范围（而非从已过滤的节点里反推，
+     否则选定一台主机后选项会自己塌成一个）。键与节点页共用，切页不重复请求。 */
+  const connectionsQuery = useQuery({
+    queryKey: ['connections'],
+    queryFn: connectionsApi.list,
+    staleTime: 300_000,
+    retry: false,
+  });
+
+  /* 节点列表跟着连接点收窄：选定来源 PVE 后，节点下拉只列这台主机上的节点。
+     未选连接时用 ['nodes'] 这个键，与节点页共用同一份缓存。 */
   const nodesQuery = useQuery({
-    queryKey: ['nodes'],
-    queryFn: nodesApi.list,
+    queryKey: connFilter ? ['nodes', connFilter] : ['nodes'],
+    queryFn: () => nodesApi.list(connFilter || undefined),
     staleTime: 60_000,
   });
 
@@ -615,8 +700,36 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     retry: false,
   });
   const quota = quotaQuery.data;
+
+  /* ---- 按人分配的额度（资源池）----
+     与上面那份**全局**台数上限是两层：那份是整个集群的护栏，这份是「我名下还能用
+     多少」。两层取最严：任一层用尽都不能再建。 */
+  const myQuotaQuery = useQuery({
+    queryKey: ['quota', 'me'],
+    queryFn: quotaApi.mine,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const myGroup = myQuotaQuery.data?.groups[isLxc ? 'ct' : 'vm'];
+  const myRemaining = myGroup?.remaining;
+  const myCountUsedUp =
+    myRemaining?.count != null && Number(myRemaining.count) <= 0;
   /* 额度用尽：禁用创建入口，并在按钮上说明原因 */
-  const quotaBlocked = Boolean(quota && !quota.can_create);
+  const quotaBlocked = Boolean((quota && !quota.can_create) || myCountUsedUp);
+  /* 创建入口被额度挡住时按钮上那句话。两层额度必须分开报（与快速部署同一条规矩）：
+     混着报会把「你名下用完了」说成「平台用完了」，数字还是平台那份。上限也只在
+     管理员那里有意义 —— 普通用户改不了那份设置，只需要知道该找谁。 */
+  const createBlockedHint = !quotaBlocked
+    ? undefined
+    : myCountUsedUp
+      ? t('guestList.myQuotaUsedUp')
+      : isAdmin
+        ? t('guestList.quotaExhausted', {
+            noun: L.noun,
+            quota: quota?.quota,
+            unit: L.unit,
+          })
+        : t('quota.askAdmin');
 
   /* ---- 手动 IP（面板侧补充信息）----
      Guest Agent 没开、容器又用 DHCP 时平台拿不到地址，这里读回运维手工填的那份。
@@ -636,6 +749,16 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       metaItems[vmMetaKey(vm.connection_id, vm.node, vm.vmid)]?.ip ?? '',
     [metaItems],
   );
+
+  /* 连接点（来源 PVE）选项：只有一条连接时这一层没有意义，整只下拉不渲染
+     （见工具栏），省掉一个恒为「全部连接」的占位控件。 */
+  const connectionOptions = useMemo(() => {
+    const items = connectionsQuery.data ?? [];
+    return [
+      { label: t('guestList.allConnections'), value: '' },
+      ...items.map((c) => ({ label: c.name || c.id, value: c.id })),
+    ];
+  }, [connectionsQuery.data, t]);
 
   /* 多台 PVE 合并展示时同名节点会出现多次。筛选项按节点名去重
      （筛选本身就是按节点名匹配，跨主机同名节点会一起命中，行内会标出来源主机）。 */
@@ -760,7 +883,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
 
   const doPower = useCallback(
     async (vm: VmSummary, action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
-      if (!canWrite) {
+      /* 按**具体权限**判，不按角色粗判：自定义角色（角色名不是 operator）完全
+         可能有 power 权限，用 canWrite 会把它们一律当成只读 —— 表现就是「明明勾了
+         电源权限，点下去却提示权限不足」。容器对应 ct.power。 */
+      if (!hasPermission(`${permPrefix}.power`)) {
         toast.warning(t('guestList.noPermission'), t('guestList.powerDenied'));
         return;
       }
@@ -804,7 +930,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         /* toast 已提示 */
       }
     },
-    [canWrite, runner, toast, isLxc, t, confirmPower],
+    [hasPermission, permPrefix, runner, toast, isLxc, t, confirmPower],
   );
 
   /* ---- 批量操作 ----
@@ -1071,7 +1197,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             </span>
             {/* 就地改名：编辑入口贴着被编辑的对象，比塞进「更多」菜单更好找。
                 模板不给入口 —— 模板名改动会牵连克隆来源，属于要谨慎对待的操作。 */}
-            {canWrite && !vm.template ? (
+            {canConfig && !vm.template ? (
               <IconButton
                 label={t('guestList.renameAria', { name: vm.name || vm.vmid })}
                 onClick={(e) => {
@@ -1162,7 +1288,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             )}
             {/* 只在平台拿不到地址时给编辑入口：自动值更准，
                 让它旁边常驻一个「改」按钮只会诱导用户改错 */}
-            {!auto && canWrite ? (
+            {!auto && canConfig ? (
               <IconButton
                 label={t('guestList.ipEditAria', { name: vm.name || vm.vmid })}
                 onClick={() => openIpEditor(vm)}
@@ -1277,7 +1403,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         const stopped = isStopped(vm.status);
         const frozen = vm.status === 'paused' || vm.status === 'suspended';
         const busy = isTransient(vm.status);
-        const noWrite = !canWrite || busy || Boolean(vm.lock);
+        const noPower =
+          !hasPermission(`${permPrefix}.power`) || busy || Boolean(vm.lock);
 
         return (
           <span className="row-actions" onClick={(e) => e.stopPropagation()}>
@@ -1286,7 +1413,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 label={`${t('power.start')} ${vm.name}`}
                 variant="primary"
                 onClick={() => void doPower(vm, 'start')}
-                disabled={noWrite}
+                disabled={noPower}
               >
                 <IconPlay size={15} />
               </IconButton>
@@ -1297,7 +1424,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 <IconButton
                   label={`${t('power.shutdown')} ${vm.name}`}
                   onClick={() => void doPower(vm, 'shutdown')}
-                  disabled={noWrite}
+                  disabled={noPower}
                 >
                   <IconPower size={15} />
                 </IconButton>
@@ -1305,14 +1432,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                   label={`${t('power.stop')} ${vm.name}`}
                   variant="danger"
                   onClick={() => void doPower(vm, 'stop')}
-                  disabled={noWrite}
+                  disabled={noPower}
                 >
                   <IconStop size={14} />
                 </IconButton>
                 <IconButton
                   label={`${t('power.reboot')} ${vm.name}`}
                   onClick={() => void doPower(vm, 'reboot')}
-                  disabled={noWrite}
+                  disabled={noPower}
                 >
                   <IconRestart size={15} />
                 </IconButton>
@@ -1334,25 +1461,31 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                     ],
                   })
                 }
-                disabled={noWrite}
+                disabled={noPower}
               >
                 <IconPlay size={15} />
               </IconButton>
             ) : null}
 
-            <IconButton
-              label={t('guestList.consoleAria', { name: vm.name })}
-              /* 带上 tab 必须走 guestPath 的 extra：自己接 `?tab=console` 会在
-                 连接参数后多出一个问号，后端收到的连接 id 就带上了 `?tab=console` */
-              onClick={() => navigate(guestPath(vm, { tab: 'console' }))}
-            >
-              <IconConsole size={15} />
-            </IconButton>
+            {/* 控制台要 vm.console / ct.console（后端 console.py 两个端点各判一次）：
+                没这把钥匙就不摆按钮 —— 详情页的控制台标签同样打不开 */}
+            {hasPermission(`${permPrefix}.console`) ? (
+              <IconButton
+                label={t('guestList.consoleAria', { name: vm.name })}
+                /* 带上 tab 必须走 guestPath 的 extra：自己接 `?tab=console` 会在
+                   连接参数后多出一个问号，后端收到的连接 id 就带上了 `?tab=console` */
+                onClick={() => navigate(guestPath(vm, { tab: 'console' }))}
+              >
+                <IconConsole size={15} />
+              </IconButton>
+            ) : null}
 
             <RowMenu
               vm={vm}
               kind={kind}
-              disabled={!canWrite || busy}
+              /* 只传「忙」：能不能开菜单由 RowMenu 按逐项权限自己判（不再看角色名，
+                 自定义角色完全可能只有一个 power 权限） */
+              disabled={busy}
               onClone={() => setCloneTarget(vm)}
               onTemplate={() => setTemplateTarget(vm)}
               onSnapshot={() => setSnapshotTarget(vm)}
@@ -1431,7 +1564,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
           </Button>
           {/* 从 OVF/OVA 导入（VMware 互操作）：与「新建」并列摆在创建区 ——
               对用户来说这两件事的意图是同一个（我要多一台机器），只是来源不同 */}
-          {canWrite && kind === 'qemu' ? (
+          {canCreate && kind === 'qemu' ? (
             <Button
               variant="secondary"
               icon={<IconUpload size={15} />}
@@ -1441,21 +1574,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               {t('vmImport.entry')}
             </Button>
           ) : null}
-          {canWrite ? (
+          {canCreate ? (
             <Button
               variant="primary"
               icon={meta.createIcon}
               onClick={() => setCreateOpen(true)}
               disabled={quotaBlocked}
-              title={
-                quotaBlocked
-                  ? t('guestList.quotaExhausted', {
-                      noun: L.noun,
-                      quota: quota?.quota,
-                      unit: L.unit,
-                    })
-                  : undefined
-              }
+              title={createBlockedHint}
             >
               {L.create}
             </Button>
@@ -1474,7 +1599,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       ) : null}
 
       {/* ---- 批量操作条 ---- */}
-      {selected.size > 0 ? (
+      {selected.size > 0 && bulkAny ? (
         <div className="bulk-bar">
           <span>
             {t('guestList.bulkSelectedPre')}
@@ -1482,70 +1607,90 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             {t('guestList.bulkSelectedPost', { unit: L.unit, noun: L.noun })}
           </span>
           <div className="flex items-center gap-8 flex-wrap">
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<IconPlay size={14} />}
-              disabled={pendingAction}
-              onClick={() => void runBulk('start')}
-            >
-              {t('power.start')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<IconPower size={14} />}
-              disabled={pendingAction}
-              onClick={() => void askBulkPower('shutdown')}
-            >
-              {t('power.shutdown')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<IconRestart size={14} />}
-              disabled={pendingAction}
-              onClick={() => void askBulkPower('reboot')}
-            >
-              {t('power.reboot')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<IconStop size={14} />}
-              disabled={pendingAction}
-              onClick={() => void askBulkPower('stop')}
-            >
-              {t('guestList.bulkForceStop')}
-            </Button>
+            {/* 批量动作同样按权限给：后端会逐台按 permission_for 拒，但摆一排点不动的
+                按钮没有意义 —— 没权限就不显示这一类。 */}
+            {canBulkPower ? (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<IconPlay size={14} />}
+                  disabled={pendingAction}
+                  onClick={() => void runBulk('start')}
+                >
+                  {t('power.start')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<IconPower size={14} />}
+                  disabled={pendingAction}
+                  onClick={() => void askBulkPower('shutdown')}
+                >
+                  {t('power.shutdown')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<IconRestart size={14} />}
+                  disabled={pendingAction}
+                  onClick={() => void askBulkPower('reboot')}
+                >
+                  {t('power.reboot')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<IconStop size={14} />}
+                  disabled={pendingAction}
+                  onClick={() => void askBulkPower('stop')}
+                >
+                  {t('guestList.bulkForceStop')}
+                </Button>
+              </>
+            ) : null}
 
-            {/* 需要额外参数的动作走这个下拉：直接铺按钮会把操作条挤爆 */}
-            <Select
-              value=""
-              onChange={(e) => {
-                const action = e.target.value as BulkAction;
-                if (action) setBulkDialog(action);
-              }}
-              disabled={pendingAction}
-              options={[
-                { label: t('guestList.bulkMore'), value: '' },
-                { label: t('guestList.bulkTag'), value: 'tag' },
-                { label: t('guestList.bulkMigrate'), value: 'migrate' },
-                { label: t('guestList.bulkBalloon'), value: 'balloon' },
-                { label: t('guestList.bulkSnapshot'), value: 'snapshot' },
-              ]}
-              aria-label={t('guestList.bulkMoreAria')}
-            />
+            {/* 需要额外参数的动作走这个下拉：直接铺按钮会把操作条挤爆。
+                选项按权限收敛（打标签 / 迁移 / 气球要 config，快照要 snapshot），
+                一个都没有时整个下拉不渲染 —— 只剩占位项的下拉没有意义。 */}
+            {bulkMore ? (
+              <Select
+                value=""
+                onChange={(e) => {
+                  const action = e.target.value as BulkAction;
+                  if (action) setBulkDialog(action);
+                }}
+                disabled={pendingAction}
+                options={[
+                  { label: t('guestList.bulkMore'), value: '' },
+                  ...(canConfig
+                    ? [
+                        { label: t('guestList.bulkTag'), value: 'tag' as BulkAction },
+                        { label: t('guestList.bulkBalloon'), value: 'balloon' as BulkAction },
+                      ]
+                    : []),
+                  ...(canMigrate
+                    ? [{ label: t('guestList.bulkMigrate'), value: 'migrate' as BulkAction }]
+                    : []),
+                  ...(canSnapshot
+                    ? [{ label: t('guestList.bulkSnapshot'), value: 'snapshot' as BulkAction }]
+                    : []),
+                ]}
+                aria-label={t('guestList.bulkMoreAria')}
+              />
+            ) : null}
 
-            <Button
-              variant="danger"
-              size="sm"
-              icon={<IconTrash size={14} />}
-              disabled={pendingAction}
-              onClick={() => setBulkDelete(true)}
-            >
-              {t('common.delete')}
-            </Button>
+            {canBulkDelete ? (
+              <Button
+                variant="danger"
+                size="sm"
+                icon={<IconTrash size={14} />}
+                disabled={pendingAction}
+                onClick={() => setBulkDelete(true)}
+              >
+                {t('common.delete')}
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="sm"
@@ -1576,6 +1721,19 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               autoComplete="off"
               spellCheck={false}
             />
+            {/* 连接点在节点之前：先圈定是哪台 PVE，再看它上面有哪些节点。
+                切换连接会清掉节点筛选 —— 旧节点多半不属于新连接，留着会得到空列表。 */}
+            {connectionOptions.length > 2 ? (
+              <Select
+                value={connFilter}
+                onChange={(e) => {
+                  setConnFilter(e.target.value);
+                  setNodeFilter('');
+                }}
+                options={connectionOptions}
+                aria-label={t('guestList.connFilterAria')}
+              />
+            ) : null}
             <Select
               value={nodeFilter}
               onChange={(e) => setNodeFilter(e.target.value)}
@@ -1595,35 +1753,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             />
           </div>
           <div className="toolbar-right">
-            {/* 可下发剩余：额度只在管理员设过时才存在；没设就写「不限」。
-                用尽时变红 —— 它同时解释了「为什么创建按钮是灰的」。 */}
-            {quota ? (
-              <span
-                className={`quota-chip${quotaBlocked ? ' is-empty' : ''}`}
-                title={
-                  quota.limited
-                    ? t('guestList.quotaLine', {
-                        noun: L.noun,
-                        quota: quota.quota,
-                        used: quota.used,
-                        unit: L.unit,
-                      })
-                    : t('guestList.quotaUnlimitedHint')
-                }
-              >
-                {!quota.limited
-                  ? t('guestList.quotaUnlimited')
-                  : quotaBlocked
-                    ? t('guestList.quotaUsedUp', {
-                        used: quota.used,
-                        quota: quota.quota,
-                      })
-                    : t('guestList.quotaRemaining', {
-                        remaining: quota.remaining,
-                        unit: L.unit,
-                      })}
-              </span>
-            ) : null}
+            {/* 额度只有管理员设过时才存在；两层合成一颗，明细点开看（见 QuotaChip） */}
+            <QuotaChip
+              quota={quota}
+              mine={myGroup}
+              unit={L.unit}
+              noun={L.noun}
+            />
             <span className="fs-sm text-muted">
               {t('guestList.showing', {
                 shown: filtered.length,
@@ -1665,21 +1801,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 : L.empty
             }
             emptyAction={
-              canWrite && !search ? (
+              canCreate && !search ? (
                 <Button
                   variant="primary"
                   icon={meta.createIcon}
                   onClick={() => setCreateOpen(true)}
                   disabled={quotaBlocked}
-                  title={
-                    quotaBlocked
-                      ? t('guestList.quotaExhausted', {
-                          noun: L.noun,
-                          quota: quota?.quota,
-                          unit: L.unit,
-                        })
-                      : undefined
-                  }
+                  title={createBlockedHint}
                 >
                   {L.create}
                 </Button>
@@ -1869,38 +1997,43 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         }
       />
 
-      {/* ---- 转模板确认（仅虚拟机）---- */}
-      {kind === 'qemu' ? (
-        <ConfirmDialog
-          open={Boolean(templateTarget)}
-          onCancel={() => setTemplateTarget(null)}
-          onConfirm={async () => {
-            const vm = templateTarget;
-            if (!vm) return;
-            setPendingAction(true);
-            try {
-              await runner.run(vmsApi.toTemplate(vm.node, vm.vmid), {
+      {/* ---- 转模板确认 ---- */}
+      <ConfirmDialog
+        open={Boolean(templateTarget)}
+        onCancel={() => setTemplateTarget(null)}
+        onConfirm={async () => {
+          const vm = templateTarget;
+          if (!vm) return;
+          setPendingAction(true);
+          try {
+            /* 容器与虚拟机的转模板端点是两条（pct template / qemu → template），
+               都要带上来源连接 —— 不带的话后端会去归属表里推断。 */
+            await runner.run(
+              isLxc
+                ? lxcApi.toTemplate(vm.node, vm.vmid, vm.connection_id ?? undefined)
+                : vmsApi.toTemplate(vm.node, vm.vmid, vm.connection_id),
+              {
                 title: t('guestList.toTemplateTask', { name: vm.name || vm.vmid }),
                 node: vm.node,
-                invalidate: [['vms'], ['lxc'], ['cluster']],
-              });
-              setTemplateTarget(null);
-            } finally {
-              setPendingAction(false);
-            }
-          }}
-          title={t('guestList.toTemplate')}
-          confirmText={t('guestList.toTemplateConfirm')}
-          loading={pendingAction}
-          message={
-            <>
-              {t('guestList.toTemplateSoon')}{' '}
-              <strong>{templateTarget?.name || `VM ${templateTarget?.vmid}`}</strong>{' '}
-              {t('guestList.toTemplateTail')}
-            </>
+                invalidate: [['vms'], ['lxc'], ['cluster'], ['templates']],
+              },
+            );
+            setTemplateTarget(null);
+          } finally {
+            setPendingAction(false);
           }
-        />
-      ) : null}
+        }}
+        title={t('guestList.toTemplate')}
+        confirmText={t('guestList.toTemplateConfirm')}
+        loading={pendingAction}
+        message={
+          <>
+            {t('guestList.toTemplateSoon', { noun: L.noun })}{' '}
+            <strong>{templateTarget?.name || `${L.noun} ${templateTarget?.vmid}`}</strong>{' '}
+            {t('guestList.toTemplateTail', { noun: L.noun })}
+          </>
+        }
+      />
 
       {/* ---- 克隆 / 迁移 / 快照 ---- */}
       <CloneDialog
@@ -2017,6 +2150,34 @@ function CloneDialog({
       ? t('guestList.cloneIdRange')
       : undefined;
 
+  /* 目标存储：只列**源机器所在节点**上、且能放这类磁盘的存储池（虚拟机 images、
+     容器 rootdir）。原先是个自由文本框，名字写错（或写了别的主机上的池子）必然
+     被 PVE 拒；候选随节点走，见 useNodeStorages。 */
+  const storagesQuery = useNodeStorages(
+    vm?.node ?? '',
+    vm?.connection_id,
+    Boolean(vm),
+  );
+  const storageOptions = useMemo(() => {
+    const want = container ? 'rootdir' : 'images';
+    return [
+      { label: t('guestList.cloneTargetDefault'), value: '' },
+      ...(storagesQuery.data ?? [])
+        .filter(
+          (s) =>
+            s.active &&
+            s.content.split(/[,;]/).some((c) => c.trim() === want),
+        )
+        .map((s) => ({
+          label: t('templates.storageAvail', {
+            storage: s.storage,
+            avail: formatBytes(s.avail),
+          }),
+          value: s.storage,
+        })),
+    ];
+  }, [storagesQuery.data, container, t]);
+
   const submit = async () => {
     if (!vm || idError || !newId) return;
     setBusy(true);
@@ -2093,11 +2254,11 @@ function CloneDialog({
           onChange={(e) => setName(e.target.value)}
           placeholder={L.cloneName}
         />
-        <Input
+        <Select
           label={t('guestList.cloneTarget')}
           value={targetStorage}
           onChange={(e) => setTargetStorage(e.target.value)}
-          placeholder={t('guestList.cloneTargetPlaceholder')}
+          options={storageOptions}
           hint={t('guestList.cloneTargetHint')}
         />
       </div>
@@ -2259,6 +2420,9 @@ function SnapshotDialog({
     }
   }, [vm]);
 
+  /* 快照额度：配了就在这儿说清还剩几张，别等提交后被 403 打回来 */
+  const snap = useSnapshotQuota(Boolean(vm));
+
   const nameError =
     name && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)
       ? t('guestList.snap.nameError')
@@ -2310,7 +2474,12 @@ function SnapshotDialog({
             variant="primary"
             onClick={submit}
             loading={busy}
-            disabled={!name || Boolean(nameError)}
+            disabled={!name || Boolean(nameError) || snap.blocked}
+            title={
+              snap.blocked
+                ? t('guestList.snap.quotaUsedUp', { limit: Number(snap.limit) })
+                : undefined
+            }
           >
             {t('guestList.snap.create')}
           </Button>
@@ -2332,6 +2501,14 @@ function SnapshotDialog({
           onChange={(e) => setDescription(e.target.value)}
           placeholder={t('guestList.snap.descPlaceholder')}
         />
+        {/* 快照额度：只在管理员配了总额度时出现 */}
+        {snap.limited ? (
+          <Notice tone={snap.blocked ? 'warning' : 'info'}>
+            {snap.blocked
+              ? t('guestList.snap.quotaUsedUp', { limit: Number(snap.limit) })
+              : t('guestList.snap.quotaRemaining', { n: Number(snap.remaining ?? 0) })}
+          </Notice>
+        ) : null}
         {/* 容器快照没有内存状态，这一项对容器不显示 */}
         {isLxc ? null : (
           <>

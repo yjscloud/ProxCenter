@@ -14,10 +14,12 @@ import {
   connectionsApi,
   ipPoolsApi,
   nodesApi,
+  quotaApi,
   storagesApi,
   templatesApi,
   vmsApi,
 } from '../api/endpoints';
+import { checkGuestSpec, remainingSummary } from '../utils/quotaSpec';
 import { errorMessage } from '../api/client';
 import { Modal } from './ui/Modal';
 import { Button, IconButton } from './ui/Button';
@@ -42,7 +44,9 @@ import {
   IconTemplate,
   IconDisk,
 } from './Icons';
+import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { useNodeStorages } from '../hooks/useNodeStorages';
 import {
   biosOptions,
   cpuTypeOptions,
@@ -454,6 +458,7 @@ export interface VmCreateWizardProps {
 export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps) {
   const t = useT();
   const toast = useToast();
+  const { isAdmin } = useAuth();
 
   const [step, setStep] = useState<StepIndex>(0);
   const [form, setForm] = useState<FormState>(initialState);
@@ -523,6 +528,37 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     retry: false,
   });
 
+  /* 按人分配的额度（资源池）：核数 / 内存 / 磁盘也在这里把住 —— 上面那份只管台数 */
+  const myQuotaQuery = useQuery({
+    queryKey: ['quota', 'me'],
+    queryFn: quotaApi.mine,
+    enabled: open,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const myGroup = myQuotaQuery.data?.groups.vm;
+  /* 当前草稿的规格 vs 额度：越界的维度（空 = 没问题） */
+  const quotaOver = useMemo(
+    () =>
+      checkGuestSpec(myGroup, {
+        count: 1,
+        cores: (form.cores || 0) * (form.sockets || 1),
+        memory_mb: form.memory || null,
+        disk_gb: form.disks.reduce((sum, d) => sum + (Number(d.size) || 0), 0) || null,
+      }),
+    [myGroup, form.cores, form.sockets, form.memory, form.disks],
+  );
+  const mySummary = remainingSummary(
+    myGroup,
+    {
+      count: t('quota.fieldLabel.count'),
+      cores: t('quota.fieldLabel.cores'),
+      memory: t('quota.fieldLabel.memory'),
+      disk: t('quota.fieldLabel.disk'),
+    },
+    { count: t('quota.unitGuest'), cores: t('quota.unitCore') },
+  );
+
   const nextIdQuery = useQuery({
     queryKey: ['cluster', 'nextid', targetConn],
     queryFn: () => clusterApi.nextId(targetConn),
@@ -555,13 +591,8 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     staleTime: 30_000,
   });
 
-  /* 存储：随节点变化 */
-  const storagesQuery = useQuery({
-    queryKey: ['storages', targetConn, form.node || 'all'],
-    queryFn: () => storagesApi.list(form.node || undefined, targetConn),
-    enabled: open,
-    staleTime: 60_000,
-  });
+  /* 存储：只列**所选节点上**的存储池（含显式带连接，见 useNodeStorages） */
+  const storagesQuery = useNodeStorages(form.node, targetConn, open);
 
   /* ISO 镜像列表 */
   const isoQuery = useQuery({
@@ -1250,11 +1281,18 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               variant="primary"
               onClick={submit}
               loading={submitting}
-              disabled={quotaQuery.data ? !quotaQuery.data.can_create : false}
+              disabled={
+                (quotaQuery.data ? !quotaQuery.data.can_create : false) ||
+                quotaOver.length > 0
+              }
               title={
-                quotaQuery.data && !quotaQuery.data.can_create
-                  ? t('vmCreate.quotaExhaustedHint')
-                  : undefined
+                quotaOver.length
+                  ? t('vmCreate.quotaSpecOver')
+                  : quotaQuery.data && !quotaQuery.data.can_create
+                    ? isAdmin
+                      ? t('vmCreate.quotaUsedUp')
+                      : t('quota.askAdmin')
+                    : undefined
               }
             >
               {t('vmCreate.submit')}
@@ -1339,15 +1377,19 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     : t('vmCreate.quotaUsedUp')
                 }
               >
+                {/* 用尽时的「总量 / 已用」只给管理员：普通用户改不了那份设置，
+                    数字对他没有出口，只需要知道去找谁 */}
                 {quotaQuery.data.can_create
                   ? t('vmCreate.quotaSummaryOk', {
                       quota: quotaQuery.data.quota,
                       used: quotaQuery.data.used,
                     })
-                  : t('vmCreate.quotaSummaryFull', {
-                      quota: quotaQuery.data.quota,
-                      used: quotaQuery.data.used,
-                    })}
+                  : isAdmin
+                    ? t('vmCreate.quotaSummaryFull', {
+                        quota: quotaQuery.data.quota,
+                        used: quotaQuery.data.used,
+                      })
+                    : t('quota.askAdmin')}
                 {quotaQuery.data.count_error ? (
                   <>
                     {t('vmCreate.quotaCountError', {
@@ -1355,6 +1397,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                     })}
                   </>
                 ) : null}
+              </Notice>
+            ) : null}
+
+            {/* 按人分配的额度：与上面那份「全局台数上限」是两层，这里报的是「我名下」 */}
+            {mySummary ? (
+              <Notice tone={quotaOver.length ? 'warning' : 'info'}>
+                {t('vmCreate.quotaSpecRemaining', { summary: mySummary })}
+                {quotaOver.length ? ` ${t('vmCreate.quotaSpecOver')}` : ''}
               </Notice>
             ) : null}
 

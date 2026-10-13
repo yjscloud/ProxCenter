@@ -9,7 +9,7 @@
 
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { firewallApi, vmsApi } from '../api/endpoints';
+import { firewallApi, lxcApi, vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Card, CardHeader } from './ui/Card';
 import { Badge } from './ui/Badge';
@@ -39,6 +39,8 @@ function toTemplateRules(rules: FirewallRule[]): FirewallRuleInput[] {
 
 export interface FirewallTemplatesProps {
   canManage: boolean;
+  /** 能否把规则下发到**容器**目标（ct.firewall.manage）：与虚拟机是两套写权限 */
+  canManageCt: boolean;
   /** 当前作用域的规则，用于「用当前规则新建模板」 */
   currentRules: FirewallRule[];
   /** 描述这些规则的来源，例如「pve1 节点规则」 */
@@ -47,6 +49,7 @@ export interface FirewallTemplatesProps {
 
 export function FirewallTemplates({
   canManage,
+  canManageCt,
   currentRules,
   currentLabel,
 }: FirewallTemplatesProps) {
@@ -64,6 +67,11 @@ export function FirewallTemplates({
     queryFn: () => vmsApi.list(),
     staleTime: 60_000,
   });
+  const lxcQuery = useQuery({
+    queryKey: ['lxc', 'all'],
+    queryFn: () => lxcApi.list(),
+    staleTime: 60_000,
+  });
 
   const [editing, setEditing] = useState<FirewallTemplate | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FirewallTemplate | null>(null);
@@ -72,9 +80,22 @@ export function FirewallTemplates({
   const [results, setResults] = useState<FirewallApplyResult | null>(null);
 
   const templates = templatesQuery.data ?? [];
+  /* 可下发的目标既可以是虚拟机也可以是容器；只列出当前用户有权写的那一类
+     —— 后端 /firewall/templates/{id}/apply 会逐台按类型再判一次权限与归属 */
   const vms = useMemo(
-    () => (vmsQuery.data ?? []).filter((vm) => !vm.template),
-    [vmsQuery.data],
+    () => [
+      ...(canManage
+        ? (vmsQuery.data ?? [])
+            .filter((vm) => !vm.template)
+            .map((vm) => ({ ...vm, type: 'qemu' as const }))
+        : []),
+      ...(canManageCt
+        ? (lxcQuery.data ?? [])
+            .filter((ct) => !ct.template)
+            .map((ct) => ({ ...ct, type: 'lxc' as const }))
+        : []),
+    ],
+    [vmsQuery.data, lxcQuery.data, canManage, canManageCt],
   );
 
   const saveTemplate = async (draft: FirewallTemplate) => {
@@ -169,7 +190,7 @@ export function FirewallTemplates({
       align: 'right',
       render: (tpl) => (
         <span className="row-actions">
-          {canManage ? (
+          {canManage || canManageCt ? (
             <>
               <Button
                 size="sm"
@@ -179,17 +200,22 @@ export function FirewallTemplates({
               >
                 {t('fwTpl.apply')}
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => setEditing(tpl)}>
-                {t('common.edit')}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setDeleteTarget(tpl)}
-                title={t('fwTpl.deleteTitle')}
-              >
-                <IconTrash size={14} />
-              </Button>
+              {/* 模板本身的增删改是面板侧集群级配置，仍只看 firewall.manage */}
+              {canManage ? (
+                <>
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(tpl)}>
+                    {t('common.edit')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setDeleteTarget(tpl)}
+                    title={t('fwTpl.deleteTitle')}
+                  >
+                    <IconTrash size={14} />
+                  </Button>
+                </>
+              ) : null}
             </>
           ) : (
             <span className="fs-xs text-muted">{t('firewall.readonly')}</span>
@@ -513,7 +539,8 @@ function ApplyTemplateModal({
               />
               <span className="fw-500">{vm.name}</span>
               <span className="mono fw-pick-meta">
-                {vm.node}/{vm.vmid}
+                {/* 标出类型：容器与虚拟机是两套写权限，选错了会被后端逐台拒绝 */}
+                {vm.type === 'lxc' ? 'CT' : 'VM'} {vm.node}/{vm.vmid}
               </span>
             </label>
           ))}

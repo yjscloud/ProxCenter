@@ -161,6 +161,53 @@ class VmQuotaIn(BaseModel):
     quota: Optional[int] = None
 
 
+class GuestQuotaIn(BaseModel):
+    """一类 guest（虚拟机 / 容器）的额度。
+
+    字段全部可选，``None`` / 缺省 = **不限制**、``0`` = 明确关闭（一台都不给建）。
+    前四个是「名下总量」（该用户名下所有机器累加），后三个是「单台封顶」。
+    """
+
+    # 总量
+    count: Optional[int] = Field(default=None, ge=0)
+    cores: Optional[int] = Field(default=None, ge=0)
+    memory_mb: Optional[int] = Field(default=None, ge=0)
+    disk_gb: Optional[int] = Field(default=None, ge=0)
+    # 单台封顶
+    max_cores: Optional[int] = Field(default=None, ge=0)
+    max_memory_mb: Optional[int] = Field(default=None, ge=0)
+    max_disk_gb: Optional[int] = Field(default=None, ge=0)
+
+
+class SnapshotQuotaIn(BaseModel):
+    """快照额度：``count`` = 名下快照总数，``per_guest`` = 单台机器的快照数。"""
+
+    count: Optional[int] = Field(default=None, ge=0)
+    per_guest: Optional[int] = Field(default=None, ge=0)
+
+
+class QuotaLimitsIn(BaseModel):
+    """一份完整额度。用户级与角色默认共用这一种形状。
+
+    缺省的组等价于「全都不限制」；它与「显式把每个字段填 0」是**两种语义**：
+    前者是没配（可继续往下继承），后者是明确禁止。
+    """
+
+    vm: GuestQuotaIn = Field(default_factory=GuestQuotaIn)
+    ct: GuestQuotaIn = Field(default_factory=GuestQuotaIn)
+    snapshot: SnapshotQuotaIn = Field(default_factory=SnapshotQuotaIn)
+
+
+class QuotaIn(BaseModel):
+    """设置用户级 / 角色默认额度。
+
+    ``quota`` 传 ``None``（或省略）= **清除**这份配置、回到继承上一层；
+    传一份（哪怕字段全是 null）= **显式覆盖**。两者的区别决定「继承」还能不能生效。
+    """
+
+    quota: Optional[QuotaLimitsIn] = None
+
+
 class MailTestIn(BaseModel):
     """发送测试邮件。``to`` 留空时发给管理员收件人。"""
 

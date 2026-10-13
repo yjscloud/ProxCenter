@@ -7,15 +7,17 @@
    因为用户是在这一页看清了这台机器的状态后才决定动手的。
 
    菜单只做「入口 + 各自的确认」：真正的动作全部走既有接口，权限按后端的要求
-   逐项判断（写操作看 vm.config 那套的 canWrite，归属仅管理员，导出看 vm.backup）。
+   逐项判断（克隆 vm.clone、转模板 template.manage、迁移 vm.migrate、删除
+   vm.delete、重装 vm.reinstall、归属仅管理员、导出 vm.backup）。
    ========================================================================== */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { guestsApi } from '../api/guests';
-import { nodesApi, storagesApi, vmsApi } from '../api/endpoints';
+import { nodesApi, vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { useAuth } from '../hooks/useAuth';
+import { useNodeStorages } from '../hooks/useNodeStorages';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useT } from '../i18n';
@@ -27,6 +29,7 @@ import { Notice } from './ui/EmptyState';
 import { UserSelect } from './ui/UserSelect';
 import { ResetGuestPasswordDialog } from './ResetGuestPasswordDialog';
 import { VmExportDialog } from './VmExportDialog';
+import { formatBytes } from '../utils/format';
 import { VmReinstallWizard } from './VmReinstallWizard';
 import {
   IconCopy,
@@ -62,7 +65,14 @@ type Dialog =
 export function VmMoreMenu({ vm, onDelete, onChanged }: VmMoreMenuProps) {
   const t = useT();
   const toast = useToast();
-  const { canWrite, isAdmin, hasPermission } = useAuth();
+  const { isAdmin, hasPermission } = useAuth();
+  /* 菜单里每一项要的后端权限都不同，逐项判（原先统一用 canWrite 这个角色粗判，
+     自定义角色即使勾了也点不动）：
+       克隆 → vm.clone；转模板 → template.manage；迁移 → vm.config；删除 → vm.delete */
+  const canClone = hasPermission('vm.clone');
+  const canConvert = hasPermission('template.manage');
+  const canMigrate = hasPermission('vm.migrate');
+  const canDelete = hasPermission('vm.delete');
 
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -153,11 +163,11 @@ export function VmMoreMenu({ vm, onDelete, onChanged }: VmMoreMenuProps) {
         </Button>
         {open ? (
           <div className="vm-more-menu" role="menu" ref={menuRef}>
-            {canWrite ? item(t('vmMore.clone'), <IconCopy size={15} />, () => setDialog('clone')) : null}
-            {canWrite && !isTemplate
+            {canClone ? item(t('vmMore.clone'), <IconCopy size={15} />, () => setDialog('clone')) : null}
+            {canConvert && !isTemplate
               ? item(t('vmMore.toTemplate'), <IconTemplate size={15} />, () => setTemplateOpen(true))
               : null}
-            {canWrite
+            {canMigrate
               ? item(t('vmMore.migrate'), <IconLayers size={15} />, () => setDialog('migrate'))
               : null}
             {/* 重装系统：用模板的系统盘把这块系统盘换掉（机器身份不变） */}
@@ -175,7 +185,7 @@ export function VmMoreMenu({ vm, onDelete, onChanged }: VmMoreMenuProps) {
             {showExport
               ? item(t('vmExport.menuItem'), <IconDownload size={15} />, () => setDialog('export'))
               : null}
-            {canWrite ? (
+            {canDelete ? (
               <>
                 <div className="user-dropdown-divider" />
                 {item(t('vmMore.deleteVm'), <IconTrash size={15} />, onDelete, true)}
@@ -263,17 +273,35 @@ function CloneMiniDialog({
   const [storage, setStorage] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const storagesQuery = useQuery({
-    queryKey: ['storages', 'list', vm?.node],
-    queryFn: () => storagesApi.list(vm?.node),
-    enabled: Boolean(vm),
-    staleTime: 60_000,
-    retry: false,
-  });
-  const targets = (storagesQuery.data ?? []).filter((item) =>
-    String(item.content ?? '')
-      .split(',')
-      .some((c) => c === 'images' || c === 'rootdir'),
+  /* 目标存储：只列**源机器所在节点**上、且能放虚拟机磁盘（images）的池子。
+     显式带上该节点的连接 —— 多主机下只按节点名查会被页面级连接带到别处
+     （见 useNodeStorages）。原先这里连内容类型都没细分，容器用的 rootdir 池
+     也会列出来，选了必被 PVE 拒。 */
+  const storagesQuery = useNodeStorages(
+    vm?.node ?? '',
+    vm?.connection_id,
+    Boolean(vm),
+  );
+  const storageOptions = useMemo(
+    () => [
+      { label: t('guestList.cloneTargetDefault'), value: '' },
+      ...(storagesQuery.data ?? [])
+        .filter(
+          (item) =>
+            item.active &&
+            String(item.content ?? '')
+              .split(/[,;]/)
+              .some((c) => c.trim() === 'images'),
+        )
+        .map((item) => ({
+          label: t('templates.storageAvail', {
+            storage: item.storage,
+            avail: formatBytes(item.avail),
+          }),
+          value: item.storage,
+        })),
+    ],
+    [storagesQuery.data, t],
   );
 
   useEffect(() => {
@@ -361,11 +389,7 @@ function CloneMiniDialog({
           <Select
             value={storage}
             onChange={(e) => setStorage(e.target.value)}
-            placeholder={t('guestList.cloneTargetPlaceholder')}
-            options={targets.map((item) => ({
-              label: `${item.storage}（${item.type}）`,
-              value: item.storage,
-            }))}
+            options={storageOptions}
           />
         </Field>
         <Switch

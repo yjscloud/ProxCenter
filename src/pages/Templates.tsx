@@ -10,7 +10,6 @@ import {
   configApi,
   lxcApi,
   nodesApi,
-  storagesApi,
   templatesApi,
   vmsApi,
 } from '../api/endpoints';
@@ -52,6 +51,7 @@ import { ostypeOptions, cpuTypeOptions } from '../utils/status';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useNodeStorages } from '../hooks/useNodeStorages';
 import type { TemplateItem, VmSummary } from '../api/types';
 
 /** 模板类型标签页：虚拟机模板与容器模板分开看，混在一屏里不好区分 */
@@ -65,7 +65,13 @@ export function Templates() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const runner = useTaskRunner();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 模板页有两种写操作，权限不同：
+       * 克隆（用模板建机器）→ `template.clone`
+       * 制作 / 导入 / 转换 / 删除模板 → `template.manage`
+     原先统一用 canWrite（按角色名粗判），自定义角色即使勾了也点不动。 */
+  const canClone = hasPermission('template.clone');
+  const canManage = hasPermission('template.manage');
 
   const [search, setSearch] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -251,7 +257,7 @@ export function Templates() {
               size="sm"
               variant="primary"
               onClick={() => setCloneTarget(tpl)}
-              disabled={!canWrite}
+              disabled={!canClone}
             >
               {t('templates.clone')}
             </Button>
@@ -271,7 +277,7 @@ export function Templates() {
               label={t('templates.deleteAria', { name: tpl.name })}
               variant="danger"
               onClick={() => setDeleteTarget(tpl)}
-              disabled={!canWrite}
+              disabled={!canManage}
             >
               <IconTrash size={15} />
             </IconButton>
@@ -279,7 +285,7 @@ export function Templates() {
         ),
       },
     ],
-    [canWrite, navigate, tab, t],
+    [canClone, canManage, navigate, tab, t],
   );
 
   return (
@@ -305,7 +311,7 @@ export function Templates() {
           >
             {t('templates.refresh')}
           </Button>
-          {canWrite ? (
+          {canManage ? (
             <>
               {/* 「从现有机器转换」必须常驻在页头。以前它只出现在列表为空的
                   空状态里，于是模板库一旦有东西，用户就再也找不到这个入口了。 */}
@@ -465,7 +471,7 @@ export function Templates() {
             }
             icon={<IconTemplate size={30} />}
             action={
-              canWrite && !search ? (
+              canManage && !search ? (
                 <div className="flex gap-8">
                   <Button
                     variant="primary"
@@ -492,7 +498,8 @@ export function Templates() {
             <TemplateCard
               key={`${t.connection_id}/${t.node}/${t.vmid}`}
               template={t}
-              canWrite={canWrite}
+              canClone={canClone}
+              canManage={canManage}
               onClone={() => setCloneTarget(t)}
               onDelete={() => setDeleteTarget(t)}
               onOpen={() =>
@@ -621,13 +628,15 @@ export function Templates() {
 
 function TemplateCard({
   template,
-  canWrite,
+  canClone,
+  canManage,
   onClone,
   onDelete,
   onOpen,
 }: {
   template: TemplateItem;
-  canWrite: boolean;
+  canClone: boolean;
+  canManage: boolean;
   onClone: () => void;
   onDelete: () => void;
   onOpen: () => void;
@@ -697,7 +706,7 @@ function TemplateCard({
             size="sm"
             icon={<IconCopy size={14} />}
             onClick={onClone}
-            disabled={!canWrite}
+            disabled={!canClone}
           >
             {t('templates.clone')}
           </Button>
@@ -709,7 +718,7 @@ function TemplateCard({
           label={t('templates.deleteAria', { name: template.name })}
           variant="danger"
           onClick={onDelete}
-          disabled={!canWrite}
+          disabled={!canManage}
         >
           <IconTrash size={15} />
         </IconButton>
@@ -800,7 +809,9 @@ function CloneTemplateDialog({
 }) {
   const t = useT();
   const runner = useTaskRunner();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 这个对话框做的是「把机器转成模板」—— 属于模板管理 */
+  const canManage = hasPermission('template.manage');
 
   const [newId, setNewId] = useState('');
   const [name, setName] = useState('');
@@ -831,17 +842,13 @@ function CloneTemplateDialog({
     staleTime: 60_000,
   });
 
-  /* 存储 / 节点都取自模板所在的那台 PVE，否则多主机场景下会列出别家的存储 */
-  const storagesQuery = useQuery({
-    queryKey: ['storages', template?.connection_id ?? '', targetNode || template?.node || 'all'],
-    queryFn: () =>
-      storagesApi.list(
-        targetNode || template?.node || undefined,
-        template?.connection_id,
-      ),
-    enabled: Boolean(template),
-    staleTime: 60_000,
-  });
+  /* 存储 / 节点都取自模板所在的那台 PVE，且只列**目标节点上**的存储池
+     （见 useNodeStorages：它会带上该节点的连接，避免被页面级连接带偏） */
+  const storagesQuery = useNodeStorages(
+    targetNode || template?.node || '',
+    template?.connection_id,
+    Boolean(template),
+  );
 
   /* 面板默认 DNS：本对话框不单独填 DNS，由后端套用默认值，这里只做告知 */
   const vmDefaultsQuery = useQuery({
@@ -896,7 +903,7 @@ function CloneTemplateDialog({
   ];
 
   const submit = async () => {
-    if (!template || !newId || idError || !canWrite) return;
+    if (!template || !newId || idError || !canManage) return;
     setBusy(true);
     try {
       if (isLxc) {
@@ -1116,7 +1123,9 @@ function TemplateCreateWizard({
 }) {
   const t = useT();
   const toast = useToast();
-  const { canWrite } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 新建 / 导入模板属于模板管理 */
+  const canManage = hasPermission('template.manage');
 
   const [mode, setMode] = useState<CreateMode>('image');
 
@@ -1161,12 +1170,9 @@ function TemplateCreateWizard({
     staleTime: 0,
   });
 
-  const storagesQuery = useQuery({
-    queryKey: ['storages', node || 'all'],
-    queryFn: () => storagesApi.list(node || undefined),
-    enabled: open,
-    staleTime: 60_000,
-  });
+  /* 磁盘存储池：只列**所选节点上**的池子，并带上该节点所属连接 —— 这台主机上
+     可能挂着别的 PVE 的节点，只按名字查会被页面级连接带到别处（见 useNodeStorages） */
+  const storagesQuery = useNodeStorages(node, undefined, open);
 
   /* 可作模板系统盘来源的镜像。
      这件事交给后端（/api/templates/images）：它要同时扫 import 与 iso 两种
@@ -1249,7 +1255,7 @@ function TemplateCreateWizard({
       : undefined;
 
   const canSubmit =
-    canWrite &&
+    canManage &&
     Boolean(node) &&
     Boolean(name.trim()) &&
     !idError &&

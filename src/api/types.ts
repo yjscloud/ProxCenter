@@ -1769,6 +1769,143 @@ export interface VmQuotaInfo {
 }
 
 /* ---------------------------------------------------------------------------
+   资源额度（按所有者分配的那一层）
+
+   与上面 VmQuotaInfo 的区别：那个是**全局**台数上限（整个集群、所有人共享）；
+   这里是**按人**配置的额度，维度是台数 / 核数 / 内存 / 磁盘 / 快照。
+
+   字段为 ``null`` = 这一项不限制；``0`` = 明确禁止（而「整份配置不存在」表示
+   这一层不生效、继续往下继承 —— 见后端 app/quota.py 的三层说明）。
+   --------------------------------------------------------------------------- */
+
+/** 一类客户机（虚拟机 / 容器）的额度 */
+export interface GuestQuotaLimits {
+  /** 名下台数 */
+  count: number | null;
+  /** 名下核数合计（总量） */
+  cores: number | null;
+  /** 名下内存合计，MB（总量） */
+  memory_mb: number | null;
+  /** 名下磁盘合计，GB（总量） */
+  disk_gb: number | null;
+  /** 单台核数封顶 */
+  max_cores: number | null;
+  /** 单台内存封顶，MB */
+  max_memory_mb: number | null;
+  /** 单台磁盘封顶，GB */
+  max_disk_gb: number | null;
+}
+
+/** 快照额度 */
+export interface SnapshotQuotaLimits {
+  /** 名下快照总数 */
+  count: number | null;
+  /** 单台机器的快照数 */
+  per_guest: number | null;
+}
+
+/** 一份完整额度（用户级与角色默认共用这一种形状） */
+export interface QuotaLimits {
+  vm: GuestQuotaLimits;
+  ct: GuestQuotaLimits;
+  snapshot: SnapshotQuotaLimits;
+}
+
+/** 某一组额度的用量（后端按字节累加，这里已换算成 MB / GB） */
+export interface QuotaUsage {
+  count: number;
+  cores: number;
+  memory_mb: number;
+  disk_gb: number;
+}
+
+/**
+ * 读数字典里的用量（``GET /api/quota/me``）。
+ *
+ * 比 :interface:`QuotaUsage` 松：快照那组只有 ``count`` —— 核数 / 内存 / 磁盘记的
+ * 是「预分配容量」，快照不改配置，与它们无关。
+ */
+export interface QuotaGroupUsage {
+  count: number;
+  cores?: number;
+  memory_mb?: number;
+  disk_gb?: number;
+}
+
+/** 额度是哪一层给的 */
+export type QuotaSource = 'user' | 'role' | 'none';
+
+/**
+ * 一组额度的读数（``GET /api/quota/me``）。
+ *
+ * ``limits`` 用扁平的 ``字段 → 数字 | null``：分组不同字段也不同（快照组只有
+ * ``count`` / ``per_guest``），用联合类型反而要在每个调用点收窄。
+ */
+export interface QuotaGroupReport {
+  limits: Record<string, number | null>;
+  /**
+   * 名下用量；``null`` = 这一组没配额度、也就没去统计（快照要逐台向 PVE 枚举，
+   * 没配就不查）。
+   */
+  usage: QuotaGroupUsage | null;
+  /** 还能用多少；``null`` = 不限制。**可以是负数**（下调额度后已建的机器会超出） */
+  remaining: Record<string, number | null> | null;
+  /** 统计不全时的原因；非空 = 这一次的用量不可信（后端会直接拒绝下发） */
+  error: string;
+}
+
+/** 我自己的额度与用量 */
+export interface MyQuotaReport {
+  username: string;
+  role: string;
+  source: QuotaSource;
+  /** 管理员（或带 ``*`` 的角色）不受额度约束 */
+  bypass: boolean;
+  groups: {
+    vm: QuotaGroupReport;
+    ct: QuotaGroupReport;
+    snapshot: QuotaGroupReport;
+  };
+}
+
+/** 某个用户的额度读数（管理端） */
+export interface UserQuotaReport {
+  username: string;
+  role: string;
+  /** 用户级额度；``null`` = 没配过（继承角色） */
+  quota: QuotaLimits | null;
+  configured: boolean;
+  updated: number | null;
+  updated_by: string;
+  /** 该用户所属角色的默认额度 */
+  role_quota: QuotaLimits | null;
+  role_configured: boolean;
+  /** 最终生效的那一份 */
+  effective: QuotaLimits;
+  source: QuotaSource;
+  bypass: boolean;
+  /** 他名下的实时用量（顺手带的，管理员据此才知道配多少合适） */
+  usage?: {
+    vm: QuotaUsage;
+    ct: QuotaUsage;
+    /** 快照：只有配了快照额度时才有值（后端才去逐台枚举） */
+    snapshot?: QuotaGroupUsage | null;
+    /** 统计不全时的原因；非空 = 这次的用量偏小 */
+    error: string;
+  } | null;
+}
+
+/** 某个角色的默认额度读数 */
+export interface RoleQuotaReport {
+  role: string;
+  quota: QuotaLimits | null;
+  configured: boolean;
+  /** 有多少人的额度会从这份默认里来（改之前先看看影响到谁） */
+  user_count: number;
+  bypass: boolean;
+}
+
+/* ---------------------------------------------------------------------------
    虚拟机 / 容器的手动补充信息（面板侧，见后端 routers/vm_meta.py）
    --------------------------------------------------------------------------- */
 
@@ -2705,7 +2842,15 @@ export interface FirewallOptions {
   radv?: boolean;
 }
 
-export type FirewallScope = 'cluster' | 'node' | 'vm';
+/**
+ * 防火墙作用域。
+ *
+ * ``vm`` 与 ``ct`` 都是「某台客户机」，但在面板里是**两个独立入口**（各看各的）：
+ * 前者是虚拟机，后者是容器。后端把 ``ct`` 当作 ``vm`` 的别名并钉死成 lxc 类型
+ * （见 backend/app/routers/firewall.py 的 _scope_base），因此权限也天然分开 ——
+ * ``firewall.*`` 管虚拟机与集群 / 节点，``ct.firewall.*`` 管容器。
+ */
+export type FirewallScope = 'cluster' | 'node' | 'vm' | 'ct';
 
 export interface FirewallRefs {
   macros: string[];

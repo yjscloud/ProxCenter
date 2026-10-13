@@ -28,7 +28,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .. import backupguard, guest_created, ownership, security, sshremote, store
+from .. import backupguard, guest_created, ownership, quota, security, sshremote, store
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 @router.get("/backups/stats")
 async def backup_stats(
     days: int = Query(default=7, ge=1, le=90),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     """最近 N 天的备份任务成败统计，跨所有已保存的 PVE。
 
@@ -213,7 +213,7 @@ async def assert_backup_access(
     if not owner:
         vmid = (item or {}).get("vmid") or _vmid_from_volid(volid)
         if vmid is not None:
-            vm_owners = await ownership.owners_map(ownership.KIND_VM)
+            vm_owners = await ownership.guest_owners_map()
             owner = ownership.vm_owner_from(vm_owners, node, vmid, _connection_scope())
 
     if not found:
@@ -265,7 +265,7 @@ async def _visible_protected(
     scope = security.visible_owner(user)
     if scope is None:
         return None, records
-    vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    vm_owners = await ownership.guest_owners_map()
     connection_id = _connection_scope()
     return scope, [
         r for r in records if _protected_record_owner(r, vm_owners, connection_id) == scope
@@ -277,7 +277,7 @@ async def assert_protected_access(user: Dict[str, Any], record: Dict[str, Any]) 
     scope = security.visible_owner(user)
     if scope is None:
         return
-    vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    vm_owners = await ownership.guest_owners_map()
     if _protected_record_owner(record, vm_owners, _connection_scope()) != scope:
         raise HTTPException(
             status_code=403,
@@ -305,13 +305,13 @@ async def list_backups(
     node: Optional[str] = None,
     storage: Optional[str] = None,
     vmid: Optional[int] = None,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> List[Dict[str, Any]]:
     """List backup archives across the cluster (or one node/storage/VM)."""
     client = get_client()
     scope = security.visible_owner(user)
     # 无创建者标记的存量备份按虚拟机归属回落，一次取全量归属表
-    vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    vm_owners = await ownership.guest_owners_map()
 
     if node and storage:
         targets = [(node, storage)]
@@ -407,7 +407,7 @@ def _backup_name(volid: str) -> str:
 async def create_backup(
     payload: BackupCreate,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     client = get_client()
 
@@ -448,10 +448,17 @@ async def create_backup(
 async def restore_backup(
     payload: BackupRestore,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     storage = payload.storage or payload.volid.split(":", 1)[0]
     await assert_backup_access(user, payload.node, storage, payload.volid)
+    # 恢复备份同样是「多出一台机器」。归档里的核数 / 内存 / 磁盘在开工前读不出来
+    # （PVE 的备份索引不给客户机配置），所以这一维只能把住**台数**；核数 / 内存 /
+    # 磁盘会在机器出现后的下一次统计里如实反映（读数会显示超额），但拦不住这一次。
+    # 归档名里的 vzdump-lxc 决定它算容器还是虚拟机额度。
+    await quota.enforce_create(
+        user, request, "ct" if "vzdump-lxc" in payload.volid else "vm"
+    )
     client = get_client()
     try:
         result = await client.backup_restore(
@@ -493,7 +500,7 @@ async def delete_backup(
     node: str = Query(...),
     storage: str = Query(...),
     volid: str = Query(...),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
     # 备份删掉就没了（不像虚拟机还有快照兜底）：要求二次确认身份
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
@@ -563,7 +570,7 @@ async def download_backup(
     connection: Optional[str] = Query(
         None, description="目标 PVE 连接 id（浏览器直接开链接，带不了请求头）"
     ),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> StreamingResponse:
     """把归档文件流给浏览器下载。
 
@@ -722,7 +729,7 @@ async def download_backup(
 async def list_protected_backups(
     request: Request,
     verify: bool = Query(False, description="是否顺带与 PVE 实际内容核对一次"),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     """受保护备份清单（可选现场核对，核对结果会刷新每条的状态）。
 
@@ -752,7 +759,7 @@ async def list_protected_backups(
 async def protect_backup(
     payload: BackupProtectIn,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
     """把备份登记为受保护，并尽力给 PVE 卷打上 protected 旗标。"""
@@ -778,7 +785,7 @@ async def protect_backup(
 async def unprotect_backup(
     request: Request,
     volid: str = Query(...),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
     # 解除保护意味着备份重新可删：同样要二次确认
     _step_up: Dict[str, Any] = Depends(security.require_step_up()),
 ) -> Dict[str, Any]:
@@ -800,7 +807,7 @@ async def unprotect_backup(
 async def verify_protected_backups(
     request: Request,
     push: bool = Query(True, description="发现异常时是否推送告警"),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     """立即核对一遍受保护备份（发现丢失 / 被改动会推告警）。
 
@@ -857,7 +864,7 @@ async def verify_protected_backups(
 # ------------------------------------------------------------- backup jobs
 @router.get("/backups/jobs")
 async def list_backup_jobs(
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:
@@ -867,7 +874,7 @@ async def list_backup_jobs(
 
     scope = security.visible_owner(user)
     # 创建者标记优先；无标记（旧版本创建的存量计划）按计划里 vmid 所属虚拟机回落
-    vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    vm_owners = await ownership.guest_owners_map()
     output: List[Dict[str, Any]] = []
     for job in jobs or []:
         comment = job.get("comment", "")
@@ -909,7 +916,7 @@ async def list_backup_jobs(
 async def create_backup_job(
     payload: BackupJobCreate,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     client = get_client()
 
@@ -982,7 +989,7 @@ async def _require_job_access(
         return
     owner = _owner_of(str((job or {}).get("comment") or ""))
     if not owner and job:
-        vm_owners = await ownership.owners_map(ownership.KIND_VM)
+        vm_owners = await ownership.guest_owners_map()
         owner = ownership.vm_owner_from(
             vm_owners,
             str(job.get("node") or ""),
@@ -1001,7 +1008,7 @@ async def update_backup_job(
     job_id: str,
     payload: BackupJobCreate,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     client = get_client()
     original_job = await _find_job(job_id)
@@ -1022,7 +1029,7 @@ async def update_backup_job(
         owner = _owner_of(original)
         if not owner:
             # 存量计划无创建者标记：靠虚拟机归属确认是本人的，顺手固化成标记
-            vm_owners = await ownership.owners_map(ownership.KIND_VM)
+            vm_owners = await ownership.guest_owners_map()
             owner = ownership.vm_owner_from(
                 vm_owners,
                 str(original_job.get("node") or ""),
@@ -1052,7 +1059,7 @@ async def update_backup_job(
 async def delete_backup_job(
     job_id: str,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.backup")),
+    user: Dict[str, Any] = Depends(security.require_any_permission("vm.backup", "ct.backup")),
 ) -> Dict[str, Any]:
     job = await _find_job(job_id)
     if job is not None:

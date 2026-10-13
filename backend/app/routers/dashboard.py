@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from .. import __version__, metrics, pvecache, security
+from .. import __version__, metrics, ownership, pvecache, security, store
 from ..formatters import normalize_storage, pve_flag
 from ..pve import ProxmoxError, all_connection_clients, get_client, requested_connection
 
@@ -38,9 +38,21 @@ def _connection_scope() -> str:
     return requested_connection() or "-"
 
 
+def _owner_connection() -> str:
+    """归属判定用的连接 id（与 ``routers/vms.py`` 的 ``_op_connection`` 同一口径）。
+
+    归属 ref 形如 ``<连接>:<节点>:<vmid>``，这里必须给出**真实**的连接 id ——
+    不能用 :func:`_connection_scope` 里的 ``"-"`` 占位，那个是缓存 key 用的。
+    """
+    return requested_connection() or str(store.get_active_connection_id() or "")
+
+
 @router.get("/dashboard/summary")
 async def dashboard_summary(
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    # 总览页同时统计虚拟机与容器，也是登录后的默认落地页：任一类查看权限即可
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
 ) -> Dict[str, Any]:
     """集群总览。节点数据直接取自 ``cluster/resources`` —— 它本来就带 node 行，
     不必再单独调一次 ``/nodes``（这正是这个接口「聚合」的意义）。
@@ -175,9 +187,17 @@ async def dashboard_summary(
 @router.get("/dashboard/top")
 async def dashboard_top(
     limit: int = 5,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    # 榜单同样是跨类型的（虚拟机 + 容器），任一类查看权限即可
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
 ) -> Dict[str, Any]:
     """The busiest VMs by CPU and memory, for the dashboard leaderboards."""
+
+    # 用户隔离：普通用户只看自己名下的机器（与 /vms 列表同一套归属口径）。
+    # 这个接口原先直接返回集群全量 —— 普通用户在仪表盘上就能读到别人机器的
+    # 名字与占用，顺着 node/vmid 还能摸到详情接口。管理员是超管视角（scope 为 None）。
+    scope = security.visible_owner(user)
 
     async def _build() -> Dict[str, Any]:
         client = get_client()
@@ -193,6 +213,16 @@ async def dashboard_top(
             r for r in (resources or [])
             if r.get("type") == "qemu" and r.get("status") == "running"
         ]
+
+        if scope is not None:
+            owners = await ownership.owners_map_for(ownership.KIND_VM)
+            conn = _owner_connection()
+            running = [
+                r
+                for r in running
+                if ownership.vm_owner_from(owners, r.get("node"), r.get("vmid"), conn)
+                == scope
+            ]
 
         def entry(vm: Dict[str, Any]) -> Dict[str, Any]:
             return {
@@ -219,7 +249,10 @@ async def dashboard_top(
             "total_running": len(running),
         }
 
-    key = f"dashboard:top:{limit}:{_connection_scope()}"
+    # 缓存必须按**用户**分档：这个进程内缓存原先只按连接分 key，管理员那份
+    # （不过滤）与普通用户那份（过滤后）会互相命中 —— 谁先请求，下一个人就读到
+    # 对方的数据，隔离等于白做。
+    key = f"dashboard:top:{limit}:{_connection_scope()}:{scope or '-'}"
     return await pvecache.cached(key, DASHBOARD_TTL, _build)
 
 

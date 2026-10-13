@@ -50,7 +50,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 VIEW = security.require_permission("baseline.view")
-ADMIN = security.require_admin()
+# AI 的模型 / Key 是面板自身的配置，归「系统设置」那一档（原先是 require_admin()，
+# 也就等于 users.manage —— 勾了用户管理的人顺带拿到了 AI 配置权）
+ADMIN = security.require_permission("settings.manage")
 
 # 同时进行的排查上限。一次 L2 排查要 SSH 到目标主机跑多轮命令、再调七八次模型；
 # 多用户并发时既可能压垮被排查的机器，也可能瞬间打爆模型额度（花的是配 key 那位的钱）。

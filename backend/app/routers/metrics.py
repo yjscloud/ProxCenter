@@ -41,17 +41,22 @@ async def read_metrics_history(
 ) -> Dict[str, Any]:
     """按区间查历史指标。
 
-    作用域与权限一一对应：``node`` 要 ``node.view``，``guest`` 要 ``vm.view``。
-    非管理员在 ``guest`` 作用域下只会拿到自己名下的机器 —— 历史数据和实时列表
-    走同一套归属隔离，否则「列表里看不见、历史里查得到」就成了绕过隔离的后门。
+    作用域与权限一一对应：``node`` 要 ``node.view``，``guest`` 要 ``vm.view``
+    **或** ``ct.view``（该作用域同时覆盖虚拟机与容器）。非管理员在 ``guest``
+    作用域下只会拿到自己名下的机器 —— 历史数据和实时列表走同一套归属隔离，
+    否则「列表里看不见、历史里查得到」就成了绕过隔离的后门。
     """
-    required = "node.view" if scope == metrics.SCOPE_NODE else "vm.view"
-    if not security.has_user_permission(user, required):
+    required = (
+        ("node.view",)
+        if scope == metrics.SCOPE_NODE
+        else ("vm.view", "ct.view")
+    )
+    if not any(security.has_user_permission(user, perm) for perm in required):
         raise HTTPException(
             status_code=403,
             detail=i18n.t(
                 "error.permission_denied_role",
-                permission=required,
+                permission=required[-1],
                 role=user.get("role"),
             ),
         )
@@ -68,7 +73,9 @@ async def read_metrics_history(
     if scope == metrics.SCOPE_GUEST:
         owner = security.visible_owner(user)
         if owner is not None:
-            owned_refs = await ownership.list_owned(ownership.KIND_VM, owner)
+            # 虚拟机 + 容器一起纳入（两类权限各自独立，但历史读数按 ref 过滤，
+            # ref 里带 VMID、跨类型不冲突）
+            owned_refs = await ownership.list_owned_guests(owner)
 
     result = await metrics.query(
         scope=scope,

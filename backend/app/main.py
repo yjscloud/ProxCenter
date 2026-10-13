@@ -106,6 +106,8 @@ from .routers import frp as frp_router
 from . import backupguard
 from . import buildinfo
 from . import portguard
+# 资源额度：按所有者分配的核数 / 内存 / 磁盘 / 快照额度（见 app/quota.py 下半部分）
+from . import quota
 from . import database
 from . import guest_created
 # 巡检快照：把「端口与进程」「安全基线」的结果落库，读接口只读快照
@@ -132,6 +134,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await alerting.init_table()
     await cert_manager.init_table()
     await ownership.init_table()
+    # 用户级资源额度表（roles.quota 列由上面的 init_db 负责补）
+    await quota.init_table()
     # 受管主机表：本次升级给它加了「来源虚拟机」三列（node / vmid / conn_id）。
     # 迁移必须在这里跑完，不能等第一次打开「SSH 安全」页才做 —— 删除虚拟机的
     # 清理逻辑（sshremote.purge_vm_hosts）可能先于那次访问被触发，届时找不到列。
@@ -140,6 +144,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await backupguard.init_table()
     # 面板发起的建机 / 克隆 / 恢复记录（创建时间字段的准确来源，见 app.guest_created）
     await guest_created.init_table()
+    # 归属表的一次性迁移：把升级前记在 KIND_VM 下的容器归属改到 KIND_CT
+    # （虚拟机 / 容器权限与归属拆分）。要用到上面的 guest_created_record 判断
+    # 哪些机器是容器，所以必须排在建表之后；纯读面板库，PVE 连不上也能跑。
+    await ownership.migrate_guest_kinds()
     await password_reset.init_table()
     # 监控历史表：「监控历史采样」作业到点后开始往里写点
     await metrics_history.init_table()
@@ -785,6 +793,11 @@ INSPECTION_WARM_FIRST_DELAY = 30
 # 客户机 IP 预热：与 guestip 的进程内缓存时长对齐，让列表的 IP 列基本总能命中
 GUEST_IP_WARM_INTERVAL = max(int(settings.guest_ip_warm_interval), 60)
 GUEST_IP_WARM_FIRST_DELAY = 45
+# 资源额度对账：快照读数是「逐台枚举 + 60 秒缓存」，本作业负责把缓存保鲜，并在
+# 有人被调低额度后已经超出时落一条日志。间隔决定「读数最多旧多久」，15 分钟够用
+# （创建快照时会主动作废缓存，不等它）。
+QUOTA_RECONCILE_INTERVAL = 900
+QUOTA_RECONCILE_FIRST_DELAY = 120
 
 
 def _job(
@@ -841,6 +854,17 @@ def _warm_summary(result: Any) -> str:
         return ""
     count = int(result.get("stored") or 0) or int(result.get("resolved") or 0)
     return f"落库 {count} 项" if count else "无变化"
+
+
+def _quota_summary(result: Any) -> str:
+    """资源额度对账的摘要：刷了多少台、几个人已经超出额度。"""
+    if not isinstance(result, dict):
+        return ""
+    refreshed = int(result.get("refreshed") or 0)
+    over = len(result.get("over") or [])
+    if not refreshed and not over:
+        return "无变化"
+    return f"刷新 {refreshed} 台" + (f"，{over} 人超额" if over else "")
 
 
 def _import_summary(result: Any) -> str:
@@ -983,6 +1007,20 @@ scheduler.register(
         backupguard.evaluate,
         BACKUP_CHECK_INTERVAL,
         summarize=_count("命中"),
+    )
+)
+# 资源额度对账：读数是逐台向 PVE 枚举出来的（没有第二份账），这里定时保鲜，
+# 免得 PVE 侧手工增删过快照之后面板还按旧数字判额度
+scheduler.register(
+    _job(
+        "quota_reconcile",
+        "资源额度对账",
+        "安全巡检",
+        "重新枚举配了额度的用户的快照数，让读数跟上 PVE 侧的手工改动",
+        quota.reconcile_snapshots,
+        QUOTA_RECONCILE_INTERVAL,
+        summarize=_quota_summary,
+        first_delay=QUOTA_RECONCILE_FIRST_DELAY,
     )
 )
 scheduler.register(

@@ -5,8 +5,8 @@
 1. **配置拼装** —— 容器的 ``rootfs`` / ``netN`` / ``mpN`` 与虚拟机的
    ``scsiN`` / ``netN`` 语义完全不同，写错一个键 PVE 会直接拒绝创建，
    而且这类错误只在真机上才暴露得出来，所以必须有回归用例。
-2. **归属与类型分派** —— 容器与虚拟机共用 ``ownership.KIND_VM``，
-   列表接口要能把 ``type`` 带出去，前端才知道该调哪套端点。
+2. **归属与类型分派** —— 容器用 ``ownership.KIND_CT``（与虚拟机的 ``KIND_VM``
+   分开），列表接口要能把 ``type`` 带出去，前端才知道该调哪套端点。
 
 这些用例不需要连 PVE，只测纯函数。
 
@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
-from app import vmconfig  # noqa: E402
+from app import ownership, vmconfig  # noqa: E402
 from app.schemas import (  # noqa: E402
     LxcCreateRequest,
     LxcMountSpec,
@@ -216,3 +216,20 @@ class TestLxcCreateRequest:
                 ostemplate="local:vztmpl/x.tar.zst",
                 storage="local-lvm",
             )
+
+
+# ------------------------------------------------------- 归属类别（拆分后）
+class TestOwnershipKind:
+    """容器归属记在 KIND_CT、虚拟机记在 KIND_VM（拆分前两者共用 KIND_VM）。"""
+
+    def test_kind_for_type(self) -> None:
+        assert ownership.kind_for_type("lxc") == ownership.KIND_CT
+        assert ownership.kind_for_type("LXC") == ownership.KIND_CT
+        assert ownership.kind_for_type("qemu") == ownership.KIND_VM
+        # 认不出来的一律当虚拟机（与 quota.normalise_kind 同一取舍）
+        assert ownership.kind_for_type("") == ownership.KIND_VM
+        assert ownership.kind_for_type(None) == ownership.KIND_VM
+
+    def test_kinds_are_distinct(self) -> None:
+        assert ownership.KIND_VM != ownership.KIND_CT
+        assert set(ownership.GUEST_KINDS) == {ownership.KIND_VM, ownership.KIND_CT}

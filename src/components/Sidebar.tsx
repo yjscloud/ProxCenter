@@ -38,6 +38,8 @@ import {
 import { useSiteInfo } from '../hooks/useSiteInfo';
 import { useUiPrefs } from '../hooks/useUiPrefs';
 import { usePveStatus } from '../hooks/usePveStatus';
+import { userHasPermission } from '../hooks/useAuth';
+import type { PermissionKey } from '../api/permissions';
 import { BrandLogo } from './BrandLogo';
 import { useT, type MessageKey } from '../i18n';
 
@@ -46,9 +48,22 @@ export interface NavItem {
   /** 词条键：渲染时用 t() 取文案（词条表见 i18n/locales/zh-CN.ts） */
   labelKey: MessageKey;
   icon: React.ReactNode;
-  /** 需要的权限（admin 自动通过）*/
-  permission?: string;
-  /** 仅管理员可见：用于全局单例的配置页（如飞书机器人，普通用户看不到）*/
+  /** 需要的权限（admin 自动通过）。键取 ``api/permissions.ts`` */
+  permission?: PermissionKey;
+  /**
+   * 需要的权限之一（**任一命中即可**）。用于跨类型的汇总页：快照 / 备份这类页面
+   * 同时覆盖虚拟机与容器，只认 vm.* 会把「只有容器权限」的用户挡在门外。
+   * 写了 ``permissions`` 就忽略 ``permission``。
+   */
+  permissions?: PermissionKey[];
+  /**
+   * 仅**超级管理员**可见（``role == admin``）。
+   *
+   * 目前没有菜单项用它 —— 面板自身的页面一律走 ``permission``（users.view /
+   * audit.view / settings.manage），这样自定义角色也能按需接管那部分工作。
+   * 留着它是因为「只有超管能碰」与「有这个权限就能碰」是两回事：将来出现真正
+   * 不可委派的面板入口（例如面板密钥轮换）时才用得上。
+   */
   adminOnly?: boolean;
 }
 
@@ -136,13 +151,30 @@ function readCollapsedSections(): string[] {
  *     且已折叠）。
  *
  * 每项使用互不重复的图标（改动时请保持唯一性）。
- */
+ *
+ * **每一项都必须写 ``permission``**（或 ``permissions``），权限键取对应页面主要
+ * 数据接口用的那一个（后端 ``routers/*.py`` 里的 ``require_permission``）。漏写
+ * 的项对**所有**登录用户可见 —— 自定义角色只勾了虚拟机权限，侧边栏却把存储、
+ * 网络、告警、穿透全都列出来，点进去只会吃 403。
+ *
+ * 面板自身的页面（用户 / 审计 / 设置 / 后台作业 / 飞书）也一样走 permission：
+ * users.view、audit.view、settings.manage…… 与后端接口一一对应。它们原先写的是
+ * ``adminOnly``（只认 role == admin），而后端按权限放行 —— 同一件事判两次、判据
+ * 还不一样，结果就是「勾了权限也进不去」。
+*/
 export const NAV_SECTIONS: NavSection[] = [
   {
     id: 'overview',
     titleKey: 'nav.section.overview',
     items: [
-      { to: '/dashboard', labelKey: 'nav.dashboard', icon: <IconDashboard size={18} /> },
+      /* 仪表盘读的是节点与虚拟机 / 容器两组数据（见 dashboard.py 的两个接口），
+         取最基础的资源查看权限，虚拟机或容器任一即可 */
+      {
+        to: '/dashboard',
+        labelKey: 'nav.dashboard',
+        icon: <IconDashboard size={18} />,
+        permissions: ['vm.view', 'ct.view'],
+      },
     ],
   },
   {
@@ -152,20 +184,57 @@ export const NAV_SECTIONS: NavSection[] = [
       /* 没有单独的「快速部署」页：快速 / 自定义是创建弹窗里的一个开关，
          入口只有列表页的「创建虚拟机」与「创建容器」。 */
       /* 容器与虚拟机是两套独立页面（PVE 上也是两套端点），各自带创建入口。
-         虚拟机排在容器前面：绝大多数运维场景以虚拟机为主，容器是次要的那一类。 */
-      { to: '/vms', labelKey: 'nav.vms', icon: <IconVm size={18} /> },
-      { to: '/lxc', labelKey: 'nav.lxc', icon: <IconBox size={18} /> },
-      { to: '/templates', labelKey: 'nav.templates', icon: <IconTemplate size={18} /> },
-      { to: '/nodes', labelKey: 'nav.nodes', icon: <IconServer size={18} /> },
+         虚拟机排在容器前面：绝大多数运维场景以虚拟机为主，容器是次要的那一类。
+         权限也是**两套**：虚拟机 vm.*、容器 ct.*（后端 routers/vms.py 与 lxc.py
+         分别校验），只被授予容器权限的用户看不到虚拟机入口，反之亦然。 */
+      {
+        to: '/vms',
+        labelKey: 'nav.vms',
+        icon: <IconVm size={18} />,
+        permission: 'vm.view',
+      },
+      {
+        to: '/lxc',
+        labelKey: 'nav.lxc',
+        icon: <IconBox size={18} />,
+        permission: 'ct.view',
+      },
+      {
+        to: '/templates',
+        labelKey: 'nav.templates',
+        icon: <IconTemplate size={18} />,
+        permission: 'template.view',
+      },
+      {
+        to: '/nodes',
+        labelKey: 'nav.nodes',
+        icon: <IconServer size={18} />,
+        permission: 'node.view',
+      },
     ],
   },
   {
     id: 'storage-network',
     titleKey: 'nav.section.storageNetwork',
     items: [
-      { to: '/storages', labelKey: 'nav.storages', icon: <IconStorage size={18} /> },
-      { to: '/networks', labelKey: 'nav.networks', icon: <IconNetwork size={18} /> },
-      { to: '/frp', labelKey: 'nav.frp', icon: <IconPlug size={18} /> },
+      {
+        to: '/storages',
+        labelKey: 'nav.storages',
+        icon: <IconStorage size={18} />,
+        permission: 'storage.view',
+      },
+      {
+        to: '/networks',
+        labelKey: 'nav.networks',
+        icon: <IconNetwork size={18} />,
+        permission: 'network.view',
+      },
+      {
+        to: '/frp',
+        labelKey: 'nav.frp',
+        icon: <IconPlug size={18} />,
+        permission: 'frp.view',
+      },
     ],
   },
   {
@@ -176,8 +245,20 @@ export const NAV_SECTIONS: NavSection[] = [
     id: 'data-protection',
     titleKey: 'nav.section.dataProtection',
     items: [
-      { to: '/snapshots', labelKey: 'nav.snapshots', icon: <IconSnapshot size={18} /> },
-      { to: '/backups', labelKey: 'nav.backups', icon: <IconBackup size={18} /> },
+      /* 快照页只是把各机器的快照汇总出来看（虚拟机 + 容器），任一类查看权限即可；
+         页面里的回滚 / 删除再按目标类型判 vm.snapshot / ct.snapshot */
+      {
+        to: '/snapshots',
+        labelKey: 'nav.snapshots',
+        icon: <IconSnapshot size={18} />,
+        permissions: ['vm.view', 'ct.view'],
+      },
+      {
+        to: '/backups',
+        labelKey: 'nav.backups',
+        icon: <IconBackup size={18} />,
+        permissions: ['vm.backup', 'ct.backup'],
+      },
       {
         to: '/incident',
         labelKey: 'nav.incident',
@@ -199,10 +280,12 @@ export const NAV_SECTIONS: NavSection[] = [
     titleKey: 'nav.section.security',
     items: [
       {
+        /* 页面里虚拟机与容器是两个独立作用域、两套权限：哪一侧都能进
+           （只授予容器权限的自定义角色照样要能配容器防火墙） */
         to: '/firewall',
         labelKey: 'nav.firewall',
         icon: <IconLock size={18} />,
-        permission: 'firewall.view',
+        permissions: ['firewall.view', 'ct.firewall.view'],
       },
       {
         /* 默认落在「主机与告警配置」而不是监测数据：SSH 凭据与告警策略是这台
@@ -247,35 +330,79 @@ export const NAV_SECTIONS: NavSection[] = [
     id: 'observability',
     titleKey: 'nav.section.observability',
     items: [
-      { to: '/alerts', labelKey: 'nav.alerts', icon: <IconBell size={18} /> },
+      {
+        to: '/alerts',
+        labelKey: 'nav.alerts',
+        icon: <IconBell size={18} />,
+        permission: 'alert.view',
+      },
       {
         to: '/certificates',
         labelKey: 'nav.certificates',
         icon: <IconShield size={18} />,
         permission: 'cert.view',
       },
+      /* 飞书机器人是**面板自身**的配置（后端 feishu.py 用 settings.manage），
+         和设置同一档；放在这一组是因为它跟告警一样属于「系统替你盯着外面的事」 */
       {
         to: '/bot',
         labelKey: 'nav.feishuBot',
         icon: <IconChat size={18} />,
-        adminOnly: true,
+        permission: 'settings.manage',
       },
     ],
   },
   {
-    // 整个分组仅管理员可见：普通用户（operator / viewer）侧边栏不会出现该分组。
+    /* 这一组读的是**面板自己**的数据（任务队列、用户、审计日志、设置），不来自
+       PVE，所以不套业务权限，而是各按**后端接口真正用的那个权限键**来：有就显示，
+       没有的项由 canAccessNav 过滤掉，整组都不可见时连分组标题一起消失。
+
+       这几项原先一律写 adminOnly（= 只有 role==admin 能看到），但后端早就是按
+       users.view / audit.view / settings.manage 放行的 —— 于是「勾了权限却进不去」
+       和「手输 URL 却能打开、里面每个按钮 403」同时存在。 */
     // 折叠起来是因为它全是低频入口，平铺会把下面所有内容顶出首屏。
     id: 'system',
     titleKey: 'nav.section.system',
     collapsible: true,
     items: [
-      { to: '/tasks', labelKey: 'nav.tasks', icon: <IconTasks size={18} />, adminOnly: true },
-      { to: '/users', labelKey: 'nav.users', icon: <IconUsers size={18} />, adminOnly: true },
-      { to: '/audit', labelKey: 'nav.audit', icon: <IconAudit size={18} />, adminOnly: true },
-      { to: '/settings', labelKey: 'nav.settings', icon: <IconSettings size={18} />, adminOnly: true },
+      /* 任务队列：有 task.view 的用户（例如授予了它的运维）也该看到自己发起的
+         任务跑成什么样 —— 后端 tasks.py 用的正是这个权限 */
+      {
+        to: '/tasks',
+        labelKey: 'nav.tasks',
+        icon: <IconTasks size={18} />,
+        permission: 'task.view',
+      },
+      /* 用户与角色：给它的人进得来（后端 /users、/roles 读接口只要 users.view），
+         但增删改还要 users.manage，页面内再判一次 */
+      {
+        to: '/users',
+        labelKey: 'nav.users',
+        icon: <IconUsers size={18} />,
+        permission: 'users.view',
+      },
+      /* 审计日志：后端 audit.py 用 audit.view */
+      {
+        to: '/audit',
+        labelKey: 'nav.audit',
+        icon: <IconAudit size={18} />,
+        permission: 'audit.view',
+      },
+      /* 设置与后台作业：面板自身的配置，与飞书机器人同一档（settings.manage） */
+      {
+        to: '/settings',
+        labelKey: 'nav.settings',
+        icon: <IconSettings size={18} />,
+        permission: 'settings.manage',
+      },
       /* 后台作业：巡检什么时候跑、跑成什么样、间隔能不能调。
          用循环箭头而不是时钟 —— 时钟已给「登录审计」，这里要保持图标唯一。 */
-      { to: '/scheduler', labelKey: 'nav.scheduler', icon: <IconRestart size={18} />, adminOnly: true },
+      {
+        to: '/scheduler',
+        labelKey: 'nav.scheduler',
+        icon: <IconRestart size={18} />,
+        permission: 'settings.manage',
+      },
     ],
   },
 ];
@@ -287,14 +414,23 @@ export const NAV_SECTIONS: NavSection[] = [
  * 普通用户迟早能从 Ctrl+K 里跳进侧边栏看不见的页面（例如 /users）。
  */
 export function canAccessNav(
-  // 只用到这两个字段：写成结构类型，调用方不必为了传参把自己伪装成 NavItem
-  item: { permission?: string; adminOnly?: boolean },
+  // 只用到这几个字段：写成结构类型，调用方不必为了传参把自己伪装成 NavItem
+  item: {
+    permission?: PermissionKey;
+    permissions?: PermissionKey[];
+    adminOnly?: boolean;
+  },
   user: { role?: string; permissions?: string[] } | null | undefined,
 ): boolean {
   if (user?.role === 'admin') return true;
   if (item.adminOnly) return false;
+  // 逐项判定统一走 useAuth 的那一份（含 `*` 通配），不在两处各写一遍
+  // any-of：跨类型汇总页（快照 / 备份）任一类权限即可
+  if (item.permissions?.length) {
+    return item.permissions.some((perm) => userHasPermission(user, perm));
+  }
   if (!item.permission) return true;
-  return user?.permissions?.includes(item.permission) ?? false;
+  return userHasPermission(user, item.permission);
 }
 
 /** 当前路由是否落在某一组里（用于自动展开被折叠的分组） */
@@ -354,6 +490,20 @@ export const FOOTER_NAV_ITEMS: NavItem[] = [
 /** 侧边栏里所有入口（按显示顺序），供「逐项开关」与兜底跳转共用。 */
 export function allNavItems(): NavItem[] {
   return [...NAV_SECTIONS.flatMap((section) => section.items), ...FOOTER_NAV_ITEMS];
+}
+
+/**
+ * 按路径找到它对应的导航入口（子页面按前缀算作父入口）。
+ *
+ * 路由拦截用它回答「当前这个页面该不该让这个人看」—— 与侧边栏的可见性是同一
+ * 份判据，避免出现「侧边栏里没有、手输 URL 却进得去」的两套规则。
+ * 找不到对应入口的路径（详情页等）返回 undefined，调用方按「不拦」处理：那些
+ * 页面各自有权限守卫，且它们的入口本来就藏在列表页里。
+ */
+export function navItemForPath(pathname: string): NavItem | undefined {
+  return allNavItems().find(
+    (item) => pathname === item.to || pathname.startsWith(`${item.to}/`),
+  );
 }
 
 /**

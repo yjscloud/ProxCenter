@@ -217,7 +217,9 @@ async def export_vms(
     node: Optional[str] = None,
     guest_type: str = Query(default="all", alias="type", pattern="^(qemu|lxc|all)$"),
     with_ip: bool = Query(default=False),
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
 ):
     """导出虚拟机 / 容器清单。
 
@@ -239,8 +241,10 @@ async def export_vms(
     guests = await vms_router.collect_vms(
         user=user, node=node, with_ip=with_ip, guest_type=guest_type
     )
-    # 归属是面板侧数据，PVE 里拿不到；一次取全表再按 ref 反查，避免逐台查库
-    owners = await ownership.owners_map(ownership.KIND_VM)
+    # 归属是面板侧数据，PVE 里拿不到；一次取全表再按 ref 反查，避免逐台查库。
+    # 虚拟机与容器是两套归属，按每台 type 取对应那张表。
+    vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    ct_owners = await ownership.owners_map_for(ownership.KIND_CT)
 
     async def rows() -> AsyncIterator[Sequence[Any]]:
         for vm in guests:
@@ -249,6 +253,7 @@ async def export_vms(
                 str(vm.get("node") or ""),
                 vm.get("vmid"),
             )
+            owners = ct_owners if str(vm.get("type") or "qemu") == "lxc" else vm_owners
             yield [
                 vm.get("connection_name") or "",
                 vm.get("node") or "",

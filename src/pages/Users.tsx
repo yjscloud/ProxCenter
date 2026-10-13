@@ -3,10 +3,11 @@
    用户 CRUD + 角色权限说明矩阵
    ========================================================================== */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { rolesApi, usersApi } from '../api/endpoints';
 import { PermissionPicker } from '../components/PermissionPicker';
+import { QuotaEditor } from '../components/QuotaEditor';
 import { errorMessage, isNotImplemented } from '../api/client';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
@@ -15,6 +16,7 @@ import { Button, IconButton } from '../components/ui/Button';
 import { Input, Select, Switch, Textarea, Field } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
 import { Modal } from '../components/ui/Modal';
+import { ProgressBar } from '../components/ui/ProgressBar';
 import { ErrorState, Notice, CollapsibleCard } from '../components/ui/EmptyState';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import {
@@ -26,11 +28,10 @@ import {
   IconEdit,
   IconKey,
   IconShield,
+  IconInfo,
   IconEye,
   IconEyeOff,
   IconUser,
-  IconCheck,
-  IconClose,
   IconClock,
 } from '../components/Icons';
 import { formatDateTime } from '../utils/format';
@@ -40,153 +41,17 @@ import {
   userEnabledMeta,
   userStatusMeta,
 } from '../utils/status'
-import { tStatic, useT, type TFunc } from '../i18n';
+import { tStatic, useT } from '../i18n';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import type {
   PanelRole,
+  PermissionGroup,
+  QuotaLimits,
   RoleOut,
   UserAccountStatus,
   UserOut,
 } from '../api/types';
-
-/* ---------------------------------------------------------------------------
-   权限矩阵：面板权限点 → 各角色是否具备
-   --------------------------------------------------------------------------- */
-
-interface PermissionRow {
-  /** 权限点标识（与后端 permissions 数组一致）*/
-  key: string;
-  /** 展示名 */
-  label: string;
-  /** 说明 */
-  description: string;
-  /** 具备该权限的角色 */
-  roles: PanelRole[];
-}
-
-/**
- * 权限矩阵：文案随语言走，因此做成接收 t 的工厂函数（模块级常量会让文案
- * 停在首次加载时的语言上）。
- */
-function permissionMatrix(t: TFunc): PermissionRow[] {
-  return [
-    {
-      key: 'vm.view',
-      label: t('users.perm.vmView.label'),
-      description: t('users.perm.vmView.desc'),
-      roles: ['admin', 'operator', 'viewer'],
-    },
-    {
-      key: 'vm.console',
-      label: t('users.perm.vmConsole.label'),
-      description: t('users.perm.vmConsole.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'vm.power',
-      label: t('users.perm.vmPower.label'),
-      description: t('users.perm.vmPower.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'vm.create',
-      label: t('users.perm.vmCreate.label'),
-      description: t('users.perm.vmCreate.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'vm.delete',
-      label: t('users.perm.vmDelete.label'),
-      description: t('users.perm.vmDelete.desc'),
-      roles: ['admin'],
-    },
-    {
-      key: 'vm.config',
-      label: t('users.perm.vmConfig.label'),
-      description: t('users.perm.vmConfig.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'vm.snapshot',
-      label: t('users.perm.vmSnapshot.label'),
-      description: t('users.perm.vmSnapshot.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'vm.migrate',
-      label: t('users.perm.vmMigrate.label'),
-      description: t('users.perm.vmMigrate.desc'),
-      roles: ['admin'],
-    },
-    {
-      key: 'backup.view',
-      label: t('users.perm.backupView.label'),
-      description: t('users.perm.backupView.desc'),
-      roles: ['admin', 'operator', 'viewer'],
-    },
-    {
-      key: 'backup.create',
-      label: t('users.perm.backupCreate.label'),
-      description: t('users.perm.backupCreate.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'backup.delete',
-      label: t('users.perm.backupDelete.label'),
-      description: t('users.perm.backupDelete.desc'),
-      roles: ['admin'],
-    },
-    {
-      key: 'node.view',
-      label: t('users.perm.nodeView.label'),
-      description: t('users.perm.nodeView.desc'),
-      roles: ['admin', 'operator', 'viewer'],
-    },
-    {
-      key: 'network.manage',
-      label: t('users.perm.networkManage.label'),
-      description: t('users.perm.networkManage.desc'),
-      roles: ['admin'],
-    },
-    {
-      key: 'storage.upload',
-      label: t('users.perm.storageUpload.label'),
-      description: t('users.perm.storageUpload.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'task.view',
-      label: t('users.perm.taskView.label'),
-      description: t('users.perm.taskView.desc'),
-      roles: ['admin', 'operator', 'viewer'],
-    },
-    {
-      key: 'task.control',
-      label: t('users.perm.taskControl.label'),
-      description: t('users.perm.taskControl.desc'),
-      roles: ['admin', 'operator'],
-    },
-    {
-      key: 'user.manage',
-      label: t('users.perm.userManage.label'),
-      description: t('users.perm.userManage.desc'),
-      roles: ['admin'],
-    },
-    {
-      key: 'audit.view',
-      label: t('users.perm.auditView.label'),
-      description: t('users.perm.auditView.desc'),
-      roles: ['admin'],
-    },
-    {
-      key: 'config.manage',
-      label: t('users.perm.configManage.label'),
-      description: t('users.perm.configManage.desc'),
-      roles: ['admin'],
-    },
-  ];
-}
 
 const ROLE_ORDER: PanelRole[] = ['admin', 'operator', 'viewer'];
 
@@ -198,10 +63,11 @@ export function Users() {
   const t = useT();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const { isAdmin, user: currentUser } = useAuth();
-
-  const permissionMatrixData = useMemo(() => permissionMatrix(t), [t]);
-  const permissionColumnsData = useMemo(() => permissionColumns(t), [t]);
+  const { hasPermission, user: currentUser } = useAuth();
+  /* 「看」与「管」是两个权限：users.view 就能进这一页（后端读接口只要它），
+     增删改用户 / 角色要 users.manage。所有写操作按钮一律按 canManage 禁用，
+     与后端 require_permission("users.manage") 对齐。 */
+  const canManage = hasPermission('users.manage');
 
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
@@ -213,6 +79,9 @@ export function Users() {
   const [approveTarget, setApproveTarget] = useState<UserOut | null>(null);
   const [rejectTarget, setRejectTarget] = useState<UserOut | null>(null);
   const [busy, setBusy] = useState(false);
+  /* 「总计」卡片点开的那层按角色明细（内容见 roleBreakdown） */
+  const [totalOpen, setTotalOpen] = useState(false);
+  const totalRef = useRef<HTMLDivElement>(null);
 
   /* ---- 用户列表 ---- */
   const usersQuery = useQuery({
@@ -221,11 +90,14 @@ export function Users() {
     staleTime: 20_000,
   });
 
-  /* ---- 角色列表 ---- */
+  /* ---- 角色列表 ----
+     与「用户编辑器 / 审批弹窗 / 角色管理」共用 `/api/roles` 这一份：它带
+     user_count（角色卡片要显示「N 个用户在用」），而 `/users/roles` 那份只有
+     id/name/permissions。同一个 queryKey 也让四处共享缓存，改完角色失效一次即可。 */
   const rolesQuery = useQuery({
-    queryKey: ['users', 'roles'],
-    queryFn: () => usersApi.roles(),
-    staleTime: 300_000,
+    queryKey: ['roles'],
+    queryFn: () => rolesApi.list(),
+    staleTime: 60_000,
     retry: false,
   });
 
@@ -251,21 +123,51 @@ export function Users() {
   );
 
   const stats = useMemo(() => {
-    const byRole = { admin: 0, operator: 0, viewer: 0 };
+    /* 按角色**逐个数**，而不是三个写死的字段：角色是可以自定义的，只统计
+       admin / operator / viewer 会让用自定义角色的账号落在任何一类之外 ——
+       顶上几张卡的读数加起来小于「总计」，差额就是这群人。 */
+    const roleCounts = new Map<string, number>();
     let disabled = 0;
     users.forEach((u) => {
       // 待审批的账号还没定角色，别混进角色统计里误导人
       if (isPendingApproval(u.status)) return;
-      if (u.role in byRole) byRole[u.role as PanelRole] += 1;
+      roleCounts.set(u.role, (roleCounts.get(u.role) ?? 0) + 1);
       if (u.enabled === false) disabled += 1;
     });
+    const count = (role: PanelRole) => roleCounts.get(role) ?? 0;
+    /* 内置三类之外的人数（即自定义角色）。「总计」卡上的小字会报出它 */
+    const others = [...roleCounts.entries()]
+      .filter(([role]) => !ROLE_ORDER.includes(role as PanelRole))
+      .reduce((sum, [, n]) => sum + n, 0);
     return {
       total: users.length,
-      ...byRole,
+      admin: count('admin'),
+      operator: count('operator'),
+      viewer: count('viewer'),
+      others,
+      roleCounts,
       disabled,
       pending: pendingUsers.length,
     };
   }, [users, pendingUsers]);
+
+  /* 点外面 / 滚动 / 改窗口大小都收起 —— 与额度胶囊、详情页的「更多操作」
+     同一套处理（浮层是绝对定位的，滚动后位置就歪了） */
+  useEffect(() => {
+    if (!totalOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (!totalRef.current?.contains(event.target as Node)) setTotalOpen(false);
+    };
+    const onScroll = () => setTotalOpen(false);
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [totalOpen]);
 
   const roleOptions = useMemo(() => {
     const fromApi = rolesQuery.data;
@@ -275,8 +177,46 @@ export function Users() {
     return ROLE_ORDER.map((r) => ({ label: roleMeta(r, t).label, value: r }));
   }, [rolesQuery.data, t]);
 
+  /* 自定义角色的显示名（id → 用户起的名字）。
+     角色名只存在于 /roles 这份数据里，而 roleMeta 的表里只有内置三个 ——
+     不查表就会把 role_f195e975 这种内部 id 直接亮给用户看。
+     内置角色不入表：继续走 roleMeta 的 i18n 词条与既有配色。 */
+  const customRoleNames = useMemo(() => {
+    const names = new Map<string, string>();
+    (rolesQuery.data ?? []).forEach((r) => {
+      if (!r.builtin) names.set(String(r.id), r.name || String(r.id));
+    });
+    return names;
+  }, [rolesQuery.data]);
+
+  /* 「总计」点开的明细：内置三类按固定顺序在前，接着是自定义角色（名字取
+     /roles，取不到就显示 id），最后补一条待审批 —— 待审批的账号同样没定角色，
+     不列出来明细之和又会小于总计。
+     放在 customRoleNames 之后：它就是靠那份映射把角色 id 翻成名字的。 */
+  const roleBreakdown = useMemo(() => {
+    const rows = ROLE_ORDER.map((role) => ({
+      key: role as string,
+      label: roleMeta(role, t).label,
+      count: stats.roleCounts.get(role) ?? 0,
+    }));
+    for (const [role, count] of stats.roleCounts) {
+      if (ROLE_ORDER.includes(role as PanelRole)) continue;
+      rows.push({ key: role, label: customRoleNames.get(role) ?? role, count });
+    }
+    if (stats.pending > 0) {
+      rows.push({
+        key: '__pending',
+        label: t('status.user.pending'),
+        count: stats.pending,
+      });
+    }
+    return rows;
+  }, [stats, customRoleNames, t]);
+
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['users'] });
+    /* 角色列表一起失效：改用户的角色会动到各角色的「N 个用户在用」 */
+    void queryClient.invalidateQueries({ queryKey: ['roles'] });
   };
 
   /* ---- 表格列 ---- */
@@ -305,17 +245,23 @@ export function Users() {
     {
       key: 'role',
       header: t('users.colRole'),
-      width: 120,
+      /* 自定义角色名比内置词条长（用户自己起的），120 会把它压成省略号 */
+      width: 150,
       render: (u) => {
         const meta = roleMeta(u.role, tStatic);
+        const label = customRoleNames.get(u.role) ?? meta.label;
         return (
-          <Badge variant={meta.variant} dot size="sm">
-            {meta.label}
+          /* 徽章里 nowrap + 省略号，长名字看不到全名；title 里带上内部 id ——
+             排障时要对的就是它，界面上又不适合直接摆出来 */
+          <Badge variant={meta.variant} dot size="sm" title={`${label} · ${u.role}`}>
+            {label}
           </Badge>
         );
       },
       sortable: true,
-      sortValue: (u) => u.role,
+      /* 按看得见的名字排，而不是按 id —— 否则列里是「测试角色」、排序却按
+         role_f195e975 来，看着像乱序 */
+      sortValue: (u) => customRoleNames.get(u.role) ?? u.role,
     },
     {
       key: 'enabled',
@@ -363,7 +309,7 @@ export function Users() {
           <IconButton
             label={t('users.editUserAria', { name: u.username })}
             variant="primary"
-            disabled={!isAdmin}
+            disabled={!canManage}
             onClick={(e) => {
               e.stopPropagation();
               setEditTarget(u);
@@ -374,7 +320,7 @@ export function Users() {
           </IconButton>
           <IconButton
             label={t('users.resetPwAria', { name: u.username })}
-            disabled={!isAdmin}
+            disabled={!canManage}
             onClick={(e) => {
               e.stopPropagation();
               setResetTarget(u);
@@ -385,7 +331,7 @@ export function Users() {
           <IconButton
             label={t('users.deleteUserAria', { name: u.username })}
             variant="danger"
-            disabled={!isAdmin || u.username === currentUser?.username}
+            disabled={!canManage || u.username === currentUser?.username}
             onClick={(e) => {
               e.stopPropagation();
               setDeleteTarget(u);
@@ -432,7 +378,7 @@ export function Users() {
           <Button
             variant="primary"
             size="sm"
-            disabled={!isAdmin}
+            disabled={!canManage}
             onClick={(e) => {
               e.stopPropagation();
               setApproveTarget(u);
@@ -443,7 +389,7 @@ export function Users() {
           <Button
             variant="secondary"
             size="sm"
-            disabled={!isAdmin}
+            disabled={!canManage}
             onClick={(e) => {
               e.stopPropagation();
               setRejectTarget(u);
@@ -478,7 +424,7 @@ export function Users() {
           <Button
             variant="primary"
             icon={<IconPlus size={15} />}
-            disabled={!isAdmin}
+            disabled={!canManage}
             onClick={() => {
               setEditTarget(null);
               setEditorOpen(true);
@@ -489,21 +435,48 @@ export function Users() {
         </>
       }
     >
-      {!isAdmin ? (
+      {!canManage ? (
         <Notice tone="info" title={t('users.readonlyTitle')}>
           {t('users.readonlyBody')}
         </Notice>
       ) : null}
 
-      {/* 统计 */}
+      {/* 统计。「总计」那张可点：这一行只列内置三类角色，用自定义角色的账号
+          不在任何一类里 —— 差额由卡上那行小字点出，完整分布点开看。 */}
       <div className="grid grid-5">
-        <KpiCard
-          label={t('users.kpiTotal')}
-          value={stats.total}
-          icon={<IconUsers size={18} />}
-          tone="accent"
-          loading={usersQuery.isLoading}
-        />
+        <div className="kpi-popover-wrap" ref={totalRef}>
+          <KpiCard
+            label={t('users.kpiTotal')}
+            value={stats.total}
+            icon={<IconUsers size={18} />}
+            tone="accent"
+            loading={usersQuery.isLoading}
+            hint={
+              stats.others > 0
+                ? t('users.kpiOthersHint', { n: stats.others })
+                : undefined
+            }
+            onClick={() => setTotalOpen((prev) => !prev)}
+            title={t('users.kpiTotalHint')}
+          />
+          {totalOpen ? (
+            <div
+              className="kpi-popover"
+              role="dialog"
+              aria-label={t('users.kpiTotalHint')}
+            >
+              <div className="quota-popover-head">
+                {t('users.kpiBreakdownTitle')}
+              </div>
+              {roleBreakdown.map((row) => (
+                <div className="quota-popover-line" key={row.key}>
+                  <span>{row.label}</span>
+                  <span className="mono">{row.count}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <KpiCard
           label={t('status.role.admin')}
           value={stats.admin}
@@ -576,9 +549,17 @@ export function Users() {
           <Select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
+            /* 内置三个在前（沿用表格列那套词条），后面跟上自定义角色 ——
+               这里以前写死内置三个，建了自定义角色之后，用它的账号在下拉里
+               根本选不出来，等于「人有、筛不了」。与表格列同一份映射
+               （customRoleNames），两处的名字不会各叫各的。 */
             options={[
               { label: t('users.filterAllRoles'), value: '' },
               ...ROLE_ORDER.map((r) => ({ label: roleMeta(r, t).label, value: r })),
+              ...[...customRoleNames.entries()].map(([id, label]) => ({
+                label,
+                value: id,
+              })),
             ]}
             aria-label={t('users.filterRoleAria')}
           />
@@ -619,32 +600,9 @@ export function Users() {
         />
       )}
 
-      {/* ---- 角色权限说明 ---- */}
-      <Card>
-        <CardHeader
-          title={t('users.rolesTitle')}
-          subtitle={t('users.rolesSubtitle')}
-          icon={<IconShield size={17} />}
-        />
-        <div className="grid grid-3 mb-16">
-          {ROLE_ORDER.map((role) => (
-            <RoleCard
-              key={role}
-              role={role}
-              info={(rolesQuery.data ?? []).find((r) => r.id === role)}
-            />
-          ))}
-        </div>
-
-        <Table<PermissionRow>
-          columns={permissionColumnsData}
-          rows={permissionMatrixData}
-          rowKey={(p) => p.key}
-          caption={t('users.permCaption')}
-          dense
-          className="perm-matrix"
-        />
-      </Card>
+      {/* ---- 角色与权限 ----
+          查看 / 新建 / 编辑 / 删除都在卡片上（见 RoleManager），不再分成两块 */}
+      <RoleManager />
 
       <CollapsibleCard title={t('users.securityTitle')} icon={<IconKey size={15} />}>
         <div className="desc-list">
@@ -751,96 +709,340 @@ export function Users() {
         requireText={deleteTarget?.username}
         message={t('users.deleteMessage', {
           name: deleteTarget?.username ?? '',
-          role: roleMeta(deleteTarget?.role, t).label,
+          /* 与表格列同一份映射：删自定义角色的用户时别把 role_xxx 写进确认文案 */
+          role:
+            (deleteTarget ? customRoleNames.get(deleteTarget.role) : undefined) ??
+            roleMeta(deleteTarget?.role, t).label,
         })}
       />
 
-      <RoleManager />
     </PageShell>
   );
 }
 
-/* ---------------------------------------------------------------------------
-   权限矩阵列
-   --------------------------------------------------------------------------- */
+/**
+ * 权限说明弹窗：按域分组把「这一项到底是干什么的」列出来。
+ *
+ * 去掉「角色 × 权限」对照表之后，这是页面上唯一一份「某个权限键代表什么」的
+ * 参照 —— 角色卡片只给数量与覆盖率。所以搜索与域筛选不是锦上添花：57 项里
+ * 找一条，靠滚动翻是不现实的。
+ */
+function PermissionHelpModal({
+  open,
+  catalog,
+  onClose,
+}: {
+  open: boolean;
+  catalog: PermissionGroup[];
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [keyword, setKeyword] = useState('');
+  const [domain, setDomain] = useState('');
 
-function permissionColumns(t: TFunc): Array<Column<PermissionRow>> {
-  return [
-    {
-      key: 'label',
-      header: t('users.permColLabel'),
-      render: (p) => (
-        <div className="vm-name-cell">
-          <span className="fw-500">{p.label}</span>
-          <span className="fs-xs text-muted mono">{p.key}</span>
-        </div>
-      ),
-    },
-    {
-      key: 'description',
-      header: t('users.permColDesc'),
-      render: (p) => (
-        <span className="fs-sm text-secondary">{p.description}</span>
-      ),
-    },
-    ...ROLE_ORDER.map<Column<PermissionRow>>((role) => ({
-      key: `role-${role}`,
-      header: roleMeta(role, t).label,
-      width: 90,
-      align: 'center',
-      render: (p) =>
-        p.roles.includes(role) ? (
-          <span className="perm-yes" title={t('users.permYes')}>
-            <IconCheck size={16} />
-            <span className="sr-only">{t('users.permYesShort')}</span>
-          </span>
-        ) : (
-          <span className="perm-no" title={t('users.permNo')}>
-            <IconClose size={16} />
-            <span className="sr-only">{t('users.permNoShort')}</span>
-          </span>
+  /* 每次打开都从干净状态开始：否则上次留下的搜索词会让列表「看起来是空的」 */
+  useEffect(() => {
+    if (!open) return;
+    setKeyword('');
+    setDomain('');
+  }, [open]);
+
+  const total = useMemo(
+    () => catalog.reduce((sum, group) => sum + group.permissions.length, 0),
+    [catalog],
+  );
+
+  /* 关键词同时匹配「名称 / 键 / 说明」：管理员可能记得中文名（快照），
+     也可能手里只有日志里抄来的 vm.snapshot */
+  const groups = useMemo(() => {
+    const q = keyword.trim().toLowerCase();
+    return catalog
+      .filter((group) => !domain || group.key === domain)
+      .map((group) => ({
+        ...group,
+        permissions: group.permissions.filter((item) =>
+          q
+            ? [item.label, item.key, item.desc ?? '']
+                .join(' ')
+                .toLowerCase()
+                .includes(q)
+            : true,
         ),
-    })),
-  ];
+      }))
+      .filter((group) => group.permissions.length > 0);
+  }, [catalog, keyword, domain]);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t('users.permHelpTitle')}
+      description={t('users.permHelpDesc')}
+      size="lg"
+    >
+      <div className="perm-help">
+        {/* 57 项、18 个域，纯滚动找一条太费劲：搜索 + 域筛选一起摆上来 */}
+        <div className="perm-help-filter">
+          <Input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder={t('users.permHelpSearch')}
+            prefix={<IconSearch size={15} />}
+            block={false}
+            autoComplete="off"
+            spellCheck={false}
+            aria-label={t('users.permHelpSearchAria')}
+          />
+          <div className="perm-help-domains">
+            <button
+              type="button"
+              className={`perm-chip${domain === '' ? ' is-on' : ''}`}
+              onClick={() => setDomain('')}
+            >
+              {t('users.permHelpAll', { n: total })}
+            </button>
+            {catalog.map((group) => (
+              <button
+                key={group.key}
+                type="button"
+                className={`perm-chip${domain === group.key ? ' is-on' : ''}`}
+                onClick={() => setDomain(group.key)}
+              >
+                {group.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {groups.length === 0 ? (
+          <div className="perm-help-empty">{t('users.permHelpEmpty')}</div>
+        ) : (
+          <PermissionGroupList groups={groups} />
+        )}
+      </div>
+    </Modal>
+  );
 }
 
 /* ---------------------------------------------------------------------------
    角色卡片
    --------------------------------------------------------------------------- */
 
-function RoleCard({ role, info }: { role: PanelRole; info?: RoleOut }) {
+function RoleCard({
+  role,
+  catalogTotal,
+  canManage,
+  onView,
+  onEdit,
+  onDelete,
+}: {
+  role: RoleOut;
+  catalogTotal: number;
+  /** 有 users.manage 才显示编辑 / 删除 */
+  canManage: boolean;
+  /** 查看这个角色的权限清单（只读，所有人可用） */
+  onView: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   const t = useT();
-  const meta = roleMeta(role, t);
-  const matrix = permissionMatrix(t);
-  const count = matrix.filter((p) => p.roles.includes(role)).length;
-
-  const description: Record<PanelRole, string> = {
-    admin: t('users.roleAdminDesc'),
-    operator: t('users.roleOperatorDesc'),
-    viewer: t('users.roleViewerDesc'),
-  };
+  const keys = role.permissions ?? [];
+  /* `*` = 全部权限：条数得按目录总数说，否则界面上会出现「1 / 57」这种读数 */
+  const all = keys.includes('*');
+  const covered = all ? catalogTotal : keys.length;
+  const percent = catalogTotal > 0 ? Math.round((covered / catalogTotal) * 100) : 0;
+  /* 超管角色本身不可改（后端也拒）；仍在用的角色不可删 */
+  const canDelete = !role.builtin && (role.user_count ?? 0) === 0;
 
   return (
-    <div className="entity-card">
+    <div className="entity-card role-card">
       <div className="entity-card-head">
         <div className="entity-card-title">
-          <Badge variant={meta.variant} dot size="sm">
-            {meta.label}
-          </Badge>
+          {/* 名称与 id 分两层：id 是技术标识，原先和名称并排贴在右上角，
+              字号还一样大 —— 结果第一眼看到的是 admin / role_3f2a */}
+          <span className="entity-card-name" title={role.name}>
+            {role.name}
+          </span>
+          <span className="entity-card-sub">{role.id}</span>
         </div>
-        <span className="fs-xs text-muted mono">{role}</span>
+        {/* 内置与自定义都标出来：原先只标内置，自定义角色看着像「没有类型」 */}
+        <Badge variant={role.builtin ? 'accent' : 'neutral'} size="sm">
+          {role.builtin ? t('users.roleBuiltinTag') : t('users.roleCustomTag')}
+        </Badge>
       </div>
-      <div className="fs-sm text-secondary">{description[role]}</div>
-      <div className="fs-xs text-muted">
-        {t('users.rolePermissionCount', { n: count, total: matrix.length })}
-        {info?.permissions && info.permissions.length > 0
-          ? t('users.roleBackendDeclared', { n: info.permissions.length })
-          : ''}
-      </div>
-      {info?.description ? (
-        <div className="fs-xs text-muted">{info.description}</div>
+
+      {role.description ? (
+        <div className="fs-sm text-secondary role-card-desc">{role.description}</div>
       ) : null}
+
+      {/* 这两个数字才是这张卡片的主信息，用 entity-stat 的大字号；
+          「12 / 57」看不出是一半还是七成，所以下面再补一条覆盖率进度条 */}
+      <div className="entity-card-stats">
+        <div className="entity-stat">
+          <span className="entity-stat-label">{t('users.roleStatPerms')}</span>
+          <span className="entity-stat-value">
+            {all ? t('users.roleStatPermsAll') : covered}
+          </span>
+          <span className="entity-stat-unit">
+            {all ? '' : t('users.roleStatPermsTotal', { total: catalogTotal })}
+          </span>
+        </div>
+        <div className="entity-stat">
+          <span className="entity-stat-label">{t('users.roleStatUsers')}</span>
+          <span className="entity-stat-value">{role.user_count ?? 0}</span>
+        </div>
+      </div>
+
+      {/* 固定主色，不走 ProgressBar 按占用率取色的默认行为 ——
+          权限多不是「危险」，绿→橙→红在这里只会误导 */}
+      <ProgressBar
+        value={percent}
+        color="var(--accent)"
+        height={4}
+        ariaLabel={t('users.roleCoverage', { percent })}
+      />
+
+      {/* 卡片本身就是操作入口（原先要滚到下面的「角色管理」列表里改） */}
+      <div className="entity-card-footer">
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={<IconEye size={14} />}
+          onClick={onView}
+        >
+          {t('users.roleViewPerms')}
+        </Button>
+        {canManage ? (
+          <span className="role-card-actions">
+            <IconButton
+              label={t('users.roleEditAria', { name: role.name })}
+              variant="primary"
+              disabled={role.id === 'admin'}
+              onClick={onEdit}
+            >
+              <IconEdit size={15} />
+            </IconButton>
+            <IconButton
+              label={t('users.deleteRoleAria', { name: role.name })}
+              variant="danger"
+              disabled={!canDelete}
+              onClick={onDelete}
+            >
+              <IconTrash size={15} />
+            </IconButton>
+          </span>
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+/** 按域分组的权限清单：只读清单与「权限说明」共用这一份渲染 */
+function PermissionGroupList({ groups }: { groups: PermissionGroup[] }) {
+  return (
+    <div className="perm-help">
+      {groups.map((group) => (
+        <section className="perm-help-group" key={group.key}>
+          <h4 className="perm-help-group-title">{group.label}</h4>
+          <div className="perm-help-items">
+            {group.permissions.map((item) => (
+              <div className="perm-help-item" key={item.key}>
+                <div className="perm-help-head">
+                  <span className="perm-help-label">{item.label}</span>
+                  <span className="perm-help-key">{item.key}</span>
+                </div>
+                {item.desc ? <p className="perm-help-desc">{item.desc}</p> : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 某个角色的权限只读清单。
+ *
+ * 与「权限说明」的分工：那个讲**每一项是干什么的**（面向「这个键是什么意思」），
+ * 这个回答**这个角色到底拿到了哪些**（面向「他能做什么」）。同一份目录数据，
+ * 一个全列、一个只列拥有的 —— 所以那些没有这项权限的域整段不出现。
+ */
+function RolePermissionsModal({
+  role,
+  catalog,
+  onClose,
+}: {
+  role: RoleOut | null;
+  catalog: PermissionGroup[];
+  onClose: () => void;
+}) {
+  const t = useT();
+  const keys = role?.permissions ?? [];
+  const all = keys.includes('*');
+
+  const groups = useMemo(() => {
+    const owned = new Set(keys);
+    return catalog
+      .map((group) => ({
+        ...group,
+        permissions: all
+          ? group.permissions
+          : group.permissions.filter((item) => owned.has(item.key)),
+      }))
+      .filter((group) => group.permissions.length > 0);
+    // role 每次点击只换一次，用它的 permissions 当依赖即可
+  }, [catalog, all, keys]);
+
+  const count = groups.reduce((sum, group) => sum + group.permissions.length, 0);
+
+  return (
+    <Modal
+      open={Boolean(role)}
+      onClose={onClose}
+      title={role ? t('users.rolePermsTitle', { name: role.name }) : ''}
+      description={t('users.rolePermsCount', { n: count })}
+      size="lg"
+    >
+      <PermissionGroupList groups={groups} />
+    </Modal>
+  );
+}
+
+/**
+ * 「自定义权限」模式下的差量提示。
+ *
+ * 用户级权限是**整份替换**角色权限，不是叠加：开关一打开，这个人就只用你勾的
+ * 这一套 —— 很容易以为在「加一项」，实际把角色的其余权限一起丢了，而且以后角色
+ * 升级也不会再同步给他（users.customPermsHint 那句说的就是这个）。把差值摆在
+ * 眼前，比再写一段说明有效。
+ *
+ * 具体差哪些键放在 title 里：键名是技术信息，看的人看得懂，又不占地方。
+ */
+function PermissionDiff({ rolePerms, perms }: { rolePerms: string[]; perms: string[] }) {
+  const t = useT();
+  const added = useMemo(
+    () => perms.filter((key) => !rolePerms.includes(key)),
+    [perms, rolePerms],
+  );
+  const removed = useMemo(
+    () => rolePerms.filter((key) => !perms.includes(key)),
+    [perms, rolePerms],
+  );
+
+  if (added.length === 0 && removed.length === 0) {
+    return <span>{' · '}{t('users.permDiffSame')}</span>;
+  }
+  return (
+    <span
+      title={[
+        ...added.map((key) => `+ ${key}`),
+        ...removed.map((key) => `- ${key}`),
+      ].join('\n')}
+    >
+      {' · '}
+      {t('users.permDiff', { added: added.length, removed: removed.length })}
+    </span>
   );
 }
 
@@ -880,6 +1082,10 @@ function UserEditor({
   /* 权限：useOverride=false 表示「跟随角色」，true 表示手动勾选一组权限 */
   const [perms, setPerms] = useState<string[]>([]);
   const [useOverride, setUseOverride] = useState(false);
+  /* 资源额度：null = 继承角色默认（与权限覆盖同一个套路） */
+  const [quotaDraft, setQuotaDraft] = useState<QuotaLimits | null>(null);
+  const [quotaTouched, setQuotaTouched] = useState(false);
+  const quotaInitRef = useRef('');
 
   const isEdit = Boolean(user);
 
@@ -890,6 +1096,38 @@ function UserEditor({
     staleTime: 60_000,
     retry: false,
   });
+
+  /* 该用户现有的额度配置（编辑时才有） */
+  const quotaQuery = useQuery({
+    queryKey: ['user-quota', user?.username ?? ''],
+    queryFn: () => usersApi.getQuota(String(user?.username)),
+    enabled: open && isEdit,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  /* 所选角色的默认额度：让「继承」这一档能说清到底继承到什么 */
+  const roleQuotaQuery = useQuery({
+    queryKey: ['role-quota', role],
+    queryFn: () => rolesApi.getQuota(role),
+    enabled: open && Boolean(role),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  /* 额度只在打开时初始化一次：否则管理员改到一半，查询一刷新就把输入盖回去了 */
+  useEffect(() => {
+    if (!open) {
+      quotaInitRef.current = '';
+      return;
+    }
+    if (!isEdit || !quotaQuery.data) return;
+    const key = user?.username ?? '';
+    if (quotaInitRef.current === key) return;
+    quotaInitRef.current = key;
+    setQuotaDraft(quotaQuery.data.configured ? quotaQuery.data.quota : null);
+    setQuotaTouched(false);
+  }, [open, isEdit, quotaQuery.data, user?.username]);
 
   /* 角色自带的权限，作为「跟随角色」时展示/回退用 */
   const rolePerms = useMemo(
@@ -924,6 +1162,9 @@ function UserEditor({
       setConfirm('');
       setUseOverride(false);
       setPerms([]);
+      // 新建的用户默认「继承角色默认额度」，由 quotaQuery 那段按库里的实际值补上
+      setQuotaDraft(null);
+      setQuotaTouched(false);
     }
     setShowPassword(false);
     setErrors({});
@@ -997,6 +1238,11 @@ function UserEditor({
           t('users.createdToast', { name: username.trim() }),
           t('users.createdRoleToast', { role: roleLabelByValue(role, roleOptions) }),
         );
+      }
+      // 额度是独立的一份配置，用户建好/改好之后再写。
+      // 只在管理员真的动过它时才写：否则「只改了个邮箱」会把已配好的额度抹掉。
+      if (!isEdit || quotaTouched) {
+        await usersApi.saveQuota(username.trim(), quotaDraft);
       }
       setPassword('');
       setConfirm('');
@@ -1115,6 +1361,11 @@ function UserEditor({
                 : t('users.permFollowing', {
                     name: roleLabelByValue(role, roleOptions),
                   })}
+              {/* 覆盖模式下把「与角色的差」摆出来：它是**整份替换**而不是叠加，
+                  管理员很容易以为自己在「加一项」，结果把角色的其余权限一起丢了 */}
+              {useOverride ? (
+                <PermissionDiff rolePerms={rolePerms} perms={perms} />
+              ) : null}
             </span>
           </div>
 
@@ -1133,6 +1384,29 @@ function UserEditor({
             onChange={setPerms}
             disabled={!useOverride}
           />
+        </div>
+
+        {/* ---- 资源额度 -----------------------------------------------------
+            紧跟角色 / 权限：这三块一起回答「这个用户能做什么、能用多少」，
+            夹在账号信息中间（邮箱、启用状态）之前更顺。 */}
+        <div>
+          <h3 className="fs-sm fw-600">{t('quota.titleUser')}</h3>
+          <div className="fs-xs text-muted mb-8">{t('quota.descUser')}</div>
+          {quotaQuery.data?.bypass ? (
+            /* 超管 / 带 * 的角色根本不受额度约束：配了也不生效，直接说明白 */
+            <Notice tone="warning">{t('quota.bypass')}</Notice>
+          ) : (
+            <QuotaEditor
+              value={quotaDraft}
+              onChange={(next) => {
+                setQuotaDraft(next);
+                setQuotaTouched(true);
+              }}
+              inherited={roleQuotaQuery.data?.quota ?? null}
+              usage={quotaQuery.data?.usage ?? null}
+              disabled={busy}
+            />
+          )}
         </div>
 
         <Field
@@ -1332,6 +1606,11 @@ function ApprovalDialog({
                 : t('users.permFollowing', {
                     name: roleLabelByValue(role, roleOptions),
                   })}
+              {/* 覆盖模式下把「与角色的差」摆出来：它是**整份替换**而不是叠加，
+                  管理员很容易以为自己在「加一项」，结果把角色的其余权限一起丢了 */}
+              {useOverride ? (
+                <PermissionDiff rolePerms={rolePerms} perms={perms} />
+              ) : null}
             </span>
           </div>
 
@@ -1484,25 +1763,56 @@ function ResetPasswordDialog({
    --------------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------------
-   角色管理：admin 可新建 / 编辑 / 删除自定义角色
+   角色管理：有 users.manage 的用户可新建 / 编辑 / 删除自定义角色
    --------------------------------------------------------------------------- */
 
+/**
+ * 角色与权限：一屏管完角色。
+ *
+ * 原先这块和下方的「角色管理」是两张卡 —— 上面一列只读的角色卡片（几个权限、
+ * 几个人在用），下面一列带编辑 / 删除的 role-row。同一个东西两处展示：改一个
+ * 角色要滚到下面，看完想对照又要滚回来。合并之后卡片自己就是操作入口。
+ */
 function RoleManager() {
   const t = useT();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const { isAdmin } = useAuth();
+  const { hasPermission } = useAuth();
+  /* 增删改角色要 users.manage；而看角色清单与权限说明只要进得来这一页（users.view） */
+  const canManage = hasPermission('users.manage');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<RoleOut | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RoleOut | null>(null);
+  /* 某个角色的权限只读清单 */
+  const [permsTarget, setPermsTarget] = useState<RoleOut | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const rolesQuery = useQuery({ queryKey: ['roles'], queryFn: () => rolesApi.list() });
-  const roles = rolesQuery.data ?? [];
+  /* 与页面顶部的角色下拉共用同一份缓存（queryKey 一致） */
+  const rolesQuery = useQuery({
+    queryKey: ['roles'],
+    queryFn: () => rolesApi.list(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const roles = useMemo(() => rolesQuery.data ?? [], [rolesQuery.data]);
 
+  /* 权限目录：只读清单与「权限说明」共用（与 PermissionPicker 同一份缓存） */
+  const catalogQuery = useQuery({
+    queryKey: ['permissions', 'catalog'],
+    queryFn: () => rolesApi.catalog(),
+    staleTime: 300_000,
+    retry: false,
+  });
+  const catalog = useMemo(() => catalogQuery.data ?? [], [catalogQuery.data]);
+  const catalogTotal = useMemo(
+    () => catalog.reduce((sum, group) => sum + group.permissions.length, 0),
+    [catalog],
+  );
+
+  /* 角色只有这一份缓存了（见页面顶部的 rolesQuery） */
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['roles'] });
-    void queryClient.invalidateQueries({ queryKey: ['users', 'roles'] });
   };
 
   const remove = async () => {
@@ -1520,83 +1830,72 @@ function RoleManager() {
     }
   };
 
-  if (!isAdmin) return null;
-
   return (
     <Card>
       <CardHeader
-        title={t('users.roleManagerTitle')}
-        subtitle={t('users.roleManagerSubtitle')}
+        title={t('users.rolesTitle')}
+        subtitle={t('users.rolesSubtitle')}
         icon={<IconShield size={17} />}
         actions={
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<IconPlus size={14} />}
-            onClick={() => {
-              setEditTarget(null);
-              setEditorOpen(true);
-            }}
-          >
-            {t('users.newRole')}
-          </Button>
+          <>
+            {/* 权限说明对谁都开放：只有 users.view 的用户也得能查「这个键是什么意思」 */}
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<IconInfo size={14} />}
+              onClick={() => setHelpOpen(true)}
+            >
+              {t('users.permHelpButton')}
+            </Button>
+            {canManage ? (
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<IconPlus size={14} />}
+                onClick={() => {
+                  setEditTarget(null);
+                  setEditorOpen(true);
+                }}
+              >
+                {t('users.newRole')}
+              </Button>
+            ) : null}
+          </>
         }
       />
 
       {rolesQuery.isLoading ? (
         <div className="fs-sm text-muted">{t('users.rolesLoading')}</div>
       ) : (
-        <div className="flex flex-col gap-8">
-          {roles.map((r) => (
-            <div className="role-row" key={r.id}>
-              <div className="role-row-main">
-                <span className="set-node-icon">
-                  <IconShield size={15} />
-                </span>
-                <div className="set-node-text">
-                  <span className="set-node-name">
-                    {r.name}
-                    {r.builtin ? (
-                      <Badge variant="neutral" size="sm">
-                        {t('users.builtin')}
-                      </Badge>
-                    ) : null}
-                  </span>
-                  <span className="fs-xs text-muted mono">{r.id}</span>
-                  <span className="fs-xs text-muted">{r.description || '—'}</span>
-                </div>
-              </div>
-
-              <div className="set-conn-tags set-conn-meta">
-                <span>{t('users.permCount', { n: r.permissions.length })}</span>
-                <span>{t('users.userCount', { n: r.user_count ?? 0 })}</span>
-              </div>
-
-              <div className="set-conn-actions">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={r.id === 'admin'}
-                  onClick={() => {
-                    setEditTarget(r);
-                    setEditorOpen(true);
-                  }}
-                >
-                  {t('common.edit')}
-                </Button>
-                <IconButton
-                  label={t('users.deleteRoleAria', { name: r.name })}
-                  variant="danger"
-                  disabled={r.builtin || (r.user_count ?? 0) > 0}
-                  onClick={() => setDeleteTarget(r)}
-                >
-                  <IconTrash size={15} />
-                </IconButton>
-              </div>
-            </div>
+        <div className="grid grid-3">
+          {roles.map((role) => (
+            <RoleCard
+              key={role.id}
+              role={role}
+              catalogTotal={catalogTotal}
+              canManage={canManage}
+              onView={() => setPermsTarget(role)}
+              onEdit={() => {
+                setEditTarget(role);
+                setEditorOpen(true);
+              }}
+              onDelete={() => setDeleteTarget(role)}
+            />
           ))}
         </div>
       )}
+
+      <RolePermissionsModal
+        role={permsTarget}
+        catalog={catalog}
+        onClose={() => setPermsTarget(null)}
+      />
+
+      <PermissionHelpModal
+        open={helpOpen}
+        catalog={catalog}
+        onClose={() => setHelpOpen(false)}
+      />
 
       <RoleEditor
         open={editorOpen}
@@ -1644,8 +1943,40 @@ function RoleEditor({
   const [perms, setPerms] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  /* 角色默认额度：null = 该角色没有默认额度（用户级也没配就是不限制） */
+  const [quotaDraft, setQuotaDraft] = useState<QuotaLimits | null>(null);
+  const [quotaTouched, setQuotaTouched] = useState(false);
+  const quotaInitRef = useRef('');
 
   const isEdit = Boolean(role);
+  /* 超管角色不受额度限制，后端也拒收它的默认额度 */
+  const quotaApplies = Boolean(role) && role?.id !== 'admin';
+
+  const quotaQuery = useQuery({
+    queryKey: ['role-quota', role?.id ?? ''],
+    queryFn: () => rolesApi.getQuota(String(role?.id)),
+    enabled: open && isEdit && quotaApplies,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!open) {
+      quotaInitRef.current = '';
+      return;
+    }
+    if (!isEdit) {
+      setQuotaDraft(null);
+      setQuotaTouched(false);
+      return;
+    }
+    if (!quotaQuery.data) return;
+    const key = role?.id ?? '';
+    if (quotaInitRef.current === key) return;
+    quotaInitRef.current = key;
+    setQuotaDraft(quotaQuery.data.configured ? quotaQuery.data.quota : null);
+    setQuotaTouched(false);
+  }, [open, isEdit, quotaQuery.data, role?.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -1669,13 +2000,19 @@ function RoleEditor({
           description: description.trim(),
           permissions: perms,
         });
+        // 默认额度是独立的一份配置：只改名字时别去动它（否则会把已配好的抹掉）
+        if (quotaApplies && quotaTouched) {
+          await rolesApi.saveQuota(role.id, quotaDraft);
+        }
         toast.success(t('users.roleUpdatedToast'), cleaned);
       } else {
-        await rolesApi.create({
+        const created = await rolesApi.create({
           name: cleaned,
           description: description.trim(),
           permissions: perms,
         });
+        // 新建时才需要写（继承 = null 不用写）
+        if (quotaDraft) await rolesApi.saveQuota(created.id, quotaDraft);
         toast.success(t('users.roleCreatedToast'), cleaned);
       }
       onDone();
@@ -1728,6 +2065,35 @@ function RoleEditor({
             placeholder={t('users.roleDescPlaceholder')}
           />
         </Field>
+
+        {/* ---- 角色默认额度 -------------------------------------------------
+            紧跟「说明」：说明回答「这个角色是干什么的」，额度回答「默认给多少」，
+            两者放在一起看最顺；权限勾选放在它们后面。 */}
+        <div>
+          <h3 className="fs-sm fw-600">{t('quota.titleRole')}</h3>
+          <div className="fs-xs text-muted mb-8">
+            {t('quota.descRole', { n: quotaQuery.data?.user_count ?? 0 })}
+          </div>
+          {!quotaApplies ? (
+            <Notice tone="warning">{t('quota.bypass')}</Notice>
+          ) : (
+            <QuotaEditor
+              value={quotaDraft}
+              onChange={(next) => {
+                setQuotaDraft(next);
+                setQuotaTouched(true);
+              }}
+              disabled={busy}
+            />
+          )}
+        </div>
+
+        {/* 影响面：这里改的不是「当前这一份配置」，而是所有在用这个角色的人 */}
+        {isEdit && (role?.user_count ?? 0) > 0 ? (
+          <Notice tone="info">
+            {t('users.roleImpact', { n: role?.user_count ?? 0 })}
+          </Notice>
+        ) : null}
 
         <div className="perm-block">
           <div className="perm-block-head">

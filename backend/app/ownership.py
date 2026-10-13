@@ -14,14 +14,23 @@
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 
 from . import database
 
+logger = logging.getLogger(__name__)
+
 # 资源类别
+#: 虚拟机（qemu）的归属。历史上容器也记在这里，现已拆到 :data:`KIND_CT`；
+#: 升级时 :func:`migrate_guest_kinds` 会把存量记录改过来。
 KIND_VM = "vm"
+#: 容器（lxc）的归属。与 :data:`KIND_VM` 分开记录，权限也各自独立（``vm.*`` /
+#: ``ct.*``）。ref 的拼法与虚拟机完全一致（``<连接>:<节点>:<vmid>``）—— VMID 在
+#: 集群内唯一，同一条 ref 不可能既是虚拟机又是容器。
+KIND_CT = "ct"
 KIND_SNAPSHOT = "snapshot"
 KIND_FRP_RULE = "frp_rule"
 KIND_ALERT_RULE = "alert_rule"
@@ -31,6 +40,19 @@ KIND_SSH_HOST = "ssh_host"
 #: 已上传到存储 import 目录里的导入文件。导入文件是**共享目录里的普通文件**，
 #: 不像虚拟机那样天然带 vmid；不记归属就是「谁都能看见、谁都能删」。
 KIND_IMPORT = "import"
+
+#: 两类客户机（虚拟机 / 容器）的归属类别，顺序固定便于复用。
+GUEST_KINDS: Tuple[str, ...] = (KIND_VM, KIND_CT)
+
+
+def kind_for_type(guest_type: Any) -> str:
+    """把 PVE 的客户机类型（``qemu`` / ``lxc``）换算成归属类别。
+
+    认不出来的一律当虚拟机：这个参数来自 URL / 列表数据，一个拼错的值不该
+    让归属校验整体报错（与 :func:`quota.normalise_kind` 同一取舍）。
+    """
+    return KIND_CT if str(guest_type or "").strip().lower() == "lxc" else KIND_VM
+
 
 
 # 复合主键与索引涉及 TEXT 列，必须是定长 VARCHAR
@@ -110,17 +132,25 @@ async def get_owner(kind: str, ref: str) -> Optional[str]:
         return row[0] if row else None
 
 
-async def find_refs_by_vm(node: str, vmid: Any, kind: str = KIND_VM) -> List[Tuple[str, str]]:
+async def find_refs_by_vm(
+    node: str, vmid: Any, kind: Optional[str] = None
+) -> List[Tuple[str, str]]:
     """按「节点 + VMID」反查归属记录，返回 ``[(connection_id, username)]``。
 
     ref 形如 ``<connection>:<node>:<vmid>``；节点名与连接 id 都不含 ``:``，
     所以从右侧按后缀匹配即可安全还原。表很小，直接在内存里筛选，避免给
     LIKE 通配符做转义。
+
+    ``kind`` 留空表示**两类客户机都查** —— 连接绑定（:mod:`app.vm_scope`）只知道
+    节点与 VMID、拿不到类型，必须两边都看才定位得到容器的连接。
     """
     suffix = f":{node}:{vmid}"
+    kinds: Tuple[str, ...] = (kind,) if kind else GUEST_KINDS
     async with database.connect() as db:
+        placeholders = ", ".join("?" for _ in kinds)
         cursor = await db.execute(
-            "SELECT ref, username FROM resource_owner WHERE kind = ?", (kind,)
+            f"SELECT ref, username FROM resource_owner WHERE kind IN ({placeholders})",
+            tuple(kinds),
         )
         rows = await cursor.fetchall()
 
@@ -143,6 +173,40 @@ async def owners_map(kind: str) -> Dict[str, str]:
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
 
+async def owners_map_for(kind: str) -> Dict[str, str]:
+    """取某类客户机的全部归属。
+
+    容器的归属在升级前记在 :data:`KIND_VM` 下（旧版本不区分类型）。这里把这类
+    存量记录并进来，保证升级瞬间、:func:`migrate_guest_kinds` 跑完之前容器也不会
+    「凭空消失」。ref 带 VMID、集群内唯一，两类之间不可能同键，所以合并是安全的。
+    """
+    owners = await owners_map(kind)
+    if kind != KIND_CT:
+        return owners
+    legacy = await owners_map(KIND_VM)
+    legacy.update(owners)  # 新记录（KIND_CT）优先
+    return legacy
+
+
+async def guest_owners_map() -> Dict[str, str]:
+    """两类客户机（虚拟机 + 容器）的**合并**归属表。
+
+    用于「记录本身不带类型」的跨类型回落判定：备份归档（vzdump 里既有 qemu 也有
+    lxc）、全局快照汇总等。ref 里带 VMID、集群内唯一，合并不会串台。
+    """
+    owners = await owners_map(KIND_VM)
+    owners.update(await owners_map(KIND_CT))
+    return owners
+
+
+async def get_owner_for(kind: str, ref: str) -> Optional[str]:
+    """:func:`get_owner` 的客户机版本：容器会回看升级前的 ``KIND_VM`` 记录。"""
+    owner = await get_owner(kind, ref)
+    if owner is None and kind == KIND_CT:
+        owner = await get_owner(KIND_VM, ref)
+    return owner
+
+
 async def list_owned(kind: str, username: str) -> List[str]:
     """某个用户名下的全部 ref。"""
     async with database.connect() as db:
@@ -151,6 +215,17 @@ async def list_owned(kind: str, username: str) -> List[str]:
             (kind, username),
         )
         return [row[0] for row in await cursor.fetchall()]
+
+
+async def list_owned_guests(username: str) -> List[str]:
+    """某个用户名下的全部客户机 ref（虚拟机 + 容器）。
+
+    用于「跨类型」的读数（历史指标、AI 排查的授权范围）：这些地方拿到的是一个
+    ``<连接>:<节点>:<vmid>`` 列表，两类混在一起无妨（VMID 唯一）。
+    """
+    refs = await list_owned(KIND_VM, username)
+    refs.extend(await list_owned(KIND_CT, username))
+    return refs
 
 
 def vm_owner_from(
@@ -191,3 +266,59 @@ def vm_owner_from(
     if len(unique) > 1:
         return None
     return usernames[0]
+
+
+# ------------------------------------------------------------------ 存量迁移
+#: 一次性迁移的标记（存 settings KV）。跑完置 1，之后不再重复扫表。
+SPLIT_FLAG = "ownership_guest_kind_split"
+
+
+async def migrate_guest_kinds() -> int:
+    """把升级前记在 :data:`KIND_VM` 下的**容器**归属搬到 :data:`KIND_CT`。
+
+    判断「是不是容器」**不依赖 PVE**：面板自己的 ``guest_created_record`` 表里存着
+    每台面板发起创建的机器的 ``guest_type``（``qemu`` / ``lxc``），升级前由
+    ``routers/lxc.py`` 正常写入。所以这个迁移纯读面板库，PVE 连不上也照样能跑。
+
+    只搬「确实有容器建机记录」的那些 ref；其余保持原样 —— 面板之外建的机器本来
+    就没有归属记录（严格隔离），搬不动也无所谓。返回搬动的条数。
+
+    跑完在 settings 里记一个标记，避免每次启动都扫表；标记写失败时下次启动重跑，
+    重复搬不会有副作用（:func:`set_owner` 是 upsert）。
+    """
+    from . import store  # 延迟导入：store 与 ownership 都在启动期被加载，避免环
+
+    try:
+        if await store.get_setting(SPLIT_FLAG):
+            return 0
+        async with database.connect() as db:
+            cursor = await db.execute(
+                "SELECT conn_id, node, vmid FROM guest_created_record "
+                "WHERE guest_type = 'lxc'"
+            )
+            rows = await cursor.fetchall()
+    except Exception:  # noqa: BLE001 - 迁移失败不该拖住启动，下次再来
+        logger.warning("容器归属迁移：读取建机记录失败，跳过", exc_info=True)
+        return 0
+
+    moved = 0
+    for conn_id, node, vmid in rows or []:
+        if not node or vmid is None:
+            continue
+        ref = vm_ref(str(conn_id or ""), str(node), vmid)
+        if await get_owner(KIND_CT, ref) is not None:
+            continue  # 已经是新记录（或迁移过），不动
+        owner = await get_owner(KIND_VM, ref)
+        if owner is None:
+            continue
+        await set_owner(KIND_CT, ref, owner)
+        await delete_owner(KIND_VM, ref)
+        moved += 1
+
+    try:
+        await store.set_setting(SPLIT_FLAG, "1")
+    except Exception:  # noqa: BLE001
+        logger.warning("容器归属迁移：写入标记失败，下次启动会重跑", exc_info=True)
+    if moved:
+        logger.info("容器归属迁移完成：%d 条记录已改记到 %s", moved, KIND_CT)
+    return moved

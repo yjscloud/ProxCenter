@@ -45,8 +45,9 @@ export function FeishuBot() {
   const qc = useQueryClient();
   const toast = useToast();
   // 机器人是全局单例：这一页只对管理员开放（接口同样要求管理员）
-  const { isAdmin } = useAuth();
-  const canManage = isAdmin;
+  const { hasPermission } = useAuth();
+  /* 飞书机器人是面板自身的配置：与后端 feishu.py 一致（settings.manage） */
+  const canManage = hasPermission('settings.manage');
 
   const [form, setForm] = useState<BotConfig | null>(null);
   const [busy, setBusy] = useState("");

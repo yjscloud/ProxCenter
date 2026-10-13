@@ -97,19 +97,14 @@ def _managed_conn_id() -> str:
     return str((store.get_active_connection() or {}).get("id") or "")
 
 
-async def require_vm_access(
-    user: Dict[str, Any] = Depends(security.get_current_user),
-    node: Optional[str] = None,
-    vmid: Optional[int] = None,
+async def _require_guest_access(
+    user: Dict[str, Any], node: Optional[str], vmid: Optional[int], kind: str
 ) -> None:
-    """按归属校验单台虚拟机的访问权限；列表接口自行过滤。
+    """按归属校验单台客户机（虚拟机 / 容器）的访问权限；列表接口自行过滤。
 
-    挂在 vms 路由上作为路由级依赖：FastAPI 会把路径里的 ``{node}/{vmid}`` 注入
-    进来，因此单台虚拟机的全部操作（详情、电源、改配、删除、快照、克隆…）都被
-    统一覆盖；没有这两个路径参数的接口取到 None，直接放行。
-
-    管理员是超管视角，不受限制；普通用户只允许操作自己名下的虚拟机，没有归属
-    记录的存量虚拟机同样拒绝（严格隔离）。
+    管理员是超管视角，不受限制；普通用户只允许操作自己名下的机器，没有归属
+    记录的存量机器同样拒绝（严格隔离）。容器使用 :data:`ownership.KIND_CT`，
+    与虚拟机的 :data:`ownership.KIND_VM` 相互独立。
     """
     if not node or vmid is None:
         return
@@ -117,11 +112,35 @@ async def require_vm_access(
     if owner is None:
         return
     ref = ownership.vm_ref(_op_connection(), node, vmid)
-    if await ownership.get_owner(ownership.KIND_VM, ref) != owner:
+    if await ownership.get_owner_for(kind, ref) != owner:
+        noun = "容器" if kind == ownership.KIND_CT else "虚拟机"
         raise HTTPException(
             status_code=403,
-            detail=f"虚拟机 {node}/{vmid} 不属于当前用户，无权访问",
+            detail=f"{noun} {node}/{vmid} 不属于当前用户，无权访问",
         )
+
+
+async def require_vm_access(
+    user: Dict[str, Any] = Depends(security.get_current_user),
+    node: Optional[str] = None,
+    vmid: Optional[int] = None,
+) -> None:
+    """按归属校验单台**虚拟机**的访问权限（容器见 :func:`require_ct_access`）。
+
+    挂在 vms 路由上作为路由级依赖：FastAPI 会把路径里的 ``{node}/{vmid}`` 注入
+    进来，因此单台虚拟机的全部操作（详情、电源、改配、删除、快照、克隆…）都被
+    统一覆盖；没有这两个路径参数的接口取到 None，直接放行。
+    """
+    await _require_guest_access(user, node, vmid, ownership.KIND_VM)
+
+
+async def require_ct_access(
+    user: Dict[str, Any] = Depends(security.get_current_user),
+    node: Optional[str] = None,
+    vmid: Optional[int] = None,
+) -> None:
+    """按归属校验单台**容器**的访问权限；挂在 lxc 路由上（同一套路）。"""
+    await _require_guest_access(user, node, vmid, ownership.KIND_CT)
 
 
 router = APIRouter(
@@ -269,23 +288,32 @@ async def collect_vms(
     if not result and failure is not None:
         _raise(failure)
 
-    # 用户隔离：普通用户只保留自己创建的虚拟机。
-    # 没有归属记录的存量虚拟机同样不返回（严格隔离），管理员不受限制。
+    # 用户隔离：普通用户只保留自己创建的虚拟机 / 容器。
+    # 没有归属记录的存量机器同样不返回（严格隔离），管理员不受限制。
+    # 虚拟机与容器是两套归属（KIND_VM / KIND_CT），按每台的 type 取对应那张表。
     owner = security.visible_owner(user)
     if owner is not None:
-        owners = await ownership.owners_map(ownership.KIND_VM)
-        result = [
-            v
-            for v in result
-            if owners.get(
-                ownership.vm_ref(
-                    str(v.get("connection_id") or ""),
-                    str(v.get("node") or ""),
-                    v.get("vmid"),
-                )
+        vm_owners = await ownership.owners_map(ownership.KIND_VM)
+        ct_owners = await ownership.owners_map_for(ownership.KIND_CT)
+
+        def _owned_by_user(item: Dict[str, Any]) -> bool:
+            owners = (
+                ct_owners
+                if str(item.get("type") or "qemu") == "lxc"
+                else vm_owners
             )
-            == owner
-        ]
+            return (
+                owners.get(
+                    ownership.vm_ref(
+                        str(item.get("connection_id") or ""),
+                        str(item.get("node") or ""),
+                        item.get("vmid"),
+                    )
+                )
+                == owner
+            )
+
+        result = [v for v in result if _owned_by_user(v)]
 
     result.sort(key=lambda v: (v.get("node") or "", v.get("vmid") or 0))
     return result
@@ -846,6 +874,22 @@ async def create_vm(
     # --- 虚拟机额度：可下发为 0（或已用达到上限）时普通用户不能再建 ---
     # 放在最前面，别等做完 DNS / VMID / 存储探测才告诉人家不行。
     await quota.enforce_for_create(user, request, "vm")
+    # --- 资源额度（按所有者分配）：核数 / 内存 / 磁盘 ---
+    # 从模板克隆（clone_from）时磁盘随来源机器，请求体里通常没有 disks —— 交给
+    # source 去读数里取，别当成 0。
+    await quota.enforce_create(
+        user,
+        request,
+        "vm",
+        spec={
+            "cores": payload.cores * payload.sockets,
+            "memory_mb": payload.memory,
+            "disk_gb": sum(disk.size for disk in payload.disks) or None,
+        },
+        source=(payload.clone_from.node, payload.clone_from.vmid)
+        if payload.clone_from
+        else None,
+    )
 
     # --- 未单独指定 DNS 时套用面板默认 DNS -------------------------------
     # 模板机多为 DHCP，客户机的 NetworkManager 常被路由器 RA 下发的 DNS 带跑；
@@ -1437,6 +1481,47 @@ async def update_vm_config(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # --- 改核数 / 内存 / 顺手挂块盘：同样吃额度 ---------------------------
+    # 这几项能从 ``extra: allow`` 进来：只有「改配置」权限并不意味着可以把资源
+    # 无限涨上去。要读一次当前配置，因为请求里往往只给了一半（只改 cores 时，
+    # 实际核数是 cores × 当前 sockets）。
+    touches_cpu = any(key in data for key in ("cores", "sockets", "memory"))
+    new_disk_keys = [key for key in data if _is_disk_key(str(key))]
+    if touches_cpu or new_disk_keys:
+        try:
+            current_config = await client.qemu_config(node, vmid) or {}
+        except ProxmoxError as exc:
+            _raise(exc)
+
+        after: Dict[str, Any] = {}
+        if touches_cpu:
+            cores = data.get("cores", current_config.get("cores"))
+            sockets = data.get("sockets", current_config.get("sockets"))
+            try:
+                after["cores"] = int(cores or 0) * int(sockets or 1)
+            except (TypeError, ValueError):
+                pass
+            if "memory" in data:
+                try:
+                    after["memory_mb"] = int(data["memory"])
+                except (TypeError, ValueError):
+                    pass
+
+        add: Dict[str, Any] = {}
+        # 已有的盘改不了容量（PVE 会拒绝），所以只算**新出现的**磁盘键
+        added_gb = sum(
+            vmconfig.disk_value_gb(data[key]) or 0.0
+            for key in new_disk_keys
+            if key not in current_config
+        )
+        if added_gb > 0:
+            add["disk_gb"] = int(round(added_gb))
+
+        if after or add:
+            await quota.enforce_grow(
+                user, request, "vm", "vm.config.update", node, vmid, add=add, after=after
+            )
+
     try:
         result = await client.qemu_set_config(node, vmid, data)
     except ProxmoxError as exc:
@@ -1511,6 +1596,11 @@ async def add_vm_disk(
         config = await client.qemu_config(node, vmid) or {}
     except ProxmoxError as exc:
         _raise(exc)
+
+    # 加一块盘就是把磁盘占用涨上去，额度必须跟着算（增量就是这块盘的大小）
+    await quota.enforce_grow(
+        user, request, "vm", "vm.disk.add", node, vmid, add={"disk_gb": payload.size}
+    )
 
     if payload.interface:
         key = payload.interface
@@ -1654,6 +1744,32 @@ async def resize_disk(
     user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
 ) -> Dict[str, Any]:
     client = get_client()
+
+    # --- 扩容同样吃额度：先算出这次要加多少 --------------------------------
+    # ``size`` 有两种写法：增量 ``+10G`` 直接可得；绝对值 ``80G`` 得先知道这块盘
+    # 现在多大（读一次配置）。读不到就不查这一项 —— 不装作知道。
+    delta = quota.disk_grow_delta(payload.size, None)
+    if delta is None:
+        try:
+            config = await client.qemu_config(node, vmid) or {}
+        except ProxmoxError as exc:
+            _raise(exc)
+        disk = next(
+            (
+                item
+                for item in vmconfig.parse_config_disks(config)
+                if item.get("interface") == payload.disk
+            ),
+            None,
+        )
+        delta = quota.disk_grow_delta(
+            payload.size, vmconfig.disk_size_to_gb((disk or {}).get("size") or "")
+        )
+    if delta:
+        await quota.enforce_grow(
+            user, request, "vm", "vm.disk.resize", node, vmid, add={"disk_gb": delta}
+        )
+
     try:
         result = await client.qemu_resize(node, vmid, payload.disk, payload.size)
     except ProxmoxError as exc:
@@ -1701,7 +1817,9 @@ async def migrate_vm(
     vmid: int,
     payload: MigrateRequest,
     request: Request,
-    user: Dict[str, Any] = Depends(security.require_permission("vm.config")),
+    # 迁移单独一个权限点（原先与「修改配置」共用 vm.config：矩阵上写着仅管理员，
+    # 实际有 config 就能迁）
+    user: Dict[str, Any] = Depends(security.require_permission("vm.migrate")),
 ) -> Dict[str, Any]:
     client = get_client()
     try:
@@ -1736,6 +1854,8 @@ async def clone_vm(
     # 克隆同样会实实在在多出一台虚拟机，配额必须跟着算 ——
     # 只在 POST /vms 拦的话，拿一台已有机器反复克隆就能绕过上限。
     await quota.enforce_for_create(user, request, "vm")
+    # 资源额度：克隆体照抄来源机器，规格从读数里取（请求体里没有这些数字）
+    await quota.enforce_create(user, request, "vm", source=(node, vmid))
 
     try:
         result = await client.qemu_clone(
@@ -1831,19 +1951,27 @@ async def convert_to_template(
 
 # ================================================================ snapshots
 async def _require_snapshot_access(
-    user: Dict[str, Any], node: str, vmid: int, name: str
+    user: Dict[str, Any],
+    node: str,
+    vmid: int,
+    name: str,
+    kind: str = ownership.KIND_VM,
 ) -> None:
     """快照级隔离：普通用户只能操作「自己创建的」或「自己名下机器上（旧版本
-    创建、无归属记录）的」快照；既非创建者也非归属机器的拒绝。"""
+    创建、无归属记录）的」快照；既非创建者也非归属机器的拒绝。
+
+    ``kind`` 决定回落判定看哪类机器的归属：虚拟机是 ``KIND_VM``，容器是
+    ``KIND_CT``（见 :func:`app.routers.lxc.rollback_container_snapshot`）。
+    """
     scope = security.visible_owner(user)
     if scope is None:
         return
     ref = ownership.snapshot_ref(_op_connection(), node, vmid, name)
     owner = await ownership.get_owner(ownership.KIND_SNAPSHOT, ref)
     if owner is None:
-        # 旧版本创建的快照没有归属记录：回落到虚拟机归属判定
-        vm_owners = await ownership.owners_map(ownership.KIND_VM)
-        owner = ownership.vm_owner_from(vm_owners, node, vmid, _op_connection())
+        # 旧版本创建的快照没有归属记录：回落到所属机器的归属判定
+        owners = await ownership.owners_map_for(kind)
+        owner = ownership.vm_owner_from(owners, node, vmid, _op_connection())
     if owner != scope:
         raise HTTPException(
             status_code=403,
@@ -1852,12 +1980,19 @@ async def _require_snapshot_access(
 
 
 async def _filter_snapshots(
-    user: Dict[str, Any], node: str, vmid: int, snaps: List[Dict[str, Any]]
+    user: Dict[str, Any],
+    node: str,
+    vmid: int,
+    snaps: List[Dict[str, Any]],
+    kind: str = ownership.KIND_VM,
 ) -> List[Dict[str, Any]]:
     """给快照列表附加创建者；普通用户保留「自己创建的」+「自己名下机器上
-    的存量快照（创建者标记缺失时按虚拟机归属回落）」，``current`` 指针除外。"""
+    的存量快照（创建者标记缺失时按所属机器归属回落）」，``current`` 指针除外。
+
+    ``kind`` 同 :func:`_require_snapshot_access`：决定回落判定用哪类归属表。
+    """
     owners = await ownership.owners_map(ownership.KIND_SNAPSHOT)
-    vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    vm_owners = await ownership.owners_map_for(kind)
     scope = security.visible_owner(user)
     vm_owner = ownership.vm_owner_from(vm_owners, node, vmid, _op_connection())
     output: List[Dict[str, Any]] = []
@@ -1898,6 +2033,10 @@ async def create_snapshot(
     user: Dict[str, Any] = Depends(security.require_permission("vm.snapshot")),
 ) -> Dict[str, Any]:
     client = get_client()
+
+    # 快照额度（总数 / 单机上限）：与建机那套分开记账，只看 snapshot 这一组
+    await quota.enforce_snapshot(user, request, "snapshot.create", "qemu", node, vmid)
+
     try:
         result = await client.qemu_snapshot_create(
             node, vmid, payload.name, payload.description, payload.vmstate
@@ -1982,10 +2121,13 @@ async def delete_snapshot(
 async def bulk_vm_action(
     payload: BulkRequest,
     request: Request,
-    # 这里只做「已登录且能看虚拟机」的基线校验；具体动作（电源 / 删除 / 迁移…）
-    # 各自的权限在 bulk.run_bulk 里按 action 判定 —— 一个端点承载多种动作，
-    # 没法写成单个 require_permission。
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    # 这里只做「已登录且能看机器」的基线校验（虚拟机或容器任一即可）；具体动作
+    # （电源 / 删除 / 迁移…）的权限在 bulk.run_bulk 里按 action **与目标类型**判定
+    # —— 一个端点承载多种动作、且目标可能是 qemu 也可能是 lxc，没法写成单个
+    # require_permission。
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
 ) -> Dict[str, Any]:
     """对一批虚拟机 / 容器执行同一个操作，逐台回报结果。
 
@@ -1999,7 +2141,10 @@ async def bulk_vm_action(
 # ============================================================== scan
 @router.get("/snapshots")
 async def all_snapshots(
-    user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
+    # 汇总页同时覆盖虚拟机与容器：只认一侧会让另一侧的用户整页打不开
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
 ) -> List[Dict[str, Any]]:
     """Every snapshot across the cluster, for the global snapshot page."""
     client = get_client()
@@ -2024,18 +2169,21 @@ async def all_snapshots(
     ]
     results = await parallel(coros, limit=6)
 
-    # 快照级用户隔离：创建者标记优先；无标记（旧版本创建）时按虚拟机归属回落
+    # 快照级用户隔离：创建者标记优先；无标记（旧版本创建）时按所属机器归属回落。
+    # 虚拟机看 KIND_VM、容器看 KIND_CT，逐台按 type 选表。
     scope = security.visible_owner(user)
     snap_owners = await ownership.owners_map(ownership.KIND_SNAPSHOT)
     vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    ct_owners = await ownership.owners_map_for(ownership.KIND_CT)
 
     output: List[Dict[str, Any]] = []
     for vm, snaps in zip(vms, results):
         if isinstance(snaps, Exception):
             continue
         vm_node = str(vm.get("node") or "")
+        owners = ct_owners if vm.get("type") == "lxc" else vm_owners
         vm_owner = ownership.vm_owner_from(
-            vm_owners, vm_node, vm.get("vmid"), _op_connection()
+            owners, vm_node, vm.get("vmid"), _op_connection()
         )
         for snap in snaps or []:
             name = snap.get("name")

@@ -733,6 +733,28 @@ def _attach_size(entry: Dict[str, Any], volid: str) -> None:
         pass
 
 
+def disk_value_gb(value: Any) -> Optional[float]:
+    """从 config 里的一个磁盘值解析出容量（GB）。
+
+    认两种写法：
+
+    * ``local-lvm:50`` —— 新建盘时的「存储:GB」，数字就是 GB；
+    * ``local-lvm:vm-100-disk-0,size=32G`` —— 已有盘，容量写在 ``size=`` 里。
+
+    别的形态（例如只给卷名的 ``local-lvm:vm-100-disk-0``）返回 ``None``：
+    拿不到就说拿不到，别猜一个数出来 —— 猜错会让额度校验凭空拦住或放过。
+    """
+    text = str(value or "")
+    if "size=" in text:
+        text = text.split("size=", 1)[1].split(",", 1)[0]
+    else:
+        head = text.split(",", 1)[0]
+        if ":" not in head:
+            return None
+        text = head.split(":", 1)[1].strip()
+    return disk_size_to_gb(text)
+
+
 def disk_size_to_gb(size: str) -> Optional[float]:
     """Convert a PVE size string such as ``32G`` / ``512M`` into GB."""
     if not size:

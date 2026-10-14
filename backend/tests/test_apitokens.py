@@ -222,6 +222,42 @@ class TestTokenModule:
         assert int(recent["id"]) in remaining
         assert int(old["id"]) not in remaining
 
+    def test_purge_only_removes_inactive_rows(self, db) -> None:
+        live = _run(apitokens.create("admin", name="还在用"))
+        revoked = _run(apitokens.create("admin", name="已吊销"))
+        expired = _run(apitokens.create("admin", name="已过期"))
+        _run(apitokens.revoke(int(revoked["id"]), username="admin"))
+        _exec(
+            "UPDATE api_tokens SET expires_at = %s WHERE id = %s",
+            (time.time() - 10, expired["id"]),
+        )
+
+        # 有效令牌删不掉：想删必须先吊销，否则一枚正在被脚本使用的凭据会
+        # 没有任何痕迹地消失，事后查不出「它有没有被吊销过」
+        assert _run(apitokens.purge(int(live["id"]), username="admin")) is False
+        assert _run(apitokens.count_active("admin")) == 1
+
+        # 已吊销 / 已过期的可以删，删完就真的查不到了
+        assert _run(apitokens.purge(int(revoked["id"]), username="admin")) is True
+        assert _run(apitokens.purge(int(expired["id"]), username="admin")) is True
+        remaining = {int(row[0]) for row in _exec("SELECT id FROM api_tokens")}
+        assert remaining == {int(live["id"])}
+
+        # 删过的再删一次：如实回 False，而不是假装成功
+        assert _run(apitokens.purge(int(revoked["id"]), username="admin")) is False
+
+    def test_purge_respects_ownership(self, db) -> None:
+        created = _run(apitokens.create("admin", name="别人的"))
+        _run(apitokens.revoke(int(created["id"]), username="admin"))
+
+        # 换个用户名去删：删不掉，行还在
+        assert _run(apitokens.purge(int(created["id"]), username="someone-else")) is False
+        assert _exec("SELECT id FROM api_tokens WHERE id = %s", (created["id"],))
+
+        # 本人（或管理员传 None）才删得掉
+        assert _run(apitokens.purge(int(created["id"]), username="admin")) is True
+        assert _exec("SELECT id FROM api_tokens WHERE id = %s", (created["id"],)) == []
+
     def test_last_used_is_written_but_throttled(self, db) -> None:
         created = _run(apitokens.create("admin", name="采集"))
         assert created["last_used"] == 0
@@ -319,6 +355,55 @@ class TestTokenRouter:
         # 别人的令牌必须仍然可用 —— 越权吊销是「误伤」，比越权读更危险
         assert _token_usable(victim_token) is True
 
+    def test_purge_removes_only_inactive_tokens(self, api) -> None:
+        headers = auth_headers(api)
+        live = api.post("/api/tokens", json={"name": "还在用"}, headers=headers).json()
+        dead = api.post("/api/tokens", json={"name": "待清理"}, headers=headers).json()
+        assert api.delete(f"/api/tokens/{dead['id']}", headers=headers).status_code == 200
+
+        # 有效令牌：删不掉，列表也不动（要先吊销）
+        resp = api.delete(f"/api/tokens/{live['id']}/record", headers=headers)
+        assert resp.status_code == 404
+        assert len(api.get("/api/tokens", headers=headers).json()["items"]) == 2
+
+        # 已吊销的：删得掉，列表里随之消失
+        resp = api.delete(f"/api/tokens/{dead['id']}/record", headers=headers)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["purged"] == dead["id"]
+        items = api.get("/api/tokens", headers=headers).json()["items"]
+        assert [item["id"] for item in items] == [live["id"]]
+
+        # 删过了再删一次：404，不是 200
+        assert (
+            api.delete(f"/api/tokens/{dead['id']}/record", headers=headers).status_code
+            == 404
+        )
+
+    def test_purge_of_someone_elses_token_is_404(self, api) -> None:
+        admin = auth_headers(api)
+        api.post(
+            "/api/users",
+            json={"username": "tokpurgerv", "password": VIEWER_PASSWORD, "role": "viewer"},
+            headers=admin,
+        )
+        victim_token = _issue(api, "别人的", headers=admin)
+        victim_id = api.get("/api/tokens", headers=admin).json()["items"][0]["id"]
+        api.delete(f"/api/tokens/{victim_id}", headers=admin)
+
+        viewer = {
+            "Authorization": "Bearer "
+            + api.post(
+                "/api/auth/login",
+                json={"username": "tokpurgerv", "password": VIEWER_PASSWORD},
+            ).json()["access_token"]
+        }
+        resp = api.delete(f"/api/tokens/{victim_id}/record", headers=viewer)
+        assert resp.status_code == 404
+        # 记录必须还在 —— 越权删除会把别人的审计痕迹一起抹掉
+        assert len(api.get("/api/tokens", headers=admin).json()["items"]) == 1
+        # 而且它本来就已失效，与「删没删掉」无关：这里只确认行没被动过
+        assert _token_usable(victim_token) is False
+
     def test_list_only_shows_own_tokens(self, api) -> None:
         admin = auth_headers(api)
         _issue(api, "管理员的", headers=admin)
@@ -398,6 +483,11 @@ class TestTokenAuth:
         listed = api.get("/api/tokens", headers=_as_token(plain))
         assert listed.status_code == 200
         assert all("token" not in item for item in listed.json()["items"])
+
+        # 删除记录同样走 require_session：拿令牌来抹自己的审计痕迹也不行
+        purge = api.delete("/api/tokens/1/record", headers=_as_token(plain))
+        assert purge.status_code == 403
+        assert "凭据" in purge.json()["detail"]
 
     def test_token_inherits_role_permissions(self, api) -> None:
         """viewer 的令牌不能做写操作 —— 令牌不比它主人更能干。"""

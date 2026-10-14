@@ -123,7 +123,10 @@ async def update_connection(
 
 
 # ================================================================= multi-PVE
-# 支持保存多台 Proxmox；所有业务模块始终使用「当前连接」，切换即全局生效。
+# 支持保存多台 Proxmox。多条连接**一律同级**：节点 / 虚拟机 / 存储等列表接口
+# 未指定连接时会遍历全部连接合并返回；只有「一次只能读一台」的接口（健康探活、
+# 集群版本 / 仲裁等）才回落到这里维护的「兜底连接」。它不对外表示「主集群」，
+# 设置页只把它作为「兜底读取目标」呈现。
 
 
 def _find_connection(
@@ -624,10 +627,11 @@ async def test_connection(
 @router.get("/config/vm-defaults")
 async def get_vm_defaults(
     user: Dict[str, Any] = Depends(security.get_current_user),
-) -> Dict[str, str]:
-    """面板级创建默认值（当前只有默认 DNS）。
+) -> Dict[str, Any]:
+    """面板级创建默认值：默认 DNS 与默认克隆方式。
 
-    创建向导向所有可创建虚拟机的用户预填这个值，因此读取只要求登录。
+    创建向导向所有可创建虚拟机的用户预填这两个值（DNS 写进 cloud-init，克隆方式
+    预选链接 / 完整），因此读取只要求登录。
     """
     return await defaults.get_vm_defaults()
 
@@ -637,15 +641,23 @@ async def put_vm_defaults(
     payload: VmDefaultsIn,
     request: Request,
     user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
-) -> Dict[str, str]:
-    """保存默认 DNS。留空 = 不干预，创建/克隆时完全继承 DHCP / RA 下发的 DNS。"""
-    saved = await defaults.set_vm_defaults(payload.dns)
+) -> Dict[str, Any]:
+    """保存默认 DNS 与默认克隆方式。
+
+    DNS 留空 = 不干预，创建/克隆时完全继承 DHCP / RA 下发的 DNS；
+    full_clone 只是各创建入口预选的初值（False 链接克隆 / True 完整克隆），
+    用户在快速部署、自定义部署、模板页克隆里都可以单独改。
+    """
+    saved = await defaults.set_vm_defaults(payload.dns, payload.full_clone)
     await security.audit(
         request,
         user,
         "config.vm_defaults",
         target="vm-defaults",
-        detail={"dns": saved["dns"] or "(空)"},
+        detail={
+            "dns": saved["dns"] or "(空)",
+            "full_clone": "完整克隆" if saved["full_clone"] else "链接克隆",
+        },
     )
     return saved
 
@@ -1112,6 +1124,22 @@ async def my_quota(
     （全集群台数、所有人共享），这里是**按人分配**的资源额度。
     """
     return await quota.resource_report(user)
+
+
+@router.get("/quota/overview")
+async def quota_overview(
+    user: Dict[str, Any] = Depends(security.require_permission("users.view")),
+) -> Dict[str, Any]:
+    """**所有用户**的额度与用量一览（管理端）。
+
+    额度这个功能唯一需要管理员持续做的决策是「要不要给谁放宽」，而此前没有任何
+    一个地方支撑它 —— 只能逐个打开用户编辑器看。这个接口把读数取一次、按归属
+    分桶算全，代价是 O(用户数 + 机器数) 而不是「每人一次 PVE 请求」。
+
+    口径与用户侧那份（``/quota/me``）完全共用。``error`` 非空表示集群读数不全，
+    用量会偏小 —— 界面必须把它显示出来，不能当成「大家都还没用」。
+    """
+    return await quota.overview()
 
 
 @router.post("/config/mail/test")

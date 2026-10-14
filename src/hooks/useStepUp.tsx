@@ -22,6 +22,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { errorMessage, setStepUpHandler } from '../api/client';
@@ -106,6 +107,14 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  /* 回车即提交。弹窗里没有 <form>，不接这一手的话「输完密码按回车」什么都不会
+     发生 —— 焦点就在密码框里，看起来像卡住了。 */
+  const onFieldKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    void submit();
+  };
+
   return (
     <StepUpContext.Provider value={{ requestStepUp }}>
       {children}
@@ -116,6 +125,30 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
         description={detail || t('stepUp.detail')}
         size="sm"
         hideClose
+        className="modal-stepup"
+        /* 按钮交给 Modal 的 footer，而不是塞在 children 末尾。
+           塞在正文里时它只是「最后一个块」：贴着密码框（正文没有行间距），
+           也没有 footer 那条顶边和浅底 —— 看起来就像按钮是输入框的一部分，
+           而下方又空出一片。全站其它弹窗（ConfirmDialog、模板转换…）都走
+           footer，这里跟齐。 */
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => settle(false)}
+              disabled={busy}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void submit()}
+              loading={busy}
+            >
+              {t('stepUp.confirm')}
+            </Button>
+          </>
+        }
       >
         {error ? (
           <div className="login-error" role="alert">
@@ -127,6 +160,7 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={onFieldKeyDown}
             placeholder={t('stepUp.passwordPlaceholder')}
             autoComplete="current-password"
             autoFocus
@@ -142,6 +176,7 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
             <Input
               value={code}
               onChange={(e) => setCode(e.target.value)}
+              onKeyDown={onFieldKeyDown}
               placeholder={t('stepUp.codePlaceholder')}
               autoComplete="one-time-code"
               maxLength={16}
@@ -149,14 +184,6 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
             />
           </Field>
         ) : null}
-        <div className="form-row" style={{ justifyContent: 'flex-end' }}>
-          <Button variant="ghost" onClick={() => settle(false)} disabled={busy}>
-            {t('common.cancel')}
-          </Button>
-          <Button variant="primary" onClick={() => void submit()} loading={busy}>
-            {t('stepUp.confirm')}
-          </Button>
-        </div>
       </Modal>
     </StepUpContext.Provider>
   );

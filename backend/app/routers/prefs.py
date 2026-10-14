@@ -19,6 +19,10 @@ router = APIRouter(prefix="/api/prefs", tags=["prefs"])
 # 「往里面塞一万个 id」这种把偏好表当仓库用的写法。
 MAX_WIDGETS = 60
 
+# 集群作用域就是一个连接 id（后端生成的是 8 位十六进制）。给足余量，
+# 但仍然是「一个标识」，不是可以随便塞长文本的字段。
+MAX_SCOPE_ID_LEN = 128
+
 
 class PrefIn(BaseModel):
     """偏好值。结构随 key 而异，由 :func:`_validate` 分派校验。"""
@@ -72,11 +76,32 @@ def _validate_language(value: Any) -> str:
     return code
 
 
+def _validate_cluster_scope(value: Any) -> str:
+    """集群作用域：连接 id，或空串表示「全部集群」。
+
+    **不校验这个 id 是否真实存在** —— 连接可以被删掉，而「偏好里存着一个已消失的
+    id」不该让保存失败（用户只是继承了一份旧视角）。前端拿到连接列表后会校验并
+    自动回到「全部集群」，请求层也只把它当**软作用域**：真定位不到时后端仍会
+   按节点 / VMID 纠正，最坏情况退化成兜底连接，而不是整页报错。
+    这里只挡住「结构不对」（对象、超长字符串之类）。
+    """
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="集群作用域必须是连接 id 字符串")
+    cid = value.strip()
+    if len(cid) > MAX_SCOPE_ID_LEN:
+        raise HTTPException(status_code=400, detail="集群作用域标识过长")
+    return cid
+
+
 def _validate(key: str, value: Any) -> Any:
     if key == prefs.PREF_DASHBOARD_LAYOUT:
         return _validate_dashboard_layout(value)
     if key == prefs.PREF_LANGUAGE:
         return _validate_language(value)
+    if key == prefs.PREF_CLUSTER_SCOPE:
+        return _validate_cluster_scope(value)
     # 白名单之外的 key 在入口就已经被挡掉了，走到这里说明漏加了校验分支
     raise HTTPException(status_code=400, detail=f"暂不支持的偏好：{key}")
 

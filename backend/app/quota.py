@@ -118,24 +118,18 @@ async def count_guests(kind: str = "vm") -> Tuple[int, Optional[str]]:
     口径与 ``GET /vms?type=all`` 一致（都用 ``cluster/resources``），
     这样用户看到的台数和配额算的台数不会打架。模板一并计入 ——
     它在 PVE 里同样占一个 VMID 与一份存储。
+
+    **与「按人分配」那一层共用同一份读数**（:func:`guest_rows`）：两者本来就是
+    同一件事的两个视角（全平台 / 某个人），各拉一次 ``cluster_resources`` 既浪费，
+    又可能因为两次拉取之间隔了几秒而给出**互相矛盾**的两个数字。
+
+    顺带白拿 :data:`STATS_TTL` 的缓存：客户机列表页在轮询这个读数，原先每次都是
+    「每个连接一次真实请求」。变更类接口会主动作废（见 :func:`invalidate`），
+    所以缓存不会让刚建出来的机器看不见。
     """
     wanted = RESOURCE_TYPES[normalise_kind(kind)]
-    targets = list(all_connection_clients()) or [(None, get_client())]
-    total = 0
-    error: Optional[str] = None
-
-    for _profile, client in targets:
-        try:
-            resources = await client.cluster_resources("vm")
-        except ProxmoxError as exc:
-            # 单条连接失败只记下来继续算其余的，总数会偏小但不会整个报错
-            error = error or str(exc.message)
-            continue
-        total += sum(
-            1 for item in (resources or []) if item.get("type") in wanted
-        )
-
-    return total, error
+    rows, error = await guest_rows()
+    return sum(1 for row in rows if row.get("type") in wanted), error
 
 
 async def usage(user: Dict[str, Any], kind: str = "vm") -> Dict[str, Any]:
@@ -732,6 +726,20 @@ _PER_GUEST_CAP: Dict[str, str] = {
     "memory_mb": "max_memory_mb",
     "disk_gb": "max_disk_gb",
 }
+
+#: 单台封顶字段的展示名。``_FIELD_TEXT`` 只覆盖「名下总量」那四个维度，这三个是
+#: 「单台上限」，文案上必须区分开 —— 「内存」与「单台内存上限」混用会让人以为
+#: 看错了是哪一层的限制（额度预警文案就靠这个区分，见 app.quotaalert）。
+_CAP_FIELD_TEXT: Dict[str, str] = {
+    "max_cores": "单台 CPU 核数",
+    "max_memory_mb": "单台内存",
+    "max_disk_gb": "单台磁盘容量",
+}
+
+
+def field_label(field: str) -> str:
+    """额度的展示名。虚拟机 / 容器分组由调用方自己拼上去（见 :func:`group_label`）。"""
+    return _FIELD_TEXT.get(field) or _CAP_FIELD_TEXT.get(field) or str(field)
 
 #: 能靠「改已有机器」长大的维度。``count`` 不在其中 —— 一台机器变不成两台。
 _GROWABLE_FIELDS: Tuple[str, ...] = ("cores", "memory_mb", "disk_gb")
@@ -1375,6 +1383,190 @@ async def _users_with_snapshot_limits() -> List[Tuple[str, str]]:
         if any(value is not None for value in limits["snapshot"].values()):
             targets.append((username, str(user.get("role") or "")))
     return targets
+
+
+async def all_user_limits() -> Dict[str, Optional[Dict[str, Dict[str, Optional[int]]]]]:
+    """整张 ``user_quota`` 表一次读完，返回 ``{用户名: 额度 或 None}``。
+
+    只给额度总览用：那个页面要一次算出**所有人**的额度，逐个查库就是 N 次往返。
+    没配过的用户不会出现在结果里（调用方 ``.get()`` 拿到 ``None``，正是
+    「继承角色默认」）。
+    """
+    async with database.connect() as db:
+        cursor = await db.execute("SELECT username, quota FROM user_quota")
+        rows = await cursor.fetchall()
+    return {str(row["username"]): _configured_limits(row["quota"]) for row in rows}
+
+
+async def all_role_limits() -> Dict[str, Optional[Dict[str, Dict[str, Optional[int]]]]]:
+    """整张 ``roles`` 表的默认额度一次读完。理由同 :func:`all_user_limits`。"""
+    async with database.connect() as db:
+        cursor = await db.execute("SELECT id, quota FROM roles")
+        rows = await cursor.fetchall()
+    return {str(row["id"]): _configured_limits(row["quota"]) for row in rows}
+
+
+async def overview() -> Dict[str, Any]:
+    """一次算出**所有用户**的额度与用量，给管理端的额度总览用。
+
+    **为什么要有这个接口**：管理端此前只能逐个打开用户编辑器看额度 ——
+    「谁快满了」这件事要点开每一个人。而每人各算一次就是每人一次
+    ``cluster_resources``。这里把读数取一次、按归属分桶，代价是 O(用户数 + 机器数)。
+
+    口径与用户侧那份（:func:`resource_report`）**完全共用**：同一个
+    :func:`guest_rows`、同一个 :func:`summarise_usage`、同一个 :func:`resolve_limits`。
+    管理端看到的数字和用户自己看到的必须一致，否则「谁说的对」会变成新问题。
+
+    ``error`` 非空表示读数不全 —— 那种情况下用量会偏小，调用方**必须**把它显示
+    出来，不能当成「大家都还没用」。
+    """
+    rows, error = await guest_rows()
+    entries = await ownership.all_refs()
+    user_limits = await all_user_limits()
+    role_limits = await all_role_limits()
+
+    # 归属按人分桶。快照的 ref 是挂在客户机后面的，总览只看客户机本身。
+    by_user: Dict[str, Dict[str, set]] = {}
+    for kind, ref, username in entries:
+        if not ref or kind not in ownership.GUEST_KINDS:
+            continue
+        bucket = by_user.setdefault(username, {"vm": set(), "ct": set()})
+        bucket["vm" if kind == ownership.KIND_VM else "ct"].add(ref)
+
+    out: List[Dict[str, Any]] = []
+    for user in await store.list_users():
+        username = str(user.get("username") or "")
+        role = str(user.get("role") or "")
+        bucket = by_user.get(username) or {"vm": set(), "ct": set()}
+        # 与 owned_refs_for 同一套：容器那组带上 vm 的 ref（见那边的说明）
+        refs = {
+            "vm": set(bucket["vm"]),
+            "ct": set(bucket["ct"]) | set(bucket["vm"]),
+        }
+        usage = summarise_usage(rows, refs)
+        effective, source = resolve_limits(
+            user_limits.get(username), role_limits.get(role)
+        )
+        out.append(
+            {
+                "username": username,
+                "role": role,
+                "source": source,
+                "limits": effective,
+                "usage": usage,
+                "remaining": {
+                    group: remaining_for(effective[group], usage[group])
+                    for group in GROUP_GUEST_KIND
+                },
+                "bypass": "*" in security.effective_permissions(user),
+            }
+        )
+
+    return {"users": out, "error": error}
+
+
+async def reconcile_owners() -> Dict[str, Any]:
+    """归属对账：把面板那本归属账和 PVE 的实际清单对齐。
+
+    **为什么需要它。** 用量是「归属表 ∩ PVE 实时清单」的交集，而归属表是面板
+    自己在维护的第二份账，它只在一部分写入路径上被更新。于是会漂：
+
+      * 机器在 **PVE 侧**直接删掉 → 归属行残留。危害不是「多算」，而是 PVE 会回收
+        最小的空闲 VMID，旧记录撞上重建的同号机器，那台**新**机器就被算到旧用户
+        头上（见 :func:`ownership.forget_guest`）。
+      * 机器在 **PVE 侧**直接建 → 没有归属行。这台机器在按人分配的这层里**不算
+        任何人**的额度，而全局台数上限（:func:`count_guests`）是数全集群的 ——
+        两份口径在这里是分开的，等于漏了一份免费额度。
+      * 快照行在机器删除后残留（代码里早就承认过这一点）。
+
+    面板删除的那几条路径已经逐条修过，但**逐个端点补不是办法**：任何新入口
+    （回收站、批量清理、以后新增的删除方式）都会再漏一次。这里做成一个周期作业，
+    和 :func:`reconcile_snapshots`、``sshremote.reconcile_panel_hosts`` 同一个思路。
+
+    **安全第一**：任何一条连接读失败就整轮跳过。拿半份清单去对账会把好端端的
+    归属记录删掉（那台机器在没读到的那条连接上），用户凭空多出额度 —— 比晚一轮
+    发现脏数据严重得多。
+
+    只动「当前已配置的连接」名下的记录：指向已删除连接的记录一律留着，管理员把
+    那台 PVE 接回来时还要用。
+
+    返回 ``{"removed", "orphans", "orphan_pct", "refused"}``；``orphans`` 是
+    「机器在、没人认领」的台数 —— **只报告，不自动指派**：该给谁是人来决定的。
+    """
+    targets = list(all_connection_clients()) or [(None, get_client())]
+    live: set = set()
+    scopes: set = set()
+    rows: List[Dict[str, Any]] = []
+    failed: List[str] = []
+
+    for profile, client in targets:
+        cid = str((profile or {}).get("id") or "")
+        try:
+            resources = await client.cluster_resources("vm")
+        except ProxmoxError as exc:
+            failed.append(str(exc.message))
+            continue
+        # 这条连接读到了：它名下的 ref 前缀才算「可以确认」
+        scopes.add(f"{cid or '-'}:")
+        for item in resources or []:
+            kind = str(item.get("type") or "")
+            if kind not in _KIND_TO_GROUP:
+                continue
+            node = str(item.get("node") or "")
+            if not node:
+                continue
+            vmid = _int_field(item, "vmid")
+            rows.append({"connection_id": cid, "node": node, "vmid": vmid})
+            live.add(ownership.vm_ref(cid, node, vmid))
+
+    if failed:
+        logger.warning("归属对账：集群读数不完整（%s），本轮跳过", "；".join(failed))
+        return {"removed": 0, "orphans": 0, "refused": "；".join(failed)}
+
+    # 存量 "-" 前缀的记录：只在 (节点, VMID) 唯一时认，与 _legacy_refs 同一规则。
+    # 歧义（两台 PVE 上同名节点 + 同 VMID）的不认，也不动它们 —— 见下面 scopes 的用法。
+    live |= {ref for ref in _legacy_refs(rows).values() if ref}
+    scopes.add("-:")
+
+    entries = await ownership.all_refs()
+
+    # 1) 清掉「机器已经不在了」的记录
+    doomed: List[Tuple[str, str]] = []
+    for kind, ref, _owner in entries:
+        if not ref or kind not in (*ownership.GUEST_KINDS, ownership.KIND_SNAPSHOT):
+            continue
+        # 快照的归属是挂在**客户机 ref 后面**的（`<guest>/<快照名>`），所以「机器
+        # 还在不在」要看前半段 —— 直接拿整条 ref 去比会把活机器的快照行全删掉。
+        guest_ref = ref.split("/", 1)[0] if kind == ownership.KIND_SNAPSHOT else ref
+        if guest_ref in live:
+            continue
+        if not any(guest_ref.startswith(prefix) for prefix in scopes):
+            continue  # 归属的那条连接现在没配上：留着，接回来还要用
+        doomed.append((kind, ref))
+
+    removed = await ownership.forget_refs(doomed)
+    for kind, ref in doomed:
+        logger.info("归属对账：%s %s 已不存在，清掉归属记录", kind, ref)
+
+    # 2) 报告「机器在、没人认领」。用与算用量**同一套**映射（owned_refs_in_rows），
+    #    否则这里数出来的人和额度算出来的人会对不上 —— 又是一处口径分叉。
+    owner_refs = {
+        (ref.split("/", 1)[0] if kind == ownership.KIND_SNAPSHOT else ref)
+        for kind, ref, _owner in entries
+        if ref and kind in (*ownership.GUEST_KINDS, ownership.KIND_SNAPSHOT)
+    }
+    canonical = {
+        ownership.vm_ref(row["connection_id"], row["node"], row["vmid"]) for row in rows
+    }
+    orphans = sorted(canonical - owned_refs_in_rows(rows, owner_refs))
+
+    return {
+        "removed": removed,
+        "orphans": len(orphans),
+        # 只留个线索，别把上千条 ref 全塞进日志/接口
+        "orphan_refs": orphans[:20],
+        "refused": "",
+    }
 
 
 async def reconcile_snapshots() -> Dict[str, Any]:

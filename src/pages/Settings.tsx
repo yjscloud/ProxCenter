@@ -15,19 +15,23 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   configApi,
+  connectionsApi,
   healthApi,
   clusterApi,
-  connectionsApi,
   mailApi,
   siteApi,
 } from '../api/endpoints';
 import { errorMessage, isNotImplemented } from '../api/client';
+import { faqApi } from '../api/endpoints';
 import {
-  faqApi,
+  browserTimeZone,
   defaultSettings,
+  isValidTimeZone,
   loadSettings,
+  notifySettingsChanged,
+  panelTimeZone,
   saveSettings,
-} from '../api/endpoints';
+} from '../utils/panelSettings';
 import { PageShell } from '../components/Layout';
 import { PanelUpdateCard } from '../components/PanelUpdateCard';
 import {
@@ -52,7 +56,6 @@ import {
 import {
   ErrorState,
   Notice,
-  CollapsibleCard,
 } from '../components/ui/EmptyState';
 import {
   IconSettings,
@@ -74,15 +77,16 @@ import {
   IconLink,
   IconMonitor,
   IconMenu,
+  IconPlug,
 } from '../components/Icons';
 import { formatDateTime } from '../utils/format';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useSectionSpy } from '../hooks/useSectionSpy';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { DEFAULT_SITE_INFO } from '../hooks/useSiteInfo';
 import { BrandLogo } from '../components/BrandLogo';
 import { ResourceSpecsPanel } from '../components/ResourceSpecsPanel';
-import { NodeNoteField, useNodeMeta } from '../components/NodeMeta';
 import type {
   ClusterStatus,
   FaqItem,
@@ -120,7 +124,7 @@ import type {
 
 interface SettingsSection {
   id: string;
-  /** 所属分组（文案在组件内按 SettingsGroup 取词） */
+  /** 所属分组：只在顶部吸顶导航里用一道竖线把组与组分开（不再有可见标题） */
   group: SettingsGroup;
   /** 导航项与卡片标题共用的名字，两边必须一致，否则“点了没跳对地方” */
   label: string;
@@ -132,7 +136,12 @@ interface SettingsSection {
   render: () => ReactNode;
 }
 
-/** 分组键：面板偏好 / 服务端配置 / 运行信息 */
+/**
+ * 分组键：面板偏好 / 服务端配置 / 运行信息。
+ *
+ * 这三类**不再各自带一行可见标题**（原先标题会压在一组卡片前面，多一层要读的
+ * 字），它们只用来界分导航里的节 —— 组与组之间画一道竖线（page-index-sep）。
+ */
 type SettingsGroup = 'prefs' | 'server' | 'runtime';
 
 /** 分区卡片的 DOM id 前缀：吸顶导航的跳转与高亮都按 `前缀 + 分区 id` 找元素 */
@@ -144,12 +153,14 @@ export function Settings() {
   const { user, hasPermission } = useAuth();
   const canManage = hasPermission('settings.manage');
   const [searchParams, setSearchParams] = useSearchParams();
+  /* 本页几处读数的轮询间隔跟「数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   /* ---- 健康检查 ---- */
   const healthQuery = useQuery({
     queryKey: ['health'],
     queryFn: () => healthApi.check(),
-    refetchInterval: 15_000,
+    refetchInterval: refresh,
     retry: 1,
   });
 
@@ -157,29 +168,32 @@ export function Settings() {
   const clusterQuery = useQuery({
     queryKey: ['cluster', 'status'],
     queryFn: () => clusterApi.status(),
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: 1,
   });
 
-  const groupMeta: Record<SettingsGroup, { label: string; desc: string }> = useMemo(
-    () => ({
-      prefs: {
-        label: t('settings.groupPrefs'),
-        desc: t('settings.groupPrefsDesc'),
-      },
-      server: {
-        label: t('settings.groupServer'),
-        desc: t('settings.groupServerDesc'),
-      },
-      runtime: {
-        label: t('settings.groupRuntime'),
-        desc: t('settings.groupRuntimeDesc'),
-      },
-    }),
-    [t],
-  );
-
   const allSections: SettingsSection[] = [
+    /* 系统信息排最前：它是「设置」这一页的入口 —— 先看清面板与集群的状态，
+       再去调具体项。列表顺序即页面顺序，导航里的分段也跟着它走。 */
+    {
+      id: 'system',
+      group: 'runtime',
+      label: t('settings.secSystem'),
+      desc: t('settings.secSystemDesc'),
+      icon: <IconActivity size={16} />,
+      render: () => (
+        <SystemSection
+          health={healthQuery.data}
+          healthLoading={healthQuery.isLoading}
+          healthError={healthQuery.error}
+          onRetryHealth={() => void healthQuery.refetch()}
+          cluster={clusterQuery.data}
+          clusterLoading={clusterQuery.isLoading}
+          currentUsername={user?.username}
+          currentRole={user?.role}
+        />
+      ),
+    },
     {
       id: 'panel',
       group: 'prefs',
@@ -263,38 +277,11 @@ export function Settings() {
       adminOnly: true,
       render: () => <EmailSection />,
     },
-    {
-      id: 'system',
-      group: 'runtime',
-      label: t('settings.secSystem'),
-      desc: t('settings.secSystemDesc'),
-      icon: <IconActivity size={16} />,
-      render: () => (
-        <SystemSection
-          health={healthQuery.data}
-          healthLoading={healthQuery.isLoading}
-          healthError={healthQuery.error}
-          onRetryHealth={() => void healthQuery.refetch()}
-          cluster={clusterQuery.data}
-          clusterLoading={clusterQuery.isLoading}
-          currentUsername={user?.username}
-          currentRole={user?.role}
-        />
-      ),
-    },
-  ];
+    ];
   const sections = allSections.filter((item) => !item.adminOnly || canManage);
 
   const firstId = sections[0]?.id ?? '';
   const wanted = searchParams.get('tab') ?? '';
-
-  /* 导航按顺序分组：同一个 group 的项连续出现，分组标题只在第一项前画一次 */
-  const groups: Array<{ name: SettingsGroup; items: SettingsSection[] }> = [];
-  for (const item of sections) {
-    const last = groups[groups.length - 1];
-    if (last && last.name === item.group) last.items.push(item);
-    else groups.push({ name: item.group, items: [item] });
-  }
 
   /* 当前高亮哪一项：先按 URL 里的 ?tab=，之后交给滚动位置（见 useSectionSpy）。
      参数指向的分区可能因权限变化消失（刚被撤掉 settings.manage），先确认它还在。 */
@@ -354,7 +341,7 @@ export function Settings() {
           onClick={() => {
             void healthQuery.refetch();
             /* 用前缀 ['cluster'] 一次覆盖集群状态与机队状态（fleet-status）：
-               系统状态区两块都读它，只刷 status 那块会停在旧值 */
+               系统信息区的读数都读它们，只刷 status 那块会停在旧值 */
             void queryClient.invalidateQueries({ queryKey: ['cluster'] });
             void queryClient.invalidateQueries({ queryKey: ['config'] });
             /* 连接列表也在这个页面上（系统状态区显示「数据来自哪台」） */
@@ -396,25 +383,20 @@ export function Settings() {
         ))}
       </nav>
 
-      {/* 分组标题、分区卡片、上面那条导航都是 .page 的直接子元素（.page 本身
-          就是 flex 列 + 20px 间距），不再多套一层容器 */}
-      {groups.map((group) => (
-        <Fragment key={group.name}>
-          <header className="page-section-head">
-            <h2 className="page-section-title">{groupMeta[group.name].label}</h2>
-            <p className="page-section-desc">{groupMeta[group.name].desc}</p>
-          </header>
+      {/* 分区卡片、上面那条导航都是 .page 的直接子元素（.page 本身就是 flex 列 +
+          20px 间距），不再多套一层容器。
 
-          {group.items.map((item) => (
-            <div
-              className="page-block"
-              id={`${SECTION_ID_PREFIX}${item.id}`}
-              key={item.id}
-            >
-              {item.render()}
-            </div>
-          ))}
-        </Fragment>
+          原先每组卡片前面还压着一行分组标题（运行信息 / 面板偏好 / 服务端配置），
+          已去掉：每个卡片自己都写清了作用范围，标题只是多一层要读的字。分组关系
+          仍保留在顶部导航里 —— 组与组之间那道竖线（page-index-sep）就是它。 */}
+      {sections.map((item) => (
+        <div
+          className="page-block"
+          id={`${SECTION_ID_PREFIX}${item.id}`}
+          key={item.id}
+        >
+          {item.render()}
+        </div>
       ))}
     </PageShell>
   );
@@ -468,8 +450,8 @@ function PanelSection() {
     saveSettings(next);
     setSaved(next);
     toast.success(t('settings.panelSaved'), t('settings.panelSavedHint'));
-    /* 通知其他页面重新读取刷新间隔 */
-    window.dispatchEvent(new CustomEvent('ProxCenter:settings-changed'));
+    /* 通知已经在页面上的轮询改用新的刷新间隔（见 hooks/useRefreshInterval） */
+    notifySettingsChanged();
   };
 
   const reset = () => {
@@ -477,10 +459,8 @@ function PanelSection() {
     saveSettings(defaultSettings);
     setSaved(defaultSettings);
     toast.info(t('settings.panelResetDone'));
-    window.dispatchEvent(new CustomEvent('ProxCenter:settings-changed'));
+    notifySettingsChanged();
   };
-
-  const timezoneGuess = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   return (
     <Card>
@@ -526,12 +506,19 @@ function PanelSection() {
 
           <Field
             label={t('settings.timezoneLabel')}
-            hint={t('settings.timezoneHint', { tz: timezoneGuess })}
+            /* 填了个拼错的时区名不该悄悄回落（见 utils/panelSettings 的
+               panelTimeZone）：当场提示，否则「改了没反应」又要查一轮 */
+            error={
+              isValidTimeZone(settings.timezone)
+                ? undefined
+                : t('settings.timezoneInvalid')
+            }
+            hint={t('settings.timezoneHint', { tz: panelTimeZone() })}
           >
             <Input
               value={settings.timezone}
               onChange={(e) => patch('timezone', e.target.value)}
-              placeholder="Asia/Shanghai"
+              placeholder={browserTimeZone()}
               className="mono"
               autoComplete="off"
             />
@@ -578,6 +565,10 @@ function VMCreateDefaultsSection() {
   const canManage = hasPermission('settings.manage');
 
   const [dns, setDns] = useState('');
+  /* 默认克隆方式：false = 链接克隆（原来的固定行为），true = 完整克隆。
+     它只是各创建入口的**初值** —— 快速部署、自定义部署、模板页克隆都会按它预选，
+     用户在那些页面上仍可单独改。 */
+  const [fullClone, setFullClone] = useState(false);
   /* 下发总额度用字符串存：空串 = 不限制，与「填了 0」是两回事 */
   const [quotaText, setQuotaText] = useState('');
   const [lxcQuotaText, setLxcQuotaText] = useState('');
@@ -612,6 +603,7 @@ function VMCreateDefaultsSection() {
     if (!query.data || loadedRef.current) return;
     loadedRef.current = true;
     setDns(query.data.dns ?? '');
+    setFullClone(Boolean(query.data.full_clone));
   }, [query.data]);
 
   useEffect(() => {
@@ -642,19 +634,30 @@ function VMCreateDefaultsSection() {
     }
     setBusy(true);
     try {
-      const saved = await configApi.saveVmDefaults(dns);
+      const saved = await configApi.saveVmDefaults({
+        dns,
+        full_clone: fullClone,
+      });
       setDns(saved.dns ?? '');
+      setFullClone(Boolean(saved.full_clone));
       const savedQuota = await configApi.saveVmQuota(text === '' ? null : Number(text));
       setQuotaText(savedQuota.quota == null ? '' : String(savedQuota.quota));
       const savedLxc = await configApi.saveLxcQuota(
         lxcText === '' ? null : Number(lxcText),
       );
       setLxcQuotaText(savedLxc.quota == null ? '' : String(savedLxc.quota));
+      /* 两项都报出来：这张卡保存的是两份设置，只说 DNS 会让人以为克隆方式没生效 */
       toast.success(
         t('profile.saved'),
-        saved.dns
-          ? t('settings.vmSavedDns', { dns: saved.dns })
-          : t('settings.vmSavedDnsEmpty'),
+        `${
+          saved.dns
+            ? t('settings.vmSavedDns', { dns: saved.dns })
+            : t('settings.vmSavedDnsEmpty')
+        } · ${
+          saved.full_clone
+            ? t('settings.vmCloneSavedFull')
+            : t('settings.vmCloneSavedLinked')
+        }`,
       );
       void queryClient.invalidateQueries({ queryKey: ['config', 'vm-defaults'] });
       void queryClient.invalidateQueries({ queryKey: ['config', 'vm-quota'] });
@@ -800,6 +803,31 @@ function VMCreateDefaultsSection() {
               ) : null}
             </div>
           ) : null}
+        </div>
+
+        {/* ---- 默认克隆方式 ------------------------------------------------
+            它是上面三栏的**同级设置**，所以排进同一个栅格、横跨整行（见
+            .set-clone-default）—— 排在栅格外面时，它与网格之间只有 16px 的
+            固定外距，比网格内部 22px 的行距还小，看着就像挂在第三栏下面。
+            横跨整行而不是占 1/3：提示是一整句话，塞进一列要折成五行。 */}
+        <div className="set-col set-clone-default">
+          <div className="set-form-block-head">
+            <span className="set-form-block-icon">
+              <IconLayers size={15} />
+            </span>
+            <span className="set-form-block-title">{t('settings.vmCloneBlock')}</span>
+            <span className="set-form-block-hint">
+              {t('settings.vmCloneBlockHint')}
+            </span>
+          </div>
+
+          <Switch
+            checked={fullClone}
+            onChange={setFullClone}
+            label={t('settings.vmCloneFull')}
+            hint={t('settings.vmCloneFullHint')}
+            disabled={!canManage}
+          />
         </div>
       </div>
 
@@ -2286,14 +2314,15 @@ function SystemSection({
   currentRole?: string;
 }) {
   const t = useT();
+  const toast = useToast();
+  const queryClient = useQueryClient();
   const { hasPermission } = useAuth();
-  /* 改连接配置（默认读取哪一套 PVE）是面板自身配置：后端 /config/connection
-     的写接口用 settings.manage，这里跟它对齐 —— 早先按 role == admin 判，
-     自定义角色即使有 settings.manage 也点不动。 */
+  /* 改「兜底读取目标」要 settings.manage —— 与后端 activate 接口的守卫一致 */
   const canManage = hasPermission('settings.manage');
   const [lastChecked, setLastChecked] = useState<Date>(() => new Date());
+  const [switching, setSwitching] = useState(false);
 
-  /* 全站合计：`/health` 与 `/cluster/status` 都只能读「默认连接」那一套 PVE，
+  /* 全站合计：`/health` 与 `/cluster/status` 都只能读「兜底连接」那一套 PVE，
      多连接部署下它们的节点数只是其中一台的 —— 系统信息要给的是**所有连接合计**，
      否则「集群有 4 台、这里显示 1 个节点」就成了误导。 */
   const fleet = useQuery({
@@ -2304,14 +2333,7 @@ function SystemSection({
   });
   const totals = fleet.data?.totals;
 
-  /*
-    默认读取的那一套 PVE：少数接口（健康探活、/cluster/status）一次只能读一台，
-    需要一个确定目标。后端会自己挑一条，但多套 PVE 里「挑哪一套」必须由人决定 ——
-    否则「这里怎么只显示 1 个节点」是一个没人答得上的问题。
-    注意它**不等于**「主连接」：其余连接照样同级，这里只是给单台读取接口指定目标。
-  */
-  const queryClient = useQueryClient();
-  const toast = useToast();
+  /* 连接列表：只用来给出「兜底读取目标」的下拉选项（管理员才需要） */
   const connectionsQuery = useQuery({
     queryKey: ['connections'],
     queryFn: connectionsApi.list,
@@ -2319,33 +2341,29 @@ function SystemSection({
     retry: false,
     enabled: canManage,
   });
-  const [switching, setSwitching] = useState(false);
   const conns = connectionsQuery.data ?? [];
-  const defaultId = conns.find((item) => item.active)?.id ?? '';
-  const defaultName =
-    conns.find((item) => item.id === defaultId)?.name ||
-    fleet.data?.default_connection?.name ||
-    '';
+  const defaultConnId = conns.find((item) => item.active)?.id ?? '';
 
-  const pickDefault = async (id: string) => {
-    if (!id || id === defaultId) return;
+  const pickFallbackConn = async (id: string) => {
+    if (!id || id === defaultConnId) return;
     setSwitching(true);
     try {
       await connectionsApi.activate(id);
-      const picked = conns.find((item) => item.id === id);
       toast.success(
-        t('settings.systemSwitched'),
-        t('settings.systemSwitchedHint', { name: picked?.name || id }),
+        t('settings.systemFallbackConnSwitched'),
+        t('settings.systemFallbackConnSwitchedHint', {
+          name: conns.find((item) => item.id === id)?.name || id,
+        }),
       );
+      /* 只有「读单台」的接口受它影响：集群版本 / 仲裁、健康探活、全站合计 */
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['connections'] }),
         queryClient.invalidateQueries({ queryKey: ['cluster', 'status'] }),
         queryClient.invalidateQueries({ queryKey: ['cluster', 'fleet-status'] }),
         queryClient.invalidateQueries({ queryKey: ['health'] }),
       ]);
-      onRetryHealth();
     } catch (err) {
-      toast.error(t('settings.systemSwitchFailed'), errorMessage(err));
+      toast.error(t('settings.systemFallbackConnFailed'), errorMessage(err));
     } finally {
       setSwitching(false);
     }
@@ -2488,6 +2506,36 @@ function SystemSection({
         />
       </div>
 
+      {/* 集群级接口的兜底读取目标。
+          它**不是「主集群」**：连接一律同级，节点 / 虚拟机 / 存储列表始终汇总
+          全部连接；只有「一次只能读一台」的接口（健康探活、/cluster/status 这类，
+          含未登录时的探活）才回落到这里。以前这个开关摆在节点页做主控，看起来
+          像是「有一台更正式」，实际只影响少数读数 —— 移到这一处并说清作用范围。 */}
+      {canManage && conns.length > 1 ? (
+        <div className="scope-bar mt-16">
+          <span className="scope-label">
+            <IconPlug size={15} />
+            {t('settings.systemFallbackConn')}
+          </span>
+          <Select
+            aria-label={t('settings.systemFallbackConn')}
+            value={defaultConnId}
+            disabled={switching}
+            onChange={(event) => void pickFallbackConn(event.target.value)}
+            options={conns.map((item) => ({
+              label: `${item.name || item.host}${
+                item.id === defaultConnId
+                  ? t('settings.systemFallbackConnCurrent')
+                  : ''
+              }`,
+              value: item.id,
+            }))}
+            style={{ maxWidth: 280 }}
+          />
+          <span className="scope-meta">{t('settings.systemFallbackConnHint')}</span>
+        </div>
+      ) : null}
+
       {/* 面板自身的版本与更新（检查新版本 / 一键更新 / 手工命令） */}
       <PanelUpdateCard />
 
@@ -2513,10 +2561,10 @@ function SystemSection({
         </div>
 
         <div className="set-info-tile">
+          {/* 显示**生效中**的时区（面板设置里填的那个），而不是浏览器自己的 ——
+              两者不一致时，这里要能解释「页面上的时间为什么和系统时间不一样」 */}
           <span className="set-info-label">{t('settings.systemInfoTimezone')}</span>
-          <span className="set-info-value mono fs-sm">
-            {Intl.DateTimeFormat().resolvedOptions().timeZone}
-          </span>
+          <span className="set-info-value mono fs-sm">{panelTimeZone()}</span>
         </div>
 
         <div className="set-info-tile">
@@ -2551,202 +2599,11 @@ function SystemSection({
         </div>
       </div>
 
-      {/* 每套 PVE 连接的明细：合计只回答「一共有多少」，
-          哪台在线、哪台启用了 HA 要能逐条看到，否则多连接部署下说不清。 */}
-      {totals && (fleet.data?.connections?.length ?? 0) > 0 ? (
-        <div className="mt-16">
-          <div className="set-form-block-head">
-            <span className="set-form-block-icon">
-              <IconLayers size={15} />
-            </span>
-            <span className="set-form-block-title">
-              {t('settings.systemFleetDetail')}
-            </span>
-            <span className="set-form-block-hint">
-              {totals.ha_enabled > 0
-                ? t('settings.systemHaSummary', {
-                    clusters: totals.ha_enabled,
-                    resources: totals.ha_resources,
-                  })
-                : t('settings.systemHaNone')}
-            </span>
-          </div>
-          <div className="set-conn-list">
-            {(fleet.data?.connections ?? []).map((row) => (
-              <div className="set-conn-row" key={row.id}>
-                <Badge variant={row.ok ? 'success' : 'danger'} dot size="sm">
-                  {row.ok
-                    ? t('settings.systemOnline')
-                    : t('settings.systemUnreachableShort')}
-                </Badge>
-                <span className="set-conn-name">{row.name}</span>
-                <span className="mono fs-xs text-muted">{row.host}</span>
-                <span className="set-conn-meta">
-                  {row.ok ? (
-                    <>
-                      {row.version ? `PVE ${row.version} · ` : ''}
-                      {t('settings.systemNodeCount', { n: row.node_count })} ·
-                      {row.cluster_mode === 'cluster'
-                        ? row.quorate === false
-                          ? ` ${t('settings.systemNoQuorumShort')}`
-                          : row.ha_enabled
-                            ? ` ${t('settings.systemHaOn')}`
-                            : ` ${t('settings.systemHaOff')}`
-                        : ` ${t('settings.systemStandaloneShort')}`}
-                    </>
-                  ) : (
-                    row.error || t('settings.systemConnFailed')
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {/* 节点列表 */}
-      {cluster && cluster.nodes.length > 0 ? (
-        <div className="mt-16">
-          <div className="set-form-block-head">
-            <span className="set-form-block-icon">
-              <IconServer size={15} />
-            </span>
-            <span className="set-form-block-title">{t('settings.systemNodesTitle')}</span>
-            <span className="set-form-block-hint">
-              {t('settings.systemNodesCount', { n: cluster.nodes.length })}
-              {totals && totals.connections > 1
-                ? t('settings.systemReadingFrom', {
-                    name: defaultName || t('settings.systemDefaultConnLabel'),
-                  })
-                : ''}
-            </span>
-          </div>
-
-          {/* 多套 PVE 时，「读哪一套」必须能选：这几张卡一次只能读一台，
-              默认由后端自动挑（第一条），而那往往不是想看的那台。 */}
-          {canManage && conns.length > 1 ? (
-            <div className="set-default-conn">
-              <Select
-                label={t('settings.systemDefaultConnLabel')}
-                hint={t('settings.systemDefaultConnHint')}
-                value={defaultId}
-                disabled={switching}
-                onChange={(event) => void pickDefault(event.target.value)}
-                options={conns.map((item) => ({
-                  label: `${item.name || item.host}${
-                    item.id === defaultId ? t('settings.systemCurrentSuffix') : ''
-                  }`,
-                  value: item.id,
-                }))}
-              />
-            </div>
-          ) : null}
-
-          <div className="set-node-list">
-            {cluster.nodes.map((n) => (
-              <ClusterNodeRow
-                key={n.name}
-                name={n.name}
-                online={Boolean(n.online)}
-                type={n.type}
-                canEdit={canManage}
-              />
-            ))}
-          </div>
-        </div>
-      ) : clusterLoading ? (
-        <div className="fs-sm text-muted mt-16">{t('settings.systemLoadingNodes')}</div>
-      ) : null}
-
       {!connected && !healthLoading && health ? (
         <Notice tone="danger" title={t('settings.systemPveDownTitle')}>
           {t('settings.systemPveDownBody')}
         </Notice>
       ) : null}
-
-      <CollapsibleCard
-        title={t('settings.systemTipsTitle')}
-        icon={<IconInfo size={15} />}
-      >
-        <div className="desc-list">
-          <div className="desc-item">
-            <div className="desc-label">{t('settings.systemTipAuth')}</div>
-            <div className="desc-value">
-              {t('settings.systemTipAuthPre')}
-              <span className="mono">HttpOnly + SameSite</span>
-              {t('settings.systemTipAuthPost')}
-            </div>
-          </div>
-          <div className="desc-item">
-            <div className="desc-label">{t('settings.systemTipCert')}</div>
-            <div className="desc-value">
-              {t('settings.systemTipCertPre')}
-              <span className="mono">verify=False</span>
-              {t('settings.systemTipCertPost')}
-            </div>
-          </div>
-          <div className="desc-item">
-            <div className="desc-label">{t('settings.systemTipWs')}</div>
-            <div className="desc-value">
-              {t('settings.systemTipWs1')}
-              <span className="mono">/api/ws/</span>
-              {t('settings.systemTipWs2')}
-              <span className="mono">/api/vms/*/console/*ws</span>
-              {t('settings.systemTipWs3')}
-              <span className="mono">Upgrade</span>
-              {t('settings.systemTipWs4')}
-              <span className="mono">Connection</span>
-              {t('settings.systemTipWs5')}
-            </div>
-          </div>
-          <div className="desc-item">
-            <div className="desc-label">{t('settings.systemTipTimeout')}</div>
-            <div className="desc-value">{t('settings.systemTipTimeoutBody')}</div>
-          </div>
-        </div>
-      </CollapsibleCard>
     </Card>
-  );
-}
-
-/* ---------------------------------------------------------------------------
-   集群节点条目：状态 / 地址 / 版本 / 备注
-   --------------------------------------------------------------------------- */
-
-function ClusterNodeRow({
-  name,
-  online,
-  type,
-  canEdit,
-}: {
-  name: string;
-  online: boolean;
-  type?: string;
-  canEdit: boolean;
-}) {
-  const t = useT();
-  const { version, address } = useNodeMeta(name, online);
-  const bits = [version ? `PVE ${version}` : '', address, type]
-    .filter(Boolean)
-    .join(' · ');
-
-  return (
-    <div className={`set-node-item ${online ? 'is-online' : 'is-offline'}`}>
-      <div className="set-node-main">
-        <span className="set-node-icon">
-          <IconServer size={15} />
-        </span>
-        <div className="set-node-text">
-          <span className="set-node-name">{name}</span>
-          <span className="fs-xs text-muted mono">{bits || '—'}</span>
-        </div>
-        <Badge variant={online ? 'success' : 'danger'} dot pulse={online} size="sm">
-          {online ? t('settings.systemOnline') : t('settings.systemOffline')}
-        </Badge>
-      </div>
-      <div className="set-node-note">
-        <NodeNoteField node={name} canEdit={canEdit} />
-      </div>
-    </div>
   );
 }

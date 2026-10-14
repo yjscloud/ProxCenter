@@ -3,6 +3,7 @@
    ========================================================================== */
 
 import { getLang, tStatic } from '../i18n';
+import { panelTimeZone } from './panelSettings';
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'] as const;
 
@@ -137,8 +138,55 @@ export function usageTone(percent: number): 'accent' | 'warning' | 'danger' {
   return 'accent';
 }
 
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : String(n);
+/* ---- 时区 ----
+   后端给的时间一律是 Unix 秒或 ISO 串（UTC），**按哪个时区显示**由面板设置里的
+   「时区」决定（见 utils/panelSettings）。所以下面几个函数不再用本地时区的
+   getHours()/getMonth()，而是交给 Intl 按指定时区取值。
+
+   格式化器按「时区」缓存：Intl.DateTimeFormat 构造一次不便宜，而一页表格要
+   格式化几百次。（缓存 key 带上时区，改设置后自然重建。） */
+let tzCacheKey = '';
+let tzFormatter: Intl.DateTimeFormat | null = null;
+
+function zonedFormatter(): Intl.DateTimeFormat {
+  const tz = panelTimeZone();
+  if (tzFormatter && tzCacheKey === tz) return tzFormatter;
+  tzCacheKey = tz;
+  tzFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  return tzFormatter;
+}
+
+/** 取该时刻在目标时区下的年月日时分秒（各段都已补零） */
+function zonedParts(d: Date): {
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  minute: string;
+  second: string;
+} {
+  const parts = zonedFormatter().formatToParts(d);
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? '00';
+  /* hour12: false 在部分运行时会把午夜给成 "24"（同一天）—— 归一成 "00" */
+  const hour = pick('hour');
+  return {
+    year: pick('year'),
+    month: pick('month'),
+    day: pick('day'),
+    hour: hour === '24' ? '00' : hour,
+    minute: pick('minute'),
+    second: pick('second'),
+  };
 }
 
 /** 数字可能是 Unix 秒，也可能是 ISO 字符串 */
@@ -156,26 +204,25 @@ function toDate(value: number | string | Date | null | undefined): Date | null {
 }
 
 /**
- * 日期时间：2026-09-19 19:33:17
+ * 日期时间：2026-09-19 19:33:17（按设置里的时区）
  */
 export function formatDateTime(
   value?: number | string | Date | null,
 ): string {
   const d = toDate(value);
   if (!d) return '—';
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  );
+  const p = zonedParts(d);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
 }
 
 /**
- * 仅日期：2026-09-19
+ * 仅日期：2026-09-19（按设置里的时区）
  */
 export function formatDate(value?: number | string | Date | null): string {
   const d = toDate(value);
   if (!d) return '—';
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const p = zonedParts(d);
+  return `${p.year}-${p.month}-${p.day}`;
 }
 
 /**
@@ -194,16 +241,17 @@ export function formatRelative(value?: number | string | Date | null): string {
 }
 
 /**
- * 图表 X 轴时间标签，按时长跨度自适应
+ * 图表 X 轴时间标签，按时长跨度自适应（按设置里的时区）
  */
 export function formatTimeLabel(value: number | string, span?: number): string {
   const d = toDate(value);
   if (!d) return '—';
+  const p = zonedParts(d);
   // span 单位秒
   if (span !== undefined && span <= 86_400) {
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `${p.hour}:${p.minute}`;
   }
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00`;
+  return `${p.month}-${p.day} ${p.hour}:00`;
 }
 
 /**

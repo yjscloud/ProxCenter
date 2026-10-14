@@ -5,10 +5,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { rolesApi, usersApi } from '../api/endpoints';
+import { quotaApi, rolesApi, usersApi } from '../api/endpoints';
 import { PermissionPicker } from '../components/PermissionPicker';
 import { QuotaEditor } from '../components/QuotaEditor';
 import { errorMessage, isNotImplemented } from '../api/client';
+import { invalidateQuota } from '../hooks/quotaCache';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -29,6 +30,7 @@ import {
   IconKey,
   IconShield,
   IconInfo,
+  IconAlert,
   IconEye,
   IconEyeOff,
   IconUser,
@@ -41,9 +43,10 @@ import {
   userEnabledMeta,
   userStatusMeta,
 } from '../utils/status'
-import { tStatic, useT } from '../i18n';
+import { tStatic, useT, type MessageKey } from '../i18n';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { PagerBar, usePaged } from '../hooks/usePaged';
 import type {
   PanelRole,
   PermissionGroup,
@@ -51,6 +54,7 @@ import type {
   RoleOut,
   UserAccountStatus,
   UserOut,
+  QuotaOverviewRow,
 } from '../api/types';
 
 const ROLE_ORDER: PanelRole[] = ['admin', 'operator', 'viewer'];
@@ -116,40 +120,53 @@ export function Users() {
     });
   }, [users, search, roleFilter]);
 
+  /* 分页交给统一的分页 hook（原先这一段是手写的页码 / 每页条数 + 两个 effect）：
+     它一并处理「筛选条件换了回第 1 页」与「删到最后一页时越界夹取」，
+     初始条数也跟随「设置 → 面板设置 → 列表每页条数」，而不是写死 10。 */
+  const userPage = usePaged(filtered, `${search}|${roleFilter}`);
+
   /* 等待审批的注册申请：直接从完整列表里筛，不额外发一次请求 */
   const pendingUsers = useMemo(
     () => users.filter((u) => isPendingApproval(u.status)),
     [users],
   );
 
+  const roles = useMemo(() => rolesQuery.data ?? [], [rolesQuery.data]);
+
   const stats = useMemo(() => {
-    /* 按角色**逐个数**，而不是三个写死的字段：角色是可以自定义的，只统计
-       admin / operator / viewer 会让用自定义角色的账号落在任何一类之外 ——
-       顶上几张卡的读数加起来小于「总计」，差额就是这群人。 */
+    /* 卡片按「账号状态」分，而不是按角色分。角色是可以自定义的、数量不固定：
+       顶上几张卡写死 admin / operator / viewer，一旦建了自定义角色，那些账号
+       就落在任何一类之外，读数还会随角色增减而失真。
+       改为启用 / 禁用 / 待审批三类，三者相加正好是总数；角色分布放到「用户总数」
+       点开的浮层里 —— 角色有几个都能列全。 */
     const roleCounts = new Map<string, number>();
+    let enabled = 0;
     let disabled = 0;
+    let pending = 0;
+    let rejected = 0;
     users.forEach((u) => {
-      // 待审批的账号还没定角色，别混进角色统计里误导人
-      if (isPendingApproval(u.status)) return;
+      // 待审批 / 已拒绝的账号根本登不进来，先单独计数，也不进角色统计
+      if (isPendingApproval(u.status)) {
+        pending += 1;
+        return;
+      }
+      if (u.status === 'rejected') {
+        rejected += 1;
+        return;
+      }
       roleCounts.set(u.role, (roleCounts.get(u.role) ?? 0) + 1);
       if (u.enabled === false) disabled += 1;
+      else enabled += 1;
     });
-    const count = (role: PanelRole) => roleCounts.get(role) ?? 0;
-    /* 内置三类之外的人数（即自定义角色）。「总计」卡上的小字会报出它 */
-    const others = [...roleCounts.entries()]
-      .filter(([role]) => !ROLE_ORDER.includes(role as PanelRole))
-      .reduce((sum, [, n]) => sum + n, 0);
     return {
       total: users.length,
-      admin: count('admin'),
-      operator: count('operator'),
-      viewer: count('viewer'),
-      others,
-      roleCounts,
+      enabled,
       disabled,
-      pending: pendingUsers.length,
+      pending,
+      rejected,
+      roleCounts,
     };
-  }, [users, pendingUsers]);
+  }, [users]);
 
   /* 点外面 / 滚动 / 改窗口大小都收起 —— 与额度胶囊、详情页的「更多操作」
      同一套处理（浮层是绝对定位的，滚动后位置就歪了） */
@@ -190,7 +207,7 @@ export function Users() {
   }, [rolesQuery.data]);
 
   /* 「总计」点开的明细：内置三类按固定顺序在前，接着是自定义角色（名字取
-     /roles，取不到就显示 id），最后补一条待审批 —— 待审批的账号同样没定角色，
+     /roles，取不到就显示 id），最后补待审批 / 已拒绝 —— 这两种账号同样没定角色，
      不列出来明细之和又会小于总计。
      放在 customRoleNames 之后：它就是靠那份映射把角色 id 翻成名字的。 */
   const roleBreakdown = useMemo(() => {
@@ -210,13 +227,70 @@ export function Users() {
         count: stats.pending,
       });
     }
+    if (stats.rejected > 0) {
+      rows.push({
+        key: '__rejected',
+        label: t('status.user.rejected'),
+        count: stats.rejected,
+      });
+    }
     return rows;
   }, [stats, customRoleNames, t]);
+
+  /* 额度总览：**一次**算出所有人的额度与用量。
+     放在页面级而不是塞进每一行 —— 逐行去问就是每人一次 PVE 读数。 */
+  const overviewQuery = useQuery({
+    queryKey: ['quota', 'overview'],
+    queryFn: quotaApi.overview,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const overviewByUser = useMemo(
+    () =>
+      new Map(
+        (overviewQuery.data?.users ?? []).map((row) => [row.username, row]),
+      ),
+    [overviewQuery.data],
+  );
+
+  /* 「谁快满了」：按**最紧的那一项**的剩余比例升序，只留紧张的那些。
+     口径与后端 :func:`app.quotaalert.tightest` 完全一致 —— 同一个 20% 线，
+     界面与推送不会一个说紧张另一个说没事，否则管理员会怀疑自己看错了。
+
+     只排一项不逐项罗列：一个人的核数 / 内存 / 磁盘经常同时见底，逐项排出来
+     每一行都是同一个意思，占的却是不同的列。 */
+  const atRisk = useMemo(
+    () =>
+      (overviewQuery.data?.users ?? [])
+        .map((row) => ({ row, tight: tightestQuota(row) }))
+        .filter((item) => item.tight && item.tight.ratio <= AT_RISK_RATIO)
+        .sort((a, b) => a.tight!.ratio - b.tight!.ratio),
+    [overviewQuery.data],
+  );
+  /* 从用户列表里取 UserOut 对象：预警行上那个「调整额度」要的是完整用户对象，
+     而总览里只有用户名与额度。取不到就把按钮藏起来 —— 宁可少一个入口，
+     也不能点开一个空白编辑器。 */
+  const userByName = useMemo(
+    () => new Map(users.map((u) => [u.username, u])),
+    [users],
+  );
+
+  const openEditorFor = (username: string) => {
+    const target = userByName.get(username);
+    if (!target) return;
+    setEditTarget(target);
+    setEditorOpen(true);
+  };
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['users'] });
     /* 角色列表一起失效：改用户的角色会动到各角色的「N 个用户在用」 */
     void queryClient.invalidateQueries({ queryKey: ['roles'] });
+    /* 额度读数一起失效（见 hooks/quotaCache）。漏掉它的表现是「改完再打开还是旧
+       数字」：编辑器是拿缓存初始化草稿的，于是管理员以为设置没生效、甚至以为额度
+       重置不了。编辑器内部有「只在打开时初始化一次」的守卫（quotaInitRef），所以
+       这里作废不会把管理员改到一半的输入冲掉。 */
+    invalidateQuota(queryClient);
   };
 
   /* ---- 表格列 ---- */
@@ -241,6 +315,26 @@ export function Users() {
       ),
       sortable: true,
       sortValue: (u) => u.username,
+    },
+    {
+      key: 'quotaLimit',
+      header: t('users.colQuota'),
+      width: 118,
+      render: (u) => {
+        const row = overviewByUser.get(u.username);
+        if (!row) return <span className="fs-xs text-muted">—</span>;
+        return <QuotaLimitCell row={row} />;
+      },
+    },
+    {
+      key: 'quotaUsed',
+      header: t('users.colQuotaUsed'),
+      width: 132,
+      render: (u) => {
+        const row = overviewByUser.get(u.username);
+        if (!row) return <span className="fs-xs text-muted">—</span>;
+        return <QuotaUsageCell row={row} />;
+      },
     },
     {
       key: 'role',
@@ -441,9 +535,130 @@ export function Users() {
         </Notice>
       ) : null}
 
-      {/* 统计。「总计」那张可点：这一行只列内置三类角色，用自定义角色的账号
-          不在任何一类里 —— 差额由卡上那行小字点出，完整分布点开看。 */}
-      <div className="grid grid-5">
+      {/* 额度总览的两种「数字不可信」都要说出来，因为这一页的「已用 / 生效上限」
+          正是管理员据以配额度的依据 —— 按偏小的数字配，等于把额度开在最不该
+          开的地方（后端在创建校验那边对同一件事是 fail-closed 的）。
+
+          两态必须分开：
+            * isError —— 请求本身失败（403 / 500 / 后端没重启）。此前这一种
+              **什么都不显示**，两列全是「—」，与「这个用户确实没配额度」在
+              界面上完全一样 —— 于是表现为「功能没生效」且毫无线索。
+            * data.error —— 请求成功但集群读数不全，用量偏小。 */}
+      {overviewQuery.isError ? (
+        <Notice tone="danger" title={t('users.quotaFailedTitle')}>
+          {t('users.quotaFailedHint')}
+          {overviewQuery.error instanceof Error
+            ? `（${overviewQuery.error.message}）`
+            : ''}
+        </Notice>
+      ) : overviewQuery.data?.error ? (
+        <Notice tone="warning" title={t('users.quotaPartialTitle')}>
+          {overviewQuery.data.error}
+        </Notice>
+      ) : null}
+
+
+      {/* ---- 谁快满了 ----
+          独立的预警视图：下面那张表是「逐个用户看全貌」，这一块是「谁需要我
+          处理」，按最紧的那一项升序 —— 管理员扫一眼就知道先动谁。
+
+          没人数时整块**不出现**。「所有人都还宽裕」是默认状态，一张空卡只是
+          噪音；真正需要告知的只有「有一个人快满了」。
+
+          口径与后端 :func:`app.quotaalert.tightest` 一致（同一条 20% 线）：
+          界面说紧张、推送却没响，或者反过来，都只会让人怀疑自己看错了。 */}
+      {atRisk.length > 0 ? (
+        <Card className="page-block">
+          <CardHeader
+            title={t('users.atRiskTitle', { n: atRisk.length })}
+            subtitle={t('users.atRiskHint')}
+            icon={<IconAlert size={16} />}
+          />
+          <div className="table-container">
+            <table className="table table-dense">
+              <thead>
+                <tr>
+                  <th>{t('users.atRiskUser')}</th>
+                  <th>{t('users.atRiskItem')}</th>
+                  <th style={{ width: 220 }}>{t('users.atRiskLeft')}</th>
+                  <th>{t('users.quotaColUsed')}</th>
+                  <th>{t('users.quotaColLimit')}</th>
+                  <th>{t('users.atRiskState')}</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {atRisk.map(({ row, tight }) => {
+                  const info = tight!;
+                  /* 这条进度是**剩余**而不是已用：看的就是「还剩多少」，填满意味
+                     着安全、见底意味着该处理了 —— 与用「已用」正好相反。 */
+                  const pct = Math.round(info.ratio * 100);
+                  const color =
+                    info.ratio <= 0.05
+                      ? 'var(--danger)'
+                      : info.ratio <= 0.15
+                        ? 'var(--warning)'
+                        : 'var(--success)';
+                  return (
+                    <tr key={row.username}>
+                      <td>
+                        <span className="fw-500">{row.username}</span>
+                      </td>
+                      <td>
+                        {/* 分组必须写出来：「内存快满了」分不清是虚拟机还是容器，
+                            而这两组的额度是各算各的。 */}
+                        <span className="text-secondary">
+                          {t(info.group === 'vm' ? 'quota.groupVm' : 'quota.groupCt')}
+                          {' · '}
+                          {t(info.label)}
+                        </span>
+                      </td>
+                      <td>
+                        <ProgressBar
+                          value={pct}
+                          color={color}
+                          label={`${pct}%`}
+                          ariaLabel={t('users.atRiskLeft')}
+                        />
+                      </td>
+                      <td className="mono">
+                        {formatQuotaValue(info.field, info.used)}
+                      </td>
+                      <td className="mono">
+                        {formatQuotaValue(info.field, info.limit)}
+                      </td>
+                      <td>
+                        <Badge
+                          variant={info.over ? 'danger' : 'warning'}
+                          size="sm"
+                          dot
+                        >
+                          {info.over ? t('users.atRiskOver') : t('users.atRiskLow')}
+                        </Badge>
+                      </td>
+                      <td align="right">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!canManage || !userByName.has(row.username)}
+                          onClick={() => openEditorFor(row.username)}
+                        >
+                          {t('users.atRiskAdjust')}
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ) : null}
+
+      {/* 统计按「账号状态」分（启用 / 禁用 / 待审批），不再写死角色卡：角色可以
+          自定义、数量不固定，写死 admin / operator / viewer 迟早失真。角色分布放在
+          「用户总数」点开的浮层里 —— 角色有几个都能列全。 */}
+      <div className="grid grid-4">
         <div className="kpi-popover-wrap" ref={totalRef}>
           <KpiCard
             label={t('users.kpiTotal')}
@@ -451,11 +666,7 @@ export function Users() {
             icon={<IconUsers size={18} />}
             tone="accent"
             loading={usersQuery.isLoading}
-            hint={
-              stats.others > 0
-                ? t('users.kpiOthersHint', { n: stats.others })
-                : undefined
-            }
+            hint={roles.length > 0 ? t('users.kpiRoleCountHint', { n: roles.length }) : undefined}
             onClick={() => setTotalOpen((prev) => !prev)}
             title={t('users.kpiTotalHint')}
           />
@@ -478,24 +689,17 @@ export function Users() {
           ) : null}
         </div>
         <KpiCard
-          label={t('status.role.admin')}
-          value={stats.admin}
-          icon={<IconShield size={18} />}
-          tone="danger"
-          loading={usersQuery.isLoading}
-        />
-        <KpiCard
-          label={t('status.role.operator')}
-          value={stats.operator}
+          label={t('users.kpiEnabled')}
+          value={stats.enabled}
           icon={<IconUser size={18} />}
-          tone="warning"
+          tone="success"
           loading={usersQuery.isLoading}
         />
         <KpiCard
-          label={t('users.kpiViewerDisabled')}
-          value={`${stats.viewer} / ${stats.disabled}`}
-          icon={<IconEye size={18} />}
-          tone="neutral"
+          label={t('users.kpiDisabled')}
+          value={stats.disabled}
+          icon={<IconEyeOff size={18} />}
+          tone={stats.disabled > 0 ? 'warning' : 'neutral'}
           loading={usersQuery.isLoading}
         />
         <KpiCard
@@ -585,23 +789,27 @@ export function Users() {
           onRetry={() => void usersQuery.refetch()}
         />
       ) : (
-        <Table<UserOut>
-          columns={columns}
-          rows={filtered}
-          rowKey={(u) => u.id ?? u.username}
-          loading={usersQuery.isLoading}
-          caption={t('users.listCaption')}
-          emptyTitle={
-            search || roleFilter ? t('users.emptySearch') : t('users.empty')
-          }
-          emptyDescription={
-            search || roleFilter ? t('users.emptySearchDesc') : undefined
-          }
-        />
+        <>
+          <Table<UserOut>
+            columns={columns}
+            rows={userPage.rows}
+            rowKey={(u) => u.id ?? u.username}
+            loading={usersQuery.isLoading}
+            caption={t('users.listCaption')}
+            emptyTitle={
+              search || roleFilter ? t('users.emptySearch') : t('users.empty')
+            }
+            emptyDescription={
+              search || roleFilter ? t('users.emptySearchDesc') : undefined
+            }
+          />
+          {/* 分页：账号一多，列表不能再一路铺到底。接在表格下沿，是这张卡的页脚 */}
+          <PagerBar pager={userPage} />
+        </>
       )}
 
       {/* ---- 角色与权限 ----
-          查看 / 新建 / 编辑 / 删除都在卡片上（见 RoleManager），不再分成两块 */}
+          查看 / 新建 / 编辑 / 删除都在表格行上（见 RoleManager），不再分成两块 */}
       <RoleManager />
 
       <CollapsibleCard title={t('users.securityTitle')} icon={<IconKey size={15} />}>
@@ -825,25 +1033,22 @@ function PermissionHelpModal({
 }
 
 /* ---------------------------------------------------------------------------
-   角色卡片
+   角色权限格（角色表格里的「权限」列）
    --------------------------------------------------------------------------- */
 
-function RoleCard({
+/**
+ * 权限读数 + 一条细覆盖率条。
+ *
+ * 「12 / 57」看不出是一半还是七成，所以下面补一条只读进度条；颜色固定主色，
+ * 不走 ProgressBar 按占用率取色的默认行为 —— 权限多不是「危险」，绿→橙→红
+ * 在这里只会误导。
+ */
+function RolePermissionsCell({
   role,
   catalogTotal,
-  canManage,
-  onView,
-  onEdit,
-  onDelete,
 }: {
   role: RoleOut;
   catalogTotal: number;
-  /** 有 users.manage 才显示编辑 / 删除 */
-  canManage: boolean;
-  /** 查看这个角色的权限清单（只读，所有人可用） */
-  onView: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
 }) {
   const t = useT();
   const keys = role.permissions ?? [];
@@ -851,88 +1056,19 @@ function RoleCard({
   const all = keys.includes('*');
   const covered = all ? catalogTotal : keys.length;
   const percent = catalogTotal > 0 ? Math.round((covered / catalogTotal) * 100) : 0;
-  /* 超管角色本身不可改（后端也拒）；仍在用的角色不可删 */
-  const canDelete = !role.builtin && (role.user_count ?? 0) === 0;
 
   return (
-    <div className="entity-card role-card">
-      <div className="entity-card-head">
-        <div className="entity-card-title">
-          {/* 名称与 id 分两层：id 是技术标识，原先和名称并排贴在右上角，
-              字号还一样大 —— 结果第一眼看到的是 admin / role_3f2a */}
-          <span className="entity-card-name" title={role.name}>
-            {role.name}
-          </span>
-          <span className="entity-card-sub">{role.id}</span>
-        </div>
-        {/* 内置与自定义都标出来：原先只标内置，自定义角色看着像「没有类型」 */}
-        <Badge variant={role.builtin ? 'accent' : 'neutral'} size="sm">
-          {role.builtin ? t('users.roleBuiltinTag') : t('users.roleCustomTag')}
-        </Badge>
-      </div>
-
-      {role.description ? (
-        <div className="fs-sm text-secondary role-card-desc">{role.description}</div>
-      ) : null}
-
-      {/* 这两个数字才是这张卡片的主信息，用 entity-stat 的大字号；
-          「12 / 57」看不出是一半还是七成，所以下面再补一条覆盖率进度条 */}
-      <div className="entity-card-stats">
-        <div className="entity-stat">
-          <span className="entity-stat-label">{t('users.roleStatPerms')}</span>
-          <span className="entity-stat-value">
-            {all ? t('users.roleStatPermsAll') : covered}
-          </span>
-          <span className="entity-stat-unit">
-            {all ? '' : t('users.roleStatPermsTotal', { total: catalogTotal })}
-          </span>
-        </div>
-        <div className="entity-stat">
-          <span className="entity-stat-label">{t('users.roleStatUsers')}</span>
-          <span className="entity-stat-value">{role.user_count ?? 0}</span>
-        </div>
-      </div>
-
-      {/* 固定主色，不走 ProgressBar 按占用率取色的默认行为 ——
-          权限多不是「危险」，绿→橙→红在这里只会误导 */}
+    <div className="role-perms-cell">
+      <span className="fs-sm">
+        {all ? t('users.roleStatPermsAll') : covered}
+        {all ? null : <span className="text-muted"> / {catalogTotal}</span>}
+      </span>
       <ProgressBar
         value={percent}
         color="var(--accent)"
         height={4}
         ariaLabel={t('users.roleCoverage', { percent })}
       />
-
-      {/* 卡片本身就是操作入口（原先要滚到下面的「角色管理」列表里改） */}
-      <div className="entity-card-footer">
-        <Button
-          variant="secondary"
-          size="sm"
-          icon={<IconEye size={14} />}
-          onClick={onView}
-        >
-          {t('users.roleViewPerms')}
-        </Button>
-        {canManage ? (
-          <span className="role-card-actions">
-            <IconButton
-              label={t('users.roleEditAria', { name: role.name })}
-              variant="primary"
-              disabled={role.id === 'admin'}
-              onClick={onEdit}
-            >
-              <IconEdit size={15} />
-            </IconButton>
-            <IconButton
-              label={t('users.deleteRoleAria', { name: role.name })}
-              variant="danger"
-              disabled={!canDelete}
-              onClick={onDelete}
-            >
-              <IconTrash size={15} />
-            </IconButton>
-          </span>
-        ) : null}
-      </div>
     </div>
   );
 }
@@ -1351,44 +1487,40 @@ function UserEditor({
           />
         </Field>
 
-        {/* ---- 权限：默认跟随角色，可切到自定义逐条勾选 ---- */}
-        <div className="perm-block">
-          <div className="perm-block-head">
-            <span className="fw-600">{t('users.permBlock')}</span>
-            <span className="fs-xs text-muted">
-              {useOverride
-                ? t('users.permCustom', { n: perms.length })
-                : t('users.permFollowing', {
-                    name: roleLabelByValue(role, roleOptions),
-                  })}
-              {/* 覆盖模式下把「与角色的差」摆出来：它是**整份替换**而不是叠加，
-                  管理员很容易以为自己在「加一项」，结果把角色的其余权限一起丢了 */}
-              {useOverride ? (
-                <PermissionDiff rolePerms={rolePerms} perms={perms} />
-              ) : null}
-            </span>
-          </div>
-
-          <Switch
-            checked={useOverride}
-            onChange={(v) => {
-              setUseOverride(v);
-              if (!v) setPerms(rolePerms);
-            }}
-            label={t('users.customPermsLabel')}
-            hint={t('users.customPermsHint')}
-          />
-
-          <PermissionPicker
-            value={perms}
-            onChange={setPerms}
-            disabled={!useOverride}
-          />
-        </div>
+        {/* ---- 账号状态（只有编辑时才有）---------------------------------
+            提到权限块之前：它俩回答的是「这个账号到底能不能登录」—— 角色与权限
+            配得再对，账号没启用、或还挂在「待审批 / 已拒绝」，照样进不来。
+            而权限块（尤其切到自定义以后）很高，原先把它俩压在表单最底部，
+            只想改个启用状态也得先滚过整屏权限勾选。 */}
+        {isEdit ? (
+          <>
+            <Switch
+              checked={enabled}
+              onChange={setEnabled}
+              label={t('users.enableAccount')}
+              hint={t('users.enableAccountHint')}
+            />
+            <Field
+              label={t('users.fieldApprovalStatus')}
+              hint={t('users.fieldApprovalStatusHint')}
+            >
+              <Select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                options={[
+                  { label: t('users.statusActive'), value: 'active' },
+                  { label: t('users.statusPending'), value: 'pending' },
+                  { label: t('users.statusRejected'), value: 'rejected' },
+                ]}
+              />
+            </Field>
+          </>
+        ) : null}
 
         {/* ---- 资源额度 -----------------------------------------------------
-            紧跟角色 / 权限：这三块一起回答「这个用户能做什么、能用多少」，
-            夹在账号信息中间（邮箱、启用状态）之前更顺。 */}
+            与邮箱一起排在权限之前：这两项都是几个字就能填完的短输入，而权限块
+            切到自定义后是一长串勾选。把「账号层面先定的事」（启用 / 审批 / 额度 /
+            邮箱）收在上面，权限留到最后 —— 上来就能填，不必先滚过整屏勾选。 */}
         <div>
           <h3 className="fs-sm fw-600">{t('quota.titleUser')}</h3>
           <div className="fs-xs text-muted mb-8">{t('quota.descUser')}</div>
@@ -1423,6 +1555,8 @@ function UserEditor({
           />
         </Field>
 
+        {/* 备注只有新建时填（编辑时后端不接受这个字段）。它跟着邮箱留在权限之前：
+            新建时它也是「一句话能填完」的输入，落到权限块之后就会被淹没 */}
         {!isEdit ? (
           <Field label={t('users.fieldComment')}>
             <Textarea
@@ -1432,30 +1566,42 @@ function UserEditor({
               placeholder={t('users.commentPlaceholder')}
             />
           </Field>
-        ) : (
-          <>
-            <Switch
-              checked={enabled}
-              onChange={setEnabled}
-              label={t('users.enableAccount')}
-              hint={t('users.enableAccountHint')}
-            />
-            <Field
-              label={t('users.fieldApprovalStatus')}
-              hint={t('users.fieldApprovalStatusHint')}
-            >
-              <Select
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-                options={[
-                  { label: t('users.statusActive'), value: 'active' },
-                  { label: t('users.statusPending'), value: 'pending' },
-                  { label: t('users.statusRejected'), value: 'rejected' },
-                ]}
-              />
-            </Field>
-          </>
-        )}
+        ) : null}
+
+        {/* ---- 权限：默认跟随角色，可切到自定义逐条勾选 ---- */}
+        <div className="perm-block">
+          <div className="perm-block-head">
+            <span className="fw-600">{t('users.permBlock')}</span>
+            <span className="fs-xs text-muted">
+              {useOverride
+                ? t('users.permCustom', { n: perms.length })
+                : t('users.permFollowing', {
+                    name: roleLabelByValue(role, roleOptions),
+                  })}
+              {/* 覆盖模式下把「与角色的差」摆出来：它是**整份替换**而不是叠加，
+                  管理员很容易以为自己在「加一项」，结果把角色的其余权限一起丢了 */}
+              {useOverride ? (
+                <PermissionDiff rolePerms={rolePerms} perms={perms} />
+              ) : null}
+            </span>
+          </div>
+
+          <Switch
+            checked={useOverride}
+            onChange={(v) => {
+              setUseOverride(v);
+              if (!v) setPerms(rolePerms);
+            }}
+            label={t('users.customPermsLabel')}
+            hint={t('users.customPermsHint')}
+          />
+
+          <PermissionPicker
+            value={perms}
+            onChange={setPerms}
+            disabled={!useOverride}
+          />
+        </div>
       </div>
 
       <Notice tone="info" title={t('users.pwSecurityTitle')}>
@@ -1813,6 +1959,11 @@ function RoleManager() {
   /* 角色只有这一份缓存了（见页面顶部的 rolesQuery） */
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['roles'] });
+    /* 角色默认额度改了，额度读数一起过期（见 hooks/quotaCache）：角色编辑器自己
+       的草稿、用户编辑器里「继承到手的是什么」那段说明，以及用户读数里的
+       effective / source / usage 都依赖它。漏掉的话同一个 bug 会换个地方再来
+       一遍：改完角色默认，再打开还是旧数字。 */
+    invalidateQuota(queryClient);
   };
 
   const remove = async () => {
@@ -1829,6 +1980,113 @@ function RoleManager() {
       setBusy(false);
     }
   };
+
+  /* 角色列表列：每个角色一行，比原先「一角色一卡片」省下大量纵向空间，
+     角色再多也不至于把页面撑成一长条。 */
+  const roleColumns: Array<Column<RoleOut>> = [
+    {
+      key: 'name',
+      header: t('users.colRole'),
+      render: (role) => (
+        <div className="vm-name-cell">
+          <span className="fw-500" title={role.name}>
+            {role.name}
+          </span>
+          {/* id 是技术标识，放在名称下面一行、走等宽小字 */}
+          <span className="fs-xs text-muted mono">{role.id}</span>
+        </div>
+      ),
+      sortable: true,
+      sortValue: (role) => role.name || role.id,
+    },
+    {
+      key: 'type',
+      header: t('users.colRoleType'),
+      width: 90,
+      render: (role) => (
+        <Badge variant={role.builtin ? 'accent' : 'neutral'} size="sm">
+          {role.builtin ? t('users.roleBuiltinTag') : t('users.roleCustomTag')}
+        </Badge>
+      ),
+      sortable: true,
+      // 内置在前（0）、自定义在后（1）
+      sortValue: (role) => (role.builtin ? 0 : 1),
+    },
+    {
+      key: 'perms',
+      header: t('users.roleStatPerms'),
+      width: 170,
+      render: (role) => (
+        <RolePermissionsCell role={role} catalogTotal={catalogTotal} />
+      ),
+      sortable: true,
+      sortValue: (role) =>
+        role.permissions?.includes('*')
+          ? catalogTotal
+          : (role.permissions?.length ?? 0),
+    },
+    {
+      key: 'users',
+      header: t('users.roleStatUsers'),
+      width: 110,
+      align: 'right',
+      render: (role) => <span className="mono">{role.user_count ?? 0}</span>,
+      sortable: true,
+      sortValue: (role) => role.user_count ?? 0,
+    },
+    {
+      key: 'description',
+      header: t('users.fieldDesc'),
+      render: (role) => (
+        <span className="fs-sm text-secondary truncate" title={role.description}>
+          {role.description || '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: t('common.actions'),
+      width: 150,
+      align: 'right',
+      render: (role) => {
+        /* 超管角色本身不可改（后端也拒）；仍在用的角色不可删 */
+        const canDelete = !role.builtin && (role.user_count ?? 0) === 0;
+        return (
+          <span className="row-actions">
+            <IconButton
+              label={t('users.roleViewPerms')}
+              onClick={() => setPermsTarget(role)}
+            >
+              <IconEye size={15} />
+            </IconButton>
+            {canManage ? (
+              <>
+                <IconButton
+                  label={t('users.roleEditAria', { name: role.name })}
+                  variant="primary"
+                  disabled={role.id === 'admin'}
+                  onClick={() => {
+                    setEditTarget(role);
+                    setEditorOpen(true);
+                  }}
+                >
+                  <IconEdit size={15} />
+                </IconButton>
+                <IconButton
+                  label={t('users.deleteRoleAria', { name: role.name })}
+                  variant="danger"
+                  disabled={!canDelete}
+                  onClick={() => setDeleteTarget(role)}
+                >
+                  <IconTrash size={15} />
+                </IconButton>
+              </>
+            ) : null}
+          </span>
+        );
+      },
+    },
+  ];
 
   return (
     <Card>
@@ -1867,22 +2125,14 @@ function RoleManager() {
       {rolesQuery.isLoading ? (
         <div className="fs-sm text-muted">{t('users.rolesLoading')}</div>
       ) : (
-        <div className="grid grid-3">
-          {roles.map((role) => (
-            <RoleCard
-              key={role.id}
-              role={role}
-              catalogTotal={catalogTotal}
-              canManage={canManage}
-              onView={() => setPermsTarget(role)}
-              onEdit={() => {
-                setEditTarget(role);
-                setEditorOpen(true);
-              }}
-              onDelete={() => setDeleteTarget(role)}
-            />
-          ))}
-        </div>
+        <Table<RoleOut>
+          columns={roleColumns}
+          rows={roles}
+          rowKey={(role) => role.id}
+          caption={t('users.rolesCaption')}
+          emptyTitle={t('users.rolesEmpty')}
+          dense
+        />
       )}
 
       <RolePermissionsModal
@@ -2109,6 +2359,131 @@ function RoleEditor({
   );
 }
 
+
+/**
+ * 「谁快满了」的判定线：剩余 ≤20% 就列进来。
+ *
+ * 与后端 :data:`app.quotaalert.THRESHOLD` 是同一条线，且都表达成比例（0~1），
+ * 不是百分比 —— 两边各存一个 20 / 0.2，早晚有一个写错，表现是「界面说紧张、
+ * 推送却没响」，谁也说不清该信哪个。
+ */
+const AT_RISK_RATIO = 0.2;
+
+/**
+ * 最紧的那一项额度：返回剩余比例（`0` = 已经见底）、字段名与那一项的实测数字，
+ * 没有任何限制时返回 `null`。
+ *
+ * 为什么要看**所有维度**而不只看台数：真正拦住用户的常常是核数或内存 ——
+ * 「还能建 1 台」但核数已经 0，实际是建不了的（见 enforce_create 的判定）。
+ *
+ * `ratio` 是 0~1 的**比例**（不是百分比）：显示层负责乘 100，别在两处各乘一次。
+ * 超额时钳到 0，所以「超了 40%」和「正好用完」在这里都显示 0 —— 要区分得看
+ * 返回的 `over`。
+ *
+ * 判据与后端 :func:`app.quotaalert.tightest` 一致：跳过未配置的上限、
+ * 跳过单台封顶（``max_*``，那是「一台别开太大」，不是「快满了」）。
+ */
+function tightestQuota(row: QuotaOverviewRow) {
+  let worst: {
+    ratio: number;
+    label: MessageKey;
+    group: 'vm' | 'ct';
+    field: string;
+    limit: number;
+    used: number;
+    left: number;
+    over: boolean;
+  } | null = null;
+  for (const group of ['vm', 'ct'] as const) {
+    for (const [field, label] of [
+      ['count', 'quota.fieldLabel.count'],
+      ['cores', 'quota.fieldLabel.cores'],
+      ['memory_mb', 'quota.fieldLabel.memory'],
+      ['disk_gb', 'quota.fieldLabel.disk'],
+    ] as const) {
+      const limit = row.limits[group][field];
+      const left = row.remaining[group][field];
+      if (limit === null || limit === undefined || left === null) continue;
+      const used = row.usage[group][field];
+      if (used === null || used === undefined) continue;
+      const ratio = limit > 0 ? Math.max(0, left) / limit : 0;
+      if (!worst || ratio < worst.ratio) {
+        worst = {
+          ratio,
+          label,
+          group,
+          field,
+          limit,
+          used,
+          left,
+          over: used > limit,
+        };
+      }
+    }
+  }
+  return worst;
+}
+
+/**
+ * 额度数值的展示：内存换算成 GB，其余按本来的单位。
+ *
+ * 为什么不用 `formatBytes`：那里是**字节**，额度里的 `memory_mb` / `disk_gb`
+ * 记的是 MB / GB，`formatBytes` 会再乘一次 1024 —— 96 GB 的上限会被写成
+ * 96 TB。
+ */
+function formatQuotaValue(field: string, value: number) {
+  if (field === 'memory_mb') return `${(value / 1024).toFixed(1)} GB`;
+  if (field === 'disk_gb') return `${value} GB`;
+  if (field === 'cores') return `${value} ${tStatic('quota.unitCores')}`;
+  return tStatic('users.quotaUnit', { n: value });
+}
+
+/** 「生效上限」那一格。上限按台数给（最直觉的一项），完整清单挂在 title 上。 */
+function QuotaLimitCell({ row }: { row: QuotaOverviewRow }) {
+  const t = useT();
+  if (row.bypass) {
+    return <span className="fs-xs text-muted">{t('users.quotaBypass')}</span>;
+  }
+  const vm = row.limits.vm.count;
+  const ct = row.limits.ct.count;
+  if (vm === null && ct === null) {
+    return <span className="fs-xs text-muted">{t('quota.unlimitedShort')}</span>;
+  }
+  /* 只显示一个数（虚拟机优先，没配就显示容器）。两个都摆出来的话
+     「6 台 · 容器 2 台」在 118px 的列里会折成两行，这一列就废了 ——
+     它存在的意义是**一眼扫过去**，需要细节的人点开编辑器。 */
+  const shown = vm ?? ct;
+  return (
+    <span className="mono fs-sm" title={t('users.quotaLimitHint')}>
+      {shown === null ? t('quota.unlimitedShort') : t('users.quotaUnit', { n: shown })}
+    </span>
+  );
+}
+
+/**
+ * 「已用」那一格：显示名下台数，并在**最紧的一项**剩余偏低/见底时点出来。
+ * 它是这张表存在的理由 —— 管理员扫一眼就知道该给谁放宽。
+ */
+function QuotaUsageCell({ row }: { row: QuotaOverviewRow }) {
+  const t = useT();
+  if (row.bypass) return <span className="fs-xs text-muted">—</span>;
+  const used = row.usage.vm.count + row.usage.ct.count;
+  const tight = tightestQuota(row);
+  const level = !tight ? '' : tight.ratio <= 0 ? ' is-empty' : tight.ratio <= 0.2 ? ' is-low' : '';
+  return (
+    <span
+      className={`quota-usage-cell${level}`}
+      title={tight ? `${t('users.quotaTight')}：${t(tight.label)}` : undefined}
+    >
+      <span className="mono">{t('users.quotaUnit', { n: used })}</span>
+      {level ? (
+        <span className="quota-usage-flag">
+          {tight!.ratio <= 0 ? t('users.quotaEmpty') : t('users.quotaLow')}
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 function roleLabel(info: RoleOut): string {
   // 自定义角色用它的名字，内置角色用既有映射

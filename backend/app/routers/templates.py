@@ -191,6 +191,104 @@ async def list_templates(
     return output
 
 
+@router.get("/templates/vztmpl")
+async def list_ct_system_templates(
+    user: Dict[str, Any] = Depends(security.require_permission("template.view")),
+) -> List[Dict[str, Any]]:
+    """所有节点上可用的**容器系统模板**（``vztmpl``），跨连接聚合。
+
+    必须和 ``/templates`` 分清 —— PVE 里「模板」这个词指两种完全不同的东西，
+    混在一起就正是模板页「容器模板」显示 0 的原因：
+
+    * ``/templates``        —— **被转成模板的机器**（``pct template`` / ``template=1``）。
+      有 VMID、能开机、能克隆，是「一台预配好的机器」。
+    * ``/templates/vztmpl`` —— **存储里的系统模板文件**（``*.tar.zst``）。
+      没有 VMID，只是一个文件，用来**新建**容器时选操作系统。
+
+    两者在界面上都该叫「容器模板」，但一个用来克隆、一个用来新建。页面此前只统计
+    前者，于是「我明明有 2 个容器模板」看到的是 0 —— 那 2 个是文件，不是机器。
+
+    单台连接读失败只跳过它自己（与 ``/templates`` 一致）；单个存储读失败同样跳过，
+    因为一个存储上的模板读不到不该让整页空掉。
+
+    **同一个卷只出一条**。共享存储（CephFS / NFS 这类）从每个节点看都是同一份内容，
+    逐个节点列出来就是同一个模板重复 N 遍、只有节点名不同（cephfs 上的 centos-9
+    因此在界面上出现了 3 次）。节点本地存储则相反：``local`` 上同名的两个文件是
+    **两份不同的文件**，必须都保留 —— 所以「卷的标识里要不要带节点」取决于这个
+    存储是不是共享的，这也是这里必须读 ``shared`` 字段的原因。
+    """
+    targets: List[Any] = list(all_connection_clients()) or [(None, get_client())]
+    output: List[Dict[str, Any]] = []
+    #: 已经列过的卷。键的形状随存储是否共享而变，见下面 shared 那段注释。
+    seen: set = set()
+    #: 已经成功扫过的共享存储 ``(连接, 存储名)`` —— 别的节点上不必再扫一遍
+    scanned_shared: set = set()
+
+    for profile, client in targets:
+        # 与 /templates 同一套取值：profile 缺失时退回本次请求指定的连接 id
+        cid = str(profile.get("id") or "") if profile else str(requested_connection() or "")
+        label = connection_label(profile) if profile else ""
+        try:
+            nodes = await client.nodes()
+        except ProxmoxError:
+            continue
+
+        for entry in nodes or []:
+            node = str(entry.get("node") or "")
+            if not node:
+                continue
+            try:
+                storages = await client.storages(node)
+            except ProxmoxError:
+                continue
+
+            for storage in storages or []:
+                name = str(storage.get("storage") or "")
+                # 只扫**内容类型含 vztmpl** 的存储：别的存储上不可能有容器模板，
+                # 逐个去问一次纯属浪费（一个节点上通常只有一两个这样的池）
+                if not name or "vztmpl" not in str(storage.get("content") or "").split(","):
+                    continue
+                shared = pve_flag(storage.get("shared", 0)) == 1
+                if shared and (cid, name) in scanned_shared:
+                    continue
+                try:
+                    items = await client.storage_content(node, name, content="vztmpl")
+                except ProxmoxError:
+                    # 读失败不登记「已扫过」：换个节点还有机会读到，
+                    # 登记了就会把这池模板整个漏掉
+                    continue
+                if shared:
+                    scanned_shared.add((cid, name))
+                for item in items or []:
+                    volid = str(item.get("volid") or "")
+                    # 共享存储：同一个 volid 从哪个节点看都是同一份，按 volid 去重
+                    # 本地存储：volid 相同也只是「同名」，是两份文件，键里带上节点
+                    key = (cid, volid) if shared else (cid, node, volid)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    output.append(
+                        {
+                            "node": node,
+                            "storage": name,
+                            "volid": volid,
+                            "name": volid.split("/")[-1] if "/" in volid else volid,
+                            "size": item.get("size"),
+                            "ctime": item.get("ctime"),
+                            # 共享存储上的模板在集群任何节点都能用，界面据此
+                            # 显示「共享」而不是其中一个节点名（见前端卡片）
+                            "shared": shared,
+                            "connection_id": cid,
+                            "connection_name": label,
+                        }
+                    )
+
+    output.sort(
+        key=lambda i: (str(i.get("connection_name") or ""), str(i.get("name") or ""))
+    )
+    return output
+
+
 @router.get("/templates/images")
 async def list_cloud_images(
     node: str,

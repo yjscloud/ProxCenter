@@ -25,6 +25,7 @@ import { Button } from '../components/ui/Button';
 import { Field, Input, Select } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
 import { PagerBar, usePaged } from '../hooks/usePaged';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { Notice } from '../components/ui/EmptyState';
 import {
   IconAlert,
@@ -73,10 +74,12 @@ export function HostAudit() {
     queryFn: hostAuditApi.hosts,
     retry: false,
   });
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const cursorsQuery = useQuery({
     queryKey: ['host-audit', 'cursors'],
     queryFn: hostAuditApi.cursors,
-    refetchInterval: 120_000,
+    refetchInterval: refresh,
     retry: false,
   });
   const loginsQuery = useQuery({
@@ -216,6 +219,10 @@ export function HostAudit() {
       render: (row) => <span className="mono fs-xs">{row.command || '—'}</span>,
     },
   ];
+
+  /* 导入进度也分页：受管主机几十台时一屏铺开同样看不出「哪台落后最多」，
+     而这张表恰恰是用来横向比对的。 */
+  const cursorPage = usePaged(cursorsQuery.data ?? [], 'host-audit-cursors');
 
   const cursorColumns: Array<Column<HostAuditCursor>> = [
     { key: 'name', header: t('hostAudit.colHost'), render: (row) => row.name },
@@ -489,11 +496,13 @@ export function HostAudit() {
         />
         <Table
           caption={t('hostAudit.cursorCaption')}
-          rows={cursorsQuery.data ?? []}
+          rows={cursorPage.rows}
           columns={cursorColumns}
           rowKey={(row) => row.host_id}
           loading={cursorsQuery.isLoading}
         />
+        {/* 分页条紧跟表格 —— 它会接成这张表格卡的下沿（见 .pagination 的样式） */}
+        <PagerBar pager={cursorPage} />
         <Notice tone="info">
           {t('hostAudit.notePre')}
           <span className="mono">host.ssh_login</span> /<span className="mono">host.ssh_failed</span> /

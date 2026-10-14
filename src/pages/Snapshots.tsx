@@ -16,6 +16,8 @@ import { Table, type Column } from '../components/ui/Table';
 import { Notice } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { PagerBar, usePaged } from '../hooks/usePaged';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import {
   IconSnapshot,
@@ -105,7 +107,9 @@ export function Snapshots() {
     [vms, nodeFilter],
   );
 
-  /* 并发拉取各 VM 快照（限制 6 并发） */
+  /* 并发拉取各 VM 快照（限制 6 并发）。轮询间隔跟「设置 → 面板设置 → 数据刷新
+     间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const snapshotsQuery = useQuery({
     queryKey: [
       'snapshots',
@@ -132,7 +136,7 @@ export function Snapshots() {
       return results.flat();
     },
     enabled: targetVms.length > 0,
-    refetchInterval: pveReady ? 60_000 : false,
+    refetchInterval: pveReady ? refresh : false,
     retry: false,
   });
 
@@ -154,6 +158,11 @@ export function Snapshots() {
       (a, b) => (b.snaptime ?? 0) - (a.snaptime ?? 0),
     );
   }, [snapshotsQuery.data, search]);
+
+  /* 快照会越攒越多（每台机器若干条），和其它列表一样分页。
+     切片放在上面那份「已过滤 + 已按时间排序」的列表之后，翻到哪一页都是
+     最新的排在前面；搜索词一变就回到第 1 页（resetKey）。 */
+  const snapPage = usePaged(snapshots, search);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['snapshots'] });
@@ -372,7 +381,7 @@ export function Snapshots() {
       ) : (
         <Table<Snapshot>
           columns={columns}
-          rows={snapshots}
+          rows={snapPage.rows}
           rowKey={(s) => `${s.node}/${s.vmid}/${s.name}`}
           loading={snapshotsQuery.isLoading}
           caption={t('snapshots.caption')}
@@ -393,6 +402,10 @@ export function Snapshots() {
           }
         />
       )}
+
+      {/* 分页条接在表格下沿，成为同一张卡的页脚（见 .pagination 的样式）。
+          出错时不出分页 —— 那会儿没有列表可翻 */}
+      {!snapshotsQuery.isError ? <PagerBar pager={snapPage} /> : null}
 
       {/* ---- 回滚确认 ---- */}
       <ConfirmDialog

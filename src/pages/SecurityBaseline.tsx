@@ -24,7 +24,7 @@ import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { SegmentedControl, Select } from '../components/ui/Input';
-import { Table } from '../components/ui/Table';
+import { Table, sortRows } from '../components/ui/Table';
 import type { Column, SortState } from '../components/ui/Table';
 import {
   CollapsibleCard,
@@ -50,6 +50,7 @@ import {
 } from '../components/Icons';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { PagerBar, usePaged } from '../hooks/usePaged';
 import { formatDateTime } from '../utils/format';
 import { TrendCard, BASELINE_TREND_SERIES } from '../components/TrendCard';
 import { useT, type MessageKey, type TFunc } from '../i18n';
@@ -58,6 +59,7 @@ import type {
   BaselineCheck,
   BaselineFleetReport,
   BaselineHostSummary,
+  BaselineIssue,
   BaselinePrivilege,
   BaselineReport,
   BaselineSeverity,
@@ -120,6 +122,14 @@ const GRADE_VARIANT: Record<string, BadgeVariant> = {
 function privilegeLabel(value: BaselinePrivilege, t: TFunc): string {
   return value === 'none' ? t('baseline.priv.none') : value;
 }
+
+/** 待处理 chip 的 tooltip 用：把状态翻成「不合格 / 待改进」，别把内部枚举甩给人看 */
+const STATUS_KEY: Record<BaselineStatus, MessageKey> = {
+  pass: 'baseline.status.pass',
+  warn: 'baseline.status.warn',
+  fail: 'baseline.status.fail',
+  unknown: 'baseline.status.unknown',
+};
 
 /** 服务器区的两种视图：卡片看一台机器的细节，列表横向比对多台机器 */
 type HostViewMode = 'card' | 'list';
@@ -323,6 +333,70 @@ function CheckRow({
    总览里的一台服务器
    --------------------------------------------------------------------------- */
 
+/**
+ * 一台机器的待处理项。
+ *
+ * 与「端口与进程」页共用同一套 chip 视觉语言（横向 flow、按结论染色、超出折叠成
+ * `+N`）：两页回答的都是「哪台最该先看」，长得不一样就等于让人学两遍。
+ *
+ * 颜色分工：**底色 = 这台机器的实际结果**（不合格 / 待改进），
+ * **圆点 = 检查项本身的严重度**。两件事分开，否则看到红点分不清在讲检查项危险
+ * 还是在讲这台没通过。
+ */
+function HostFindings({ host, max = 4 }: { host: BaselineHostSummary; max?: number }) {
+  const t = useT();
+
+  /* 连不上：整行只有一句说明，没有条目可摊 */
+  if (!host.ok) {
+    return (
+      <span className="baseline-note">
+        <IconAlert size={12} aria-hidden="true" />
+        {host.error || t('baseline.cannotConnectHost')}
+      </span>
+    );
+  }
+
+  /* 后端已经把待处理压到最多 4 条（高危优先）；万一上限被调高，
+     这里折叠成 `+N` 并把完整清单挂到 title，而不是默默丢掉。
+     issues 里只可能有 fail / warn（后端已滤掉 pass/unknown），所以下面两个
+     分支够用；真混进别的值就落到中性底色，不会认错成「已通过」。 */
+  const shown = host.issues.slice(0, max);
+  const rest = host.issues.length - shown.length;
+  const describe = (issue: BaselineIssue) =>
+    `${issue.label} · ${t(STATUS_KEY[issue.status])}`;
+
+  if (host.issues.length === 0) {
+    return (
+      <span className="fs-xs" style={{ color: 'var(--success)' }}>
+        {t('baseline.allPassedShort', { n: host.summary.total })}
+      </span>
+    );
+  }
+
+  return (
+    <span className="baseline-chips">
+      {shown.map((issue) => (
+        <span
+          key={issue.key}
+          className={`baseline-chip is-${issue.status}`}
+          title={describe(issue)}
+        >
+          <span className={`baseline-dot is-${issue.severity}`} aria-hidden="true" />
+          {issue.label}
+        </span>
+      ))}
+      {rest > 0 ? (
+        <span
+          className="baseline-chip is-more"
+          title={host.issues.slice(max).map(describe).join('\n')}
+        >
+          {t('baseline.moreIssues', { n: rest })}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function HostCard({
   host,
   onOpen,
@@ -401,27 +475,11 @@ function HostCard({
             <span className="is-fail" style={{ width: width(summary.fail) }} />
           </span>
 
-          {host.issues.length > 0 ? (
-            <span className="baseline-issue-list">
-              {host.issues.map((issue) => (
-                <span key={issue.key} className="baseline-issue">
-                  <span
-                    className={`baseline-dot is-${issue.severity}`}
-                    aria-hidden="true"
-                  />
-                  {issue.label}
-                </span>
-              ))}
-            </span>
-          ) : (
-            <span className="fs-xs" style={{ color: 'var(--success)' }}>
-              {t('baseline.allPassedN', { n: summary.total })}
-            </span>
-          )}
+          <HostFindings host={host} />
         </span>
       ) : (
-        <span className="baseline-host-body fs-xs text-muted">
-          {host.error || t('baseline.cannotConnectHost')}
+        <span className="baseline-host-body">
+          <HostFindings host={host} />
         </span>
       )}
 
@@ -594,7 +652,8 @@ export function SecurityBaseline() {
 
   /*
     列表视图的列：与卡片用的是同一份数据、同一套口径，只是把它摊成行 ——
-    十几台机器时横向比对分数比翻卡片快得多。排序交给 Table 自己处理。
+    十几台机器时横向比对分数比翻卡片快得多。排序状态在这里，实际排序在下面
+    「先排整份、再切页」那一步做（分页之后再排就只排得动当前页）。
   */
   const [hostSort, setHostSort] = useState<SortState | null>(null);
   const hostColumns = useMemo<Array<Column<BaselineHostSummary>>>(
@@ -602,7 +661,7 @@ export function SecurityBaseline() {
       {
         key: 'name',
         header: t('baseline.colHost'),
-        width: 190,
+        width: 176,
         sortable: true,
         sortValue: (host) => host.name || host.host_id,
         render: (host) => (
@@ -648,42 +707,38 @@ export function SecurityBaseline() {
         sortable: true,
         title: t('baseline.sortByFail'),
         sortValue: (host) => (host.ok ? host.summary.fail : -1),
-        render: (host) =>
-          host.ok ? (
-            <span className="baseline-list-counts mono fs-sm">
-              <span className="is-pass">{host.summary.pass}</span>
-              <span className="is-sep"> / </span>
-              <span className="is-warn">{host.summary.warn}</span>
-              <span className="is-sep"> / </span>
-              <span className="is-fail">{host.summary.fail}</span>
+        render: (host) => {
+          /* 连不上不是「分数低」，这一列给个破折号，理由写在「待处理」列 ——
+             两列各写一遍错误原文会重复占地方 */
+          if (!host.ok) return <span className="fs-xs text-muted">—</span>;
+          const { total, pass, warn, fail } = host.summary;
+          const width = (value: number) => (total ? `${(value / total) * 100}%` : '0%');
+          return (
+            <span className="baseline-list-counts-wrap">
+              <span className="baseline-list-counts mono fs-sm">
+                <span className="is-pass">{pass}</span>
+                <span className="is-sep"> / </span>
+                <span className="is-warn">{warn}</span>
+                <span className="is-sep"> / </span>
+                <span className="is-fail">{fail}</span>
+              </span>
+              {/* 与卡片里那根 6px 的条同义，只是更细：横向比分数时一眼看出构成 */}
+              {total > 0 ? (
+                <span className="baseline-list-bar" aria-hidden="true">
+                  <span className="is-pass" style={{ width: width(pass) }} />
+                  <span className="is-warn" style={{ width: width(warn) }} />
+                  <span className="is-fail" style={{ width: width(fail) }} />
+                </span>
+              ) : null}
             </span>
-          ) : (
-            <span className="fs-xs text-danger">
-              {host.error || t('baseline.cannotConnect')}
-            </span>
-          ),
+          );
+        },
       },
       {
         key: 'issues',
         header: t('baseline.colPending'),
-        render: (host) =>
-          host.issues.length ? (
-            <span className="baseline-issue-list">
-              {host.issues.map((issue) => (
-                <span key={issue.key} className="baseline-issue">
-                  <span
-                    className={`baseline-dot is-${issue.severity}`}
-                    aria-hidden="true"
-                  />
-                  {issue.label}
-                </span>
-              ))}
-            </span>
-          ) : host.ok ? (
-            <span className="fs-xs" style={{ color: 'var(--success)' }}>
-              {t('baseline.allPassedShort', { n: host.summary.total })}
-            </span>
-          ) : null,
+        /* 不给宽度：留白全部由这一列吸收，chip 流正好把它填满 */
+        render: (host) => <HostFindings host={host} />,
       },
       {
         key: 'actions',
@@ -693,7 +748,15 @@ export function SecurityBaseline() {
         locked: true,
         label: t('common.actions'),
         render: (host) => (
-          <div className="form-row" style={{ gap: 6, justifyContent: 'flex-end' }}>
+          /* 整行可点进详情（见下面 Table 的 onRowClick），这两个按钮得把事件挡住 ——
+             点「巡检」不该顺带跳走；onKeyDown 同样要挡，否则焦点落在按钮上按 Enter
+             时 keydom 冒泡到 <tr>，会「既巡检又跳转」。 */
+          <span
+            className="form-row"
+            style={{ gap: 6, justifyContent: 'flex-end' }}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
             <Button size="sm" variant="ghost" onClick={() => openHost(host.host_id)}>
               {t('baseline.details')}
             </Button>
@@ -706,12 +769,22 @@ export function SecurityBaseline() {
             >
               {scanningId === host.host_id ? t('baseline.scanning') : t('baseline.scan')}
             </button>
-          </div>
+          </span>
         ),
       },
     ],
     [openHost, scanHost, scanningId, t],
   );
+
+  /* 排序 + 分页：两步的**顺序不能反** —— 前端分页是切片，先切再排的话，排的只是
+     当前这一页（第 2 页里不合格项最多的那台永远排不到前面来，翻页时排序看着像
+     坏了）。排序规则与表格内部共用同一个 sortRows。
+     卡片视图不分页：一屏放得下十几张卡，分页反而让人以为还有别的页。 */
+  const sortedHosts = useMemo(
+    () => sortRows(fleet?.hosts ?? [], hostColumns, hostSort),
+    [fleet, hostColumns, hostSort],
+  );
+  const hostPage = usePaged(sortedHosts, 'baseline-fleet');
 
   const runFix = async (key: string, label: string) => {
     setBusyKey(key);
@@ -1089,15 +1162,27 @@ export function SecurityBaseline() {
                   ))}
                 </div>
               ) : (
-                <Table
-                  caption={t('baseline.tableCaption')}
-                  rows={fleet.hosts}
-                  columns={hostColumns}
-                  rowKey={(host) => host.host_id}
-                  dense
-                  sort={hostSort}
-                  onSortChange={setHostSort}
-                />
+                /* 分页条紧跟表格下沿 —— 表格与分页条读起来是一张卡（见 .pagination） */
+                <>
+                  <Table
+                    caption={t('baseline.tableCaption')}
+                    rows={hostPage.rows}
+                    columns={hostColumns}
+                    rowKey={(host) => host.host_id}
+                    dense
+                    sort={hostSort}
+                    onSortChange={setHostSort}
+                    /* 整行可点：横向比对时先认出「是哪台」，再点进去看细节，
+                       不必每行都去够最右边那颗「详情」。卡片视图本来就整张可点，
+                       这里补上，两种视图的手感才对齐。
+                       行内的「巡检 / 详情」按钮自己挡掉了冒泡（见 hostColumns）。*/
+                    onRowClick={(host) => openHost(host.host_id)}
+                    rowTitle={(host) =>
+                      t('baseline.viewHostAria', { name: host.name || host.host_id })
+                    }
+                  />
+                  <PagerBar pager={hostPage} />
+                </>
               )
             ) : !fleetQuery.isError ? (
               <EmptyState

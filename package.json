@@ -1,7 +1,7 @@
 {
   "name": "proxcenter-panel",
   "private": true,
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "check:graph": "node scripts/check-graph.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
-    "verify": "npm run typecheck && npm run check:graph && npm run check:i18n && npm run build",
+    "check:quota": "node scripts/check-quota-invalidation.mjs",
+    "verify": "npm run typecheck && npm run check:graph && npm run check:i18n && npm run check:quota && npm run build",
     "serve:dist": "node scripts/serve-dist.mjs",
     "lint": "echo \"no lint configured\""
   },

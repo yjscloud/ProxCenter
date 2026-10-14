@@ -55,6 +55,10 @@ interface QuotaRow {
   left: string;
   /** 「已用 x / 上限 y」，没配上限就是空串 */
   detail: string;
+  /** 这一项自己见底了没有（逐项，不是跟着胶囊的总体状态走） */
+  empty: boolean;
+  /** 已经**超出**了多少（正数）。额度被下调之后已建的机器会落到这里 */
+  over: number;
 }
 
 /** 逐维度列表的字段顺序、词条与单位。内存后端按 MB 存，界面一律换算成 GB。 */
@@ -123,10 +127,17 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
         left:
           left === null
             ? t('quota.unlimitedShort')
-            : t('quota.leftOfTotal', {
-                n: Math.round(Math.max(0, left) / scale),
-                unit: dimUnit,
-              }),
+            : left < 0
+              ? /* 负数剩余是在说「已经超了」。写成「还剩 -3 台」要人多读一遍才算
+                   得过来，直接说「已超额」是同一件事的白话 */
+                t('quota.overTotal', {
+                  n: Math.round(-left / scale),
+                  unit: dimUnit,
+                })
+              : t('quota.leftOfTotal', {
+                  n: Math.round(left / scale),
+                  unit: dimUnit,
+                }),
         detail:
           total === null
             ? ''
@@ -135,6 +146,10 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
                 total: Math.round(total / scale),
                 unit: dimUnit,
               }),
+        /* 只有这一项见底才点红。磁盘还剩 100 GB 的时候把它一起标红是在说谎 ——
+           胶囊的「已用尽」是「**有一项**见底」，那是另一回事 */
+        empty: left !== null && left <= 0,
+        over: left !== null && left < 0 ? Math.round(-left / scale) : 0,
       });
     }
     return out;
@@ -177,7 +192,7 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
 
       {open ? (
         <div
-          className="quota-popover"
+          className={`quota-popover${exhausted ? ' is-empty' : ''}`}
           role="dialog"
           aria-label={t('quota.detailsTitle', { noun })}
         >
@@ -196,8 +211,12 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
             <div className="quota-popover-block">
               <div className="quota-popover-block-title">{t('quota.platformLabel')}</div>
               <div className="quota-popover-line">
-                <span>{t('quota.fieldLabel.count')}</span>
-                <span>
+                <span className="quota-popover-label">
+                  {t('quota.fieldLabel.count')}
+                </span>
+                {/* 平台这层只有这一个值，它就是这一行的重点 —— 用「还剩」那格
+                    的样式（右对齐 + 加重），而不是当注解用灰色 */}
+                <span className="quota-popover-left">
                   {quota?.limited
                     ? t('quota.usedOfTotal', {
                         used: quota.used,
@@ -213,15 +232,18 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
           {rows.length ? (
             <div className="quota-popover-block">
               <div className="quota-popover-block-title">{t('quota.mineLabel')}</div>
+              {/* 三段各自成格：标签 | 还剩 x | 已用 y / 上限 z。
+                  原先三段挤在同一个行内流里，标签会被长数值压到换行
+                  （「磁盘」断成「磁 / 盘」），数值接着断成三行 ——
+                  拆成三格才各归各位（见 .quota-popover-line 的注释）。 */}
               {rows.map((row) => (
-                <div className="quota-popover-line" key={row.field}>
-                  <span>{row.label}</span>
-                  <span>
-                    {row.left}
-                    {row.detail ? (
-                      <span className="quota-popover-detail">{row.detail}</span>
-                    ) : null}
-                  </span>
+                <div
+                  className={`quota-popover-line${row.empty ? ' is-empty' : ''}`}
+                  key={row.field}
+                >
+                  <span className="quota-popover-label">{row.label}</span>
+                  <span className="quota-popover-left">{row.left}</span>
+                  <span className="quota-popover-detail">{row.detail}</span>
                 </div>
               ))}
             </div>
@@ -229,6 +251,11 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
 
           {/* 出口：管理员去设置里改，普通用户找管理员。这是两层额度唯一需要「行动」
               的地方，所以放在最后一行 —— 也是原先两条文案里最容易被抄错的一句 */}
+          {/* 口径写在这里，别让人猜：额度数的是**配置容量**（配了多大），不是
+              实际占用；模板也计入（它同样占一个 VMID 与一份存储）。这两点最容易
+              被理解成「我明明没开机怎么也在扣」。 */}
+          <div className="quota-popover-note">{t('quota.usageBasis')}</div>
+
           <div className="quota-popover-foot">
             {isAdmin ? t('quota.adminWhere') : exhausted ? t('quota.askAdmin') : t('quota.byAdmin')}
           </div>

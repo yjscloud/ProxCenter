@@ -7,8 +7,8 @@
       按节点名去推断该节点属于哪台 PVE；而虚拟机 / 容器详情页会设页面级连接
       （见 api/client.ts 的 ``setPageConnection``），于是向导里选了 A 集群的节点，
       请求却打到 B 集群 —— 轻则报 ``hostname lookup 'x' failed``，重则两边的节点
-      同名，**静默列出 B 集群的存储**。这里按节点反查它的 ``connection_id`` 并显式
-      带上，请求头不会被页面级连接顶掉。
+      同名，**静默列出 B 集群的存储**。这里把连接显式写进请求头，优先级高于
+      页面级连接与顶栏的集群作用域（后两者都可能指向另一套集群）。
    2. **不带节点名时后端会聚合**（这台主机的**全部节点**、甚至全部主机的存储），
       于是「选了节点还看见别的节点的池子」。所以：没选节点就不去查，查回来的
       再按 ``node`` 收敛一次。
@@ -43,12 +43,18 @@ export function useNodeStorages(
     staleTime: 60_000,
   });
 
-  /* 节点所属连接：以节点列表为准（向导的连接选择框可能还没选，或者选的是另一台）。
-     两个都拿不到时留空，让后端自己去推断。 */
+  /* 节点所属连接。**显式传入的连接优先**：调用点（详情页 / 各创建向导）本来就知道
+     这台机器在哪条连接上（vm.connection_id / 向导选的目标主机）。
+
+     只有在没显式给时，才回落到「按节点名去节点列表里反查」。反查是有歧义的 ——
+     多套 PVE 上同名节点是常态（两台都叫 pve1），而且 `/nodes` 会跟着顶栏作用域
+     变窄：向导目标主机是 A、节点名在两台都存在时，反查可能命中 B。
+     两个都拿不到时留空，让后端自己按节点名推断。 */
   const nodeConn = useMemo(() => {
-    if (!node) return connectionId || '';
+    if (connectionId) return connectionId;
+    if (!node) return '';
     const hit = (nodesQuery.data ?? []).find((item) => item.node === node);
-    return hit?.connection_id || connectionId || '';
+    return hit?.connection_id || '';
   }, [node, nodesQuery.data, connectionId]);
 
   const query = useQuery({

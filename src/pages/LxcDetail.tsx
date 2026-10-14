@@ -13,7 +13,7 @@
 归属、权限、任务等待、控制台这些机制两边完全一致，直接复用。
 */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { lxcApi, storagesApi } from '../api/endpoints';
@@ -21,6 +21,7 @@ import { setPageConnection } from '../api/client';
 import { guestPower } from '../api/guests';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { Breadcrumb } from '../components/Topbar';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, InfoGrid, InfoRow, KpiCard } from '../components/ui/Card';
@@ -37,7 +38,7 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { ConfirmDialog, useConfirm } from '../components/ui/ConfirmDialog';
 import { DetailSkeleton } from '../components/ui/Spinner';
-import { Notice } from '../components/ui/EmptyState';
+import { EmptyState, Notice } from '../components/ui/EmptyState';
 import { Table, type Column } from '../components/ui/Table';
 import { CpuChart, MemoryChart, NetworkChart, DiskIoChart } from '../components/MetricChart';
 import { ConsoleTab } from '../components/ConsoleTab';
@@ -55,11 +56,26 @@ import {
   IconSnapshot,
   IconLayers,
   IconEdit,
+  IconTerminal,
+  IconInfo,
+  IconMonitor,
+  IconPause,
+  IconConsole,
 } from '../components/Icons';
-import { formatBytes, formatDateTime, formatUptimeShort, parseTags, toPercent } from '../utils/format';
+import { LxcMoreMenu } from '../components/LxcMoreMenu';
+import {
+  formatBytes,
+  formatDateTime,
+  formatUptimeShort,
+  parseSizeToBytes,
+  parseTags,
+  toPercent,
+  usageColor,
+  usageTone,
+} from '../utils/format';
 import { isRunning, isTransient, vmStatusMeta } from '../utils/status'
 import { isDestructivePower, powerConfirmOptions } from '../utils/powerConfirm';
-import { useT } from '../i18n';
+import { useT, type MessageKey } from '../i18n';
 import { useTaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -81,6 +97,17 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/* Tab 清单带图标，与虚拟机详情页（VmDetail 的 TABS）同一套写法。
+   胶囊分段控件只有纯文字：标签一多就分不清是「存储」还是「存储配置」，而且两页
+   切换手感不一致会让人以为点进了别的页面。 */
+const TABS: Array<{ key: TabKey; labelKey: MessageKey; icon: ReactNode }> = [
+  { key: 'overview', labelKey: 'lxcDetail.tabOverview', icon: <IconInfo size={15} /> },
+  { key: 'network', labelKey: 'lxcDetail.tabNetwork', icon: <IconNetwork size={15} /> },
+  { key: 'storage', labelKey: 'lxcDetail.tabStorage', icon: <IconStorage size={15} /> },
+  { key: 'snapshot', labelKey: 'lxcDetail.tabSnapshot', icon: <IconSnapshot size={15} /> },
+  { key: 'console', labelKey: 'lxcDetail.tabConsole', icon: <IconTerminal size={15} /> },
+];
+
 export function LxcDetail() {
   const t = useT();
   const { node = '', vmid = '' } = useParams<{ node: string; vmid: string }>();
@@ -92,7 +119,7 @@ export function LxcDetail() {
 
      旧链接兼容：跳控制台 / 快照时曾把 `?tab=…` 拼在连接 id 后面
      （见 api/guests.guestPath），书签与历史里可能还留着这种地址。 */
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const pageConnection = (searchParams.get('connection') ?? '').split('?')[0];
   useEffect(() => {
     setPageConnection(pageConnection);
@@ -106,37 +133,39 @@ export function LxcDetail() {
   /* 关机 / 停止 / 重启前弹一次确认（见 utils/powerConfirm） */
   const [powerConfirmEl, confirmPower] = useConfirm();
 
-  const tabs = useMemo(
-    () => [
-      { label: t('lxcDetail.tabOverview'), value: 'overview' as TabKey },
-      { label: t('lxcDetail.tabNetwork'), value: 'network' as TabKey },
-      { label: t('lxcDetail.tabStorage'), value: 'storage' as TabKey },
-      { label: t('lxcDetail.tabSnapshot'), value: 'snapshot' as TabKey },
-      { label: t('lxcDetail.tabConsole'), value: 'console' as TabKey },
-    ],
-    [t],
-  );
-
-  const [tab, setTab] = useState<TabKey>('overview');
+  /* Tab 写进 URL：刷新、分享链接、浏览器前进后退都停在原来那个 Tab，
+     与虚拟机详情页一致（见 VmDetail）。首屏也认 ?tab=，否则分享出去的一律
+     落在概览。用 URLSearchParams 包一层是为了保住列表页带过来的 ?connection。 */
+  const [tab, setTab] = useState<TabKey>(() => {
+    const raw = searchParams.get('tab');
+    return raw && TABS.some((item) => item.key === raw) ? (raw as TabKey) : 'overview';
+  });
+  const selectTab = (next: TabKey) => {
+    setTab(next);
+    const params = new URLSearchParams(searchParams);
+    params.set('tab', next);
+    setSearchParams(params, { replace: true });
+  };
   const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
   const [pending, setPending] = useState(false);
 
   /* 容器是独立的一套权限（ct.*），与虚拟机的 vm.* 不通用 */
   const canPower = hasPermission('ct.power');
   const canConfig = hasPermission('ct.config');
-  const canDelete = hasPermission('ct.delete');
   const canSnapshot = hasPermission('ct.snapshot');
 
   const queryKey = useMemo(() => ['lxc', node, ctId] as const, [node, ctId]);
 
   /* 未配置连接时不必发请求：页面会直接给出「去添加连接」的引导 */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const ctQuery = useQuery({
     queryKey,
     queryFn: () => lxcApi.detail(node, ctId),
     enabled: pveReady && Boolean(node) && Number.isFinite(ctId),
-    refetchInterval: pveReady ? 10_000 : false,
+    refetchInterval: pveReady ? refresh : false,
   });
 
   const rrdQuery = useQuery<RrdPoint[]>({
@@ -171,9 +200,12 @@ export function LxcDetail() {
   }, [queryClient, node, ctId]);
 
   /* ---- 电源操作 ---- */
-  const doPower = async (action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
-    /* 关机 / 停止 / 重启先确认：详情页里这三个按钮挨在一起，误点一下容器里的
-       服务就断了。启动不拦。 */
+  const doPower = async (
+    action: 'start' | 'stop' | 'shutdown' | 'reboot' | 'suspend' | 'resume',
+  ) => {
+    /* 关机 / 停止 / 重启 / 挂起先确认：详情页里这几个按钮挨在一起，误点一下容器
+       里的服务就断了。启动与恢复不拦 —— 它们不会让服务停下来。
+       （isDestructivePower 已把 suspend 算进去，这里不必再单独判一次。） */
     if (isDestructivePower(action)) {
       const ok = await confirmPower(
         powerConfirmOptions(t, action, { name: ct?.name, vmid: ctId }, 'lxc'),
@@ -185,6 +217,9 @@ export function LxcDetail() {
       stop: t('lxcDetail.powerStop'),
       shutdown: t('lxcDetail.powerShutdown'),
       reboot: t('lxcDetail.powerReboot'),
+      /* 挂起 / 恢复与虚拟机共用同一套文案（power.*），不另立一份 */
+      suspend: t('power.suspend'),
+      resume: t('power.resume'),
     };
     setPending(true);
     try {
@@ -465,21 +500,41 @@ export function LxcDetail() {
 
   /* ========================================================= 渲染 ================= */
 
-  if (ctQuery.isLoading) return <DetailSkeleton />;
+  /* 骨架与错误态都包在 .page 里，与虚拟机详情页一致 —— 否则加载过程中页面没有
+     内容区留白，骨架是「贴着顶栏」出现的，和加载完成后的版面差一截。 */
+  if (ctQuery.isLoading) {
+    return (
+      <div className="page">
+        <DetailSkeleton />
+      </div>
+    );
+  }
   if (ctQuery.isError || !ct) {
     return (
       <div className="page">
+        <Breadcrumb
+          items={[
+            { label: t('lxcDetail.breadcrumbLxc'), to: '/lxc' },
+            { label: ct?.name || `CT ${ctId}` },
+          ]}
+        />
         <PveQueryError
           title={t('lxcDetail.loadFailed')}
           error={ctQuery.error}
           onRetry={() => void ctQuery.refetch()}
         />
+        <Button variant="secondary" onClick={() => navigate('/lxc')}>
+          {t('vmDetail.backToList')}
+        </Button>
       </div>
     );
   }
 
   const status = vmStatusMeta(ct.status, t);
   const running = isRunning(ct.status);
+  /* 挂起中的容器要单独给一个「恢复」按钮 —— 它既不算运行也不算停止，
+     少了这个出口就只能去列表页操作。取值与虚拟机详情页同一口径。 */
+  const frozen = ct.status === 'paused' || ct.status === 'suspended';
   const busy = isTransient(ct.status) || pending || Boolean(ct.lock);
 
   const memPct = toPercent(toNumber(ct.mem) / Math.max(toNumber(ct.maxmem), 1));
@@ -629,8 +684,7 @@ export function LxcDetail() {
       key: 'snaptime',
       header: t('common.createdAt'),
       width: 180,
-      render: (r) =>
-        r.snaptime ? new Date(Number(r.snaptime) * 1000).toLocaleString() : '-',
+      render: (r) => (r.snaptime ? formatDateTime(Number(r.snaptime)) : '-'),
     },
     {
       key: 'actions',
@@ -690,7 +744,10 @@ export function LxcDetail() {
       }
       subtitle={`${node} · CT ${ctId}${ct.ostemplate ? ` · ${ct.ostemplate.split('/').pop()}` : ''}`}
       actions={
-        <div className="flex items-center gap-8">
+        /* 加上 flex-wrap：现在这一排有「刷新 / 编辑配置 / 重启 / 关机 / 停止 /
+           挂起 / 控制台 / 更多操作」八个控件，窄屏上排不下时要能自己换行，
+           否则会顶出页面宽度（虚拟机的 .detail-actions 本来就带 wrap）。 */
+        <div className="flex items-center gap-8 flex-wrap">
           <IconButton
             label={t('common.refresh')}
             variant="secondary"
@@ -732,6 +789,23 @@ export function LxcDetail() {
               >
                 {t('lxcDetail.forceStop')}
               </Button>
+              {/* 挂起用 ghost：它不终止服务、之后可以恢复，不该和上面三个
+                  会断服务的按钮抢同一个视觉权重（与虚拟机详情页一致） */}
+              <Button
+                variant="ghost"
+                icon={<IconPause size={14} />}
+                disabled={!canPower || busy}
+                onClick={() => void doPower('suspend')}
+              >
+                {t('power.suspend')}
+              </Button>
+              <Button
+                variant="secondary"
+                icon={<IconConsole size={14} />}
+                onClick={() => selectTab('console')}
+              >
+                {t('lxcDetail.tabConsole')}
+              </Button>
             </>
           ) : (
             <Button
@@ -743,61 +817,106 @@ export function LxcDetail() {
               {t('lxcDetail.powerStart')}
             </Button>
           )}
-          <Button
-            variant="danger"
-            icon={<IconTrash size={15} />}
-            disabled={!canDelete || busy}
-            onClick={() => setDeleteOpen(true)}
-          >
-            {t('common.delete')}
-          </Button>
+          {frozen ? (
+            <Button
+              variant="primary"
+              icon={<IconPlay size={15} />}
+              disabled={!canPower || busy}
+              onClick={() => void doPower('resume')}
+            >
+              {t('power.resume')}
+            </Button>
+          ) : null}
+          {/* 低频与危险操作（克隆 / 转模板 / 迁移 / 删除）收进「更多操作」：
+              常驻在标题栏会把开机 / 关机 / 控制台这几个主操作挤散，而删除摆在
+              最显眼处也不合适（见 LxcMoreMenu）。 */}
+          <LxcMoreMenu
+            ct={ct}
+            connectionId={pageConnection}
+            onDelete={() => setDeleteOpen(true)}
+            onChanged={invalidate}
+          />
         </div>
       }
     >
-      <div className="mb-16">
-        <SegmentedControl<TabKey>
-          value={tab}
-          onChange={setTab}
-          options={tabs}
-          ariaLabel={t('lxcDetail.tabsAria')}
-        />
+      {/* ---- Tab 导航：与虚拟机详情页同一套 .tabs / .tab ---- */}
+      <div className="tabs" role="tablist" aria-label={t('lxcDetail.tabsAria')}>
+        {TABS.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.key}
+            className={`tab ${tab === item.key ? 'is-active' : ''}`}
+            onClick={() => selectTab(item.key)}
+          >
+            {item.icon}
+            <span>{t(item.labelKey)}</span>
+          </button>
+        ))}
       </div>
 
-      {/* ==================== 概览 ==================== */}
+      <div className="tab-panel">
+
+      {/* ==================== 概览 ====================
+           骨架与虚拟机详情页的 OverviewTab 逐块对齐：KPI 行跨满 → 左「基本信息」
+           / 右「存储 + 网卡」两列等高 → 四张曲线卡铺在下方的 monitor-grid 里。
+
+           原来这里写的是 `.kpi-grid` 与 `.chart-stack` —— **这两个类全仓库都没有
+           CSS 定义**。没有网格容器，4 张 KPI 卡就是 4 个整宽块级元素竖着堆，
+           四张图也在右栏里一路排下去；虚拟机那边是 3 张并排 + 2×2 图表网格。
+           两页看起来像两个产品，就是这两个类名断链造成的。 */}
       {tab === 'overview' ? (
-        <>
-          <div className="kpi-grid mb-16">
+        <div className="detail-columns is-balanced">
+          {/* ---- 实时资源：跨两列铺开 ---- */}
+          <div className="grid grid-4 detail-full">
             <KpiCard
               label="CPU"
               value={`${cpuPct.toFixed(1)}%`}
-              hint={t('lxcDetail.kpiCpuHint', { n: ct.cpus ?? 1 })}
-              icon={<IconCpu size={18} />}
+              icon={<IconCpu size={16} />}
+              tone={usageTone(cpuPct)}
               progress={Math.min(100, cpuPct)}
+              progressColor={usageColor(cpuPct)}
+              hint={<span className="mono">{t('lxcDetail.kpiCpuHint', { n: ct.cpus ?? 1 })}</span>}
             />
             <KpiCard
               label={t('lxcDetail.kpiMem')}
-              value={`${memPct.toFixed(0)}%`}
-              hint={`${formatBytes(toNumber(ct.mem))} / ${formatBytes(toNumber(ct.maxmem))}`}
-              icon={<IconMemory size={18} />}
+              value={`${memPct.toFixed(1)}%`}
+              icon={<IconMemory size={16} />}
+              tone={usageTone(memPct)}
               progress={memPct}
+              progressColor={usageColor(memPct)}
+              hint={
+                <span className="mono">
+                  {formatBytes(toNumber(ct.mem))} / {formatBytes(toNumber(ct.maxmem))}
+                </span>
+              }
             />
             <KpiCard
               label={t('lxcDetail.kpiDisk')}
-              value={`${diskPct.toFixed(0)}%`}
-              hint={`${formatBytes(toNumber(ct.disk))} / ${formatBytes(toNumber(ct.maxdisk))}`}
-              icon={<IconStorage size={18} />}
+              value={`${diskPct.toFixed(1)}%`}
+              icon={<IconStorage size={16} />}
+              tone={usageTone(diskPct)}
               progress={diskPct}
+              progressColor={usageColor(diskPct)}
+              hint={
+                <span className="mono">
+                  {formatBytes(toNumber(ct.disk))} / {formatBytes(toNumber(ct.maxdisk))}
+                </span>
+              }
             />
+            {/* 运行时长没有「占比」可谈，因此不给 tone / progressColor ——
+                三个百分比的卡走绿→黄→红分档，这张若也上色就分不清它量的是什么 */}
             <KpiCard
               label={t('lxcDetail.kpiUptime')}
               value={formatUptimeShort(ct.uptime)}
+              icon={<IconLayers size={16} />}
               hint={running ? t('lxcDetail.running') : t('lxcDetail.stopped')}
-              icon={<IconLayers size={18} />}
             />
           </div>
 
-          <div className="grid grid-2 mb-16">
-            <Card>
+          <div className="detail-column">
+            <Card collapsible={false} className="vm-basic-info">
               <CardHeader
                 title={t('lxcDetail.basicInfo')}
                 icon={<IconLayers size={16} />}
@@ -884,49 +1003,157 @@ export function LxcDetail() {
                 <p className="mt-12 fs-sm text-secondary">{ct.description}</p>
               ) : null}
             </Card>
+          </div>
 
-            <Card>
+          {/* ---- 右列：存储 + 网卡 ----
+              与虚拟机概览右列同构（那边是「磁盘 + 网络」，用同一套 .hw-item 视觉
+              语言）。数据不用额外请求：rootfs / mounts / networks 本来就在这份
+              详情里，之前只是没往概览上摆。 */}
+          <div className="detail-column">
+            <Card collapsible={false}>
               <CardHeader
-                title={t('lxcDetail.monitor')}
-                icon={<IconNetwork size={16} />}
-                actions={
-                  <SegmentedControl<RrdTimeframe>
-                    value={timeframe}
-                    onChange={setTimeframe}
-                    options={[
-                      { label: t('lxcDetail.tfHour'), value: 'hour' },
-                      { label: t('lxcDetail.tfDay'), value: 'day' },
-                      { label: t('lxcDetail.tfWeek'), value: 'week' },
-                      { label: t('lxcDetail.tfMonth'), value: 'month' },
-                    ]}
-                  />
-                }
+                title={t('lxcDetail.storageCard')}
+                subtitle={t('lxcDetail.storageSubtitle', {
+                  count: ct.mounts.length + 1,
+                  size: formatBytes(toNumber(ct.maxdisk), 0),
+                })}
+                icon={<IconStorage size={16} />}
               />
-              <div className="chart-stack">
+              {ct.rootfs?.volid || ct.rootfs?.size || ct.mounts.length ? (
+                <div className="flex flex-col">
+                  {ct.rootfs?.volid || ct.rootfs?.size ? (
+                  <div className="hw-item">
+                    <div className="hw-item-main">
+                      <span className="hw-item-icon">
+                        <IconStorage size={15} />
+                      </span>
+                      <div className="hw-item-text">
+                        <span className="hw-item-label">rootfs</span>
+                        <span className="hw-item-value">
+                          {formatBytes(parseSizeToBytes(ct.rootfs.size))}
+                          {ct.rootfs.storage ? ` · ${ct.rootfs.storage}` : ''}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                {ct.mounts.map((m, i) => (
+                  <div className="hw-item" key={m.mp || m.volid || i}>
+                    <div className="hw-item-main">
+                      <span className="hw-item-icon">
+                        <IconStorage size={15} />
+                      </span>
+                      <div className="hw-item-text">
+                        <span className="hw-item-label">{m.mp || `mp${i}`}</span>
+                        <span className="hw-item-value">
+                          {m.size ? formatBytes(parseSizeToBytes(m.size)) : '—'}
+                          {m.storage ? ` · ${m.storage}` : ''}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                </div>
+              ) : (
+                <EmptyState title={t('lxcDetail.noStorage')} compact />
+              )}
+            </Card>
+
+            <Card collapsible={false}>
+              <CardHeader
+                title={t('lxcDetail.network')}
+                subtitle={t('lxcDetail.nicCount', { count: ct.networks.length })}
+                icon={<IconNetwork size={16} />}
+              />
+              {ct.networks.length === 0 ? (
+                <EmptyState title={t('lxcDetail.noNics')} compact />
+              ) : (
+                <div className="flex flex-col">
+                  {ct.networks.map((n) => (
+                    <div className="hw-item" key={n.interface}>
+                      <div className="hw-item-main">
+                        <span className="hw-item-icon">
+                          <IconNetwork size={15} />
+                        </span>
+                        <div className="hw-item-text">
+                          <span className="hw-item-label">
+                            {n.interface}
+                            {n.name ? ` · ${n.name}` : ''}
+                          </span>
+                          <span className="hw-item-value">
+                            {n.bridge || t('vmDetail.noBridge')}
+                            {n.ip ? ` · ${n.ip}` : ''}
+                            {n.gw ? ` · ${n.gw}` : ''}
+                          </span>
+                          {n.hwaddr ? (
+                            <span className="fs-xs text-muted mono">{n.hwaddr}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </div>
+
+          {/* ---- 曲线：跨两列铺开，四张卡 2×2 ----
+              与虚拟机「监控」Tab 同一套 .monitor-grid（charts.css）：两列网格 +
+              卡片专属内边距 + 悬停描边。四张图各占一张卡，而不是挤在右栏同一张
+              卡里竖着排 —— 半宽栏里 2×2 会把每张图压到 ~240px，坐标轴都读不出
+              刻度。 */}
+          <div className="detail-full">
+            <div className="flex items-center justify-between gap-12 flex-wrap mb-16">
+              {/* 这里用 .card-title 而不是 CardHeader：CardHeader 自带下边框与
+                  14px 外边距，脱离卡片单独摆在工具行里会画出一条悬空的横线 */}
+              <span className="card-title">
+                <IconMonitor size={16} />
+                {t('lxcDetail.monitor')}
+              </span>
+              <SegmentedControl<RrdTimeframe>
+                value={timeframe}
+                onChange={setTimeframe}
+                ariaLabel={t('lxcDetail.monRangeAria')}
+                options={[
+                  { label: t('lxcDetail.tfHour'), value: 'hour' },
+                  { label: t('lxcDetail.tfDay'), value: 'day' },
+                  { label: t('lxcDetail.tfWeek'), value: 'week' },
+                  { label: t('lxcDetail.tfMonth'), value: 'month' },
+                ]}
+              />
+            </div>
+            <div className="monitor-grid">
+              <Card>
                 <CpuChart
                   points={rrdQuery.data ?? []}
                   loading={rrdQuery.isLoading}
                   error={rrdQuery.error}
                 />
+              </Card>
+              <Card>
                 <MemoryChart
                   points={rrdQuery.data ?? []}
                   loading={rrdQuery.isLoading}
                   error={rrdQuery.error}
                 />
+              </Card>
+              <Card>
                 <NetworkChart
                   points={rrdQuery.data ?? []}
                   loading={rrdQuery.isLoading}
                   error={rrdQuery.error}
                 />
+              </Card>
+              <Card>
                 <DiskIoChart
                   points={rrdQuery.data ?? []}
                   loading={rrdQuery.isLoading}
                   error={rrdQuery.error}
                 />
-              </div>
-            </Card>
+              </Card>
+            </div>
           </div>
-        </>
+        </div>
       ) : null}
 
       {/* ==================== 网络 ==================== */}
@@ -1031,6 +1258,7 @@ export function LxcDetail() {
           guestType="lxc"
         />
       ) : null}
+      </div>
 
       {/* ---- 编辑配置 ---- */}
       <Modal

@@ -7,12 +7,14 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   clusterApi,
+  connectionsApi,
   dashboardApi,
   lxcApi,
   nodesApi,
   storagesApi,
   vmsApi,
 } from '../api/endpoints';
+import { guestPath } from '../api/guests';
 import { PageShell } from '../components/Layout';
 import { useAuth } from '../hooks/useAuth';
 import { useMetricsStream } from '../hooks/useMetricsStream';
@@ -23,8 +25,10 @@ import { Button } from '../components/ui/Button';
 import { SegmentedControl } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
 import { ErrorState, EmptyState } from '../components/ui/EmptyState';
+import { Modal } from '../components/ui/Modal';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { DonutChart, CHART_COLORS } from '../components/MetricChart';
 import { CapacityCard } from '../components/CapacityCard';
 import type { CapacityTimeframe } from '../components/CapacityCard';
@@ -41,8 +45,10 @@ import {
   IconGrip,
   IconLayout,
   IconChevronRight,
+  IconChevronDown,
   IconEyeOff,
   IconEye,
+  IconLayers,
 } from '../components/Icons';
 import {
   formatBytes,
@@ -53,7 +59,12 @@ import {
   usageTone,
 } from '../utils/format';
 import { taskStatusMeta, nodeStatusMeta } from '../utils/status';
-import type { DashboardTop, NodeInfo, TaskInfo } from '../api/types';
+import type {
+  DashboardTop,
+  FleetConnectionStatus,
+  NodeInfo,
+  TaskInfo,
+} from '../api/types';
 import {
   packRows,
   useDashboardLayout,
@@ -61,10 +72,10 @@ import {
 } from '../hooks/useDashboardLayout';
 import { useT } from '../i18n';
 
-/* 仪表盘各卡片的自动刷新间隔。原先 10 秒：多路接口（虚拟机 / 节点 / 集群 / 存储 /
-   任务 / TopN）都会在这么短的周期里重复打后端与 PVE，属于无谓的常驻轮询。30 秒
-   对「看一眼集群概览」足够，节点 KPI 那条实时曲线走 WebSocket，不受这里影响。 */
-const REFRESH = 30_000;
+/* 仪表盘各卡片的自动刷新间隔取自「设置 → 面板设置 → 数据刷新间隔」
+   （见 useRefreshInterval）：这里是全站接口最集中的一页（虚拟机 / 节点 / 集群 /
+   存储 / 任务 / TopN 一起轮询），间隔调小要清楚代价。原先写死 30 秒。
+   节点 KPI 那条实时曲线走 WebSocket，不受这个设置影响。 */
 
 /* 「集群节点」卡片最多列几个节点。
    节点一多，卡片里再一行行堆下去就是半屏滚动条 —— 这块是「扫一眼健康度」
@@ -106,8 +117,8 @@ const WIDGET_META: WidgetMeta[] = [
     id: 'distribution',
     nameKey: 'dashboard.widget.distribution',
     span: 'half',
-    /* 统计口径只算虚拟机（vmsApi.list → vm.view），与 /dashboard/summary 那套
-       「vm 或 ct 任一类即可」不同，这里不能放宽到 ct.view */
+    /* 统计口径只算虚拟机（vmsApi.list → vm.view）：这张图讲的是虚拟机分布，
+       不跟着「虚拟机或容器任一类」放宽到 ct.view */
     permissions: ['vm.view'],
   },
   {
@@ -262,14 +273,16 @@ export function Dashboard() {
     if (refreshing && !anyFetching) setRefreshing(false);
   }, [refreshing, anyFetching]);
 
-  /* ---- 数据查询（每 30 秒自动刷新）----
+  /* ---- 数据查询 ----
      每路都挂权限开关：没权限的连接上就不发请求（见上面的 canXxx）。
      另外 enabled 为 false 时 react-query 不会置 isLoading —— 被裁掉的卡片
-     连加载骨架都不会闪一下，这也是「自适应」需要的一半。 */
+     连加载骨架都不会闪一下，这也是「自适应」需要的一半。
+     刷新间隔跟「设置 → 面板设置 → 数据刷新间隔」走。 */
+  const refresh = useRefreshInterval();
   const vmsQuery = useQuery({
     queryKey: ['vms', 'all'],
     queryFn: () => vmsApi.list(),
-    refetchInterval: pveReady ? REFRESH : false,
+    refetchInterval: pveReady ? refresh : false,
     enabled: canVm,
   });
 
@@ -280,63 +293,269 @@ export function Dashboard() {
   const ctsQuery = useQuery({
     queryKey: ['lxc', 'dashboard'],
     queryFn: () => lxcApi.list(),
-    refetchInterval: pveReady ? REFRESH : false,
+    refetchInterval: pveReady ? refresh : false,
     enabled: !isAdmin && canCt,
   });
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
-    refetchInterval: pveReady ? REFRESH : false,
+    refetchInterval: pveReady ? refresh : false,
     enabled: canNode,
   });
 
-  const clusterQuery = useQuery({
-    queryKey: ['cluster', 'status'],
-    queryFn: clusterApi.status,
-    refetchInterval: pveReady ? REFRESH : false,
-    retry: false,
-    enabled: canNode,
-  });
 
-  /* 集群仲裁与 HA：单节点恒为 quorate，多节点时掉仲裁意味着整群只读 */
-  const haQuery = useQuery({
-    queryKey: ['cluster', 'ha-status'],
-    queryFn: clusterApi.haStatus,
-    refetchInterval: REFRESH,
+  /* ---- 集群态势（全机队口径）----
+     这里原先读 /cluster/ha-status —— 那个接口只能读**默认连接**那一套（面板把
+     多条 PVE 当同级，见 connections 的说明）。症状是：套着四台 PVE 时，非默认的
+     那几套失去仲裁，仪表盘照样一片绿。失去仲裁意味着那个集群进入只读保护，
+     是最高级别的异常，不能漏。
+     fleet-status 已经把每条连接的仲裁 / HA / 可达性算好（顶栏「控制台状态」用的
+     是同一个接口、同一个 queryKey，所以不会多发请求）。 */
+  const fleetQuery = useQuery({
+    queryKey: ['cluster', 'fleet-status'],
+    queryFn: clusterApi.fleetStatus,
+    refetchInterval: refresh,
     retry: false,
     enabled: loadNodes,
   });
 
-  const haHint = (() => {
-    const ha = haQuery.data;
-    if (!ha) return t('dashboard.ha.unavailable');
-    /* 前缀带上连接名：多套 PVE 同级的部署里，这张卡只反映默认连接那一套 */
-    const prefix = ha.connection_name ? `${ha.connection_name} · ` : '';
-    if (ha.cluster_mode === 'standalone') return prefix + t('dashboard.ha.standalone');
-    if (ha.quorum.quorate === false) return prefix + t('dashboard.ha.lostQuorum');
-    if (!ha.ha_enabled) return prefix + t('dashboard.ha.notEnabled');
-    return ha.ha_resources.length > 0
-      ? prefix + t('dashboard.ha.managed', { n: ha.ha_resources.length })
+  const fleetItems = fleetQuery.data?.connections ?? [];
+  const noQuorum = fleetItems.filter((item) => item.quorate === false);
+  const unreachable = fleetItems.filter((item) => !item.ok);
+
+  /* 副标题里的 PVE 版本：多套 PVE 未必同版本，去重后展示，超过两个折叠成 +N
+     （与顶栏「控制台状态」同一套写法）。 */
+  const pveVersions = Array.from(
+    new Set(fleetItems.map((item) => item.version).filter(Boolean)),
+  );
+  const versionText =
+    pveVersions.length > 2
+      ? `${pveVersions[0]} / ${pveVersions[1]} +${pveVersions.length - 2}`
+      : pveVersions.join(' / ');
+
+  /* 三态取「全机队里最坏的那一个」：失去仲裁 > 有连接不可达 > 正常 */
+  const posture: 'ok' | 'degraded' | 'down' | 'unknown' = !fleetQuery.data
+    ? 'unknown'
+    : noQuorum.length > 0
+      ? 'down'
+      : unreachable.length > 0
+        ? 'degraded'
+        : 'ok';
+
+  const postureDot =
+    posture === 'ok'
+      ? 'is-ok'
+      : posture === 'degraded'
+        ? 'is-warn'
+        : posture === 'down'
+          ? 'is-bad'
+          : '';
+  const postureLabel =
+    posture === 'ok'
+      ? t('dashboard.posture.ok')
+      : posture === 'degraded'
+        ? t('dashboard.posture.degraded')
+        : posture === 'down'
+          ? t('dashboard.posture.down')
+          : t('dashboard.kpi.unknown');
+  const postureTone =
+    posture === 'ok'
+      ? 'accent'
+      : posture === 'degraded'
+        ? 'warning'
+        : posture === 'down'
+          ? 'danger'
+          : 'neutral';
+
+  /* 单条连接的细节说明（沿用原来那套措辞，数据换成 fleet 里的那一条） */
+  const connectionHint = (item: FleetConnectionStatus) => {
+    const prefix = item.name ? `${item.name} · ` : '';
+    if (!item.ok) return prefix + t('dashboard.posture.unreachableShort');
+    if (item.cluster_mode === 'standalone') return prefix + t('dashboard.ha.standalone');
+    if (item.quorate === false) return prefix + t('dashboard.ha.lostQuorum');
+    if (!item.ha_enabled) return prefix + t('dashboard.ha.notEnabled');
+    return item.ha_resources > 0
+      ? prefix + t('dashboard.ha.managed', { n: item.ha_resources })
       : prefix + t('dashboard.ha.enabledEmpty');
+  };
+
+  /* 异常必须出现在**明面上**（hint 就是明面）：以前它只是 hover 才知道的前缀，
+     非默认集群掉仲裁根本没人会看到。 */
+  const postureHint = (() => {
+    const fleet = fleetQuery.data;
+    if (!fleet) return t('dashboard.ha.unavailable');
+    if (noQuorum.length === 1) {
+      return t('dashboard.posture.lostQuorum', { name: noQuorum[0].name });
+    }
+    if (noQuorum.length > 1) {
+      return t('dashboard.posture.lostQuorumMany', { n: noQuorum.length });
+    }
+    if (unreachable.length === 1) {
+      return t('dashboard.posture.unreachable', { name: unreachable[0].name });
+    }
+    if (unreachable.length > 1) {
+      return t('dashboard.posture.unreachableMany', { n: unreachable.length });
+    }
+    /* 只有一套 PVE 时不讲「几套 PVE 几个节点」那套合计话术，讲这一套自己 */
+    if (fleet.connections.length === 1) return connectionHint(fleet.connections[0]);
+    return t('dashboard.posture.fleetSummary', {
+      pve: fleet.totals.connections,
+      nodes: fleet.totals.nodes,
+      ha: fleet.totals.ha_resources,
+    });
   })();
+
+  /* ---- 下钻明细：每套 PVE 一行，按区域分组（与节点 / 网络 / 存储三页同一套层级语言）---- */
+  const [postureOpen, setPostureOpen] = useState(false);
+  /* 连接表只用来取「区域」标签。它在打开明细前就先查好（而不是等弹窗打开了
+     再查）：否则第一次展开时会先按「未分区」画一遍，连接表回来后再跳成真实
+     区域名 —— 一次可见的重新分组。接口本身很轻（读面板自己的配置）。 */
+  const connectionsQuery = useQuery({
+    queryKey: ['connections'],
+    queryFn: connectionsApi.list,
+    staleTime: 300_000,
+    retry: false,
+    enabled: loadNodes,
+  });
+
+  const postureGroups = useMemo(() => {
+    const regionOf = (connId: string) => {
+      const hit = (connectionsQuery.data ?? []).find(
+        (item) => String(item.id) === connId,
+      );
+      return String(hit?.region || '').trim();
+    };
+    /* 异常排前面：打开明细的人是来看「哪一套出问题了」的 */
+    const severity = (item: FleetConnectionStatus) =>
+      item.quorate === false ? 0 : item.ok ? 2 : 1;
+
+    const map = new Map<
+      string,
+      { id: string; label: string; items: FleetConnectionStatus[] }
+    >();
+    for (const item of fleetItems) {
+      const region = regionOf(item.id);
+      let hit = map.get(region);
+      if (!hit) {
+        hit = {
+          id: region,
+          label: region || t('nodes.regionUnassigned'),
+          items: [],
+        };
+        map.set(region, hit);
+      }
+      hit.items.push(item);
+    }
+    const groups = [...map.values()];
+    for (const group of groups) {
+      group.items.sort(
+        (a, b) => severity(a) - severity(b) || a.name.localeCompare(b.name),
+      );
+    }
+    /* 未分区排最后：它是兜底分组，不该排在有名字的区域前面 */
+    return groups.sort((a, b) => {
+      if (Boolean(a.id) !== Boolean(b.id)) return a.id ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [fleetItems, connectionsQuery.data, t]);
+  const showPostureRegion = postureGroups.some((group) => group.id !== '');
+
+  /* 第三级：具体节点。数据直接用仪表盘已经在查的 /nodes —— 它本来就汇总了全部
+     连接的节点，按来源连接分一下组即可，不为了这个弹窗再打一路接口。
+     离线优先排序：打开这份明细就是为了看哪台机器出问题。 */
+  const nodesByConnection = useMemo(() => {
+    const map = new Map<string, NodeInfo[]>();
+    for (const node of nodesQuery.data ?? []) {
+      const key = String(node.connection_id ?? '');
+      const list = map.get(key);
+      if (list) list.push(node);
+      else map.set(key, [node]);
+    }
+    for (const list of map.values()) {
+      list.sort(
+        (a, b) =>
+          (a.status === 'online' ? 1 : 0) - (b.status === 'online' ? 1 : 0) ||
+          a.node.localeCompare(b.node),
+      );
+    }
+    return map;
+  }, [nodesQuery.data]);
+
+  /* 折叠状态分两套语义，因为两级的默认值刚好相反：
+       * 连接**默认收起** —— 先看「哪几套 PVE 有问题」，要看某台的节点再点开；
+       * 区域默认展开 —— 它一般只有一两个，收起它等于把内容藏两层。
+     收起的连接存成「已展开的连接」而不是「已收起的连接」：默认值就是空数组，
+     不必等 fleet 数据到了再挨个补 id（那会先闪一帧全展开）。 */
+  const [openPostureConns, setOpenPostureConns] = useState<string[]>([]);
+  const [closedPostureRegions, setClosedPostureRegions] = useState<string[]>([]);
+  const togglePostureConn = (id: string) => {
+    setOpenPostureConns((list) =>
+      list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
+    );
+  };
+  const togglePostureRegion = (id: string) => {
+    setClosedPostureRegions((list) =>
+      list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
+    );
+  };
+
+  /* 明细里一套 PVE 的状态词与配色 */
+  const itemMeta = (item: FleetConnectionStatus) => {
+    const parts = [
+      item.cluster_mode === 'standalone'
+        ? t('dashboard.posture.standalone')
+        : t('dashboard.posture.cluster'),
+      t('dashboard.posture.nodeCount', { n: item.node_count }),
+    ];
+    if (item.version) parts.push(`v${item.version}`);
+    if (item.cluster_mode === 'cluster') {
+      parts.push(
+        item.ha_enabled
+          ? t('dashboard.posture.haManaged', { n: item.ha_resources })
+          : t('dashboard.posture.haOff'),
+      );
+    }
+    return parts.join(' · ');
+  };
+
+  /* 明细里一套 PVE 的状态点 / 徽章 / 状态词。
+     失去仲裁最重（整群只读），其次是不可达；单机没有仲裁可言，标成中性。 */
+  const postureItemDot = (item: FleetConnectionStatus) =>
+    item.quorate === false ? 'is-bad' : item.ok ? 'is-ok' : 'is-warn';
+  const postureItemBadge = (
+    item: FleetConnectionStatus,
+  ): 'danger' | 'warning' | 'neutral' | 'success' =>
+    item.quorate === false
+      ? 'danger'
+      : !item.ok
+        ? 'warning'
+        : item.cluster_mode === 'standalone'
+          ? 'neutral'
+          : 'success';
+  const postureItemLabel = (item: FleetConnectionStatus) => {
+    if (item.quorate === false) return t('dashboard.kpi.lostQuorum');
+    if (!item.ok) return t('dashboard.posture.unreachableShort');
+    if (item.cluster_mode === 'standalone') return t('dashboard.posture.standalone');
+    return t('dashboard.kpi.quorate');
+  };
 
   const storagesQuery = useQuery({
     queryKey: ['storages', 'all'],
     queryFn: () => storagesApi.list(),
-    refetchInterval: pveReady ? REFRESH : false,
+    refetchInterval: pveReady ? refresh : false,
     enabled: loadStorages,
   });
 
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', 8],
     queryFn: () => clusterApi.tasks({ limit: 8 }),
-    refetchInterval: REFRESH,
+    refetchInterval: refresh,
     retry: false,
     enabled: loadTasks,
   });
 
-  /* 容量预测：节点磁盘趋势外推，变化慢，30s 刷一次即可。
+  /* 容量预测：节点磁盘趋势外推，变化慢 —— 也跟设置走，别处刷得勤它跟着勤。
      窗口可切换（周 / 月 / 年），不同窗口都可能有用：
      周看短期暴涨，年看长期趋势（月度尖峰在 30 天窗口里容易被平均掉）。 */
   const [capacityTimeframe, setCapacityTimeframe] =
@@ -344,7 +563,7 @@ export function Dashboard() {
   const capacityQuery = useQuery({
     queryKey: ['dashboard', 'capacity', capacityTimeframe],
     queryFn: () => dashboardApi.capacity(capacityTimeframe),
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
     enabled: loadNodes,
   });
@@ -353,7 +572,7 @@ export function Dashboard() {
   const topQuery = useQuery({
     queryKey: ['dashboard', 'top', 8],
     queryFn: () => dashboardApi.top(8),
-    refetchInterval: REFRESH,
+    refetchInterval: refresh,
     retry: false,
     enabled: loadTop,
   });
@@ -380,9 +599,6 @@ export function Dashboard() {
       running: running.length,
       stopped: stopped.length,
       other,
-      /* 模板单独计数：它不参与运行状态分布（既不是运行中也不是已停止），
-         但要让人知道「还有这些机器存在」，否则总数会对不上侧边栏的读数。 */
-      templates: vms.length - realVms.length,
     };
   }, [vmsQuery.data]);
 
@@ -582,8 +798,22 @@ export function Dashboard() {
     {
       key: 'node',
       header: t('dashboard.tasks.colNode'),
-      render: (task) => <span className="fs-sm">{task.node}</span>,
-      width: 110,
+      /* 任务跨连接合并时把来源一并写出来：两台 PVE 都有 pve1 时，
+         光看节点名会以为是同一条任务出现了两次 */
+      render: (task) => (
+        <span
+          className="fs-sm truncate"
+          title={
+            task.connection_name ? `${task.node} · ${task.connection_name}` : task.node
+          }
+        >
+          {task.node}
+          {task.connection_name ? (
+            <span className="fs-xs text-muted"> · {task.connection_name}</span>
+          ) : null}
+        </span>
+      ),
+      width: 160,
     },
     {
       key: 'id',
@@ -740,7 +970,8 @@ export function Dashboard() {
             quorate 掉了在多节点集群里意味着整个集群进入只读保护。
             直接用 KpiCard 而不是自建卡片：和左右四个指标共用同一套
             label / value / hint 结构，视觉才不会是「五张卡里混了个异类」。
-            Quorum 作为主读数，HA 状态退到 hint 里。
+            主读数是**全机队**的三态结论（正常 / 降级 / 异常），哪一套出了
+            什么问题写在 hint 里；点开还能逐套看明细。
 
             这张卡**恒定渲染**：以前 HA 取不到数据时整张卡消失，整行当场
             少一格、右边几个指标一起左移 —— 只是打开一次页面就能看到整行跳一下。
@@ -754,43 +985,27 @@ export function Dashboard() {
             <KpiCard
               label={t('dashboard.kpi.posture')}
               value={
-                haQuery.data ? (
-                  <span className="posture-inline">
-                    <span
-                      className={`posture-dot ${
-                        haQuery.data.quorum.quorate ? 'is-ok' : 'is-bad'
-                      }`}
-                    />
-                    {haQuery.data.quorum.quorate
-                      ? t('dashboard.kpi.quorate')
-                      : t('dashboard.kpi.lostQuorum')}
-                  </span>
-                ) : (
-                  /* 拿不到 quorum 时给一个明确的「未知」，而不是让整张卡消失 */
-                  <span className="posture-inline">
-                    <span className="posture-dot" />
-                    {t('dashboard.kpi.unknown')}
-                  </span>
-                )
+                <span className="posture-inline">
+                  <span className={`posture-dot ${postureDot}`} />
+                  {postureLabel}
+                </span>
               }
               icon={<IconServer size={16} />}
-              /* 与左右四个指标同一套配色逻辑：正常态用 accent（蓝），
-                 只有真正出问题时才转 danger（红）—— CPU / 内存 / 存储
+              /* 与左右四个指标同一套配色逻辑：正常态用 accent（蓝），降级转
+                 warning（橙）、失去仲裁转 danger（红）—— CPU / 内存 / 存储
                  超阈值时也是这样变色的，保持整行读起来一致；
                  读不到状态则退成 neutral，不用红去吓人。 */
-              tone={
-                haQuery.data
-                  ? haQuery.data.quorum.quorate
-                    ? 'accent'
-                    : 'danger'
-                  : 'neutral'
-              }
-              loading={haQuery.isLoading}
+              tone={postureTone}
+              loading={fleetQuery.isLoading}
               /* HA 的几种状态要说清楚是哪一种，不能一律写成「未启用」：
                  单机根本不存在 HA（显示为「未启用」会让人以为配置漏了），
                  多节点集群跑着 HA 但没托管资源，也应该读作「已启用」。
-                 多连接部署下这张卡只反映默认连接那一套，所以把连接名带上。 */
-              hint={haHint}
+                 多套 PVE 时给全机队合计；有异常则直接点名是哪一套 ——
+                 异常必须写在明面上，不能只在悬停提示里。 */
+              hint={postureHint}
+              /* 点开看逐套 PVE 的明细：KPI 卡撑不下多行，细节按需展开 */
+              onClick={() => setPostureOpen(true)}
+              title={t('dashboard.posture.detailTitle')}
             />
 
             <KpiCard
@@ -1112,12 +1327,6 @@ export function Dashboard() {
                 );
               })}
             </ul>
-
-            {stats.templates > 0 ? (
-              <div className="dist-foot">
-                {t('dashboard.dist.templates', { n: stats.templates })}
-              </div>
-            ) : null}
           </div>
         </Card>
       </>
@@ -1180,8 +1389,17 @@ export function Dashboard() {
                   : toPercent(v.cpu);
               return (
                 <Link
-                  key={`${v.node}-${v.vmid}`}
-                  to={`/vms/${encodeURIComponent(v.node)}/${v.vmid}`}
+                  /* 榜单汇总全部连接：同名节点 + 同 VMID 在不同 PVE 上是两台机器，
+                     只按 node+vmid 做 key 会撞键 */
+                  key={`${v.connection_id ?? ''}-${v.node}-${v.vmid}`}
+                  /* 走 guestPath：它会把 connection 一并带进详情页地址，
+                     否则多集群下点进去可能落到另一台同名节点上的机器 */
+                  to={guestPath({
+                    node: v.node,
+                    vmid: v.vmid,
+                    type: 'qemu',
+                    connection_id: v.connection_id,
+                  })}
                   className="top-vm"
                   style={{ textDecoration: 'none' }}
                 >
@@ -1268,19 +1486,20 @@ export function Dashboard() {
     <PageShell
       title={t('dashboard.title')}
       subtitle={
-        /* 副标题读的是集群状态（/cluster/status → node.view）。没这个权限时
-           clusterQuery 不会发出去、data 永远是 undefined —— 照原样写就会一直
-           停在「加载中」，一个永远转不完的假象。那就干脆不显示。 */
+        /* 副标题走**全机队**口径：这里原先读 /cluster/status —— 那条接口只能读一台，
+           套着四套 PVE 时页头只报其中一套的版本与仲裁，另一套掉仲裁也照样「正常」。
+           现在与下面的「集群态势」卡用同一份 fleet 数据：版本去重后列出，
+           态势取全机队最坏的那个。没 node.view 时整段不显示（否则会停在
+           「加载中」这个永远转不完的假象）。 */
         !loadNodes
           ? undefined
-          : clusterQuery.data
-            ? `Proxmox VE ${clusterQuery.data.version || ''} · ${
-                clusterQuery.data.quorate === true
-                  ? t('dashboard.subtitle.quorate')
-                  : clusterQuery.data.quorate === false
-                    ? t('dashboard.subtitle.notQuorate')
-                    : t('dashboard.subtitle.standalone')
-              }`
+          : fleetQuery.data
+            ? [
+                versionText ? `Proxmox VE ${versionText}` : '',
+                t('dashboard.subtitle.posture', { state: postureLabel }),
+              ]
+                .filter(Boolean)
+                .join(' · ')
             : t('dashboard.subtitle.loading')
       }
       actions={
@@ -1401,6 +1620,133 @@ export function Dashboard() {
           </div>
         </Card>
       ) : null}
+
+      {/* ---- 集群态势明细：区域 → 连接 → 节点 ----
+          KPI 卡只放得下一个三态结论，这里是它的下钻。层级语言与节点 / 网络 /
+          存储三页一致（tree-head 标题条 + tree-body 竖线缩进），每一级都可折叠；
+          区域默认展开、连接默认收起 —— 先看到「哪几套 PVE 有问题」，要看某台的
+          节点再点开，异常项排在各组最前面。 */}
+      <Modal
+        open={postureOpen}
+        onClose={() => setPostureOpen(false)}
+        size="xl"
+        title={t('dashboard.posture.detailTitle')}
+        description={t('dashboard.posture.detailDesc')}
+      >
+        {fleetItems.length === 0 ? (
+          <EmptyState title={t('dashboard.posture.empty')} compact />
+        ) : (
+          <div className="node-groups">
+            {postureGroups.map((group) => {
+              const regionCollapsed = closedPostureRegions.includes(group.id);
+              const regionNodes = group.items.reduce(
+                (n, item) =>
+                  n + (nodesByConnection.get(String(item.id))?.length ?? 0),
+                0,
+              );
+              return (
+                /* 一级：区域 / 机房 */
+                <section className="tree-group" key={`region:${group.id}`}>
+                  {showPostureRegion ? (
+                    <button
+                      type="button"
+                      className="tree-head is-region"
+                      aria-expanded={!regionCollapsed}
+                      onClick={() => togglePostureRegion(group.id)}
+                    >
+                      <span className="tree-head-icon">
+                        <IconChevronDown size={15} />
+                      </span>
+                      <IconLayers size={15} />
+                      <span className="tree-name">{group.label}</span>
+                      <span className="tree-meta">
+                        <Badge variant="neutral" size="sm">
+                          {t('dashboard.posture.pveCount', {
+                            n: group.items.length,
+                          })}
+                        </Badge>
+                        <Badge variant="neutral" size="sm">
+                          {t('dashboard.posture.nodeCount', { n: regionNodes })}
+                        </Badge>
+                      </span>
+                    </button>
+                  ) : null}
+
+                  {regionCollapsed ? null : (
+                    <div
+                      className={
+                        showPostureRegion ? 'tree-body' : 'flex flex-col gap-16'
+                      }
+                    >
+                      {group.items.map((item) => {
+                        const nodes =
+                          nodesByConnection.get(String(item.id)) ?? [];
+                        const connOpen = openPostureConns.includes(item.id);
+                        return (
+                          /* 二级：连接（一套 PVE）。默认收起，点开看它下面的节点 */
+                          <section className="tree-group" key={`conn:${item.id}`}>
+                            <button
+                              type="button"
+                              className="tree-head"
+                              aria-expanded={connOpen}
+                              onClick={() => togglePostureConn(item.id)}
+                            >
+                              <span className="tree-head-icon">
+                                <IconChevronDown size={15} />
+                              </span>
+                              <span
+                                className={`posture-dot ${postureItemDot(item)}`}
+                              />
+                              <span className="tree-name">{item.name}</span>
+                              <span className="tree-meta">
+                                <Badge
+                                  variant={postureItemBadge(item)}
+                                  size="sm"
+                                >
+                                  {postureItemLabel(item)}
+                                </Badge>
+                                <span className="posture-conn-meta">
+                                  {item.ok
+                                    ? itemMeta(item)
+                                    : item.error ||
+                                      t('dashboard.posture.unreachableShort')}
+                                </span>
+                              </span>
+                            </button>
+
+                            {connOpen ? (
+                              /* 三级：这台主机上的具体节点 */
+                              <div className="tree-body">
+                                {nodes.length > 0 ? (
+                                  nodes.map((node) => (
+                                    <DashboardNodeRow
+                                      key={`${item.id}:${node.node}`}
+                                      node={node}
+                                      hideConnection
+                                    />
+                                  ))
+                                ) : (
+                                  /* 连接通但一个节点都读不到：多半是令牌权限不足
+                                     （PVE 对无权限的读取返回空列表而不是报错） */
+                                  <p className="posture-empty">
+                                    {item.ok
+                                      ? t('dashboard.posture.nodesEmpty')
+                                      : t('dashboard.posture.nodesUnreachable')}
+                                  </p>
+                                )}
+                              </div>
+                            ) : null}
+                          </section>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </Modal>
     </PageShell>
   );
 }
@@ -1414,7 +1760,14 @@ export function Dashboard() {
    竖着一扫就知道谁快满了。运行时长这类次要信息退到名称下方的小字。
    --------------------------------------------------------------------------- */
 
-function DashboardNodeRow({ node }: { node: NodeInfo }) {
+function DashboardNodeRow({
+  node,
+  hideConnection = false,
+}: {
+  node: NodeInfo;
+  /** 集群态势明细里第三级就挂在某个连接下，连接名上一级已经写了，不必重复 */
+  hideConnection?: boolean;
+}) {
   const t = useT();
   const offline = node.status !== 'online';
   const meta = nodeStatusMeta(node.status, t);
@@ -1451,7 +1804,7 @@ function DashboardNodeRow({ node }: { node: NodeInfo }) {
           {offline
             ? t('dashboard.nodes.offline')
             : t('dashboard.nodes.uptime', { uptime: formatUptimeShort(node.uptime) })}
-          {node.connection_name ? ` · ${node.connection_name}` : ''}
+          {node.connection_name && !hideConnection ? ` · ${node.connection_name}` : ''}
         </span>
         {/* 屏幕阅读器读不到颜色，状态用徽章文字兜底 */}
         <span className="sr-only">{meta.label}</span>

@@ -23,7 +23,7 @@ import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Input, SegmentedControl, Select, Switch, Textarea } from '../components/ui/Input';
-import { Table, type Column } from '../components/ui/Table';
+import { Table, sortRows, type Column, type SortState } from '../components/ui/Table';
 import { CollapsibleCard, EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
 import { Skeleton } from '../components/ui/Spinner';
 import {
@@ -38,6 +38,7 @@ import {
 } from '../components/Icons';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { PagerBar, usePaged } from '../hooks/usePaged';
 import { formatDateTime } from '../utils/format';
 import { TrendCard, PORTS_TREND_SERIES } from '../components/TrendCard';
 import { useT, type MessageKey, type TFunc } from '../i18n';
@@ -218,33 +219,71 @@ function hostStatusMeta(
   return { variant: 'success', label: t('ports.status.clean') };
 }
 
-/** 一台机器的待处理项：可疑进程优先，其次是非预期开放端口 */
-function HostFindings({ host }: { host: PortHostSummary }) {
+/**
+ * 一台机器的待处理项：可疑进程优先，其次是非预期开放端口。
+ *
+ * 条目走**横向 chip 流**而不是竖排列表：列表视图里这一列是唯一没有固定宽度的
+ * 列，竖排时内容只占住左侧一小条，右边空出几百像素的空洞，行高还被条目数
+ * 一路撑开（4 条 ≈ 90px）。横向 chip 让条目顺着列宽铺开，空洞消失、单行放得下。
+ * 卡片视图复用同一套 chip，两种视图的观感也就统一了。
+ */
+function HostFindings({ host, max = 4 }: { host: PortHostSummary; max?: number }) {
   const t = useT();
+
+  /* 连不上：整行只有一句说明，没有条目可摊 */
   if (!host.ok) {
     return (
-      <span className="fs-xs text-danger">
+      <span className="baseline-note">
+        <IconAlert size={12} aria-hidden="true" />
         {host.error || t('baseline.cannotConnectHost')}
       </span>
     );
   }
+
   if (host.top_suspicious.length > 0) {
+    const shown = host.top_suspicious.slice(0, max);
+    const rest = host.top_suspicious.length - shown.length;
     return (
-      <span className="baseline-issue-list">
-        {host.top_suspicious.map((item) => (
-          <span key={item.pid} className="baseline-issue">
+      <span className="baseline-chips">
+        {shown.map((item) => (
+          <span
+            key={item.pid}
+            className={`baseline-chip is-${item.severity}`}
+            title={`${item.name}（${item.user}）· ${item.labels.join('、')}`}
+          >
             <span className={`baseline-dot is-${item.severity}`} aria-hidden="true" />
-            {item.name}（{item.user}）：{item.labels[0] ?? ''}
+            <span className="fw-500">{item.name}</span>
+            <span className="text-muted">{item.user}</span>
           </span>
         ))}
+        {rest > 0 ? (
+          <span
+            className="baseline-chip is-more"
+            title={host.top_suspicious
+              .slice(max)
+              .map((item) => `${item.name}（${item.user}）· ${item.labels.join('、')}`)
+              .join('\n')}
+          >
+            {t('ports.moreFindings', { n: rest })}
+          </span>
+        ) : null}
       </span>
     );
   }
+
   if (host.top_ports.length > 0) {
+    const shown = host.top_ports.slice(0, max);
+    const rest = host.top_ports.length - shown.length;
     return (
-      <span className="baseline-issue-list">
-        {host.top_ports.slice(0, 4).map((item) => (
-          <span key={`${item.proto}-${item.address}-${item.port}`} className="baseline-issue">
+      <span className="baseline-chips">
+        {shown.map((item) => (
+          <span
+            key={`${item.proto}-${item.address}-${item.port}`}
+            className={`baseline-chip is-${item.severity}`}
+            title={`${item.address}:${item.port}/${item.proto} · ${
+              item.process || t('ports.unknownProcess')
+            }`}
+          >
             <span className={`baseline-dot is-${item.severity}`} aria-hidden="true" />
             <span className="mono">
               {item.address}:{item.port}
@@ -252,9 +291,26 @@ function HostFindings({ host }: { host: PortHostSummary }) {
             <span className="text-muted">{item.process || t('ports.unknownProcess')}</span>
           </span>
         ))}
+        {rest > 0 ? (
+          <span
+            className="baseline-chip is-more"
+            title={host.top_ports
+              .slice(max)
+              .map(
+                (item) =>
+                  `${item.address}:${item.port}/${item.proto} · ${
+                    item.process || t('ports.unknownProcess')
+                  }`,
+              )
+              .join('\n')}
+          >
+            {t('ports.moreFindings', { n: rest })}
+          </span>
+        ) : null}
       </span>
     );
   }
+
   return (
     <span className="fs-xs" style={{ color: 'var(--success)' }}>
       {t('ports.noOpenPorts')}
@@ -685,6 +741,12 @@ export function PortGuard() {
     ) : null;
 
   /*
+    列表视图的排序状态。hostColumns 里好几列标了 sortable，之前却没接排序状态 ——
+    点表头什么都不会发生。接上之后有个铁律：**先排整份、再切页**（见下面）。
+  */
+  const [hostSort, setHostSort] = useState<SortState | null>(null);
+
+  /*
     列表视图的列：与卡片同一份数据、同一套结论，只是摊成行 ——
     服务器一多，横向比对「哪台有几条待处理」比翻卡片快得多。
   */
@@ -708,7 +770,7 @@ export function PortGuard() {
       {
         key: 'status',
         header: t('ports.colVerdict'),
-        width: 130,
+        width: 118,
         sortable: true,
         /* 可疑进程 → 待确认端口 → 干净 → 未巡检 */
         sortValue: (host) =>
@@ -735,30 +797,52 @@ export function PortGuard() {
         sortable: true,
         title: t('ports.sortByUnexpected'),
         sortValue: (host) => (host.ok ? host.summary.unexpected : -1),
-        render: (host) =>
-          host.ok ? (
-            <span className="baseline-list-counts mono fs-sm">
-              <span>{host.summary.listeners}</span>
-              <span className="is-sep"> / </span>
-              <span>{host.summary.exposed}</span>
-              <span className="is-sep"> / </span>
-              <span className={host.summary.unexpected ? 'is-warn' : 'is-pass'}>
-                {host.summary.unexpected}
+        render: (host) => {
+          if (!host.ok) return <span className="fs-xs text-muted">—</span>;
+          const { listeners, exposed, unexpected } = host.summary;
+          /* 三段构成（expected ⊆ listeners、unexpected ⊆ exposed），条形按占比切，
+             0 监听时整条留空，别画一条看着像"有数据"的底线 */
+          const expected = Math.max(0, listeners - exposed);
+          const openNotUnexpected = Math.max(0, exposed - unexpected);
+          return (
+            <span className="baseline-list-counts-wrap">
+              <span className="baseline-list-counts mono fs-sm">
+                <span>{listeners}</span>
+                <span className="is-sep"> / </span>
+                <span>{exposed}</span>
+                <span className="is-sep"> / </span>
+                <span className={unexpected ? 'is-warn' : 'is-pass'}>{unexpected}</span>
               </span>
+              {listeners > 0 ? (
+                <span className="baseline-list-bar" aria-hidden="true">
+                  <span
+                    className="is-expected"
+                    style={{ width: `${(expected / listeners) * 100}%` }}
+                  />
+                  <span
+                    className="is-exposed"
+                    style={{ width: `${(openNotUnexpected / listeners) * 100}%` }}
+                  />
+                  <span
+                    className="is-unexpected"
+                    style={{ width: `${(unexpected / listeners) * 100}%` }}
+                  />
+                </span>
+              ) : null}
             </span>
-          ) : (
-            <span className="fs-xs text-muted">—</span>
-          ),
+          );
+        },
       },
       {
         key: 'findings',
         header: t('baseline.colPending'),
+        /* 不给宽度：留白全部由这一列吸收，chip 流正好把它填满 */
         render: (host) => <HostFindings host={host} />,
       },
       {
         key: 'firewall',
         header: t('ports.colFirewall'),
-        width: 104,
+        width: 96,
         sortable: true,
         sortValue: (host) => (host.ok && host.summary.firewall_active ? 0 : 1),
         render: (host) =>
@@ -786,7 +870,16 @@ export function PortGuard() {
         locked: true,
         label: t('common.actions'),
         render: (host) => (
-          <div className="form-row" style={{ gap: 6, justifyContent: 'flex-end' }}>
+          /* 整行可点进详情（见下面 Table 的 onRowClick），这两个按钮得把事件挡住 ——
+             点「巡检」不该顺带跳走；「详情」与整行同效，挡掉只是避免重复调用。
+             onKeyDown 同样要挡：行是 tabbable 的，焦点落在按钮上按 Enter 时
+             keydown 会冒泡到 <tr>，那就会「既巡检又跳转」。 */
+          <span
+            className="form-row"
+            style={{ gap: 6, justifyContent: 'flex-end' }}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
             <Button size="sm" variant="ghost" onClick={() => openHost(host.host_id)}>
               {t('baseline.details')}
             </Button>
@@ -799,12 +892,22 @@ export function PortGuard() {
             >
               {scanningId === host.host_id ? t('ports.scanning') : t('ports.scan')}
             </button>
-          </div>
+          </span>
         ),
       },
     ],
     [openHost, scanHost, scanningId, t],
   );
+
+  /* 排序 + 分页：两步的**顺序不能反** —— 前端分页是切片，先切再排的话，排的只是
+     当前这一页（第 2 页里「待确认端口」最多的那台永远排不到前面来，翻页时排序
+     看着像坏了）。排序规则与表格内部共用同一个 sortRows。
+     卡片视图不分页：一屏放得下十几张卡，分页反而让人以为还有别的页。 */
+  const sortedHosts = useMemo(
+    () => sortRows(overview?.hosts ?? [], hostColumns, hostSort),
+    [overview, hostColumns, hostSort],
+  );
+  const hostPage = usePaged(sortedHosts, 'ports-fleet');
 
   const listenerColumns: Array<Column<PortListener>> = [
     {
@@ -1228,13 +1331,28 @@ export function PortGuard() {
                   ))}
                 </div>
               ) : (
-                <Table
-                  caption={t('ports.fleetCaption')}
-                  rows={overview.hosts}
-                  columns={hostColumns}
-                  rowKey={(host) => host.host_id}
-                  dense
-                />
+                /* 分页条紧跟表格下沿 —— 工具栏 / 表格 / 分页条读起来是一张卡
+                   （见 .pagination 的样式） */
+                <>
+                  <Table
+                    caption={t('ports.fleetCaption')}
+                    rows={hostPage.rows}
+                    columns={hostColumns}
+                    rowKey={(host) => host.host_id}
+                    dense
+                    sort={hostSort}
+                    onSortChange={setHostSort}
+                    /* 整行可点：横向比对时先认出"是哪台"，再点进去看细节，
+                       不必每行都去够最右边那颗「详情」。卡片视图本来就整张可点，
+                       这里补上，两种视图的手感才对齐。
+                       行内的「巡检 / 详情」按钮自己挡掉了冒泡（见 hostColumns）。*/
+                    onRowClick={(host) => openHost(host.host_id)}
+                    rowTitle={(host) =>
+                      t('ports.viewHostAria', { name: host.name || host.host_id })
+                    }
+                  />
+                  <PagerBar pager={hostPage} />
+                </>
               )
             ) : !overviewQuery.isError ? (
               <EmptyState

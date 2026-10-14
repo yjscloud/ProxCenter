@@ -13,6 +13,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { healthApi } from '../api/endpoints';
+import { useRefreshInterval } from './useRefreshInterval';
 
 export interface PveStatus {
   /** 是否已保存可用的连接（false = 首次部署还没填过，该去添加） */
@@ -32,10 +33,12 @@ export interface PveStatus {
 }
 
 export function usePveStatus(): PveStatus {
+  /* 探测间隔跟「设置 → 面板设置 → 数据刷新间隔」走 */
+  const refresh = useRefreshInterval();
   const query = useQuery({
     queryKey: ['health'],
     queryFn: healthApi.check,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
   });
 

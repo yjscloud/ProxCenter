@@ -19,6 +19,7 @@ from ..pve import (
     connection_label,
     get_client,
 )
+from ..vm_scope import bind_node_connection
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ async def node_disks_health(
     health 与 wearout，十幾块盘的机器上差别很大。需要细节时前端再单独请求
     :func:`node_disk_smart`。
     """
+    await bind_node_connection(node)
     client = get_client()
     try:
         disks = await client.get(f"/nodes/{node}/disks/list")
@@ -111,6 +113,7 @@ async def node_disk_smart(
     返回结构因盘而异：ATA 盘给结构化的 ``attributes``（重分配扇区、通电时间等），
     NVMe 盘只给一段 ``text`` 原文。这里原样透传，由前端分别渲染。
     """
+    await bind_node_connection(node)
     client = get_client()
     try:
         data = await client.get(
@@ -150,6 +153,7 @@ async def node_zfs_pools(
     user: Dict[str, Any] = Depends(security.require_permission("node.view")),
 ) -> List[Dict[str, Any]]:
     """ZFS 池列表。没有池的节点返回空数组（这是正常情况，不是错误）。"""
+    await bind_node_connection(node)
     client = get_client()
     try:
         pools = await client.get(f"/nodes/{node}/disks/zfs")

@@ -15,6 +15,7 @@ import { Table, type Column } from '../components/ui/Table';
 import { EmptyState, Notice } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { CardSkeleton } from '../components/ui/Spinner';
 import { IpPoolPanel } from '../components/IpPoolPanel';
 import {
@@ -66,11 +67,13 @@ export function Networks() {
   /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
      （配好之后自动恢复） */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
-    refetchInterval: pveReady ? 20_000 : false,
+    refetchInterval: pveReady ? refresh : false,
   });
 
   const nodes = nodesQuery.data ?? [];
@@ -136,7 +139,7 @@ export function Networks() {
       return results;
     },
     enabled: nodes.length > 0,
-    refetchInterval: pveReady ? 30_000 : false,
+    refetchInterval: pveReady ? refresh : false,
   });
 
   const groups = netQueries.data ?? [];
@@ -224,30 +227,47 @@ export function Networks() {
   /* 有任一条连接填了区域才渲染这一层 */
   const showRegion = regionGroups.some((group) => group.id !== '');
 
-  /* 展开了的组。**默认一个都不展开**：节点一多，全展开就是好几屏表格，而组标题
-     上已经写着「几个节点、几个接口、几个掉线」—— 先看概况再决定展开哪台机器，
-     比一进页面就铺满表格更好用。
-     这里存「已展开」而不是「已收起」：默认值就是空数组，不需要在拿到数据之后
-     再补一次状态（那会多一帧的闪烁）。
-     两级组共用一个集合，id 带前缀区分：``region:`` / ``conn:``。 */
-  const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
-  const toggleGroup = (id: string) => {
-    setExpandedGroups((list) =>
+  /* 两级的展开状态，**默认值相反**：
+
+       * 区域（机房标签）**默认展开**：它只是一层分组，展开它等于把下面那几条连接
+         列出来 —— 也就是「一条连接都没填区域」时本来就一眼能看到的东西。默认收起
+         的话，多机房部署里一进页面只看到几行区域名，什么都得点一下；
+       * 连接**默认收起**：它下面才是节点表格，节点一多就是好几屏，而标题行上已经
+         写着「几个节点、几个接口、几个掉线」—— 先看概况再决定展开哪台机器。
+
+     所以区域存「已收起」、连接存「已展开」：各自的默认值就是空数组，不必在拿到
+     数据之后再补一次状态（那会多一帧的闪烁）。 */
+  const [collapsedRegions, setCollapsedRegions] = useState<string[]>([]);
+  const [expandedConns, setExpandedConns] = useState<string[]>([]);
+
+  const toggleRegion = (id: string) =>
+    setCollapsedRegions((list) =>
       list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
     );
-  };
+  const toggleConn = (id: string) =>
+    setExpandedConns((list) =>
+      list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
+    );
 
-  /* 所有可折叠的组（区域 + 连接），用于工具栏那个「全部展开 / 全部收起」 */
-  const allGroupIds = useMemo(
-    () => [
-      ...(showRegion ? regionGroups.map((g) => `region:${g.id}`) : []),
-      ...(showConnection ? pveGroups.map((g) => `conn:${g.id}`) : []),
-    ],
-    [regionGroups, pveGroups, showRegion, showConnection],
+  /* 所有可折叠的组，用于工具栏那个「全部展开 / 全部收起」（两层各一份） */
+  const allRegionIds = useMemo(
+    () => (showRegion ? regionGroups.map((g) => g.id) : []),
+    [regionGroups, showRegion],
+  );
+  const allConnIds = useMemo(
+    () => (showConnection ? pveGroups.map((g) => g.id) : []),
+    [pveGroups, showConnection],
   );
   const allExpanded =
-    allGroupIds.length > 0 &&
-    allGroupIds.every((id) => expandedGroups.includes(id));
+    (allRegionIds.length > 0 || allConnIds.length > 0) &&
+    allRegionIds.every((id) => !collapsedRegions.includes(id)) &&
+    allConnIds.every((id) => expandedConns.includes(id));
+
+  /* 一键展开 / 收起把两层一起改 —— 区域那份存的是「已收起」，展开即清空 */
+  const setAllExpanded = (open: boolean) => {
+    setCollapsedRegions(open ? [] : allRegionIds);
+    setExpandedConns(open ? allConnIds : []);
+  };
 
   /* 列宽：名称 / 类型 / 状态 / 网关 / 端口这些长度基本固定的给窄宽并把空间让
      出来，地址与备注**不设宽** —— 它们长短最不可控，交给浏览器吸收剩余宽度，
@@ -398,8 +418,7 @@ export function Networks() {
   /* 树的第二层：一条 PVE 连接 + 它下面的节点卡。
      抽成函数是因为它嵌在区域层里 —— 直接写在 JSX 里会叠到四层缩进，很难读。 */
   const renderConnectionGroup = (pve: (typeof pveGroups)[number]) => {
-    const connOpen =
-      !showConnection || expandedGroups.includes(`conn:${pve.id}`);
+    const connOpen = !showConnection || expandedConns.includes(pve.id);
     const ifaceCount = pve.items.reduce((n, g) => n + g.ifaces.length, 0);
     const downCount = pve.items.reduce(
       (n, g) => n + g.ifaces.filter((i) => !i.active).length,
@@ -412,7 +431,7 @@ export function Networks() {
             type="button"
             className="tree-head"
             aria-expanded={connOpen}
-            onClick={() => toggleGroup(`conn:${pve.id}`)}
+            onClick={() => toggleConn(pve.id)}
           >
             <span className="tree-head-icon">
               <IconChevronDown size={15} />
@@ -547,7 +566,7 @@ export function Networks() {
               n: filtered.reduce((s, g) => s + g.ifaces.length, 0),
             })}
           </span>
-          {/* 分组默认收起：给一个一键展开 / 收起，省得一台一台点。
+          {/* 连接默认收起（区域默认展开）：给一个一键展开 / 收起，省得一台一台点。
               只有一台 PVE 时它没有意义（那一层根本不渲染） */}
           {pveGroups.length > 1 ? (
             <Button
@@ -560,7 +579,7 @@ export function Networks() {
                   <IconChevronDown size={14} />
                 )
               }
-              onClick={() => setExpandedGroups(allExpanded ? [] : allGroupIds)}
+              onClick={() => setAllExpanded(!allExpanded)}
             >
               {allExpanded
                 ? t('networks.collapseAll')
@@ -592,10 +611,12 @@ export function Networks() {
           onRetry={() => void netQueries.refetch()}
         />
       ) : (
-        <div className="flex flex-col gap-24">
+        /* 区域之间的间距由 .node-groups 统一给（节点 / 存储两页共用同一个容器类） */
+        <div className="node-groups">
           {regionGroups.map((region) => {
+            /* 区域默认展开（见上面两级状态的说明）：空数组 = 全部展开 */
             const regionOpen =
-              !showRegion || expandedGroups.includes(`region:${region.id}`);
+              !showRegion || !collapsedRegions.includes(region.id);
             const nodeCount = region.conns.reduce(
               (n, pve) => n + pve.items.length,
               0,
@@ -608,7 +629,7 @@ export function Networks() {
                     type="button"
                     className="tree-head is-region"
                     aria-expanded={regionOpen}
-                    onClick={() => toggleGroup(`region:${region.id}`)}
+                    onClick={() => toggleRegion(region.id)}
                   >
                     <span className="tree-head-icon">
                       <IconChevronDown size={15} />
@@ -630,7 +651,7 @@ export function Networks() {
                   /* 不渲染区域头时（一条连接都没填区域），这一层也就不该有缩进 */
                   <div
                     className={
-                      showRegion ? 'tree-body' : 'flex flex-col gap-24'
+                      showRegion ? 'tree-body' : 'flex flex-col gap-16'
                     }
                   >
                     {region.conns.map(renderConnectionGroup)}

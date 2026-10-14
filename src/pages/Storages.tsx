@@ -26,7 +26,6 @@ import {
   IconTrash,
   IconFolder,
   IconSearch,
-  IconClose,
   IconChevronDown,
   IconLayers,
   IconServer,
@@ -39,6 +38,7 @@ import {
 import { contentLabel, storageStatusMeta } from '../utils/status'
 import { useT, type MessageKey } from '../i18n';
 import { useTaskRunner } from '../hooks/useTaskRunner';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import type { Storage, StorageContent } from '../api/types';
@@ -51,6 +51,33 @@ const CONTENT_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
   { label: 'storages.contentBackup', value: 'backup' },
   { label: 'storages.contentSnippets', value: 'snippets' },
 ];
+
+/**
+ * 存储内容列表的缓存时长。
+ *
+ * 这个接口是整页最慢的一环：PVE 侧要真的去扫存储目录（目录 / NFS / CIFS 型
+ * 存储尤其慢）。而用户的操作节奏是「点开一个看一眼、再点开另一个」——
+ * 60 秒内重开同一个存储直接复用上次结果，不再等第二次扫描。
+ * 后端还有一层 20 秒的进程内缓存兜底（多人、多标签页）。
+ */
+const CONTENT_STALE_TIME = 60_000;
+
+/**
+ * 存储内容列表的 react-query key。
+ *
+ * 预取与正式查询共用这一个函数：两边各写一遍，早晚会写得不一样 ——
+ * 那时预取照样发请求，点开却还是转圈，且没人查得出为什么。
+ */
+function contentQueryKey(storage: Storage | null, contentFilter: string) {
+  return [
+    'storages',
+    'content',
+    storage?.connection_id,
+    storage?.node,
+    storage?.storage,
+    contentFilter,
+  ] as const;
+}
 
 /**
  * 上传对话框里可选的内容类型。
@@ -157,12 +184,14 @@ export function Storages() {
 
   /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const storagesQuery = useQuery({
     queryKey: ['storages', filterConn ?? '', filterNode ?? 'all'],
     queryFn: () => storagesApi.list(filterNode, filterConn),
     enabled: pveReady,
-    refetchInterval: pveReady ? 15_000 : false,
+    refetchInterval: pveReady ? refresh : false,
   });
 
   const storages = storagesQuery.data ?? [];
@@ -182,6 +211,15 @@ export function Storages() {
     const regionOf = (connId: string) => {
       const hit = conns.find((item) => String(item.id) === connId);
       return String(hit?.region || '').trim();
+    };
+    /* 连接名：存储列表自带的 connection_name 做兜底，连接表里能查到就用
+       name → host（与地址池面板、网络页同一个口径） */
+    const connLabelOf = (connId: string, fallback: string) => {
+      const hit = conns.find((item) => String(item.id) === connId);
+      return (
+        String(hit?.name || hit?.host || fallback || '').trim() ||
+        t('nodes.defaultConnection')
+      );
     };
 
     // 先按「连接 + 节点」归拢：两台 PVE 上完全可能有同名节点，不能只按名字分
@@ -217,57 +255,102 @@ export function Storages() {
         a.connection_name.localeCompare(b.connection_name),
     );
 
+    /* 区域 → 连接 → 节点：与「节点」「网络」两页同一套层级。
+       先按区域分，再在区域内按连接分，最后把节点挂在各自的连接上。 */
+    type ConnGroup = { id: string; label: string; nodes: typeof nodes };
     const regionMap = new Map<
       string,
-      { id: string; label: string; nodes: typeof nodes }
+      { id: string; label: string; conns: ConnGroup[] }
     >();
     for (const node of nodes) {
       const region = regionOf(node.connection_id);
-      let hit = regionMap.get(region);
-      if (!hit) {
-        hit = { id: region, label: region || t('nodes.regionUnassigned'), nodes: [] };
-        regionMap.set(region, hit);
+      let regionHit = regionMap.get(region);
+      if (!regionHit) {
+        regionHit = {
+          id: region,
+          label: region || t('nodes.regionUnassigned'),
+          conns: [],
+        };
+        regionMap.set(region, regionHit);
       }
-      hit.nodes.push(node);
+      let connHit = regionHit.conns.find(
+        (item) => item.id === node.connection_id,
+      );
+      if (!connHit) {
+        connHit = {
+          id: node.connection_id,
+          label: connLabelOf(node.connection_id, node.connection_name),
+          nodes: [],
+        };
+        regionHit.conns.push(connHit);
+      }
+      connHit.nodes.push(node);
     }
-    /* 未分区排最后：它是兜底分组，不该排在有名字的区域前面 */
-    return [...regionMap.values()].sort((a, b) => {
-      if (Boolean(a.id) !== Boolean(b.id)) return a.id ? -1 : 1;
-      return a.label.localeCompare(b.label);
-    });
+    /* 未分区排最后：它是兜底分组，不该排在有名字的区域前面。
+       连接层按名称排，跨区域看时顺序才稳定。 */
+    return [...regionMap.values()]
+      .map((region) => ({
+        ...region,
+        conns: [...region.conns].sort((a, b) => a.label.localeCompare(b.label)),
+      }))
+      .sort((a, b) => {
+        if (Boolean(a.id) !== Boolean(b.id)) return a.id ? -1 : 1;
+        return a.label.localeCompare(b.label);
+      });
   }, [storages, conns, t]);
   /** 一个区域都没配时，这一层整个不渲染（页面与改动前一样平铺节点） */
   const showRegion = regionGroups.some((group) => group.id !== '');
-  /** 两条以上连接才需要标出来「这个节点在哪台 PVE 上」 */
-  const multiConn = new Set(storages.map((item) => item.connection_id ?? '')).size > 1;
+  /** 只有一条连接时「连接」那层只有一个取值，渲染出来除了占一行没有任何作用 */
+  const showConnection =
+    new Set(storages.map((item) => item.connection_id ?? '')).size > 1;
 
-  /* 收起来的组。默认**全部展开**：进这一页就是想看存储本身，不是先点一层标题。
-     id 带前缀区分两级：``region:`` / ``node:``。 */
+  /* 三级的折叠状态分两套语义，因为默认值刚好相反：
+       * 区域 / 连接默认**展开**（存「已收起」）—— 进这一页就是来看存储的；
+       * 节点默认**收起**（存「已展开」）—— 先把有哪些节点列出来，想看哪台上的
+         存储池再点开，一屏能装下更多机器。
+     节点存成「已展开」而不是「已收起」：默认值就是空数组，不必等数据到了再
+     补一遍 id（那会先闪一帧全展开），定时刷新也不会把已展开的又收回去。 */
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const toggleGroup = (id: string) => {
     setCollapsedGroups((list) =>
       list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
     );
   };
-  const allGroupIds = useMemo(
+
+  const [openNodes, setOpenNodes] = useState<string[]>([]);
+  const toggleOpenNode = (key: string) => {
+    setOpenNodes((list) =>
+      list.includes(key) ? list.filter((value) => value !== key) : [...list, key],
+    );
+  };
+
+  /* 工具栏那两个「全部收起 / 全部展开」要覆盖三级，但两级的存储语义不同，
+     所以分成两组 id：可收起的（区域 + 连接）与可展开的（节点）。 */
+  const collapsedIds = useMemo(
     () =>
       regionGroups.flatMap((region) => [
         `region:${region.id}`,
-        ...region.nodes.map((node) => `node:${node.key}`),
+        ...(showConnection ? region.conns.map((conn) => `conn:${conn.id}`) : []),
       ]),
+    [regionGroups, showConnection],
+  );
+  const nodeKeys = useMemo(
+    () =>
+      regionGroups.flatMap((region) =>
+        region.conns.flatMap((conn) => conn.nodes.map((node) => node.key)),
+      ),
     [regionGroups],
   );
+  const allExpanded =
+    collapsedGroups.length === 0 &&
+    (nodeKeys.length === 0 || nodeKeys.every((key) => openNodes.includes(key)));
+  const allCollapsed =
+    openNodes.length === 0 &&
+    collapsedIds.every((id) => collapsedGroups.includes(id));
 
   /* 展开的存储内容 */
   const contentQuery = useQuery({
-    queryKey: [
-      'storages',
-      'content',
-      selected?.connection_id,
-      selected?.node,
-      selected?.storage,
-      contentFilter,
-    ],
+    queryKey: contentQueryKey(selected, contentFilter),
     queryFn: () =>
       storagesApi.content(
         {
@@ -279,8 +362,37 @@ export function Storages() {
       ),
     enabled: Boolean(selected),
     retry: false,
-    staleTime: 15_000,
+    staleTime: CONTENT_STALE_TIME,
   });
+
+  /* 鼠标移到某一行就先替它把内容取回来。
+     PVE 扫目录的那几秒，用户通常还在把鼠标往行的左侧 / 那行按钮上挪 ——
+     等点下去的时候数据已经到了（或正在路上），弹窗里直接就是表格。
+     180ms 的防抖让「一路扫过十几行」只预取最后停下的那一行：每指到新的一行
+     都会清掉上一个定时器，扫得快就一次都不发。 */
+  const hoverTimer = useRef<number | null>(null);
+  const prefetchContent = (item: Storage) => {
+    void queryClient.prefetchQuery({
+      queryKey: contentQueryKey(item, ''),
+      queryFn: () =>
+        storagesApi.content(
+          { node: item.node, storage: item.storage },
+          item.connection_id,
+        ),
+      staleTime: CONTENT_STALE_TIME,
+    });
+  };
+  const onRowHover = (item: Storage) => {
+    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(() => prefetchContent(item), 180);
+  };
+
+  useEffect(
+    () => () => {
+      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    },
+    [],
+  );
 
   const filteredContent = useMemo(() => {
     const list = contentQuery.data ?? [];
@@ -587,6 +699,8 @@ export function Storages() {
               options={nodeOptions}
               aria-label={t('storages.filterNodeAria')}
             />
+            {/* 节点默认收起，得说清楚怎么展开、以及点存储池会发生什么 */}
+            <span className="fs-sm text-muted">{t('storages.expandHint')}</span>
           </div>
           <div className="toolbar-right">
             <span className="fs-sm text-muted">
@@ -595,21 +709,27 @@ export function Storages() {
                 total: storages.length,
               })}
             </span>
-            {/* 与「节点」页同款：区域 / 节点都收起来时用得上 */}
+            {/* 与「节点」页同款：区域 / 连接收起、节点展开都归这两个按钮管 */}
             <div className="flex items-center gap-8">
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setCollapsedGroups([])}
-                disabled={collapsedGroups.length === 0}
+                onClick={() => {
+                  setCollapsedGroups([]);
+                  setOpenNodes(nodeKeys);
+                }}
+                disabled={allExpanded}
               >
                 {t('nodes.expandAll')}
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setCollapsedGroups(allGroupIds)}
-                disabled={allGroupIds.length === 0}
+                onClick={() => {
+                  setCollapsedGroups(collapsedIds);
+                  setOpenNodes([]);
+                }}
+                disabled={allCollapsed}
               >
                 {t('nodes.collapseAll')}
               </Button>
@@ -655,12 +775,23 @@ export function Storages() {
             />
           </Card>
         ) : (
-          /* 三层：区域 → 节点 → 该节点上的存储（与「节点」页同一套结构） */
+          /* 三层：区域 → 连接 → 节点，节点下是该节点上的存储表。
+             层级语言与「节点」「网络」两页一致：三级都是 tree-head 标题条，
+             内容缩进在 tree-body 的竖线里。 */
           <div className="node-groups">
             {regionGroups.map((region) => {
               const regionCollapsed = collapsedGroups.includes(`region:${region.id}`);
+              const regionNodeCount = region.conns.reduce(
+                (n, conn) => n + conn.nodes.length,
+                0,
+              );
+              const regionStorageCount = region.conns.reduce(
+                (n, conn) =>
+                  n + conn.nodes.reduce((m, g) => m + g.storages.length, 0),
+                0,
+              );
               return (
-                <div className="tree-group" key={`region:${region.id}`}>
+                <section className="tree-group" key={`region:${region.id}`}>
                   {/* 一级：区域 / 机房（填在连接上的标签） */}
                   {showRegion ? (
                     <button
@@ -676,124 +807,197 @@ export function Storages() {
                       <span className="tree-name">{region.label}</span>
                       <span className="tree-meta">
                         <Badge variant="neutral" size="sm">
-                          {t('storages.nodeCount', { n: region.nodes.length })}
+                          {t('nodes.pveCount', { n: region.conns.length })}
+                        </Badge>
+                        <Badge variant="neutral" size="sm">
+                          {t('storages.nodeCount', { n: regionNodeCount })}
+                        </Badge>
+                        <Badge variant="neutral" size="sm">
+                          {t('storages.storageCount', {
+                            n: regionStorageCount,
+                          })}
                         </Badge>
                       </span>
                     </button>
                   ) : null}
 
                   {regionCollapsed ? null : (
-                    <div className={showRegion ? 'tree-body' : undefined}>
-                      {region.nodes.map((group) => {
-                        const nodeCollapsed = collapsedGroups.includes(
-                          `node:${group.key}`,
+                    /* 不渲染区域头时这一层也不该有缩进 */
+                    <div
+                      className={
+                        showRegion ? 'tree-body' : 'flex flex-col gap-16'
+                      }
+                    >
+                      {region.conns.map((conn) => {
+                        const connCollapsed = collapsedGroups.includes(
+                          `conn:${conn.id}`,
+                        );
+                        const connStorageCount = conn.nodes.reduce(
+                          (n, g) => n + g.storages.length,
+                          0,
                         );
                         return (
-                          <div key={group.key}>
-                            {/* 二级：节点（存储实际所在的主机） */}
-                            <button
-                              type="button"
-                              className="node-group-title"
-                              aria-expanded={!nodeCollapsed}
-                              onClick={() => toggleGroup(`node:${group.key}`)}
-                            >
-                              <span className="tree-head-icon">
-                                <IconChevronDown size={14} />
-                              </span>
-                              <IconServer size={14} />
-                              <span className="fw-600">{group.node}</span>
-                              {/* 多主机时才标出这一组属于哪台 PVE（同名节点靠它区分） */}
-                              {multiConn && group.connection_name ? (
-                                <span className="fs-xs text-muted">
-                                  {group.connection_name}
+                          <section className="tree-group" key={`conn:${conn.id}`}>
+                            {/* 二级：连接（存储所在的那台 PVE）。只有一条连接时
+                                这一层只有一个取值，不渲染 */}
+                            {showConnection ? (
+                              <button
+                                type="button"
+                                className="tree-head"
+                                aria-expanded={!connCollapsed}
+                                onClick={() => toggleGroup(`conn:${conn.id}`)}
+                              >
+                                <span className="tree-head-icon">
+                                  <IconChevronDown size={15} />
                                 </span>
-                              ) : null}
-                              <span className="fs-xs text-muted">
-                                {t('storages.storageCount', { n: group.storages.length })}
-                              </span>
-                            </button>
+                                <IconServer size={15} />
+                                <span className="tree-name">{conn.label}</span>
+                                <span className="tree-meta">
+                                  <Badge variant="neutral" size="sm">
+                                    {t('storages.nodeCount', {
+                                      n: conn.nodes.length,
+                                    })}
+                                  </Badge>
+                                  <Badge variant="neutral" size="sm">
+                                    {t('storages.storageCount', {
+                                      n: connStorageCount,
+                                    })}
+                                  </Badge>
+                                </span>
+                              </button>
+                            ) : null}
 
-                            {/* 三级：存储本身 */}
-                            {nodeCollapsed ? null : (
-                              <Table<Storage>
-                                /* 「节点」这一列在分层视图里是重复信息（组标题已经
-                                   写了），去掉，把横向空间留给容量 */
-                                columns={columns.filter((col) => col.key !== 'node')}
-                                rows={group.storages}
-                                rowKey={(s) => `${s.connection_id ?? ''}/${s.node}/${s.storage}`}
-                                caption={t('storages.caption')}
-                                onRowClick={(s) => {
-                                  setSelected(s);
-                                  setContentFilter('');
-                                  setSearch('');
-                                }}
-                                isRowSelected={(s) =>
-                                  selected?.storage === s.storage &&
-                                  selected?.node === s.node &&
-                                  selected?.connection_id === s.connection_id
+                            {connCollapsed ? null : (
+                              <div
+                                className={
+                                  showConnection
+                                    ? 'tree-body'
+                                    : 'flex flex-col gap-16'
                                 }
-                              />
+                              >
+                                {conn.nodes.map((group) => {
+                                  const nodeOpen = openNodes.includes(group.key);
+                                  return (
+                                    <section className="tree-group" key={group.key}>
+                                      {/* 三级：节点（存储实际所在的主机）。默认收起，
+                                          点开才列它上面的存储池。
+                                          同名节点分属两台 PVE 时，靠上面那层连接区分 */}
+                                      <button
+                                        type="button"
+                                        className="tree-head"
+                                        aria-expanded={nodeOpen}
+                                        onClick={() => toggleOpenNode(group.key)}
+                                      >
+                                        <span className="tree-head-icon">
+                                          <IconChevronDown size={15} />
+                                        </span>
+                                        <IconServer size={15} />
+                                        <span className="tree-name">
+                                          {group.node}
+                                        </span>
+                                        <span className="tree-meta">
+                                          <Badge variant="neutral" size="sm">
+                                            {t('storages.storageCount', {
+                                              n: group.storages.length,
+                                            })}
+                                          </Badge>
+                                        </span>
+                                      </button>
+
+                                      {/* 内容：存储表。表格自带边框，直接缩进在竖线里 */}
+                                      {nodeOpen ? (
+                                        <div className="tree-body">
+                                          <Table<Storage>
+                                            /* 「节点」这一列在分层视图里是重复信息
+                                               （组标题已经写了），去掉，把横向空间
+                                               留给容量 */
+                                            columns={columns.filter(
+                                              (col) => col.key !== 'node',
+                                            )}
+                                            rows={group.storages}
+                                            rowKey={(s) =>
+                                              `${s.connection_id ?? ''}/${s.node}/${s.storage}`
+                                            }
+                                            caption={t('storages.caption')}
+                                            onRowHover={onRowHover}
+                                            onRowClick={(s) => {
+                                              setSelected(s);
+                                              setContentFilter('');
+                                              setSearch('');
+                                            }}
+                                            isRowSelected={(s) =>
+                                              selected?.storage === s.storage &&
+                                              selected?.node === s.node &&
+                                              selected?.connection_id === s.connection_id
+                                            }
+                                          />
+                                        </div>
+                                      ) : null}
+                                    </section>
+                                  );
+                                })}
+                              </div>
                             )}
-                          </div>
+                          </section>
                         );
                       })}
                     </div>
                   )}
-                </div>
+                </section>
               );
             })}
           </div>
         )}
       </div>
 
-      {/* ---- 内容浏览 ---- */}
-      {selected ? (
-        <Card padded={false}>
-          <div
-            style={{
-              padding: '16px 18px',
-              borderBottom: '1px solid var(--border-muted)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              flexWrap: 'wrap',
-            }}
-          >
-            <div className="flex items-center gap-8 flex-wrap">
-              <IconFolder size={16} />
-              <span className="fw-600">
-                {t('storages.contentTitle', { storage: selected.storage })}
-              </span>
+      {/* ---- 内容浏览：点存储池弹出的窗口 ----
+          以前这块内容铺在页面最下面：点一行存储，页面底部长出一大块表格，
+          想对比另一个存储池就得先滚到底、再滚回来点。改成居中弹窗之后，列表
+          始终停在原地，浏览与上传都在窗里完成，关掉就回到刚才那一行。 */}
+      <Modal
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+        size="xl"
+        title={t('storages.contentTitle', { storage: selected?.storage ?? '' })}
+        /* 窗里还会再弹出「上传」「删除确认」两个弹窗：它们开着时这个窗不该
+           跟着 Esc 一起关（三个弹窗都在 document 上监听 Esc，都会收到） */
+        closeOnEsc={!uploadOpen && !deleteTarget}
+        description={
+          selected ? (
+            <span className="flex items-center gap-8 flex-wrap">
               <Badge variant="neutral" size="sm">
                 {selected.node}
               </Badge>
               <Badge variant="neutral" size="sm">
                 {selected.type}
               </Badge>
-              <span className="fs-sm text-muted">
-                {t('storages.avail', { size: formatBytes(selected.avail) })}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-8 flex-wrap">
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t('storages.searchPlaceholder')}
-                prefix={<IconSearch size={14} />}
-                block={false}
-                aria-label={t('storages.searchAria')}
-              />
-              <Select
-                value={contentFilter}
-                onChange={(e) => setContentFilter(e.target.value)}
-                options={CONTENT_FILTERS.map((item) => ({
-                  label: t(item.label),
-                  value: item.value,
-                }))}
-                aria-label={t('storages.contentFilterAria')}
-              />
+              <span>{t('storages.avail', { size: formatBytes(selected.avail) })}</span>
+            </span>
+          ) : undefined
+        }
+      >
+        {selected ? (
+          <div className="flex flex-col gap-16">
+            <div className="flex items-center justify-between gap-12 flex-wrap">
+              <div className="flex items-center gap-8 flex-wrap">
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={t('storages.searchPlaceholder')}
+                  prefix={<IconSearch size={14} />}
+                  block={false}
+                  aria-label={t('storages.searchAria')}
+                />
+                <Select
+                  value={contentFilter}
+                  onChange={(e) => setContentFilter(e.target.value)}
+                  options={CONTENT_FILTERS.map((item) => ({
+                    label: t(item.label),
+                    value: item.value,
+                  }))}
+                  aria-label={t('storages.contentFilterAria')}
+                />
+              </div>
               {canManageStorage ? (
                 <Button
                   variant="primary"
@@ -804,64 +1008,50 @@ export function Storages() {
                   {t('storages.upload')}
                 </Button>
               ) : null}
-              <IconButton label={t('storages.closeContent')} onClick={() => setSelected(null)}>
-                <IconClose size={16} />
-              </IconButton>
             </div>
-          </div>
 
-          {contentNotImpl ? (
-            <div style={{ padding: 16 }}>
+            {contentNotImpl ? (
               <Notice tone="info" title={t('storages.notImplTitle')}>
                 {t('storages.contentNotImpl')}
               </Notice>
-            </div>
-          ) : contentQuery.isLoading ? (
-            <TableSkeleton rows={5} cols={5} />
-          ) : (
-            <Table<StorageContent>
-              columns={contentColumns}
-              rows={filteredContent}
-              rowKey={(c) => c.volid}
-              caption={t('storages.contentCaption', { storage: selected.storage })}
-              emptyTitle={
-                contentFilter ? t('storages.contentEmptyFiltered') : t('storages.contentEmpty')
-              }
-              emptyDescription={
-                contentFilter ? (
-                  t('storages.contentEmptyFilteredDesc')
-                ) : (
-                  <>
-                    {t('storages.contentEmptyDesc')}
-                  </>
-                )
-              }
-              emptyAction={
-                /* 有上传权限且不是「筛选筛没了」时才给按钮：
-                   筛选态下给「上传」会让用户以为文件丢了，其实只是被筛掉 */
-                canManageStorage && !contentFilter ? (
-                  <Button
-                    variant="primary"
-                    icon={<IconUpload size={15} />}
-                    onClick={() => setUploadOpen(true)}
-                  >
-                    {t('storages.uploadFile')}
-                  </Button>
-                ) : undefined
-              }
-              className="table-flush"
-            />
-          )}
-        </Card>
-      ) : (
-        <Card>
-          <EmptyState
-            title={t('storages.selectTitle')}
-            description={t('storages.selectDesc')}
-            icon={<IconFolder size={28} />}
-          />
-        </Card>
-      )}
+            ) : contentQuery.isLoading ? (
+              <TableSkeleton rows={5} cols={5} />
+            ) : (
+              <Table<StorageContent>
+                columns={contentColumns}
+                rows={filteredContent}
+                rowKey={(c) => c.volid}
+                caption={t('storages.contentCaption', { storage: selected.storage })}
+                emptyTitle={
+                  contentFilter ? t('storages.contentEmptyFiltered') : t('storages.contentEmpty')
+                }
+                emptyDescription={
+                  contentFilter ? (
+                    t('storages.contentEmptyFilteredDesc')
+                  ) : (
+                    <>
+                      {t('storages.contentEmptyDesc')}
+                    </>
+                  )
+                }
+                emptyAction={
+                  /* 有上传权限且不是「筛选筛没了」时才给按钮：
+                     筛选态下给「上传」会让用户以为文件丢了，其实只是被筛掉 */
+                  canManageStorage && !contentFilter ? (
+                    <Button
+                      variant="primary"
+                      icon={<IconUpload size={15} />}
+                      onClick={() => setUploadOpen(true)}
+                    >
+                      {t('storages.uploadFile')}
+                    </Button>
+                  ) : undefined
+                }
+              />
+            )}
+          </div>
+        ) : null}
+      </Modal>
 
       {/* ---- 上传 ISO ---- */}
       <UploadDialog

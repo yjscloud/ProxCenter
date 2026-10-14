@@ -9,6 +9,7 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from 'axios';
 import { detectLang, tStatic } from '../i18n';
+import { clearScope, getGlobalScope } from './scope';
 
 export const USER_KEY = 'pve_user';
 
@@ -107,6 +108,13 @@ export function markSession(active: boolean): void {
   } catch {
     /* localStorage 不可用，忽略 */
   }
+  if (!active) {
+    /* 退出 / 会话失效时一并清掉集群作用域与连接缓存：它们描述的是「这个人在这个
+       浏览器上的视角」，换个账号登录不该继承（对方可能看不到那条连接，
+       第一批请求就会整片报「连接不存在」）。放在 try 外面，读不了
+       localStorage 时也要清内存里那份。 */
+    clearScope();
+  }
 }
 
 /** 后端下发的 CSRF 令牌（非 HttpOnly，供前端回填请求头） */
@@ -162,9 +170,28 @@ http.interceptors.request.use(
     // 界面语言：后端据此返回权限目录 / FAQ / 内置角色名与错误消息
     // （见 backend/app/i18n.py）。这个模块在 React 之外，所以直接读持久化的语言。
     config.headers.set?.('Accept-Language', detectLang());
-    // 页面级连接：只在调用方没显式指定时才补，显式传的优先
-    if (pageConnection && !config.headers.has?.('X-PVE-Connection')) {
-      config.headers.set?.('X-PVE-Connection', pageConnection);
+    /* 连接的三级优先级（详见 api/scope.ts）：
+         调用点显式传的 X-PVE-Connection（硬指定）
+         → 页面级连接 ?connection=（也是硬指定：这一页就是那台机器）
+         → 顶栏「集群作用域」（**软**作用域，走另一个头）。
+       用两个头而不是一个，是因为它们强度不同：
+         * X-PVE-Connection —— 后端据此**不再**按节点 / VMID 自动定位
+           （调用点已经知道机器在哪条连接上，别改它）；
+         * X-PVE-Scope —— 只决定列表类接口读哪一套；后端能按节点 / VMID
+           定位到别处时仍然允许纠正。若把软作用域也发成前者，作用域为 A 时
+           操作 B 的机器会打到 A 上，任务轮询还会一直转圈
+           （见 backend/app/pve.py 的说明）。
+       都不存在时**什么都不发** —— 后端对列表类接口的「未指定 = 合并全部集群」
+       分支就是靠它来判定的，塞一个空串反而会被当成「指定了连接」。 */
+    if (!config.headers.has?.('X-PVE-Connection')) {
+      if (pageConnection) {
+        config.headers.set?.('X-PVE-Connection', pageConnection);
+      } else if (!config.headers.has?.('X-PVE-Scope')) {
+        const scope = getGlobalScope();
+        if (scope) {
+          config.headers.set?.('X-PVE-Scope', scope);
+        }
+      }
     }
     // 访问令牌在 HttpOnly Cookie 里，浏览器自动带 —— 这里只处理 CSRF：
     // 后端要求改状态的方法回填 X-CSRF-Token，值是那枚「非 HttpOnly」的 cookie。
@@ -386,8 +413,8 @@ export async function del<T>(
 /**
  * 为单次请求指定目标 PVE 连接（面板可配置多台 Proxmox）。
  *
- * 后端读取 `X-PVE-Connection` 请求头，在本次请求内改用该连接访问 PVE；
- * 不传则使用「当前连接」。
+ * 传了连接 id 就只打这一条连接；不传则**不表态**，由请求拦截器按
+ * 「页面级连接 → 顶栏集群作用域」补上（见 api/scope.ts）。
  *
  * 非字符串入参会被安全忽略 —— 有些接口会被直接当作 react-query 的
  * `queryFn` 调用，此时第一个参数是查询上下文对象，不能被误当成连接 ID。
@@ -411,6 +438,9 @@ export function scoped(connectionId?: unknown): AxiosRequestConfig {
  *
  * 详情页从列表页跳进来时 URL 上带着 ?connection=，挂载时设一次，页面里所有
  * 请求（含各 Tab 自己的查询）就都跟着走；离开时清掉，不影响别的页面。
+ *
+ * 它是**硬指定**（走 `X-PVE-Connection`），优先级高于顶栏的全局作用域：这一页
+ * 讲的就是那台机器，别的页面偏好不该把它带偏。
  */
 let pageConnection = '';
 

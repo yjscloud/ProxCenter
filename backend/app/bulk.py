@@ -259,6 +259,11 @@ async def _run_one(
                 raise ProxmoxError(f"{vmid} 正在运行，请先关机后再删除", 409)
             destroy = client.qemu_destroy if gtype == "qemu" else client.lxc_destroy
             result = await destroy(node, vmid, purge=params.purge)
+            # 与单机删除同一口径：归属记录要清，否则额度不会还给用户
+            # （PVE 会回收空闲 VMID，旧记录会撞上重建的同号机器）。
+            # 这里不吞异常 —— 批量操作本来就要逐台给出结果，清理失败同样该让
+            # 这一台报出来，而不是默默留着一条会错伤别人的记录。
+            await ownership.forget_guest(conn_id, node, vmid)
 
         elif action == "tag":
             config_getter = client.qemu_config if gtype == "qemu" else client.lxc_config

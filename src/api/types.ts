@@ -188,6 +188,11 @@ export interface LoginResponse {
   mfa_token?: string;
   /** 该角色被强制要求开 2FA，但还没绑定 */
   totp_setup_required?: boolean;
+  /**
+   * 面板是否允许「信任设备」。第一步（mfa_required）返回它，第二步据此决定
+   * 要不要显示那个勾选框 —— 管理员关掉之后，勾了也不会生效，不如不显示。
+   */
+  trust_device_available?: boolean;
 }
 
 /** 两步验证状态 */
@@ -540,6 +545,13 @@ export interface DiagnosticsResult {
 export interface VmDefaults {
   /** 默认 DNS（空格分隔）；空串 = 不干预，保持继承 DHCP / RA 下发的 DNS */
   dns: string;
+  /**
+   * 默认克隆方式：true = 完整克隆，false = 链接克隆。
+   *
+   * 各创建入口（快速部署 / 自定义部署 / 模板页克隆）把它当作**初值**预选，
+   * 用户在各自页面上仍可单独改 —— 这是一份默认值，不是开关锁。
+   */
+  full_clone: boolean;
 }
 
 /**
@@ -1179,6 +1191,14 @@ export interface VmSummary {
   netout?: number;
   diskread?: number;
   diskwrite?: number;
+  /**
+   * 归属人用户名；``null`` = **无人认领**。
+   *
+   * 只有「能看全量机器」的人（管理员）才拿得到这个字段：普通用户本来就只看得到
+   * 自己名下的机器，回填只是把他自己重复一遍。列表页据此筛出无人认领的机器 ——
+   * 那种机器在按人分配的额度里**不算任何人**，而平台台数上限是算它的。
+   */
+  owner?: string | null;
 }
 
 /** guest 类型：虚拟机 / 容器 */
@@ -1854,6 +1874,40 @@ export interface QuotaGroupReport {
   error: string;
 }
 
+/**
+ * 额度总览里的一行（``GET /api/quota/overview``，管理端）。
+ *
+ * 与 :interface:`MyQuotaReport` 的区别：那是「我自己」的读数，这是**所有用户**
+ * 的一行一条 —— 额度唯一需要管理员持续做的决策是「要不要给谁放宽」，得先看得见
+ * 谁快满了。
+ */
+export interface QuotaOverviewRow {
+  username: string;
+  role: string;
+  source: QuotaSource;
+  /** 三层解析之后的**最终生效**额度，不是某一层的原始配置 */
+  limits: QuotaLimits;
+  /** 名下用量（预分配容量：配了多大，不是实际占了多少） */
+  usage: { vm: QuotaUsage; ct: QuotaUsage };
+  /** 还能用多少；``null`` = 那一项不限制。**可以是负数**（下调额度后已建的会超出） */
+  remaining: {
+    vm: Record<string, number | null>;
+    ct: Record<string, number | null>;
+  };
+  /** 不受额度约束（超管，或带 ``*`` 的角色） */
+  bypass: boolean;
+}
+
+/** 额度总览（``GET /api/quota/overview``） */
+export interface QuotaOverviewReport {
+  users: QuotaOverviewRow[];
+  /**
+   * 集群读数不全的原因；非空 = 用量偏小。
+   * **界面必须把它说出来** —— 当成「大家都还没用」会让管理员配错额度。
+   */
+  error: string;
+}
+
 /** 我自己的额度与用量 */
 export interface MyQuotaReport {
   username: string;
@@ -1981,6 +2035,37 @@ export interface TemplateItem {
   connection_name?: string;
 }
 
+/**
+ * 存储里的一个容器**系统模板**（vztmpl，`*.tar.zst`）。
+ *
+ * 与 :interface:`TemplateItem` 不是一回事：那边是「被转成模板的机器」（有 VMID，
+ * 用来克隆）；这边是**文件**（没有 VMID，用来新建容器时选操作系统）。PVE 里两者
+ * 都叫「模板」，界面上必须分清楚，否则模板页会把「有 2 个系统模板」显示成 0。
+ */
+export interface CtSystemTemplate {
+  /**
+   * 枚举到它的那个节点。**共享存储**上这个值只代表「从哪个节点读到的」，
+   * 模板本身集群内任意节点都能用（见 `shared`）。
+   */
+  node: string;
+  storage: string;
+  /** 卷标识，如 `local:vztmpl/rocky-9-default_20240912_amd64.tar.xz` */
+  volid: string;
+  name: string;
+  size?: number;
+  ctime?: number;
+  /**
+   * 所在的存储是共享存储（CephFS / NFS 这类）。
+   *
+   * 后端按卷去重，共享存储上的同一个卷只会返回一条（否则每个节点都会列一遍，
+   * 同一个模板重复 N 次）。界面据此把节点名换成「共享」，避免暗示它只属于
+   * 某一个节点。
+   */
+  shared?: boolean;
+  connection_id?: string;
+  connection_name?: string;
+}
+
 /** 节点上的一个 cloud 镜像（.img / .qcow2 / .raw）*/
 export interface CloudImageItem {
   volid: string;
@@ -2089,41 +2174,6 @@ export interface TemplateCloneResult {
    仪表盘
    --------------------------------------------------------------------------- */
 
-export interface DashboardSummary {
-  version: { pve?: string; release?: string; panel: string };
-  vms: {
-    total: number;
-    running: number;
-    stopped: number;
-    templates: number;
-    other: number;
-  };
-  containers: { total: number };
-  nodes: {
-    total: number;
-    online: number;
-    offline: number;
-    cpu_total: number;
-    cpu_used: number;
-    cpu_usage: number;
-    mem_total: number;
-    mem_used: number;
-    mem_usage: number;
-    disk_total: number;
-    disk_used: number;
-    disk_usage: number;
-    detail: NodeInfo[];
-  };
-  storage: {
-    total: number;
-    used: number;
-    avail: number;
-    usage: number;
-    count: number;
-  };
-  recent_tasks: TaskInfo[];
-}
-
 export interface DashboardTopEntry {
   node: string;
   vmid: number;
@@ -2133,6 +2183,8 @@ export interface DashboardTopEntry {
   mem: number;
   maxmem: number;
   uptime?: number;
+  /** 所属 PVE 连接。榜单汇总全部连接，靠它才能链到正确的详情页 */
+  connection_id?: string;
 }
 
 export interface DashboardTop {
@@ -2379,6 +2431,13 @@ export interface TaskInfo {
   id?: string;
   /** WebSocket 推送的字段 */
   progress?: number;
+  /**
+   * 任务来自哪条 PVE 连接。只有「跨连接合并」时才由后端补上
+   * （`/cluster/tasks` 未指定作用域、或作用域为「全部集群」）；
+   * 指定了作用域或只有一套 PVE 时是 undefined —— 那时不需要它。
+   */
+  connection_id?: string;
+  connection_name?: string;
 }
 
 export interface TaskLogLine {

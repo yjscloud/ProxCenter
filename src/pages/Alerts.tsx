@@ -9,14 +9,18 @@ import { Field, Input, Switch, Textarea } from "../components/ui/Input";
 import { Notice } from "../components/ui/EmptyState";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import {
+  Table,
+  sortRows,
+  type Column,
+  type SortState,
+} from "../components/ui/Table";
+import {
   IconAlert,
   IconBell,
   IconPlus,
   IconTrash,
   IconRefresh,
   IconSave,
-  IconCheck,
-  IconClose,
   IconCpu,
   IconMemory,
   IconDisk,
@@ -32,12 +36,15 @@ import {
 } from "../components/Icons";
 import { useSectionSpy } from "../hooks/useSectionSpy";
 import { useToast } from "../hooks/useToast";
+import { useRefreshInterval } from "../hooks/useRefreshInterval";
 import { useSiteInfo } from "../hooks/useSiteInfo";
-import { tStatic, useT, type TFunc } from "../i18n";
-import { formatRelative, usageColor } from "../utils/format";
+import { PagerBar, usePaged } from "../hooks/usePaged";
+import { tStatic, useT, type MessageKey, type TFunc } from "../i18n";
+import { formatDateTime, formatRelative, usageColor } from "../utils/format";
 import { isRunning } from "../utils/status";
 import type {
   AlertEmailConfig,
+  AlertRecord,
   AlertRule,
   AlertWebhookConfig,
 } from "../api/types";
@@ -62,7 +69,41 @@ function metricOptions(t: TFunc) {
  */
 const STATE_METRICS = new Set(["offline", "backup"]);
 
+/**
+ * **内置来源自建**、历史里会出现、但**不该出现在规则下拉里**的指标。
+ *
+ * 刻意与 :func:`metricOptions` 分开：那份是规则编辑器的可选项，而这些指标在
+ * :func:`app.alerting.evaluate` 里根本不参与判定（额度预警由
+ * :mod:`app.quotaalert` 单独算）。混进去的话，用户配出来的规则会在保存时被
+ * ``normalise_rule`` 悄悄改回 cpu —— 界面上看不出任何异常，规则却永远不按
+ * 额度判定。
+ */
+const INTERNAL_METRIC_LABELS: Record<string, MessageKey> = {
+  quota: "alerts.metric.quota",
+};
+
 const isStateMetric = (metric: string) => STATE_METRICS.has(metric);
+
+/**
+ * 投递状态的四态：结果（送达 / 失败）× 类别（告警 / 恢复）。
+ *
+ * 排序也用它 —— 按「该不该先管」排：发送失败 > 恢复通知失败 > 新告警 > 已恢复。
+ * 按文案字母排会把「已发送」顶到最前，恰好是最不需要先看的那批。
+ *
+ * 静默来源的记录在写入口就被整条丢掉了（见 alerting.record），所以这里只剩这四态。
+ */
+function deliveryMeta(r: AlertRecord, t: TFunc) {
+  const sent = r.result === "sent";
+  const isRecovery = r.kind === "recovery";
+  if (sent) {
+    return isRecovery
+      ? { variant: "info" as const, label: t("alerts.badgeRecovered"), rank: 3 }
+      : { variant: "success" as const, label: t("alerts.badgeSent"), rank: 2 };
+  }
+  return isRecovery
+    ? { variant: "warning" as const, label: t("alerts.badgeRecoveryFailed"), rank: 1 }
+    : { variant: "danger" as const, label: t("alerts.badgeSendFailed"), rank: 0 };
+}
 
 /* ---------------------------------------------------------------------------
    页内区块导航
@@ -158,10 +199,12 @@ export function Alerts() {
   const [hookSecretClear, setHookSecretClear] = useState(false);
   const [clearHistoryOpen, setClearHistoryOpen] = useState(false);
 
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const query = useQuery({
     queryKey: ["alerts"],
     queryFn: alertsApi.get,
-    refetchInterval: 15000,
+    refetchInterval: refresh,
     retry: false,
   });
 
@@ -174,7 +217,7 @@ export function Alerts() {
   const vmsQuery = useQuery({
     queryKey: ["vms", "all"],
     queryFn: () => vmsApi.list(),
-    refetchInterval: 15_000,
+    refetchInterval: refresh,
   });
 
   /* 面板名称：告警卡片标题留空时用它（见后端 alerting.resolve_title_brand），
@@ -437,6 +480,195 @@ export function Alerts() {
     }
   }
 
+  /* 告警历史的列宽。
+
+     这里必须**每一列都给死宽度**，一个都不能漏。原因在 .table-resizable：
+     它给全站表格加了 `table-layout: fixed` —— 定宽布局下浏览器严格按声明的宽度
+     排，多出来的横向空间只会被「唯一没声明宽度的那一列」独吞。
+
+     之前把「数值」列留成无宽（想让那根条形吃掉剩余宽度），结果它一个人吃了
+     三百多像素，格子里的内容却只占左边两百多 —— 右侧空出一大片，比原来还难看。
+
+     定宽布局有两条互补的规则（实测过）：
+       * 声明宽度之和小于容器 → 各列**按比例放大**填满容器，右侧不留洞；
+       * 之和大于容器 → 表格溢出，`.table-container` 出现横向滚动条。
+     所以下面的和（935）刻意压在常见容器宽度（1000~1250）**之下**，让它走第一条路。
+     宽屏上多出来的那部分由「数值」列里那根条形吸收（见 .alert-hist-bar 的
+     max-width），而不是变成空白。
+
+     数字按中文字宽估的：12px 字号下汉字约 12px/字，等宽数字约 7px/字，
+     再加上 table-dense 每格左右各 10px 内边距。 */
+  const histColumns = useMemo<Array<Column<AlertRecord>>>(
+    () => [
+      {
+        key: "time",
+        header: t("alerts.colTime"),
+        width: 115,
+        sortable: true,
+        sortValue: (r) => Number(r.ts ?? 0),
+        render: (r) => (
+          /* 相对时间读起来快（「3 小时前」比一串日期省眼睛），但要核对具体是哪一刻
+             就得有绝对时间 —— 挂在 title 上，两种读法都留着 */
+          <span className="alert-hist-time" title={formatDateTime(r.ts)}>
+            <IconClock size={12} aria-hidden="true" />
+            {formatRelative(r.ts)}
+          </span>
+        ),
+      },
+      {
+        key: "status",
+        header: t("alerts.colStatus"),
+        width: 120,
+        sortable: true,
+        sortValue: (r) => deliveryMeta(r, t).rank,
+        render: (r) => {
+          const meta = deliveryMeta(r, t);
+          return (
+            <Badge variant={meta.variant} size="sm" dot>
+              {meta.label}
+            </Badge>
+          );
+        },
+      },
+      {
+        key: "rule",
+        header: t("alerts.colRule"),
+        width: 215,
+        sortable: true,
+        sortValue: (r) => r.rule_name || "",
+        render: (r) => (
+          /* detail（投递详情 / 失败原因）后端一直有、卡片时代却从没渲染过。
+             放进 title：不占列宽，也不至于被埋没 —— 而「发送失败」恰恰是最需要
+             看到原因的那一格。 */
+          <span className="alert-hist-rule" title={r.detail || undefined}>
+            <span className="fw-500 truncate">{r.rule_name || t("alerts.fallbackAlarm")}</span>
+            {isAdmin && r.username ? (
+              <Badge variant="neutral" size="sm">
+                {r.username}
+              </Badge>
+            ) : null}
+          </span>
+        ),
+      },
+      {
+        key: "object",
+        header: t("alerts.colObject"),
+        width: 175,
+        sortable: true,
+        sortValue: (r) => `${r.target_type}:${r.target ?? ""}`,
+        render: (r) => (
+          <span className="truncate">
+            {r.target_type === "node"
+              ? t("alerts.targetNodePrefix")
+              : t("alerts.targetVmPrefix")}
+            {r.target ?? ""}
+          </span>
+        ),
+      },
+      {
+        key: "metric",
+        header: t("alerts.colMetric"),
+        width: 150,
+        sortable: true,
+        sortValue: (r) => r.metric,
+        render: (r) => {
+          /* 指标列要同时认「规则可选的指标」和「内置来源自建的指标」。
+             后者不能塞进 metricOptions —— 那是规则编辑器的可选项，而这些指标
+             在资源告警里根本不参与判定（额度预警是 app.quotaalert 单独算的），
+             挂上去用户配一条会静默失效：normalise_rule 悄悄把它改回 cpu，
+             界面上看不出任何异常，规则却永远不按额度判。 */
+          const meta =
+            metricMap[r.metric] ??
+            (INTERNAL_METRIC_LABELS[r.metric]
+              ? {
+                  label: t(INTERNAL_METRIC_LABELS[r.metric]),
+                  icon: <IconAlert size={14} />,
+                }
+              : { label: r.metric, icon: <IconAlert size={14} /> });
+          return (
+            <span className="alert-hist-metric">
+              <span className="alert-hist-metric-icon" aria-hidden="true">
+                {meta.icon}
+              </span>
+              {meta.label}
+            </span>
+          );
+        },
+      },
+      {
+        key: "value",
+        header: t("alerts.colValue"),
+        /* 条形 + 16px 间距 + 约 30px 数值 + 约 58px 阈值文案 + 20px 内边距 */
+        width: 215,
+        sortable: true,
+        sortValue: (r) => Number(r.value ?? 0),
+        render: (r) => {
+          const value = Number(r.value ?? 0);
+          const threshold = Number(r.threshold ?? 0);
+          const pct = Math.min(100, Math.max(0, value));
+          /* 状态型记录没有百分比：画条只会是一根 0% 的空槽，直接陈述结果更清楚 */
+          if (isStateMetric(String(r.metric))) {
+            const recovered = r.kind === "recovery";
+            return (
+              <span
+                className="fw-600"
+                style={{
+                  color: recovered ? "var(--success)" : "var(--danger)",
+                }}
+              >
+                {recovered ? t("alerts.recoveredOk") : t("alerts.stateAbnormal")}
+              </span>
+            );
+          }
+          return (
+            <span className="alert-hist-value">
+              <span
+                className="alert-hist-bar"
+                title={t("alerts.threshold", { n: threshold })}
+              >
+                {/* 与全站同一套分档（见 utils/format 的 usageColor） */}
+                <span
+                  className="alert-hist-bar-fill"
+                  style={{ width: `${pct}%`, background: usageColor(value) }}
+                />
+                <span
+                  className="alert-hist-bar-threshold"
+                  style={{ left: `${Math.min(100, threshold)}%` }}
+                />
+              </span>
+              <span className="alert-hist-num">{value}%</span>
+              <span className="alert-hist-thr">
+                {t("alerts.threshold", { n: threshold })}
+              </span>
+            </span>
+          );
+        },
+      },
+    ],
+    [isAdmin, metricMap, t],
+  );
+
+  /* ---- 告警历史：表格 + 排序 + 分页 ----
+     原来这里是几十张卡片堆成网格。卡片要一屏放得下才划算，可告警恰恰是「越堆越多」
+     的数据 —— 八十条卡片会把页面拉得极长，要找某一条只能一路滚到底。
+
+     表格解决的是另一件事：**横向扫**。「哪台机器反复在告警」「哪类指标最常触发」
+     只有把若干行并排才看得出来。排序 + 每页条数则是不让「翻到第 6 页」本身
+     成为负担。
+
+     排序必须在**整份**数据上做完再切页（顺序反了排的只是当前页 —— 第 2 页里时间
+     最新的那条永远排不到最前，翻页时看着像坏了）。规则与表格内部共用同一个 sortRows。 */
+  const [histSort, setHistSort] = useState<SortState | null>({
+    key: "time",
+    direction: "desc",
+  });
+  const sortedRecords = useMemo(
+    () => sortRows(records as AlertRecord[], histColumns, histSort),
+    [records, histColumns, histSort],
+  );
+  /* 归属作用域一变（管理员 ↔ 普通用户）就回第一页；条数不够时的越界由 hook 自己夹住 */
+  const histPage = usePaged(sortedRecords, `${isAdmin}`);
+
   return (
     <PageShell
       title={t("alerts.title")}
@@ -582,38 +814,45 @@ export function Alerts() {
           请求体里，走飞书自己的算法；通用 Webhook 发的是用户自定义模板、签名走
           X-Panel-Signature 头。合成「类型二选一」的单一渠道会丢掉「两处同时推送」
           的能力 —— 所以合并的是配置界面，不是投递链路。两个都开就都发。 */}
-      <Card className="page-block" id={`${SECTION_PREFIX}channels`}>
+      {/* alc-channels 是这一卡的样式作用域：渠道内的字段间距、说明行高
+          都比全局松一档，见 components.css 的「告警通知渠道」一节 */}
+      <Card className="page-block alc-channels" id={`${SECTION_PREFIX}channels`}>
         <CardHeader
           title={t("alerts.channelsTitle")}
           subtitle={t("alerts.channelsSubtitle")}
           icon={<IconAlert size={16} />}
         />
 
+        {/* 标题行：左边「名字 + 状态徽章」，右边操作按钮（见 .alc-ch 系列样式）。
+            名字与徽章包在 .alc-ch-id 里作为一个整体 —— 窄屏放不下时让按钮
+            换行，而不是把徽章从名字旁边拆走。 */}
         <div className="alc-ch alc-ch--first">
-          <span className="alc-ch-name">
-            <IconChat size={15} />
-            {t("alerts.feishuBot")}
-          </span>
-          {/* 只在被关掉时才亮出来：常态下挂一个「已启用」是纯噪音。
-              注意飞书这条通道目前没有界面开关（enabled 默认 true），
-              这里如实反映后端状态，为将来补开关留好位置。 */}
-          {feishu && !feishu.enabled ? (
-            <Badge variant="warning" size="sm" dot>
-              {t("alerts.disabled")}
+          <div className="alc-ch-id">
+            <span className="alc-ch-name">
+              <IconChat size={15} />
+              {t("alerts.feishuBot")}
+            </span>
+            {/* 只在被关掉时才亮出来：常态下挂一个「已启用」是纯噪音。
+                注意飞书这条通道目前没有界面开关（enabled 默认 true），
+                这里如实反映后端状态，为将来补开关留好位置。 */}
+            {feishu && !feishu.enabled ? (
+              <Badge variant="warning" size="sm" dot>
+                {t("alerts.disabled")}
+              </Badge>
+            ) : null}
+            <Badge variant={webhookSet ? "success" : "neutral"} size="sm" dot>
+              <span className="flex items-center gap-4">
+                <IconKey size={12} />
+                {webhookSet ? t("alerts.webhookSaved") : t("alerts.webhookUnset")}
+              </span>
             </Badge>
-          ) : null}
-          <Badge variant={webhookSet ? "success" : "neutral"} size="sm" dot>
-            <span className="flex items-center gap-4">
-              <IconKey size={12} />
-              {webhookSet ? t("alerts.webhookSaved") : t("alerts.webhookUnset")}
-            </span>
-          </Badge>
-          <Badge variant={secretSet ? "success" : "neutral"} size="sm" dot>
-            <span className="flex items-center gap-4">
-              <IconKey size={12} />
-              {secretSet ? t("alerts.signatureSet") : t("alerts.signatureUnset")}
-            </span>
-          </Badge>
+            <Badge variant={secretSet ? "success" : "neutral"} size="sm" dot>
+              <span className="flex items-center gap-4">
+                <IconKey size={12} />
+                {secretSet ? t("alerts.signatureSet") : t("alerts.signatureUnset")}
+              </span>
+            </Badge>
+          </div>
           <div className="alc-ch-actions">
             <Button
               variant="ghost"
@@ -760,27 +999,29 @@ export function Alerts() {
             这些渠道的差异只在请求体形状上，用「模板 + 占位符」表达即可，不必为
             每家写一遍发送代码。签名是面板自己的约定，见下面说明。 */}
         <div className="alc-ch">
-          <span className="alc-ch-name">
-            <IconPlug size={15} />
-            {t("alerts.hookName")}
-          </span>
-          {hook && !hook.enabled ? (
-            <Badge variant="warning" size="sm" dot>
-              {t("alerts.disabled")}
+          <div className="alc-ch-id">
+            <span className="alc-ch-name">
+              <IconPlug size={15} />
+              {t("alerts.hookName")}
+            </span>
+            {hook && !hook.enabled ? (
+              <Badge variant="warning" size="sm" dot>
+                {t("alerts.disabled")}
+              </Badge>
+            ) : null}
+            <Badge variant={hookSet ? "success" : "neutral"} size="sm" dot>
+              <span className="flex items-center gap-4">
+                <IconKey size={12} />
+                {hookSet ? t("alerts.hookAddressSaved") : t("alerts.hookAddressUnset")}
+              </span>
             </Badge>
-          ) : null}
-          <Badge variant={hookSet ? "success" : "neutral"} size="sm" dot>
-            <span className="flex items-center gap-4">
-              <IconKey size={12} />
-              {hookSet ? t("alerts.hookAddressSaved") : t("alerts.hookAddressUnset")}
-            </span>
-          </Badge>
-          <Badge variant={hookSecretSet ? "success" : "neutral"} size="sm" dot>
-            <span className="flex items-center gap-4">
-              <IconKey size={12} />
-              {hookSecretSet ? t("alerts.signatureSet") : t("alerts.signatureUnset")}
-            </span>
-          </Badge>
+            <Badge variant={hookSecretSet ? "success" : "neutral"} size="sm" dot>
+              <span className="flex items-center gap-4">
+                <IconKey size={12} />
+                {hookSecretSet ? t("alerts.signatureSet") : t("alerts.signatureUnset")}
+              </span>
+            </Badge>
+          </div>
           <div className="alc-ch-actions">
             <Button
               variant="ghost"
@@ -933,7 +1174,9 @@ export function Alerts() {
                   </Button>
                 ))}
               </div>
-              <div className="mt-8">
+              {/* 12px 而不是 8px：上面那排是模板按钮，textarea 贴太近会看着像
+                  按钮组的一部分，而不是「点完按钮后在这里改内容」 */}
+              <div className="mt-12">
                 <Textarea
                   value={hook.template}
                   rows={4}
@@ -1253,104 +1496,20 @@ export function Alerts() {
           }
         />
 
-        {records.length > 0 ? (
-          <div className="alert-grid">
-            {records.map((r: any) => {
-              const sent = r.result === "sent";
-              /* 静默记录已在 records 里被滤掉，这里只剩两种投递状态：送达 / 发送失败 */
-              const state = sent ? "sent" : "failed";
-              const isRecovery = r.kind === "recovery";
-              const meta = metricMap[r.metric] ?? { label: r.metric, icon: <IconAlert size={14} /> };
-              const value = Number(r.value ?? 0);
-              const threshold = Number(r.threshold ?? 0);
-              const pct = Math.min(100, Math.max(0, value));
-              /* 与全站同一套分档（见 utils/format 的 usageColor） */
-              const fillColor = usageColor(value);
-              const targetLabel =
-                (r.target_type === "node"
-                  ? t("alerts.targetNodePrefix")
-                  : t("alerts.targetVmPrefix")) + (r.target ?? "");
-              const badgeText = sent
-                ? isRecovery
-                  ? t("alerts.badgeRecovered")
-                  : t("alerts.badgeSent")
-                : isRecovery
-                  ? t("alerts.badgeRecoveryFailed")
-                  : t("alerts.badgeSendFailed");
-              const badgeVariant = sent
-                ? isRecovery
-                  ? "info"
-                  : "success"
-                : isRecovery
-                  ? "warning"
-                  : "danger";
-              return (
-                <div className={`alert-card alert-${state}`} key={r.id}>
-                  <span className="alert-card-stripe" aria-hidden="true" />
-                  <div className="alert-card-body">
-                    <div className="alert-card-top">
-                      <span className={`alert-card-icon is-${state}`}>
-                        {sent ? <IconCheck size={15} /> : <IconClose size={15} />}
-                      </span>
-                      <span className="alert-card-title">{r.rule_name ?? t("alerts.fallbackAlarm")}</span>
-                      <Badge variant={badgeVariant} size="sm" dot>
-                        {badgeText}
-                      </Badge>
-                      {isAdmin && r.username ? (
-                        <Badge variant="neutral" size="sm">
-                          {r.username}
-                        </Badge>
-                      ) : null}
-                    </div>
-
-                    <div className="alert-card-meta">
-                      <span className="alert-card-target">
-                        <span className="alert-card-metric-icon">{meta.icon}</span>
-                        {meta.label}
-                        <span className="text-muted">·</span>
-                        {targetLabel}
-                      </span>
-                      <span className="alert-card-time">
-                        <IconClock size={12} />
-                        {formatRelative(r.ts)}
-                      </span>
-                    </div>
-
-                    {STATE_METRICS.has(String(r.metric)) ? (
-                      /* 状态型记录没有百分比：画进度条只会是一根 0% 的空槽，
-                         直接陈述结果更清楚 */
-                      <div className="alert-card-metric-val">
-                        <span className="fw-600">
-                          {isRecovery ? t("alerts.recoveredOk") : t("alerts.stateAbnormal")}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="alert-card-metric">
-                        <div className="alert-card-bar">
-                          <span
-                            className="alert-card-bar-fill"
-                            style={{ width: `${pct}%`, background: fillColor }}
-                          />
-                          <span
-                            className="alert-card-bar-threshold"
-                            style={{ left: `${Math.min(100, threshold)}%` }}
-                            title={t("alerts.threshold", { n: threshold })}
-                          />
-                        </div>
-                        <div className="alert-card-metric-val">
-                          <span className="mono fw-600">{value}%</span>
-                          <span className="text-muted"> {t("alerts.threshold", { n: threshold })}</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-secondary fs-sm">{t("alerts.historyEmpty")}</div>
-        )}
+        <Table<AlertRecord>
+          caption={t("alerts.historyTitle")}
+          columns={histColumns}
+          rows={histPage.rows}
+          rowKey={(r) => r.id}
+          dense
+          sort={histSort}
+          onSortChange={setHistSort}
+          emptyTitle={t("alerts.historyEmpty")}
+          rowTitle={(r) => r.detail ?? ""}
+        />
+        {/* 分页条只在真有记录时出现：空列表上那个「每页 N 条」下拉会让人以为
+            底下还有东西没露出来 */}
+        {records.length > 0 ? <PagerBar pager={histPage} /> : null}
       </Card>
 
       <ConfirmDialog

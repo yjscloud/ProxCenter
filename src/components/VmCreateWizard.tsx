@@ -7,7 +7,7 @@
    ========================================================================== */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   clusterApi,
   configApi,
@@ -20,7 +20,9 @@ import {
   vmsApi,
 } from '../api/endpoints';
 import { checkGuestSpec, remainingSummary } from '../utils/quotaSpec';
+import { invalidateQuota } from '../hooks/quotaCache';
 import { errorMessage } from '../api/client';
+import { getGlobalScope } from '../api/scope';
 import { Modal } from './ui/Modal';
 import { Button, IconButton } from './ui/Button';
 import {
@@ -36,6 +38,7 @@ import { Notice } from './ui/EmptyState';
 import { Badge } from './ui/Badge';
 import { NodePicker } from './NodePicker';
 import { QuickDeployForm } from './QuickDeployForm';
+import { isPathDisabled, SSH_SECURITY_NAV_PATH } from './Sidebar';
 import {
   IconPlus,
   IconTrash,
@@ -46,6 +49,7 @@ import {
 } from './Icons';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
+import { useUiPrefs } from '../hooks/useUiPrefs';
 import { useNodeStorages } from '../hooks/useNodeStorages';
 import {
   biosOptions,
@@ -459,6 +463,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
   const t = useT();
   const toast = useToast();
   const { isAdmin } = useAuth();
+  const queryClient = useQueryClient();
+
+  /* 「SSH 安全」入口被面板级开关关掉时，Cloud-Init 那一步的「接入安全管控」整个
+     收起来（见下面的渲染）：勾了它机器会被登记成受管主机，而看受管主机的地方都在
+     那个入口下面 —— 入口关了，这个开关就是「勾了没处看」。
+     取值一并钉住：先勾上、之后入口被关掉时，不会提交一个已经看不见的 true。 */
+  const navDisabled = useUiPrefs().nav_disabled;
+  const sshNavOff = isPathDisabled(SSH_SECURITY_NAV_PATH, navDisabled);
 
   const [step, setStep] = useState<StepIndex>(0);
   const [form, setForm] = useState<FormState>(initialState);
@@ -643,12 +655,33 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     setForm((f) => (f.ciDns ? f : { ...f, ciDns: dns }));
   }, [open, vmDefaultsQuery.data]);
 
-  /* 默认选中「当前连接」：让所有取数都带上具体连接，
-     否则后端会走「未指定连接 → 合并所有 PVE」的分支，节点列表会混入别的主机 */
+  /* 预填面板默认克隆方式（「设置 → 创建默认值 → 默认克隆方式」）。同样每次打开
+     只填一次，用户在第 2 步点过「链接 / 完整」之后不再覆盖。
+     自定义部署默认就是「从模板克隆」，所以这个初值决定的就是它的默认克隆方式；
+     快速部署那份由 QuickDeployForm 各自预填，模板页克隆同理。 */
+  const cloneFullPrefilledRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      cloneFullPrefilledRef.current = false;
+      return;
+    }
+    const defaults = vmDefaultsQuery.data;
+    if (cloneFullPrefilledRef.current || !defaults) return;
+    cloneFullPrefilledRef.current = true;
+    setForm((f) => ({ ...f, cloneFull: Boolean(defaults.full_clone) }));
+  }, [open, vmDefaultsQuery.data]);
+
+  /* 默认选中一套具体连接：让所有取数都带上它，
+     否则后端会走「未指定连接 → 合并所有 PVE」的分支，节点列表会混入别的主机。
+     优先落在顶栏「集群作用域」选的那一套 —— 用户刚把作用域切到 B，进向导却
+     默认在 A，多半不是他想要的；作用域为「全部集群」时回落到兜底连接。 */
   useEffect(() => {
     if (!open || targetConn) return;
     const conns = connectionsQuery.data ?? [];
-    const target = conns.find((c) => c.active) ?? conns[0];
+    const target =
+      conns.find((c) => c.id === getGlobalScope()) ??
+      conns.find((c) => c.active) ??
+      conns[0];
     if (target) setTargetConn(target.id);
   }, [open, targetConn, connectionsQuery.data]);
 
@@ -834,6 +867,10 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     const vmid = Number(vmidStr);
     return cloneSources.find((v) => v.node === node && v.vmid === vmid);
   }, [form.cloneFrom, cloneSources]);
+
+  /* 面板默认克隆方式：只用来给「链接 / 完整」两张卡片标一个「默认」（见下面
+     第 2 步的 clone-method 卡片），不改写用户已选的值 */
+  const panelDefaultFull = Boolean(vmDefaultsQuery.data?.full_clone);
 
   /* 默认选中第一个模板，省去手动选择 */
   useEffect(() => {
@@ -1063,7 +1100,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         cloudinit,
         /* 接入安全管控只在「全新创建 + cloud-init + 静态 IP」下有意义：
            克隆走的是后端另一条路径（原样复制源机配置），不看这个开关。 */
-        manage: form.ciManage,
+        manage: sshNavOff ? false : form.ciManage,
         tags: form.tags || undefined,
         description: form.description || undefined,
       };
@@ -1077,6 +1114,9 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         t('vmCreate.toastCreated'),
         t('vmCreate.toastCreatedHint', { vmid: result.vmid ?? form.vmid }),
       );
+      /* 这个组件**不走 runner**（创建是直连调用），所以额度读数要自己作废：
+         刚多出来一台机器，不刷的话「我的额度」还挂着创建前的已用数。 */
+      invalidateQuota(queryClient);
       onCreated?.(result.vmid ?? Number(form.vmid));
       onClose();
     } catch (err) {
@@ -1642,9 +1682,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                       <span className="clone-method-body">
                         <span className="clone-method-title">
                           {t('vmCreate.cloneLinked')}
-                          <span className="clone-method-tag">
-                            {t('vmCreate.cloneDefault')}
-                          </span>
+                          {/* 「默认」标在面板默认的那一项上（设置 → 创建默认值）：
+                              原先固定标在链接克隆上，管理员把默认改成完整克隆后
+                              它就成了一句假话 */}
+                          {panelDefaultFull ? null : (
+                            <span className="clone-method-tag">
+                              {t('vmCreate.cloneDefault')}
+                            </span>
+                          )}
                         </span>
                         <span className="clone-method-desc">
                           {t('vmCreate.cloneLinkedDesc')}
@@ -1660,7 +1705,14 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                         {form.cloneFull ? <IconCheck size={12} /> : null}
                       </span>
                       <span className="clone-method-body">
-                        <span className="clone-method-title">{t('vmCreate.cloneFull')}</span>
+                        <span className="clone-method-title">
+                          {t('vmCreate.cloneFull')}
+                          {panelDefaultFull ? (
+                            <span className="clone-method-tag">
+                              {t('vmCreate.cloneDefault')}
+                            </span>
+                          ) : null}
+                        </span>
                         <span className="clone-method-desc">
                           {t('vmCreate.cloneFullDesc')}
                         </span>
@@ -2363,19 +2415,23 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
                   }
                 />
 
-                <Switch
-                  label={t('vmCreate.ciManage')}
-                  checked={form.ciManage}
-                  onChange={(v) => update('ciManage', v)}
-                  hint={
-                    /* 两种都能接入，差别只在登记时机：静态地址创建时就定了、立刻登记；
-                       DHCP 则等机器通过 Guest Agent 自报地址（创建时的后台轮询 +
-                       待登记队列两条路兜底）。这里只把差别讲清楚，不做任何限制。 */
-                    hasStaticIpOnNics(form)
-                      ? t('vmCreate.ciManageHint')
-                      : t('vmCreate.ciManageDhcpHint')
-                  }
-                />
+                {/* 「SSH 安全」入口被面板级开关关掉时整项不出现（见 sshNavOff）：
+                    机器会被登记成受管主机，而看受管主机的页面都在那个入口下面 */}
+                {sshNavOff ? null : (
+                  <Switch
+                    label={t('vmCreate.ciManage')}
+                    checked={form.ciManage}
+                    onChange={(v) => update('ciManage', v)}
+                    hint={
+                      /* 两种都能接入，差别只在登记时机：静态地址创建时就定了、立刻登记；
+                         DHCP 则等机器通过 Guest Agent 自报地址（创建时的后台轮询 +
+                         待登记队列两条路兜底）。这里只把差别讲清楚，不做任何限制。 */
+                      hasStaticIpOnNics(form)
+                        ? t('vmCreate.ciManageHint')
+                        : t('vmCreate.ciManageDhcpHint')
+                    }
+                  />
+                )}
 
                 <Input
                   label={t('vmCreate.ciDns')}

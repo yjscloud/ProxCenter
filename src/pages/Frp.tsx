@@ -32,6 +32,8 @@ import {
 } from "../components/Icons";
 import type { FrpRule, FrpRuleInput } from "../api/types";
 import { useAuth } from "../hooks/useAuth";
+import { PagerBar, usePaged } from "../hooks/usePaged";
+import { useRefreshInterval } from "../hooks/useRefreshInterval";
 import { useToast } from "../hooks/useToast";
 import { useT } from "../i18n";
 
@@ -69,12 +71,14 @@ function HeaderActions() {
   const { hasPermission } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const [busy, setBusy] = useState(false);
 
   const statusQuery = useQuery({
     queryKey: ["frp", "status"],
     queryFn: frpApi.status,
-    refetchInterval: 5000,
+    refetchInterval: refresh,
   });
   const running = statusQuery.data?.running ?? false;
   const canManage = hasPermission("settings.manage");
@@ -117,20 +121,21 @@ function HeaderActions() {
    --------------------------------------------------------------------------- */
 function StatusRow() {
   const t = useT();
+  const refresh = useRefreshInterval();
   const statusQuery = useQuery({
     queryKey: ["frp", "status"],
     queryFn: frpApi.status,
-    refetchInterval: 5000,
+    refetchInterval: refresh,
   });
   const rulesQuery = useQuery({
     queryKey: ["frp", "rules"],
     queryFn: frpApi.rules.list,
-    refetchInterval: 8000,
+    refetchInterval: refresh,
   });
   const serverQuery = useQuery({
     queryKey: ["frp", "server"],
     queryFn: frpApi.server.get,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
   });
 
   const running = statusQuery.data?.running ?? false;
@@ -192,11 +197,12 @@ function ServerCard() {
   const toast = useToast();
   const qc = useQueryClient();
   const canManage = hasPermission("settings.manage");
+  const refresh = useRefreshInterval();
 
   const serverQuery = useQuery({
     queryKey: ["frp", "server"],
     queryFn: frpApi.server.get,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
   });
 
   const [draft, setDraft] = useState<typeof EMPTY_SERVER | null>(null);
@@ -389,11 +395,12 @@ function ProcessCard() {
   const toast = useToast();
   const qc = useQueryClient();
   const canManage = hasPermission("settings.manage");
+  const refresh = useRefreshInterval();
 
   const statusQuery = useQuery({
     queryKey: ["frp", "status"],
     queryFn: frpApi.status,
-    refetchInterval: 5000,
+    refetchInterval: refresh,
   });
   const available = statusQuery.data?.available ?? false;
 
@@ -505,18 +512,19 @@ function RulesCard() {
   const toast = useToast();
   const qc = useQueryClient();
   const canManage = hasPermission("frp.manage");
+  const refresh = useRefreshInterval();
   /** 新建规则走弹窗，填完再保存 —— 避免先落库一条空规则再反复重启 frpc */
   const [creating, setCreating] = useState(false);
 
   const listQuery = useQuery({
     queryKey: ["frp", "rules"],
     queryFn: frpApi.rules.list,
-    refetchInterval: 8000,
+    refetchInterval: refresh,
   });
   const effectiveQuery = useQuery({
     queryKey: ["frp", "effective"],
     queryFn: frpApi.effective,
-    refetchInterval: 8000,
+    refetchInterval: refresh,
   });
 
   const rules = listQuery.data?.rules ?? [];
@@ -540,6 +548,12 @@ function RulesCard() {
     }
     return [...dups];
   }, [rules]);
+
+  /* 规则会越积越多（每台内网服务一条），和管理员那边其它列表一样分页。
+     用统一的分页 hook：页码越界自动夹回最后一页，并提供「每页 N 条」下拉。
+     resetKey 取「看的范围」（管理员看全部 / 用户看自己的）—— 这一页没有筛选框，
+     换个范围才是真的换了一份列表，那时该回到第 1 页。 */
+  const rulePage = usePaged(rules, isAdmin ? 'all' : ownUsername || 'self');
 
   async function create(payload: FrpRuleInput) {
     await frpApi.rules.create(payload);
@@ -595,48 +609,52 @@ function RulesCard() {
       {rules.length === 0 ? (
         <p className="text-secondary fs-sm">{t('frp.noRules')}</p>
       ) : (
-        <div className="table-container">
-          <table className="table table-dense">
-            <thead>
-              <tr>
-                <th>{t('frp.colOwner')}</th>
-                <th>{t('frp.colName')}</th>
-                <th>{t('frp.colLocalIp')}</th>
-                <th>{t('frp.colLocalPort')}</th>
-                <th>{t('frp.colRemotePort')}</th>
-                <th>{t('common.status')}</th>
-                <th style={{ width: 96 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {rules.map((r) => (
-                <RuleRow
-                  key={r.id}
-                  rule={r}
-                  canManageRow={canManage && (isAdmin || r.username === ownUsername)}
-                  isEffective={effectiveNames.has(r.name)}
-                  onUpdate={async (patch) => {
-                    try {
-                      await update(r.id, patch);
-                      void qc.invalidateQueries({ queryKey: ["frp"] });
-                    } catch (err) {
-                      toast.error(t('frp.saveFailed'), errorMessage(err));
-                    }
-                  }}
-                  onDelete={async () => {
-                    try {
-                      await remove(r.id);
-                      void qc.invalidateQueries({ queryKey: ["frp"] });
-                      toast.success(t('frp.deleted'));
-                    } catch (err) {
-                      toast.error(t('frp.deleteFailed'), errorMessage(err));
-                    }
-                  }}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="table-container">
+            <table className="table table-dense">
+              <thead>
+                <tr>
+                  <th>{t('frp.colOwner')}</th>
+                  <th>{t('frp.colName')}</th>
+                  <th>{t('frp.colLocalIp')}</th>
+                  <th>{t('frp.colLocalPort')}</th>
+                  <th>{t('frp.colRemotePort')}</th>
+                  <th>{t('common.status')}</th>
+                  <th style={{ width: 96 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {rulePage.rows.map((r) => (
+                  <RuleRow
+                    key={r.id}
+                    rule={r}
+                    canManageRow={canManage && (isAdmin || r.username === ownUsername)}
+                    isEffective={effectiveNames.has(r.name)}
+                    onUpdate={async (patch) => {
+                      try {
+                        await update(r.id, patch);
+                        void qc.invalidateQueries({ queryKey: ["frp"] });
+                      } catch (err) {
+                        toast.error(t('frp.saveFailed'), errorMessage(err));
+                      }
+                    }}
+                    onDelete={async () => {
+                      try {
+                        await remove(r.id);
+                        void qc.invalidateQueries({ queryKey: ["frp"] });
+                        toast.success(t('frp.deleted'));
+                      } catch (err) {
+                        toast.error(t('frp.deleteFailed'), errorMessage(err));
+                      }
+                    }}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* 分页条接在表格下沿，成为同一张卡的页脚（见 .pagination 的样式） */}
+          <PagerBar pager={rulePage} />
+        </>
       )}
 
       <RuleDialog
@@ -914,10 +932,11 @@ function RuleRow({
    --------------------------------------------------------------------------- */
 function LogCard() {
   const t = useT();
+  const refresh = useRefreshInterval();
   const logsQuery = useQuery({
     queryKey: ["frp", "logs"],
     queryFn: frpApi.logs,
-    refetchInterval: 5000,
+    refetchInterval: refresh,
   });
   const logs = logsQuery.data?.logs ?? [];
 

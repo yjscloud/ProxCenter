@@ -2,7 +2,7 @@
    ProxCenter — 模板管理
    ========================================================================== */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -34,6 +34,8 @@ import { CardSkeleton } from '../components/ui/Spinner';
 import { CollapsibleCard, EmptyState, Notice } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { useUiPrefs } from '../hooks/useUiPrefs';
+import { LXC_NAV_PATH, isPathDisabled } from '../components/Sidebar';
 import {
   IconTemplate,
   IconCopy,
@@ -43,16 +45,19 @@ import {
   IconRefresh,
   IconCloud,
   IconVm,
+  IconDisk,
 } from '../components/Icons';
+import { LxcCreateWizard } from '../components/LxcCreateWizard';
 import { formatBytes, formatUptimeShort, parseTags } from '../utils/format';
 import { ostypeLabel } from '../utils/status'
 import { useT } from '../i18n';
 import { ostypeOptions, cpuTypeOptions } from '../utils/status';
 import { useTaskRunner } from '../hooks/useTaskRunner';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useNodeStorages } from '../hooks/useNodeStorages';
-import type { TemplateItem, VmSummary } from '../api/types';
+import type { CtSystemTemplate, TemplateItem, VmSummary } from '../api/types';
 
 /** 模板类型标签页：虚拟机模板与容器模板分开看，混在一屏里不好区分 */
 type TemplateTab = 'qemu' | 'lxc';
@@ -72,12 +77,17 @@ export function Templates() {
      原先统一用 canWrite（按角色名粗判），自定义角色即使勾了也点不动。 */
   const canClone = hasPermission('template.clone');
   const canManage = hasPermission('template.manage');
+  /* 用系统模板新建容器走的是 /lxc 那条创建链，要的是 ct.create —— 与「克隆模板」
+     是两把不同的钥匙，不能拿 canClone 顶替 */
+  const canCreateCt = hasPermission('ct.create');
 
   const [search, setSearch] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<TemplateItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TemplateItem | null>(null);
   const [convertOpen, setConvertOpen] = useState(false);
+  /* 用系统模板新建容器：非 null 就打开容器向导并预选这个模板 */
+  const [ctPreset, setCtPreset] = useState<CtSystemTemplate | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<TemplateTab>('qemu');
   const [view, setView] = useState<ViewMode>('cards');
@@ -87,12 +97,36 @@ export function Templates() {
      归属过滤，模板都归属管理员 → 普通用户看到的是空列表。 */
   /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
+
+  /* 「容器」在「设置 → 导航栏功能开关」里被关掉后，这一页不该再留一个进得去的
+     容器入口 —— 与侧边栏、路由拦截、AskAiButton 用同一份判据（isPathDisabled），
+     路径也只写一遍（LXC_NAV_PATH）。
+
+     必须提到两个 query **之前**：下面的 vztmpl 查询要靠它决定要不要发。 */
+  const ctNavOff = isPathDisabled(LXC_NAV_PATH, useUiPrefs().nav_disabled);
 
   const templatesQuery = useQuery({
     queryKey: ['templates', 'all'],
     queryFn: () => templatesApi.list(),
     enabled: pveReady,
-    refetchInterval: pveReady ? 20_000 : false,
+    refetchInterval: pveReady ? refresh : false,
+  });
+
+  /* 容器**系统模板**（vztmpl 文件）。
+     和上面那份不是一回事：那份是「被转成模板的机器」（有 VMID，用来克隆），
+     这份是存储里的模板**文件**（没有 VMID，用来新建容器时选操作系统）。
+     PVE 里两者都叫「模板」—— 页面此前只统计前者，于是明明有系统模板却显示 0。
+     这就是「容器模板数量为零」的直接原因（见 templatesApi.vztmpl）。
+
+     容器关掉时**不去取**：这个接口要逐节点问「节点列表 → 存储列表 → 存储内容」
+     三跳，是一个负载不轻的轮询，而结果一个字节都不会被渲染。 */
+  const vztmplQuery = useQuery({
+    queryKey: ['templates', 'vztmpl'],
+    queryFn: () => templatesApi.vztmpl(),
+    enabled: pveReady && !ctNavOff,
+    refetchInterval: pveReady && !ctNavOff ? refresh : false,
   });
 
   const templates = useMemo(() => {
@@ -113,11 +147,39 @@ export function Templates() {
     () => templates.filter((t) => (t.guest_type ?? 'qemu') !== 'lxc'),
     [templates],
   );
+  /* 「已转为模板的容器」：这一类是机器，能克隆 */
   const ctTemplates = useMemo(
     () => templates.filter((t) => t.guest_type === 'lxc'),
     [templates],
   );
-  const shown = tab === 'lxc' ? ctTemplates : vmTemplates;
+  /* 「容器系统模板」：这一类是文件，用来新建容器 */
+  const ctSystem = useMemo(() => {
+    const list = vztmplQuery.data ?? [];
+    const q = search.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (v) =>
+        v.name?.toLowerCase().includes(q) ||
+        v.storage.toLowerCase().includes(q) ||
+        v.node.toLowerCase().includes(q),
+    );
+  }, [vztmplQuery.data, search]);
+  /* 实际生效的标签页。开关一关，无论 state 停在哪儿都按虚拟机页渲染 ——
+     用**派生值**而不是 useEffect 往回改：派生不会先渲染出一帧已经不该存在的
+     容器视图，也不会让下面那几处 `=== 'lxc'` 各写一遍（见 ctSystemShown）。 */
+  const activeTab: TemplateTab = ctNavOff ? 'qemu' : tab;
+
+  const shown = activeTab === 'lxc' ? ctTemplates : vmTemplates;
+  /* 标签页上的数字必须把两类都算上，否则又会回到「我有 2 个却显示 0」 */
+  const ctCount = ctTemplates.length + ctSystem.length;
+  /* 系统模板**只在「容器模板」标签页**露面。
+     它是容器的东西（vztmpl 文件），放到虚拟机模板页上不对题，而且会把那一页
+     整个搞乱：虚拟机模板会被打上「已转为模板的容器」的分组标题，空态也不再
+     触发（条件里算了系统模板）。
+
+     下面是**唯一**的 tab 出口，渲染和判断都只看这一份 —— 分散着各写一遍
+     `tab === 'lxc'`，漏掉任何一处都会重演这个 bug。 */
+  const ctSystemShown = activeTab === 'lxc' ? ctSystem : [];
 
   /* 「从现有虚拟机转换为模板」需要虚拟机列表，且只在要用到时才拉取 ——
      转换弹窗和创建向导里都有这一个页签，两个开关都要算进去。
@@ -130,21 +192,25 @@ export function Templates() {
     staleTime: 30_000,
   });
 
-  /* 容器同样能转模板（PVE 的 pct template），所以候选里也要有容器 */
+  /* 容器同样能转模板（PVE 的 pct template），所以候选里也要有容器。
+     容器关掉时不拉：转出来的「已转模板的容器」在这一页已经没有位置了
+     （容器模板页签被隐去），这个列表纯粹是白跑一趟。 */
   const lxcQuery = useQuery({
     queryKey: ['lxc', 'all'],
     queryFn: () => lxcApi.list(),
-    enabled: convertCandidatesNeeded,
+    enabled: convertCandidatesNeeded && !ctNavOff,
     staleTime: 30_000,
   });
 
-  /* 转换候选 = 非模板的虚拟机 + 非模板的容器 */
+  /* 转换候选 = 非模板的虚拟机 + 非模板的容器（容器关掉时只有前者）。
+     否则「从现有机器转换」的下拉里还留着容器，转出来的模板却无处可看 ——
+     与页签隐去是同一件事的两半。 */
   const nonTemplates = useMemo(
     () =>
-      [...(vmsQuery.data ?? []), ...(lxcQuery.data ?? [])].filter(
+      [...(vmsQuery.data ?? []), ...(ctNavOff ? [] : (lxcQuery.data ?? []))].filter(
         (v) => !v.template,
       ),
-    [vmsQuery.data, lxcQuery.data],
+    [vmsQuery.data, lxcQuery.data, ctNavOff],
   );
 
   const invalidate = () => {
@@ -182,6 +248,83 @@ export function Templates() {
   };
 
   /* 列表视图：与卡片同信息量，操作列锁在最后（顺序不能让用户拖走） */
+  /* 系统模板（vztmpl）的列。刻意比模板机少几列：它是个**文件**，
+     没有 CPU/内存/运行时长这些「机器」才有的属性，摆上来只会是一排「—」。 */
+  const ctSystemColumns = useMemo<Array<Column<CtSystemTemplate>>>(
+    () => [
+      {
+        key: 'name',
+        header: t('templates.colName'),
+        width: 260,
+        render: (tpl) => (
+          <span className="flex items-center gap-8" title={tpl.volid}>
+            <IconDisk size={15} aria-hidden="true" />
+            <span className="truncate">{tpl.name}</span>
+          </span>
+        ),
+      },
+      {
+        key: 'storage',
+        header: t('templates.colStorage'),
+        width: 140,
+        render: (tpl) => <code className="fs-xs">{tpl.storage}</code>,
+      },
+      {
+        key: 'node',
+        header: t('templates.colNode'),
+        width: 140,
+        render: (tpl) => (
+          <span className="flex items-center gap-6">
+            {/* 共享存储给徽章而不是节点名：模板在这台集群的任意节点都能用，
+                写死一个节点等于凭空给用户加了一条限制（见 ctShared） */}
+            {tpl.shared ? (
+              <Badge variant="neutral" size="sm" title={t('templates.ctSharedHint')}>
+                {t('templates.ctShared')}
+              </Badge>
+            ) : (
+              tpl.node
+            )}
+            {tpl.connection_name ? (
+              <Badge variant="neutral" size="sm">
+                {tpl.connection_name}
+              </Badge>
+            ) : null}
+          </span>
+        ),
+      },
+      {
+        key: 'size',
+        header: t('templates.colSize'),
+        width: 100,
+        render: (tpl) => <span className="mono">{formatBytes(tpl.size, 0)}</span>,
+      },
+      {
+        key: 'actions',
+        header: '',
+        width: 120,
+        align: 'right',
+        locked: true,
+        label: t('common.actions'),
+        render: (tpl) => (
+          <span
+            className="form-row"
+            style={{ gap: 6, justifyContent: 'flex-end' }}
+          >
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!canCreateCt}
+              onClick={() => setCtPreset(tpl)}
+            >
+              {t('templates.ctCreate')}
+            </Button>
+          </span>
+        ),
+      },
+    ],
+    [canCreateCt, t],
+  );
+
   const templateColumns = useMemo<Array<Column<TemplateItem>>>(
     () => [
       {
@@ -190,7 +333,7 @@ export function Templates() {
         width: 200,
         render: (tpl) => (
           <span className="fw-600" title={tpl.name}>
-            {tpl.name || `${tab === 'lxc' ? 'CT' : 'VM'} ${tpl.vmid}`}
+            {tpl.name || `${activeTab === 'lxc' ? 'CT' : 'VM'} ${tpl.vmid}`}
           </span>
         ),
       },
@@ -285,7 +428,7 @@ export function Templates() {
         ),
       },
     ],
-    [canClone, canManage, navigate, tab, t],
+    [canClone, canManage, navigate, activeTab, t],
   );
 
   return (
@@ -296,10 +439,13 @@ export function Templates() {
           {t('templates.title')}
         </>
       }
+      /* 总数与容器数都要算上系统模板，否则会出现「共 4 个模板（容器 0）」
+         而标签页上写着「容器模板（5）」的自相矛盾 —— 同一屏里两个数字对不上，
+         比数字本身错更让人不敢信。 */
       subtitle={t('templates.subtitle', {
-        total: templates.length,
+        total: templates.length + ctSystem.length,
         vm: vmTemplates.length,
-        ct: ctTemplates.length,
+        ct: ctCount,
       })}
       actions={
         <>
@@ -393,19 +539,27 @@ export function Templates() {
       <div className="toolbar">
         <div className="toolbar-left">
           <SegmentedControl<TemplateTab>
-            value={tab}
+            value={activeTab}
             onChange={setTab}
             ariaLabel={t('templates.tabTypeAria')}
-            options={[
-              {
-                label: t('templates.tabVm', { count: vmTemplates.length }),
-                value: 'qemu',
-              },
-              {
-                label: t('templates.tabCt', { count: ctTemplates.length }),
-                value: 'lxc',
-              },
-            ]}
+            options={
+              ctNavOff
+                ? /* 容器被导航栏功能开关关掉：这个页签整项隐去。留着它等于给了一个
+                     点进去也会被路由弹回来的死入口（/lxc 已被 Layout 拦截）。 */
+                  [{ label: t('templates.tabVm', { count: vmTemplates.length }), value: 'qemu' }]
+                : [
+                    {
+                      label: t('templates.tabVm', { count: vmTemplates.length }),
+                      value: 'qemu',
+                    },
+                    {
+                      /* 两类都算上：已转为模板的容器 + 系统模板文件。
+                         只数前者正是「明明有 2 个容器模板却显示 0」的原因。 */
+                      label: t('templates.tabCt', { count: ctCount }),
+                      value: 'lxc',
+                    },
+                  ]
+            }
           />
           <Input
             value={search}
@@ -440,13 +594,13 @@ export function Templates() {
           error={templatesQuery.error}
           onRetry={() => void templatesQuery.refetch()}
         />
-      ) : shown.length === 0 ? (
+      ) : shown.length === 0 && ctSystemShown.length === 0 ? (
         <Card>
           <EmptyState
             title={
               search
                 ? t('templates.emptySearch')
-                : tab === 'lxc'
+                : activeTab === 'lxc'
                   ? t('templates.emptyCt')
                   : t('templates.emptyVm')
             }
@@ -492,35 +646,89 @@ export function Templates() {
             }
           />
         </Card>
-      ) : view === 'cards' ? (
-        <div className="grid grid-auto-320">
-          {shown.map((t) => (
-            <TemplateCard
-              key={`${t.connection_id}/${t.node}/${t.vmid}`}
-              template={t}
-              canClone={canClone}
-              canManage={canManage}
-              onClone={() => setCloneTarget(t)}
-              onDelete={() => setDeleteTarget(t)}
-              onOpen={() =>
-                navigate(
-                  t.guest_type === 'lxc'
-                    ? `/lxc/${t.node}/${t.vmid}`
-                    : `/vms/${t.node}/${t.vmid}`,
-                )
-              }
-            />
-          ))}
-        </div>
       ) : (
-        <Table<TemplateItem>
-          columns={templateColumns}
-          rows={shown}
-          rowKey={(tpl) => `${tpl.connection_id}/${tpl.node}/${tpl.vmid}`}
-          caption={t('templates.tableCaption', {
-            kind: tab === 'lxc' ? t('templates.kindCt') : t('templates.kindVm'),
-          })}
-        />
+        <>
+          {/* 容器系统模板（vztmpl 文件）：用来**新建**容器，不是拿来克隆的机器。
+              两类在 PVE 里都叫「模板」，这里分开列并各自标名 —— 混成一个列表
+              会让人以为点「克隆」就能用这些文件建出机器来。
+              只在「容器模板」标签页出现（见 ctSystemShown）。 */}
+          {ctSystemShown.length > 0 ? (
+            <section className="mb-20">
+              <div className="flex items-center gap-8 flex-wrap mb-10">
+                <h3 className="card-title">{t('templates.ctSystemTitle')}</h3>
+                <span className="fs-xs text-muted">
+                  {t('templates.ctSystemHint')}
+                </span>
+              </div>
+              {view === 'cards' ? (
+                <div className="grid grid-auto-320">
+                  {ctSystemShown.map((tpl) => (
+                    <CtSystemTemplateCard
+                      key={`${tpl.connection_id}/${tpl.node}/${tpl.volid}`}
+                      template={tpl}
+                      canCreate={canCreateCt}
+                      onCreate={() => setCtPreset(tpl)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <Table<CtSystemTemplate>
+                  columns={ctSystemColumns}
+                  rows={ctSystemShown}
+                  rowKey={(tpl) => `${tpl.connection_id}/${tpl.node}/${tpl.volid}`}
+                  caption={t('templates.ctSystemCaption')}
+                />
+              )}
+            </section>
+          ) : null}
+
+          {shown.length > 0 ? (
+            <section>
+              {/* 只有「容器模板」页上两类同时在列时才要这个小标题：只有一类时
+                  不加，免得凭空多一层。用 ctSystemShown 而不是 ctSystem ——
+                  否则在虚拟机模板页上，这一页的虚拟机模板会被打上
+                  「已转为模板的容器」的标题。 */}
+              {ctSystemShown.length > 0 ? (
+                <h3 className="card-title mb-10">
+                  {t('templates.ctConvertedTitle')}
+                </h3>
+              ) : null}
+              {view === 'cards' ? (
+                <div className="grid grid-auto-320">
+                  {shown.map((t) => (
+                    <TemplateCard
+                      key={`${t.connection_id}/${t.node}/${t.vmid}`}
+                      template={t}
+                      canClone={canClone}
+                      canManage={canManage}
+                      onClone={() => setCloneTarget(t)}
+                      onDelete={() => setDeleteTarget(t)}
+                      onOpen={() =>
+                        navigate(
+                          t.guest_type === 'lxc'
+                            ? `/lxc/${t.node}/${t.vmid}`
+                            : `/vms/${t.node}/${t.vmid}`,
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <Table<TemplateItem>
+                  columns={templateColumns}
+                  rows={shown}
+                  rowKey={(tpl) => `${tpl.connection_id}/${tpl.node}/${tpl.vmid}`}
+                  caption={t('templates.tableCaption', {
+                    kind:
+                      activeTab === 'lxc'
+                        ? t('templates.kindCt')
+                        : t('templates.kindVm'),
+                  })}
+                />
+              )}
+            </section>
+          ) : null}
+        </>
       )}
 
       {/* ---- 创建模板向导 ---- */}
@@ -562,6 +770,22 @@ export function Templates() {
         onDone={() => {
           invalidate();
           setCloneTarget(null);
+        }}
+      />
+
+      {/* ---- 用系统模板新建容器 ----
+          复用容器创建向导，只把「节点 + 模板」预选好。模板是节点级资源，
+          三个值必须一起给：少了连接或节点，选中的 volid 不在当前节点的模板
+          列表里，下拉会显示成空值。 */}
+      <LxcCreateWizard
+        open={ctPreset !== null}
+        onClose={() => setCtPreset(null)}
+        initialTemplate={ctPreset?.volid}
+        initialNode={ctPreset?.node}
+        initialConnection={ctPreset?.connection_id}
+        onCreated={() => {
+          invalidate();
+          setCtPreset(null);
         }}
       />
 
@@ -625,6 +849,73 @@ export function Templates() {
 /* ---------------------------------------------------------------------------
    模板卡片
    --------------------------------------------------------------------------- */
+
+/**
+ * 一个容器**系统模板**（vztmpl 文件）。与 :func:`TemplateCard` 并列但不同源：
+ * 那边是「被转成模板的机器」（有 VMID、能克隆），这边是存储里的一个文件，
+ * 只能拿来**新建**容器。所以这里不摆 CPU / 内存 / 运行时长 —— 文件没有这些，
+ * 摆上来只会是一排「—」。
+ */
+function CtSystemTemplateCard({
+  template,
+  canCreate,
+  onCreate,
+}: {
+  template: CtSystemTemplate;
+  canCreate: boolean;
+  onCreate: () => void;
+}) {
+  const t = useT();
+  return (
+    <article className="entity-card">
+      <div className="entity-card-head">
+        <div className="entity-card-title">
+          <span className="entity-card-name" title={template.volid}>
+            {template.name}
+          </span>
+          {/* 共享存储上的模板集群内任意节点都能用，写一个节点名会暗示「它属于
+              那一台」（cephfs 上的模板因此看着像绑在 node02 上）。 */}
+          <span className="entity-card-sub">
+            {template.storage} ·{' '}
+            {template.shared ? t('templates.ctShared') : template.node}
+            {template.connection_name ? ` · ${template.connection_name}` : ''}
+          </span>
+        </div>
+        <Badge variant="neutral" size="sm">
+          {t('templates.ctSystemBadge')}
+        </Badge>
+      </div>
+
+      <div className="entity-card-stats">
+        <div className="entity-stat">
+          <span className="entity-stat-label">{t('templates.colSize')}</span>
+          <span className="entity-stat-value">{formatBytes(template.size, 0)}</span>
+        </div>
+      </div>
+
+      <div className="fs-xs text-muted mono truncate" title={template.volid}>
+        {template.volid}
+      </div>
+
+      <div className="entity-card-footer">
+        <div className="flex items-center gap-4">
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<IconPlus size={14} />}
+            disabled={!canCreate}
+            title={
+              canCreate ? undefined : t('templates.ctCreateNeedsPermission')
+            }
+            onClick={onCreate}
+          >
+            {t('templates.ctCreate')}
+          </Button>
+        </div>
+      </div>
+    </article>
+  );
+}
 
 function TemplateCard({
   template,
@@ -869,6 +1160,21 @@ function CloneTemplateDialog({
       setFull(false);
     }
   }, [template]);
+
+  /* 按面板默认克隆方式预选（「设置 → 创建默认值 → 默认克隆方式」）。只在每次打开
+     后第一次拿到默认值时填一次：用户勾过之后再回填，等于顶掉他的选择。
+     容器模板没有这个勾选项（PVE 的 pct clone 只有全量），预填对它无影响。 */
+  const fullPrefillRef = useRef(false);
+  useEffect(() => {
+    if (!template) {
+      fullPrefillRef.current = false;
+      return;
+    }
+    const defaults = vmDefaultsQuery.data;
+    if (fullPrefillRef.current || !defaults) return;
+    fullPrefillRef.current = true;
+    setFull(Boolean(defaults.full_clone));
+  }, [template, vmDefaultsQuery.data]);
 
   useEffect(() => {
     if (template && !newId && nextIdQuery.data?.vmid) {
@@ -1162,9 +1468,18 @@ function TemplateCreateWizard({
     staleTime: 60_000,
   });
 
+  /* 目标节点所属的 PVE 连接。节点是从**全部连接**里挑的，取号与创建都必须带上
+     它的连接：不带就会落到「面板当前连接」（或后端兜底的那台），在别的集群的
+     节点名上建机会直接 hostname lookup 失败，而 VMID 也可能与那台上的机器撞号
+     （每台 PVE 的 VMID 空间各自独立）。 */
+  const nodeConn = useMemo(
+    () => (nodesQuery.data ?? []).find((n) => n.node === node)?.connection_id ?? '',
+    [nodesQuery.data, node],
+  );
+
   const nextIdQuery = useQuery({
-    queryKey: ['cluster', 'nextid'],
-    queryFn: clusterApi.nextId,
+    queryKey: ['cluster', 'nextid', nodeConn],
+    queryFn: () => clusterApi.nextId(nodeConn),
     enabled: open,
     retry: false,
     staleTime: 0,
@@ -1179,15 +1494,15 @@ function TemplateCreateWizard({
      存储内容，还得知道每种内容里 PVE 认哪些扩展名 —— 前端自己扫容易漏，
      之前就漏掉了 import 目录，导致 .qcow2 永远选不到。 */
   const imagesQuery = useQuery({
-    queryKey: ['templates', 'images', node],
-    queryFn: () => templatesApi.images(node),
+    queryKey: ['templates', 'images', nodeConn, node],
+    queryFn: () => templatesApi.images(node, nodeConn),
     enabled: open && Boolean(node),
     retry: false,
   });
 
   const bridgesQuery = useQuery({
-    queryKey: ['nodes', node, 'network'],
-    queryFn: () => nodesApi.network(node),
+    queryKey: ['nodes', nodeConn, node, 'network'],
+    queryFn: () => nodesApi.network(node, nodeConn),
     enabled: open && Boolean(node),
     retry: false,
     staleTime: 60_000,
@@ -1277,41 +1592,46 @@ function TemplateCreateWizard({
     }
     setSubmitting(true);
     try {
-      const res = await vmsApi.create({
-        node,
-        vmid: idNum,
-        name: name.trim(),
-        memory,
-        cores,
-        sockets: 1,
-        /* 模板上的气球会被每个克隆继承 —— 想让克隆机能被宿主机回收内存就设它 */
-        balloon: balloon.trim() ? Number(balloon) : undefined,
-        cpu_type: cpuType,
-        ostype,
-        disks: [
-          { storage: diskStorage, size: diskSize, interface: 'scsi0', format: 'qcow2' },
-        ],
-        networks: [
-          { bridge, model: 'virtio', firewall: true },
-        ],
-        scsi_hw: 'virtio-scsi-single',
-        bios: 'seabios',
-        machine: 'pc',
-        start_on_boot: false,
-        tags: tags || undefined,
-        description: t('templates.wizDesc'),
-        source_image: imageVolId || undefined,
-        target_storage: diskStorage,
-        templateMode: true,
-        cloudinit: ciEnabled
-          ? {
-              enabled: true,
-              user: ciUser || undefined,
-              ssh_keys: sshKey || undefined,
-              ip_configs: [{ ip: 'dhcp', gateway: '' }],
-            }
-          : undefined,
-      });
+      /* 带上目标节点所属的连接：节点是从全部连接里挑的，不带会落到面板当前连接，
+         在别的集群的节点名上建机会报 hostname lookup 失败 */
+      const res = await vmsApi.create(
+        {
+          node,
+          vmid: idNum,
+          name: name.trim(),
+          memory,
+          cores,
+          sockets: 1,
+          /* 模板上的气球会被每个克隆继承 —— 想让克隆机能被宿主机回收内存就设它 */
+          balloon: balloon.trim() ? Number(balloon) : undefined,
+          cpu_type: cpuType,
+          ostype,
+          disks: [
+            { storage: diskStorage, size: diskSize, interface: 'scsi0', format: 'qcow2' },
+          ],
+          networks: [
+            { bridge, model: 'virtio', firewall: true },
+          ],
+          scsi_hw: 'virtio-scsi-single',
+          bios: 'seabios',
+          machine: 'pc',
+          start_on_boot: false,
+          tags: tags || undefined,
+          description: t('templates.wizDesc'),
+          source_image: imageVolId || undefined,
+          target_storage: diskStorage,
+          templateMode: true,
+          cloudinit: ciEnabled
+            ? {
+                enabled: true,
+                user: ciUser || undefined,
+                ssh_keys: sshKey || undefined,
+                ip_configs: [{ ip: 'dhcp', gateway: '' }],
+              }
+            : undefined,
+        },
+        nodeConn || undefined,
+      );
 
       toast.success(
         t('templates.wizSubmitted'),

@@ -13,6 +13,7 @@
 
 import { useMemo } from 'react';
 import { Field, Input, SegmentedControl } from './ui/Input';
+import { Button } from './ui/Button';
 import { Notice } from './ui/EmptyState';
 import { useT, type MessageKey } from '../i18n';
 import type {
@@ -62,6 +63,18 @@ const FIELD_KEYS: Record<string, MessageKey> = {
 function limitValue(limits: object, field: string): number | null {
   const raw = (limits as Record<string, number | null | undefined>)[field];
   return raw ?? null;
+}
+
+type QuotaGroup = 'vm' | 'ct' | 'snapshot';
+
+const QUOTA_GROUPS: QuotaGroup[] = ['vm', 'ct', 'snapshot'];
+
+/** 这一份额度里有没有任何一项是限住的。 */
+function anyLimited(limits: QuotaLimits | null | undefined): boolean {
+  if (!limits) return false;
+  return QUOTA_GROUPS.some((group) =>
+    Object.keys(FIELD_KEYS).some((field) => limitValue(limits[group], field) !== null),
+  );
 }
 
 /** 空的输入框 = 不限制；非法输入也按不限制处理（后端同样容忍坏值） */
@@ -270,7 +283,29 @@ export function QuotaEditor({
 
       {custom ? (
         <>
+          {/* 「重置」此前只能靠管理员自己想明白「继承」= 删除这一层的自定义。
+              顶部的分段控件说的是**当前处于哪种模式**，不是**有哪些动作**——
+              想把一份配乱了的额度扔掉，得先推断出「切到继承」就是那个动作。
+              给一个明写着结果的按钮，代价只是多一行。 */}
+          <div className="flex items-center justify-end">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={disabled}
+              onClick={() => onChange(null)}
+              title={t('quota.resetToRoleHint')}
+            >
+              {t('quota.resetToRole')}
+            </Button>
+          </div>
           <Notice tone="info">{t('quota.customNote')}</Notice>
+          {/* 「自定义但一项都不填」= **显式不限制**，会盖掉角色默认 —— 与切到
+              「继承」完全不是一回事，而这个坑踩上去之后表现为「我明明清空了，
+              怎么还有上限」。给的是行内提示而不是确认弹窗：它是常驻的规则说明，
+              不是一次性的危险动作，每次保存都弹一次只会把人训练成无脑点确认。 */}
+          {!anyLimited(value) && anyLimited(inherited) ? (
+            <Notice tone="warning">{t('quota.blankOverridesRole')}</Notice>
+          ) : null}
 
           <h4 className="fs-sm fw-600 mt-8">{t('quota.groupVm')}</h4>
           <GuestLimitsFields

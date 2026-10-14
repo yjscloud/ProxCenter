@@ -46,7 +46,16 @@ PREF_DASHBOARD_LAYOUT = "dashboard_layout"
 # 服务端这份决定「发给这个人的通知邮件用哪种语言」。两者刻意各存一份 ——
 # 同一账号在公司电脑看英文、在家看中文是合理的。
 PREF_LANGUAGE = "language"
-ALLOWED_KEYS = frozenset({PREF_DASHBOARD_LAYOUT, PREF_LANGUAGE})
+# 顶栏「集群作用域」：这个人默认在看哪一套 PVE（值是连接 id，空串 = 全部集群）。
+#
+# 与语言同理，浏览器那份 localStorage 是**本设备的热副本**（请求拦截器与启动校验
+# 需要同步读取），服务端这份决定「换台设备/换个浏览器打开时恢复到哪一套」。
+# 存服务端还有一层意义：原先「读哪一台」是 settings 里的全局指针，管理员甲切一下
+# 管理员乙的读数立刻跟着变；改成按用户之后，各人的视角互不干扰。
+PREF_CLUSTER_SCOPE = "cluster_scope"
+ALLOWED_KEYS = frozenset(
+    {PREF_DASHBOARD_LAYOUT, PREF_LANGUAGE, PREF_CLUSTER_SCOPE}
+)
 
 # 单个偏好的体积上限。布局就是个 widget id 数组，几 KB 顶天；留 64 KB 是给
 # 未来的偏好（比如保存的筛选条件组合）留余量，同时挡住把这张表当文件存的用法。

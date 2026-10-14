@@ -179,20 +179,27 @@ async def list_containers(
         _raise(failure)
 
     owner = security.visible_owner(user)
-    if owner is not None:
-        owners = await ownership.owners_map_for(ownership.KIND_CT)
-        result = [
-            c
-            for c in result
-            if owners.get(
+    # 与 /vms 同一套：容器同样要在每行回填归属人（见那边的说明），
+    # 否则管理员在这一页看不出哪台是「无人认领」的
+    owners = await ownership.owners_map_for(ownership.KIND_CT)
+
+    def _owner_of(item: Dict[str, Any]) -> str:
+        return (
+            owners.get(
                 ownership.vm_ref(
-                    str(c.get("connection_id") or ""),
-                    str(c.get("node") or ""),
-                    c.get("vmid"),
+                    str(item.get("connection_id") or ""),
+                    str(item.get("node") or ""),
+                    item.get("vmid"),
                 )
             )
-            == owner
-        ]
+            or ""
+        )
+
+    if owner is not None:
+        result = [c for c in result if _owner_of(c) == owner]
+    else:
+        for item in result:
+            item["owner"] = _owner_of(item) or None
 
     result.sort(key=lambda c: (c.get("node") or "", c.get("vmid") or 0))
     return result
@@ -526,6 +533,10 @@ async def delete_container(
     await guest_created.drop_record(_op_connection(), node, vmid, "lxc")
     # 同虚拟机：IP 缓存一并清掉，免得贴在重建的同号容器上
     await guestip.forget(_op_connection(), node, vmid, "lxc")
+    # 归属记录不删的话额度不会还给用户（见 ownership.forget_guest 的说明）；
+    # 读数缓存也要主动作废，否则删除后几秒内额度读数仍是旧的。
+    await ownership.forget_guest(_op_connection(), node, vmid)
+    quota.invalidate()
     return {"task": task}
 
 

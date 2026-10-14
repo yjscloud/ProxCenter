@@ -6,9 +6,9 @@
 
    1. **看节点**：多台 PVE、每台若干节点时，平铺的大卡片很快就会变成
       「一片长得差不多的方块」—— 45 个节点要滚五六屏才看完，还看不出谁在冒烟。
-      所以补了「列表视图」：一行一个节点，CPU / 内存 / 磁盘三根迷你条横向对齐，
-      一屏看几十个，谁红谁绿一眼分辨；再按来源 PVE 分组，多主机不会混在一起。
-      卡片视图保留给节点不多的场景（信息更舒展，备注输入框也好点）。
+      所以按「区域 → 连接 → 节点」铺成三层树（与网络页同一套层级语言：
+      每层一个可折叠的标题条，缩进用一条竖线画出来），每个节点是一张独立卡片：
+      卡头写它是谁、活没活着，卡体是 CPU / 内存 / 磁盘与备注。
    2. **管连接**：节点连不上时，要修的是「连接」，不是节点本身。连接配置
       因此挪到了同一功能域下的子页面 `/nodes/connections`（点顶部子页签或
       「添加节点」都能进）—— 但它不该和节点列表挤在一页：那张表单很长，
@@ -17,15 +17,15 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { clusterApi, connectionsApi, nodesApi } from '../api/endpoints';
 import { errorMessage, isNotConfigured } from '../api/client';
 import { PageShell } from '../components/Layout';
-import { Card } from '../components/ui/Card';
+import { Card, CardHeader } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
 import { ProgressBar } from '../components/ui/ProgressBar';
-import { Input, SegmentedControl, Select } from '../components/ui/Input';
+import { Input, Select } from '../components/ui/Input';
 import { CardSkeleton } from '../components/ui/Spinner';
 import { EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
 import { SetupRequired } from '../components/SetupRequired';
@@ -55,16 +55,14 @@ import {
 import { nodeStatusMeta } from '../utils/status'
 import { useT, type MessageKey } from '../i18n';
 import { useAuth } from '../hooks/useAuth';
-import { useToast } from '../hooks/useToast';
+import { useGlobalScope } from '../hooks/useGlobalScope';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { NodeNoteField, useNodeMeta } from '../components/NodeMeta';
 import type { NodeInfo } from '../api/types';
 
 /* 「集群失去仲裁」提示的关闭状态记忆键 */
 const QUORUM_NOTICE_KEY = 'pve_quorum_notice_dismissed';
-/* 视图偏好：节点少时卡片好看，节点多时列表好用，让用户自己定 */
-const VIEW_KEY = 'pve_nodes_view';
 
-type ViewMode = 'list' | 'cards';
 type SortKey = 'name' | 'cpu' | 'mem' | 'disk' | 'status';
 
 const SORT_OPTIONS: Array<{ label: MessageKey; value: SortKey }> = [
@@ -80,26 +78,14 @@ export function Nodes() {
   const navigate = useNavigate();
   /* 连接写操作需要 settings.manage，仅管理员可进入表单 */
   const { isAdmin } = useAuth();
+  /* 顶栏的集群作用域（空串 = 全部集群）：页头那行读数与下方列表都跟着它，
+     而仲裁告警不受它影响（见下面 quorum 那段的说明） */
+  const scope = useGlobalScope();
 
-  /* ---- 视图与筛选 ---- */
-  const [view, setView] = useState<ViewMode>(() => {
-    try {
-      return localStorage.getItem(VIEW_KEY) === 'cards' ? 'cards' : 'list';
-    } catch {
-      return 'list';
-    }
-  });
+  /* ---- 筛选 ---- */
   const [search, setSearch] = useState('');
   const [connFilter, setConnFilter] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('name');
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(VIEW_KEY, view);
-    } catch {
-      /* 忽略 */
-    }
-  }, [view]);
 
   /* 提示允许用户关掉，关掉后记住；等仲裁恢复正常会自动清掉标记，
      这样下次真出问题时还会重新提醒，而不是永久失声 */
@@ -111,19 +97,26 @@ export function Nodes() {
     }
   });
 
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
-    /* 面板还没配置连接时，后端对每个请求都回 428：继续 10 秒轮询只会刷一屏
+    /* 面板还没配置连接时，后端对每个请求都回 428：继续轮询只会刷一屏
        没人看的报错（重试也已在 main.tsx 关掉）。配好之后自动恢复轮询。 */
     refetchInterval: (query) =>
-      isNotConfigured(query.state.error) ? false : 10_000,
+      isNotConfigured(query.state.error) ? false : refresh,
   });
 
-  const clusterQuery = useQuery({
-    queryKey: ['cluster', 'status'],
-    queryFn: clusterApi.status,
-    refetchInterval: 30_000,
+  /* 机队（全部连接）的合计状态。页头那行「集群版本 / 仲裁」以前取自
+     `/cluster/status` —— 那条接口一次只能读**默认那一台**，于是 4 套连接里
+     非默认的那几套失去仲裁时，页头照样一片绿（仪表盘的集群态势卡踩过同一个坑）。
+     换用 fleet-status 之后页头与告警都是全机队口径，且与顶栏「控制台状态」、
+     设置页共用同一份缓存，不多发请求。 */
+  const fleetQuery = useQuery({
+    queryKey: ['cluster', 'fleet-status'],
+    queryFn: clusterApi.fleetStatus,
+    refetchInterval: refresh,
     retry: false,
   });
 
@@ -131,7 +124,7 @@ export function Nodes() {
   const connStatusQuery = useQuery({
     queryKey: ['connections', 'status'],
     queryFn: connectionsApi.status,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
   });
   const failedConnections = (connStatusQuery.data ?? []).filter((c) => !c.ok);
@@ -140,50 +133,15 @@ export function Nodes() {
     (c) => c.ok && !c.node_metrics,
   );
 
-  /* ---- 默认读取的 PVE ----
-     少数接口（健康探活、/cluster/status）一次只能读一台，页头那行「集群版本 /
-     仲裁」就取自它。多套 PVE 时「读哪一套」必须由人决定，否则「这里怎么只有
-     一台的版本」是个没人答得上的问题。它**不等于主连接**：其余连接照样同级，
-     下方节点列表也仍然汇总全部连接。 */
-  const queryClient = useQueryClient();
-  const toast = useToast();
+  /* 连接列表：只为「区域标签」而读（节点按「区域 → 连接 → 节点」分组）。
+     这里**不按 isAdmin 关掉** —— 区域分组所有用户都要用，接口本身也只要求登录。 */
   const connectionsQuery = useQuery({
     queryKey: ['connections'],
     queryFn: connectionsApi.list,
     staleTime: 300_000,
     retry: false,
-    /* 这里**不按 isAdmin 关掉**：下面「读取哪台」的选择器只有管理员能操作，
-       但连接的**区域标签**所有用户都要用 —— 节点列表按「区域 → 连接 → 节点」
-       分组，拿不到连接就分不出区域。（该接口本身只要求登录） */
   });
   const conns = connectionsQuery.data ?? [];
-  const defaultConnId = conns.find((item) => item.active)?.id ?? '';
-  const [switchingDefault, setSwitchingDefault] = useState(false);
-
-  const pickDefaultConn = async (id: string) => {
-    if (!id || id === defaultConnId) return;
-    setSwitchingDefault(true);
-    try {
-      await connectionsApi.activate(id);
-      toast.success(
-        t('nodes.defaultPveSwitched'),
-        t('nodes.defaultPveSwitchedHint', {
-          name: conns.find((item) => item.id === id)?.name || id,
-        }),
-      );
-      /* 只读单台的接口都要重取：页头的集群版本 / 仲裁、健康探活，以及全站合计 */
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['connections'] }),
-        queryClient.invalidateQueries({ queryKey: ['cluster', 'status'] }),
-        queryClient.invalidateQueries({ queryKey: ['cluster', 'fleet-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['health'] }),
-      ]);
-    } catch (err) {
-      toast.error(t('nodes.defaultPveSwitchFailed'), errorMessage(err));
-    } finally {
-      setSwitchingDefault(false);
-    }
-  };
 
   const list = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
 
@@ -287,9 +245,12 @@ export function Nodes() {
   }, [groups, conns, t]);
   const showRegion = regionGroups.some((group) => group.id !== '');
 
-  /* 收起来的组。默认**全部展开** —— 这一页是「看节点」的主界面，一进来就该看到
-     节点本身，而不是一层要点的标题（与网络页的接口表不同：那里是明细，先看概况
-     更合理）。id 带前缀区分两级：``region:`` / ``conn:``。 */
+  /* 两级折叠状态分两套语义，因为默认值刚好相反：
+       * 区域默认**展开**（存「已收起」）—— 区域一般只有一两个，收起它等于把内容藏两层；
+       * 连接默认**收起**（存「已展开」）—— 节点一多要滚好几屏，先列出有哪些 PVE、
+         想看哪台再点开；节点卡本身也是默认收起（见 NodeCard），点开才看指标。
+     连接存成「已展开」而不是「已收起」：默认值就是空数组，不必等节点数据到了再
+     挨个补 id（那会先闪一帧全展开），10 秒轮询也不会把已展开的连接又收回去。 */
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const toggleGroup = (id: string) => {
     setCollapsedGroups((list) =>
@@ -297,17 +258,26 @@ export function Nodes() {
     );
   };
 
-  /* 所有可折叠的组（区域 + 连接），用于工具栏那个「全部展开 / 全部收起」 */
-  const allGroupIds = useMemo(
-    () => [
-      ...(showRegion ? regionGroups.map((g) => `region:${g.id}`) : []),
-      ...(grouped ? groups.map((g) => `conn:${g.id}`) : []),
-    ],
-    [regionGroups, groups, showRegion, grouped],
+  const [openConns, setOpenConns] = useState<string[]>([]);
+  const toggleOpenConn = (id: string) => {
+    setOpenConns((list) =>
+      list.includes(id) ? list.filter((value) => value !== id) : [...list, id],
+    );
+  };
+
+  /* 工具栏那个「全部展开 / 全部收起」要覆盖两级，但两级语义相反，
+     所以分成两组 id：一组往 collapsedGroups 里放，一组往 openConns 里放。 */
+  const regionIds = useMemo(
+    () => (showRegion ? regionGroups.map((g) => g.id) : []),
+    [regionGroups, showRegion],
+  );
+  const connIds = useMemo(
+    () => (grouped ? groups.map((g) => g.id) : []),
+    [groups, grouped],
   );
   const allCollapsed =
-    allGroupIds.length > 0 &&
-    allGroupIds.every((id) => collapsedGroups.includes(id));
+    openConns.length === 0 &&
+    regionIds.every((id) => collapsedGroups.includes(`region:${id}`));
 
   const connectionOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -321,29 +291,46 @@ export function Nodes() {
     ];
   }, [list, t]);
 
-  /* 后端在「单机（未组集群）」时返回 quorate=null —— 那不是失去仲裁，不能报警。
-     所以必须用 === false 判断；写成 !quorate 会把单机环境也误报成集群故障。 */
-  const quorate = clusterQuery.data?.quorate ?? null;
-  const showQuorumWarning = quorate === false && !quorumDismissed;
+  /* ---- 仲裁（告警全机队、标题跟随作用域）----
+     告警逐个连接看，而不是只看兜底那台：失去仲裁意味着那个集群进入只读保护，
+     是最高级别的异常 —— 它**不跟顶栏作用域走**，聚焦 A 集群时 B 集群掉仲裁
+     照样要报（提示里会点名是哪几台，不会看不懂）。
+     后端在「单机（未组集群）」时返回 quorate=null —— 那不是失去仲裁，不能报警，
+     所以必须用 === false 判断。 */
+  const fleet = fleetQuery.data;
+  const fleetItems = fleet?.connections ?? [];
+  const noQuorumConns = fleetItems.filter((c) => c.quorate === false);
+  const showQuorumWarning = noQuorumConns.length > 0 && !quorumDismissed;
+
+  /* 页头那行读数描述的是**当前正在看的东西**：聚焦某套集群时，
+     「几个连接 / 几个集群 / 仲裁如何」都只算那一套（节点数与在线数来自下面
+     这份列表，它本来就会被作用域过滤）。告警仍是全机队的。 */
+  const scopedFleet = scope
+    ? fleetItems.filter((c) => c.id === scope)
+    : fleetItems;
+  const scopedNoQuorum = scopedFleet.filter((c) => c.quorate === false);
+  const scopedClusters = scopedFleet.filter(
+    (c) => c.cluster_mode === 'cluster',
+  ).length;
   const quorumLabel =
-    quorate === true
-      ? t('nodes.quorumOk')
-      : quorate === false
-        ? t('nodes.quorumBad')
-        : t('nodes.quorumStandalone');
+    scopedNoQuorum.length > 0
+      ? t('nodes.quorumBadCount', { n: scopedNoQuorum.length })
+      : t('nodes.quorumOk');
 
   const onlineCount = list.filter((n) => n.status === 'online').length;
 
   /* 仲裁恢复正常 → 清掉「已关闭」标记，下次真异常时重新提示 */
   useEffect(() => {
-    if (quorate !== true || !quorumDismissed) return;
+    if (noQuorumConns.length > 0 || !quorumDismissed) return;
     setQuorumDismissed(false);
     try {
       localStorage.removeItem(QUORUM_NOTICE_KEY);
     } catch {
       /* 忽略 */
     }
-  }, [quorate, quorumDismissed]);
+    // noQuorumConns 每次渲染都是新数组，这里只关心「还有没有失去仲裁的集群」
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noQuorumConns.length, quorumDismissed]);
 
   const dismissQuorumNotice = () => {
     setQuorumDismissed(true);
@@ -381,27 +368,20 @@ export function Nodes() {
         </>
       }
       subtitle={
-        clusterQuery.data
-          ? t('nodes.subtitle', {
-              version: clusterQuery.data.version || t('common.unknown'),
-              quorum: quorumLabel,
+        fleet
+          ? t('nodes.subtitleFleet', {
+              connections: scopedFleet.length,
+              clusters: scopedClusters,
+              /* 节点数与在线数取页面上这份列表，与下方列表、工具条的
+                 「显示 x / y 个节点」同一口径（它同样会被作用域过滤） */
               online: onlineCount,
               total: list.length,
-              connections: groups.length,
+              quorum: quorumLabel,
             })
           : t('dashboard.subtitle.loading')
       }
       actions={
         <>
-          <SegmentedControl<ViewMode>
-            value={view}
-            onChange={setView}
-            ariaLabel={t('nodes.viewAria')}
-            options={[
-              { label: t('nodes.viewCards'), value: 'cards' },
-              { label: t('nodes.viewList'), value: 'list' },
-            ]}
-          />
           {isAdmin ? (
             <Button
               variant="primary"
@@ -417,7 +397,7 @@ export function Nodes() {
             icon={<IconRefresh size={15} />}
             onClick={() => {
               void nodesQuery.refetch();
-              void clusterQuery.refetch();
+              void fleetQuery.refetch();
               void connStatusQuery.refetch();
             }}
             loading={nodesQuery.isFetching && !nodesQuery.isLoading}
@@ -429,31 +409,9 @@ export function Nodes() {
     >
       <NodeSubNav active="nodes" />
 
-      {/* 多套 PVE 时「读哪一套」必须能选：页头的集群版本 / 仲裁这类接口一次只能
-          读一台，默认由后端挑（第一条），而那往往不是想看的那台。 */}
-      {isAdmin && conns.length > 1 ? (
-        <div className="scope-bar">
-          <span className="scope-label">
-            <IconPlug size={15} />
-            {t('nodes.defaultPveLabel')}
-          </span>
-          <Select
-            aria-label={t('nodes.defaultPveLabel')}
-            value={defaultConnId}
-            disabled={switchingDefault}
-            onChange={(event) => void pickDefaultConn(event.target.value)}
-            options={conns.map((item) => ({
-              label: `${item.name || item.host}${
-                item.id === defaultConnId ? t('nodes.defaultPveCurrent') : ''
-              }`,
-              value: item.id,
-            }))}
-            style={{ maxWidth: 280 }}
-          />
-          <span className="scope-meta">{t('nodes.defaultPveHint')}</span>
-        </div>
-      ) : null}
-
+      {/* 失去仲裁的集群逐个点名：只报「有一个」而不说是哪个，等于把排障的
+          第一步留给用户。「读取哪一台」不再由这一页决定 —— 集群级接口的兜底
+          目标移到了「设置 → 系统信息」，这里只呈现全机队的事实。 */}
       {showQuorumWarning ? (
         <Notice
           tone="danger"
@@ -465,6 +423,12 @@ export function Nodes() {
           }
         >
           {t('nodes.quorumNoticeBody')}
+          {noQuorumConns.map((c) => (
+            <span key={c.id} className="mono">
+              {' '}
+              {c.name || c.host}
+            </span>
+          ))}
         </Notice>
       ) : null}
 
@@ -537,13 +501,20 @@ export function Nodes() {
               options={SORT_OPTIONS.map((s) => ({ label: t(s.label), value: s.value }))}
               aria-label={t('nodes.sortAria')}
             />
+            {/* 连接与节点卡都是默认收起的：不说清楚怎么展开，一列标题条
+                会被读成「这里没有节点」。
+                但只有一条连接时**连接那一层不渲染**（见 grouped），提示里
+                再写「点击连接展开」就是在让人去点一个不存在的东西。 */}
+            <span className="fs-sm text-muted">
+              {t(grouped ? 'nodes.expandHint' : 'nodes.expandHintSingle')}
+            </span>
           </div>
           <div className="toolbar-right">
             <span className="fs-sm text-muted">
               {t('nodes.showing', { shown: visible.length, total: list.length })}
             </span>
-            {/* 分组默认展开；节点一多时给一个一键收起，省得一个个点 */}
-            {allGroupIds.length > 1 ? (
+            {/* 分组默认展开（区域）或收起（连接）；节点一多时一键切换，省得一个个点 */}
+            {regionIds.length + connIds.length > 1 ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -554,7 +525,15 @@ export function Nodes() {
                     <IconChevronRight size={14} />
                   )
                 }
-                onClick={() => setCollapsedGroups(allCollapsed ? [] : allGroupIds)}
+                onClick={() => {
+                  if (allCollapsed) {
+                    setCollapsedGroups([]);
+                    setOpenConns(connIds);
+                  } else {
+                    setCollapsedGroups(regionIds.map((id) => `region:${id}`));
+                    setOpenConns([]);
+                  }
+                }}
               >
                 {allCollapsed ? t('nodes.expandAll') : t('nodes.collapseAll')}
               </Button>
@@ -623,14 +602,18 @@ export function Nodes() {
             compact
           />
         </Card>
-      ) : view === 'list' ? (
+      ) : (
         <div className="node-groups">
           {regionGroups.map((region) => {
             const regionCollapsed = collapsedGroups.includes(
               `region:${region.id}`,
             );
+            const regionNodeCount = region.conns.reduce(
+              (n, group) => n + group.nodes.length,
+              0,
+            );
             return (
-              <div className="tree-group" key={`region:${region.id}`}>
+              <section className="tree-group" key={`region:${region.id}`}>
                 {/* 一级：区域 / 机房。整条都是开关 */}
                 {showRegion ? (
                   <button
@@ -648,125 +631,78 @@ export function Nodes() {
                       <Badge variant="neutral" size="sm">
                         {t('nodes.pveCount', { n: region.conns.length })}
                       </Badge>
-                    </span>
-                  </button>
-                ) : null}
-
-                {regionCollapsed ? null : (
-                  <div className={showRegion ? 'tree-body' : undefined}>
-                    {region.conns.map((group) => {
-                      const connCollapsed = collapsedGroups.includes(
-                        `conn:${group.id}`,
-                      );
-                      return (
-                        <Card key={group.id || 'default'} padded={false}>
-                          {/* 二级：连接。原先这一行是死的，现在整行可折叠 */}
-                          {grouped ? (
-                            <button
-                              type="button"
-                              className="node-group-head"
-                              aria-expanded={!connCollapsed}
-                              onClick={() => toggleGroup(`conn:${group.id}`)}
-                            >
-                              <span className="tree-head-icon">
-                                <IconChevronDown size={14} />
-                              </span>
-                              <IconServer size={14} />
-                              <span className="fw-600">{group.label}</span>
-                              <span className="fs-xs text-muted">
-                                {onlineRatioOf(group.nodes)}
-                              </span>
-                            </button>
-                          ) : null}
-
-                          {connCollapsed ? null : (
-                            <div className="node-list" role="list">
-                              <div
-                                className="node-list-row is-head"
-                                aria-hidden="true"
-                              >
-                                <span>{t('nodes.colNode')}</span>
-                                <span>{t('common.status')}</span>
-                                <span>{t('nodes.colCpu')}</span>
-                                <span>{t('nodes.colMem')}</span>
-                                <span>{t('nodes.colDisk')}</span>
-                                <span>{t('nodes.colUptime')}</span>
-                                <span>{t('nodes.colNote')}</span>
-                                <span />
-                              </div>
-                              {group.nodes.map((node) => (
-                                <NodeListRow
-                                  key={`${node.connection_id ?? ''}:${node.node}`}
-                                  node={node}
-                                  onOpen={() => openDetail(node)}
-                                />
-                              ))}
-                            </div>
-                          )}
-                        </Card>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="node-groups">
-          {regionGroups.map((region) => {
-            const regionCollapsed = collapsedGroups.includes(
-              `region:${region.id}`,
-            );
-            return (
-              <div className="tree-group" key={`region:${region.id}`}>
-                {showRegion ? (
-                  <button
-                    type="button"
-                    className="tree-head is-region"
-                    aria-expanded={!regionCollapsed}
-                    onClick={() => toggleGroup(`region:${region.id}`)}
-                  >
-                    <span className="tree-head-icon">
-                      <IconChevronDown size={15} />
-                    </span>
-                    <IconLayers size={15} />
-                    <span className="tree-name">{region.label}</span>
-                    <span className="tree-meta">
                       <Badge variant="neutral" size="sm">
-                        {t('nodes.pveCount', { n: region.conns.length })}
+                        {t('nodes.nodeCount', { n: regionNodeCount })}
                       </Badge>
                     </span>
                   </button>
                 ) : null}
 
                 {regionCollapsed ? null : (
-                  <div className={showRegion ? 'tree-body' : undefined}>
+                  /* 不渲染区域头时这一层也不该有缩进（与网络页同一套写法） */
+                  <div
+                    className={
+                      showRegion ? 'tree-body' : 'flex flex-col gap-16'
+                    }
+                  >
                     {region.conns.map((group) => {
-                      const connCollapsed = collapsedGroups.includes(
-                        `conn:${group.id}`,
-                      );
+/* 没有标题条时必须**当作展开**。
+                         标题条只在多条连接时渲染（见下面的 grouped），而 openConns
+                         默认是空 —— 于是只有一条 PVE 时既没有可点的开关、
+                         卡片又被判成收起，页面看着像「这台 PVE 没有节点」。
+                         折叠是为了省滚动，不是为了把内容藏掉且再也拿不出来。
+
+                         网络页是同一套三层树，那边从一开始就写对了
+                         （Networks.tsx 的 ``!showConnection || expandedConns…``）；
+                         这里是照它抄的时候漏了那半个条件。 */
+                      const connOpen =
+                        !grouped || openConns.includes(group.id);
+                      const offlineCount = group.nodes.filter(
+                        (n) => n.status !== 'online',
+                      ).length;
                       return (
-                        <div key={group.id || 'default'}>
+                        <section
+                          className="tree-group"
+                          key={group.id || 'default'}
+                        >
+                          {/* 二级：连接。与区域同款的标题条，整行可折叠 */}
                           {grouped ? (
                             <button
                               type="button"
-                              className="node-group-title"
-                              aria-expanded={!connCollapsed}
-                              onClick={() => toggleGroup(`conn:${group.id}`)}
+                              className="tree-head"
+                              aria-expanded={connOpen}
+                              title={onlineRatioOf(group.nodes)}
+                              onClick={() => toggleOpenConn(group.id)}
                             >
                               <span className="tree-head-icon">
-                                <IconChevronDown size={14} />
+                                <IconChevronDown size={15} />
                               </span>
-                              <IconServer size={14} />
-                              <span>{group.label}</span>
-                              <span className="fs-xs text-muted">
-                                {onlineRatioOf(group.nodes)}
+                              <IconServer size={15} />
+                              <span className="tree-name">{group.label}</span>
+                              <span className="tree-meta">
+                                <Badge variant="neutral" size="sm">
+                                  {t('nodes.nodeCount', {
+                                    n: group.nodes.length,
+                                  })}
+                                </Badge>
+                                {offlineCount > 0 ? (
+                                  <Badge variant="warning" size="sm" dot>
+                                    {t('nodes.offlineCount', {
+                                      n: offlineCount,
+                                    })}
+                                  </Badge>
+                                ) : null}
                               </span>
                             </button>
                           ) : null}
-                          {connCollapsed ? null : (
-                            <div className="grid grid-auto-320">
+
+                          {connOpen ? (
+                            /* 三级：节点卡。每行一张，缩进用竖线画出来 */
+                            <div
+                              className={
+                                grouped ? 'tree-body' : 'flex flex-col gap-16'
+                              }
+                            >
                               {group.nodes.map((node) => (
                                 <NodeCard
                                   key={`${node.connection_id ?? ''}:${node.node}`}
@@ -775,13 +711,13 @@ export function Nodes() {
                                 />
                               ))}
                             </div>
-                          )}
-                        </div>
+                          ) : null}
+                        </section>
                       );
                     })}
                   </div>
                 )}
-              </div>
+              </section>
             );
           })}
         </div>
@@ -803,106 +739,14 @@ function nodePercents(node: NodeInfo) {
 }
 
 /* ---------------------------------------------------------------------------
-   列表视图的一行
+   节点卡：层级树里的一个节点
    ---------------------------------------------------------------------------
-   一行一个节点：名称 / 状态 / 三根迷你条 / 运行时长 / 备注。
-   行整体可点进详情，备注是输入框，必须拦住冒泡。
-   --------------------------------------------------------------------------- */
+   卡头回答「这是谁、活没活着、什么时候进来的」，卡体是 CPU / 内存 / 磁盘 与
+   运行时长、备注。骨架与网络页的节点卡一致（Card + CardHeader + 卡片内衬），
+   两页看起来才是同一个东西。
 
-function NodeListRow({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
-  const t = useT();
-  const { hasPermission } = useAuth();
-  /* 节点备注写在面板自己的库里（见 node_notes.py），后端要 `node.view` ——
-     这里与它保持一致，不再用「是不是非只读用户」的角色粗判 */
-  const canEditNote = hasPermission('node.view');
-  const pct = nodePercents(node);
-  const meta = nodeStatusMeta(node.status, t);
-  const offline = node.status !== 'online';
-  const { version, address } = useNodeMeta(node.node, !offline, node.connection_id);
-
-  return (
-    <div
-      className={`node-list-row${offline ? ' is-offline' : ''}`}
-      role="button"
-      tabIndex={0}
-      aria-label={t('nodes.viewNodeAria', { node: node.node })}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') onOpen();
-      }}
-    >
-      <div className="node-list-name">
-        <span className="fw-600 truncate">{node.node}</span>
-        <span className="fs-xs text-muted truncate">
-          {version
-            ? t('nodes.pveVersion', { version })
-            : node.kernel
-              ? t('nodes.kernel', { kernel: node.kernel })
-              : ''}
-          {address ? ` · ${address}` : ''}
-        </span>
-      </div>
-
-      <div className="node-list-status">
-        <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
-          {meta.label}
-        </Badge>
-        {node.level ? (
-          <Badge variant="warning" size="sm" title={t('nodes.maintenanceLevel', { level: node.level })}>
-            {t('nodes.maintenance')}
-          </Badge>
-        ) : null}
-      </div>
-
-      <NodeListMetric
-        percent={pct.cpu}
-        sub={node.maxcpu ? t('dashboard.nodes.cores', { n: node.maxcpu }) : '—'}
-        offline={offline}
-      />
-      <NodeListMetric percent={pct.mem} sub={formatBytes(node.maxmem, 0)} offline={offline} />
-      <NodeListMetric percent={pct.disk} sub={formatBytes(node.maxdisk, 0)} offline={offline} />
-
-      <span className="fs-sm text-secondary truncate">
-        {offline ? t('nodes.offline') : formatUptimeShort(node.uptime)}
-      </span>
-
-      {/* 备注是可编辑输入框，必须拦住冒泡 —— 否则点一下就会触发跳转 */}
-      <div
-        className="node-list-note"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
-        <NodeNoteField node={node.node} canEdit={canEditNote} />
-      </div>
-
-      <IconChevronRight size={14} />
-    </div>
-  );
-}
-
-function NodeListMetric({
-  percent,
-  sub,
-  offline,
-}: {
-  percent: number;
-  sub: string;
-  offline: boolean;
-}) {
-  const color = offline ? 'var(--text-muted)' : usageColor(percent);
-  return (
-    <div className="node-list-metric">
-      <span className="mono fs-sm" style={{ color }}>
-        {offline ? '—' : `${percent.toFixed(1)}%`}
-      </span>
-      <ProgressBar value={offline ? 0 : percent} color={color} height={5} />
-      <span className="fs-xs text-muted truncate">{sub}</span>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------------
-   卡片视图（节点不多的场景）
+   但这里的卡**默认收起**：这一页的主任务是「先看有哪些节点、谁不在线」，
+   一屏列完比每台都摊开指标更有用；要看某台的负载，点一下卡头即可展开。
    --------------------------------------------------------------------------- */
 
 function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
@@ -917,97 +761,93 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
   /* 地址与 PVE 版本是按需拉取的补充信息 */
   const { version, address } = useNodeMeta(node.node, !offline, node.connection_id);
 
+  /* 卡头副标题：PVE 版本（没有版本就退到内核）+ 管理地址，中间用点分开 */
+  const spec = [
+    version
+      ? t('nodes.pveVersion', { version })
+      : node.kernel
+        ? t('nodes.kernel', { kernel: node.kernel })
+        : '',
+    address,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
-    <article
-      className="entity-card node-card"
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') onOpen();
-      }}
-      role="button"
-      tabIndex={0}
-      aria-label={t('nodes.viewNodeAria', { node: node.node })}
-    >
-      <div className="entity-card-head">
-        <div className="entity-card-title">
-          <span className="entity-card-name">{node.node}</span>
-          <span className="entity-card-sub">
-            {version
-              ? t('nodes.pveVersion', { version })
-              : node.kernel
-                ? t('nodes.kernel', { kernel: node.kernel })
-                : t('nodes.nodeLabel', { node: node.node })}
-            {address ? ` · ${address}` : ''}
-          </span>
-        </div>
-        <div className="entity-card-badges">
-          {node.connection_name ? (
-            <Badge
-              variant="neutral"
-              size="sm"
-              title={t('nodes.sourceHost', { name: node.connection_name })}
-            >
-              {node.connection_name}
+    <Card padded={false} className="card-head-inset" defaultOpen={false}>
+      <CardHeader
+        icon={<IconServer size={16} />}
+        title={
+          /* 卡头只留下结论（活没活着、是不是在维护）—— 连接名归属上层标题条，
+             版本与地址是副标题，指标全在卡体里 */
+          <span className="flex items-center gap-8 flex-wrap">
+            <span>{node.node}</span>
+            <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
+              {meta.label}
             </Badge>
-          ) : null}
-          <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
-            {meta.label}
-          </Badge>
+            {node.level ? (
+              <Badge
+                variant="warning"
+                size="sm"
+                title={t('nodes.maintenanceLevel', { level: node.level })}
+              >
+                {t('nodes.maintenance')}
+              </Badge>
+            ) : null}
+          </span>
+        }
+        subtitle={spec || undefined}
+        actions={
+          <Button
+            variant="ghost"
+            size="sm"
+            iconRight={<IconChevronRight size={14} />}
+            aria-label={t('nodes.viewNodeAria', { node: node.node })}
+            onClick={onOpen}
+          >
+            {t('nodes.viewDetail')}
+          </Button>
+        }
+      />
+
+      {/* 卡体：左边三根指标条（宽度归它们，进度条才看得出差别），
+          右边是运行时长与备注 —— 一屏看下来视线不用来回跳 */}
+      <div className="node-card-body">
+        <div className="node-metrics">
+          <NodeMetric
+            icon={<IconCpu size={12} />}
+            label={t('nodes.colCpu')}
+            percent={pct.cpu}
+            sub={node.maxcpu ? t('dashboard.nodes.cores', { n: node.maxcpu }) : '—'}
+            offline={offline}
+          />
+          <NodeMetric
+            icon={<IconMemory size={12} />}
+            label={t('nodes.colMem')}
+            percent={pct.mem}
+            sub={formatBytes(node.maxmem, 0)}
+            offline={offline}
+          />
+          <NodeMetric
+            icon={<IconDisk size={12} />}
+            label={t('nodes.colDisk')}
+            percent={pct.disk}
+            sub={formatBytes(node.maxdisk, 0)}
+            offline={offline}
+          />
+        </div>
+
+        <div className="node-card-aside">
+          <span className="fs-sm text-secondary flex items-center gap-6">
+            <IconActivity size={12} />
+            <span title={offline ? undefined : formatUptime(node.uptime)}>
+              {offline ? t('nodes.offline') : formatUptimeShort(node.uptime)}
+            </span>
+          </span>
+          <NodeNoteField node={node.node} canEdit={canEditNote} />
         </div>
       </div>
-
-      {/* 指标区：数值 + 迷你条合并到一格，替代原先「数值区 + 进度条区」两份重复展示 */}
-      <div className="node-metrics">
-        <NodeMetric
-          icon={<IconCpu size={12} />}
-          label={t('nodes.colCpu')}
-          percent={pct.cpu}
-          sub={node.maxcpu ? t('dashboard.nodes.cores', { n: node.maxcpu }) : '—'}
-          offline={offline}
-        />
-        <NodeMetric
-          icon={<IconMemory size={12} />}
-          label={t('nodes.colMem')}
-          percent={pct.mem}
-          sub={formatBytes(node.maxmem, 0)}
-          offline={offline}
-        />
-        <NodeMetric
-          icon={<IconDisk size={12} />}
-          label={t('nodes.colDisk')}
-          percent={pct.disk}
-          sub={formatBytes(node.maxdisk, 0)}
-          offline={offline}
-        />
-      </div>
-
-      {/* 备注是可编辑输入框，必须拦住冒泡 —— 否则点一下就会触发卡片跳转 */}
-      <div
-        className="node-card-note"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
-        <NodeNoteField node={node.node} canEdit={canEditNote} />
-      </div>
-
-      <div className="node-card-foot">
-        <span className="fs-xs text-muted flex items-center gap-6">
-          <IconActivity size={12} />
-          {offline
-            ? t('nodes.offline')
-            : t('dashboard.nodes.uptime', { uptime: formatUptimeShort(node.uptime) })}
-        </span>
-        {node.level ? (
-          <Badge variant="warning" size="sm">
-            {t('nodes.maintenanceLevel', { level: node.level })}
-          </Badge>
-        ) : (
-          <span className="fs-xs text-muted">
-            {offline ? '—' : formatUptime(node.uptime)}
-          </span>
-        )}
-      </div>
-    </article>
+    </Card>
   );
 }
 
@@ -1032,12 +872,14 @@ function NodeMetric({
   const color = offline ? 'var(--text-muted)' : usageColor(percent);
   return (
     <div className="node-metric">
-      <span className="node-metric-label">
-        {icon} {label}
-      </span>
-      <span className="node-metric-value" style={{ color }}>
-        {offline ? '—' : `${percent.toFixed(1)}%`}
-      </span>
+      <div className="node-metric-head">
+        <span className="node-metric-label">
+          {icon} {label}
+        </span>
+        <span className="node-metric-value" style={{ color }}>
+          {offline ? '—' : `${percent.toFixed(1)}%`}
+        </span>
+      </div>
       <ProgressBar value={offline ? 0 : percent} color={color} height={6} />
       <span className="node-metric-sub">{sub}</span>
     </div>

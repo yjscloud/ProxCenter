@@ -52,6 +52,10 @@ class LoginResponse(BaseModel):
     mfa_token: str = ""
     # 该角色被要求开启两步验证但还没绑定，登录后先去绑定
     totp_setup_required: bool = False
+    # 面板是否允许「信任设备」（settings.totp_trust_enabled）。第一步返回它，
+    # 前端才知道第二步那个勾选框该不该出现 —— 否则管理员关掉之后，用户勾了
+    # 也拿不到任何效果，是个说不清的静默失败。
+    trust_device_available: bool = False
 
 
 class LoginMfaRequest(BaseModel):
@@ -59,6 +63,10 @@ class LoginMfaRequest(BaseModel):
 
     mfa_token: str
     code: str
+    # 勾了「信任设备（7 天后重新校验）」：验证通过后登记一台信任设备，
+    # 之后 7 天内在同一台浏览器上只需口令即可登录。是否真的签发还取决于
+    # 面板级开关 settings.totp_trust_enabled（见 routers/auth.py 的 login_mfa）。
+    trust_device: bool = False
 
 
 class TotpCodeIn(BaseModel):
@@ -102,9 +110,14 @@ class ConnectionTestIn(BaseModel):
 
 
 class VmDefaultsIn(BaseModel):
-    """面板级创建默认值（目前只有默认 DNS）。空值 = 不干预。"""
+    """面板级创建默认值：默认 DNS 与默认克隆方式。
+
+    dns 留空 = 不干预（保持继承 DHCP / RA）；full_clone = 各创建入口预选的克隆
+    方式（False 链接克隆 / True 完整克隆），只是初值，用户在各自页面上仍可改。
+    """
 
     dns: str = ""
+    full_clone: bool = False
 
 
 class SiteLinkIn(BaseModel):
@@ -501,6 +514,15 @@ class VmOwnerIn(BaseModel):
     username: Optional[str] = None
     # 目标 PVE 连接；不传则用当前连接
     connection_id: Optional[str] = None
+    # 客户机类型（qemu / lxc）。**不传按虚拟机处理** —— 这是历史上唯一会走这个
+    # 端点的类型，保持老客户端的行为不变。传了 lxc 就落到 KIND_CT 桶。
+    #
+    # 为什么要它：归属的「类别」决定了额度记到哪一组。容器被记进 KIND_VM 时，
+    # 列表因为有 legacy 回落仍然看得出归属人，但额度会把它**同时**算进虚拟机
+    # 与容器两组（见 app.quota.py 里 refs 的构造），于是容器那一组的额度凭空
+    # 变紧、虚拟机那组也虚占。正常路径上前端会按类型分派到 /lxc 那个端点，
+    # 这个字段只是兜底：静默记错额度桶比报错难查得多。
+    guest_type: Optional[str] = None
 
 
 class ResizeRequest(BaseModel):

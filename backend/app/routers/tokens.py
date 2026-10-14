@@ -1,4 +1,4 @@
-"""个人 API Token 管理接口：创建 / 列表 / 吊销。
+"""个人 API Token 管理接口：创建 / 列表 / 吊销 / 删除记录。
 
 归属规则
 --------
@@ -140,5 +140,35 @@ async def revoke_token(
     return {
         "ok": True,
         "revoked": token_id,
+        "active": await apitokens.count_active(user["username"]),
+    }
+
+
+@router.delete("/{token_id}/record")
+async def purge_token_record(
+    token_id: int,
+    request: Request,
+    user: Dict[str, Any] = Depends(require_session),
+) -> Dict[str, Any]:
+    """把一枚**已经失效**的令牌记录从列表里抹掉。
+
+    和上面的吊销分成两条路由，因为后果不一样：吊销是「让它失效」（记录留着，
+    以后还能回答「我上个月是不是吊销过它」），删除是「连同那条记录也不要了」。
+
+    所以这里只接受已吊销或已过期的条目。已失效的令牌既不能用于鉴权、也不会占配额，
+    留着只是一条等 ``purge_expired`` 来扫的历史 —— 让用户自己清掉，比让他在列表里
+    盯着几条永远不动的灰条更合理。
+
+    不需要二次确认（与吊销同理）：这是**收窄**权限的动作，应急时不该有摩擦。
+    """
+    if not await apitokens.purge(token_id, username=user["username"]):
+        # 与吊销同一口径：不存在 / 不是自己的 / 还在生效，统一回同一句话 ——
+        # 分开就等于提供了一个「拿 id 探测这枚令牌状态」的接口。
+        raise HTTPException(status_code=404, detail="令牌不存在或仍在生效，无法删除")
+
+    await security.audit(request, user, "token.purge", target=f"token/{token_id}")
+    return {
+        "ok": True,
+        "purged": token_id,
         "active": await apitokens.count_active(user["username"]),
     }

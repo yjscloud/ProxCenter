@@ -6,6 +6,7 @@ import { useCallback } from 'react';
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { tasksApi } from '../api/endpoints';
 import { ApiError, errorMessage } from '../api/client';
+import { invalidateQuota } from './quotaCache';
 import { useToast } from './useToast';
 import { useT } from '../i18n';
 import type { TaskInfo } from '../api/types';
@@ -70,6 +71,28 @@ export function useTaskRunner(): TaskRunner {
   const toast = useToast();
   const queryClient = useQueryClient();
 
+  /**
+   * 任务结束后的统一刷新：调用方给的那几份 + **额度读数无条件一起作废**。
+   *
+   * 为什么额度要无条件作废：任何一个任务都是一次写操作 —— 可能多了一台机器、
+   * 少了一台、改了规格、动了快照、换了归属，每一样都会让额度读数变。而额度
+   * 只有几个小查询，无条件刷新的代价远低于「某个调用点忘了刷新」的代价：
+   * 「删了机器额度没还回来」「额度改完还是旧数字」这两类问题连着出过好几次，
+   * 根因都是要求几十个调用点各自记得同一件事。
+   *
+   * 放在 runner 里（全站写操作的集中入口）而不是散在调用点，等于从机制上
+   * 消掉这类 bug —— 以后新增的写操作也不会再漏。
+   */
+  const flush = useCallback(
+    (keys: QueryKey[]) => {
+      for (const key of keys) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+      invalidateQuota(queryClient);
+    },
+    [queryClient],
+  );
+
   const run = useCallback<TaskRunner['run']>(
     async (promiseOrResult, options) => {
       const {
@@ -104,9 +127,7 @@ export function useTaskRunner(): TaskRunner {
         toast.dismiss(toastId);
         if (destructive) toast.destructive(t('task.succeeded', { title }));
         else toast.success(t('task.succeeded', { title }));
-        invalidate.forEach((key) =>
-          queryClient.invalidateQueries({ queryKey: key }),
-        );
+        flush(invalidate);
         return null;
       }
 
@@ -170,9 +191,7 @@ export function useTaskRunner(): TaskRunner {
                 loading: false,
                 persistent: false,
               });
-              invalidate.forEach((key) =>
-                queryClient.invalidateQueries({ queryKey: key }),
-              );
+              flush(invalidate);
               return lastTask;
             }
             continue;
@@ -194,9 +213,7 @@ export function useTaskRunner(): TaskRunner {
                 loading: false,
                 persistent: false,
               });
-              invalidate.forEach((key) =>
-                queryClient.invalidateQueries({ queryKey: key }),
-              );
+              flush(invalidate);
               onSuccess?.(task);
             } else if (warn) {
               toast.update(toastId, {
@@ -206,9 +223,7 @@ export function useTaskRunner(): TaskRunner {
                 loading: false,
                 persistent: false,
               });
-              invalidate.forEach((key) =>
-                queryClient.invalidateQueries({ queryKey: key }),
-              );
+              flush(invalidate);
               onSuccess?.(task);
             } else {
               const message = exit || t('task.interrupted');
@@ -221,9 +236,7 @@ export function useTaskRunner(): TaskRunner {
               });
               onError?.(task);
               // 失败也刷新，保证列表状态与后端一致
-              invalidate.forEach((key) =>
-                queryClient.invalidateQueries({ queryKey: key }),
-              );
+              flush(invalidate);
             }
             return task;
           }

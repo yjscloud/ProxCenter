@@ -336,6 +336,166 @@ class TestTwoFactor:
         assert resp.status_code == 403
 
 
+def _enable_2fa(client):
+    """给管理员开启两步验证，返回 ``(secret, recovery_codes)``。
+
+    复用 :class:`TestTwoFactor` 里那套 setup → enable 的调用，避免两处各写一遍、
+    日后改接口时漏掉一处。
+    """
+    return TestTwoFactor()._enable(client, _token(client))
+
+
+# ------------------------------------------------------- 信任设备（7 天免第二步）
+class TestTrustedDevice:
+    """登录时勾了「信任设备」之后的免二次校验行为。
+
+    这一组是**安全回归**：信任设备等于把第二因子在一台浏览器上关掉 7 天，
+    所以每个「不该被信任」的边界都要有断言 —— 别人的 cookie、换过密码、
+    关了又开 2FA、管理员关掉面板开关。
+    """
+
+    def _trust(self, client, secret: str):
+        """走完两步验证并勾上「信任设备」，返回第二步响应。"""
+        step1 = _login(client).json()
+        assert step1["mfa_required"] is True
+        return client.post(
+            "/api/auth/login/2fa",
+            headers=_csrf(client),
+            json={
+                "mfa_token": step1["mfa_token"],
+                "code": pyotp.TOTP(secret).now(),
+                "trust_device": True,
+            },
+        )
+
+    def test_trusted_device_skips_the_second_step(self, api) -> None:
+        secret, _ = _enable_2fa(api)
+
+        step2 = self._trust(api, secret)
+        assert step2.status_code == 200, step2.text
+        assert api.cookies.get("panel_trusted")
+
+        # 关键断言：再登录一次，**没有 mfa_required**，直接拿到会话
+        again = _login(api)
+        body = again.json()
+        assert body["mfa_required"] is not True
+        assert body["access_token"]
+        assert api.get("/api/auth/me", headers=_bearer(body["access_token"])).status_code == 200
+
+    def test_without_the_checkbox_the_request_is_still_challenged(self, api) -> None:
+        """不勾就不该签信任 —— 默认收紧，勾选是用户主动的让步。"""
+        secret, _ = _enable_2fa(api)
+        step1 = _login(api).json()
+        api.post(
+            "/api/auth/login/2fa",
+            headers=_csrf(api),
+            json={"mfa_token": step1["mfa_token"], "code": pyotp.TOTP(secret).now()},
+        )
+        assert not api.cookies.get("panel_trusted")
+        assert _login(api).json()["mfa_required"] is True
+
+    def test_password_is_still_required(self, api) -> None:
+        """信任设备跳过的是第二因子，不是密码 —— 拿错口令照样进不去。"""
+        secret, _ = _enable_2fa(api)
+        assert self._trust(api, secret).status_code == 200
+
+        assert _login(api, WRONG).status_code == 401
+
+    def test_change_password_forgets_trusted_devices(self, api) -> None:
+        """改密码必须把信任设备一起清掉，否则「改密码赶人」赶不走这台。
+
+        归属绑定（别人的 cookie 不能替别人跳过）由
+        ``test_trusteddevices.py::test_is_trusted_requires_the_same_username``
+        在模块层直接覆盖 —— 那条 SQL 条件就是这条防线的全部，不必绕一大圈
+        在接口层再造一个开了 2FA 的账号来验。
+        """
+        secret, _ = _enable_2fa(api)
+        assert self._trust(api, secret).status_code == 200
+        assert _count_trusted() == 1
+
+        token = _token(api)
+        changed = api.post(
+            "/api/auth/password",
+            headers=_bearer(token),
+            json={
+                "current_password": ADMIN["password"],
+                "new_password": "Brand-New-Pa55w0rd!",
+                # 开了 2FA 的账号改密码还要带一次动态码
+                # （见 schemas.PasswordChange 的说明）
+                "totp_code": pyotp.TOTP(secret).now(),
+            },
+        )
+        assert changed.status_code == 200, changed.text
+        # 服务端记录没了。cookie 还在浏览器里，但它已经对不上任何一行 ——
+        # 这正是「信任判定只看服务端」的意义：客户端留着一枚失效口令也没用。
+        assert _count_trusted() == 0
+
+        relogin = _login(api, "Brand-New-Pa55w0rd!")
+        assert relogin.json()["mfa_required"] is True
+
+    def test_disabling_2fa_forgets_trusted_devices(self, api) -> None:
+        """关了 2FA 也要清：留着的话「关了再开」旧信任会立刻复活成绕过通道。"""
+        token = _token(api)
+        secret, _ = TestTwoFactor()._enable(api, token)
+        assert self._trust(api, secret).status_code == 200
+        assert _count_trusted() == 1
+
+        disabled = api.post(
+            "/api/auth/2fa/disable",
+            headers=_bearer(token),
+            json={"password": ADMIN["password"], "code": pyotp.TOTP(secret).now()},
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert _count_trusted() == 0
+
+    def test_switch_off_hides_and_refuses_the_feature(self, api, monkeypatch) -> None:
+        """面板开关关掉后：第一步不再提示可用，第二步即使硬传也签不出来。"""
+        secret, _ = _enable_2fa(api)
+        monkeypatch.setattr(settings, "totp_trust_enabled", False)
+
+        step1 = _login(api).json()
+        assert step1["mfa_required"] is True
+        assert step1["trust_device_available"] is False
+
+        resp = api.post(
+            "/api/auth/login/2fa",
+            headers=_csrf(api),
+            json={
+                "mfa_token": step1["mfa_token"],
+                "code": pyotp.TOTP(secret).now(),
+                "trust_device": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert _count_trusted() == 0
+
+    def test_expired_device_is_challenged_again(self, api) -> None:
+        """过了 7 天就该重新校验 —— 后端只认 expires_at，不认 cookie 还在不在。"""
+        secret, _ = _enable_2fa(api)
+        assert self._trust(api, secret).status_code == 200
+
+        _exec("UPDATE trusted_devices SET expires_at = %s", (time.time() - 1,))
+        assert _login(api).json()["mfa_required"] is True
+
+
+def _count_trusted() -> int:
+    row = _exec("SELECT COUNT(*) FROM trusted_devices")
+    return int(row[0][0])
+
+
+def _exec(sql: str, params: tuple | None = None):
+    conn = connect(settings.db_name)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            if cursor.description:
+                return cursor.fetchall()
+            conn.commit()
+            return []
+    finally:
+        conn.close()
+
+
 # ------------------------------------------------------------------- 限流
 class TestRateLimit:
     def test_auth_endpoint_throttled(self, api, monkeypatch) -> None:

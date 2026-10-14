@@ -13,9 +13,12 @@
    `settings.manage`，并会触发二次确认（step-up）。
 
    **不再区分「当前连接」与「默认节点」**：面板能同时连多台 PVE，读数据的
-   接口都带 `?conn=<id>` 各自取数，没有哪一台比别人更「正式」。原先那条
-   「设为当前」按钮只会让人以为其余连接是次要的、甚至没接上 —— 现在每条
-   连接平权，各自显示自己**能不能连上**（这才是用户真正关心的问题）。
+   接口大多带连接作用域各自取数，没有哪一台比别人更「正式」。但平权不等于
+   「读哪一台」无需回答 —— 健康探活、集群版本 / 仲裁这类一次只能读一台的
+   接口仍需要一个**兜底读取目标**：它只在「设置 → 系统信息」里切换，本页用
+   一枚徽章标出当前是谁，不再提供「设为当前」按钮（那条按钮只会让人以为
+   其余连接是次要的、甚至没接上）。每条连接平权，各自显示自己**能不能连上**
+   （这才是用户真正关心的问题）。
 
    想进来就直接填一台新主机，用 `/nodes/connections?new=1`。
    ========================================================================== */
@@ -49,6 +52,7 @@ import {
   IconTrash,
 } from './Icons';
 import { useToast } from '../hooks/useToast';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useT } from '../i18n';
 import type {
   ConnectionConfigInput,
@@ -114,11 +118,13 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
   const connections = connectionsQuery.data ?? [];
 
   /* 逐条探测可达性：连接列表真正要回答的是「能不能连上」，
-     这正是原先「谁是当前连接」标记没回答的问题。 */
+     这正是原先「谁是当前连接」标记没回答的问题。
+     间隔跟「设置 → 面板设置 → 数据刷新间隔」走。 */
+  const refresh = useRefreshInterval();
   const statusQuery = useQuery({
     queryKey: ['connections', 'status'],
     queryFn: connectionsApi.status,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
   });
   const statusById = useMemo(() => {
@@ -551,8 +557,9 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
                       {t('conn.checking')}
                     </Badge>
                   ) : null}
-                  {/* 默认读取：不是「主连接」，只是单台读取接口（健康探活、
-                      集群节点状态）的目标，在「设置 → 系统信息」里可换 */}
+                  {/* 兜底读取：不是「主连接」。只有一次只能读一台的接口
+                      （健康探活、集群版本 / 仲裁）回落到它，可在「设置 → 系统信息」
+                      里更换；其余连接一律同级，列表页始终汇总全部连接 */}
                   {c.active ? (
                     <Badge
                       variant="accent"

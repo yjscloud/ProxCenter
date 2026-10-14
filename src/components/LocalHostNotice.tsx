@@ -37,6 +37,7 @@ import { Button } from './ui/Button';
 import { Card, CardHeader } from './ui/Card';
 import { Notice } from './ui/EmptyState';
 import { IconServer } from './Icons';
+import { formatDateTime } from '../utils/format';
 
 export interface LocalHostInfo {
   /** 当前用户是不是管理员（本机只有管理员能看、能导入） */
@@ -100,9 +101,7 @@ export function LocalHostCard() {
 
   if (!local.isAdmin || !local.enabled || local.container) return null;
 
-  const when = local.state?.at
-    ? new Date(local.state.at * 1000).toLocaleString()
-    : '';
+  const when = local.state?.at ? formatDateTime(local.state.at) : '';
 
   const remove = async () => {
     if (!armed) {

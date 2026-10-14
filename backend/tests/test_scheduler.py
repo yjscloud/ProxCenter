@@ -437,6 +437,30 @@ class TestPrefs:
         assert listed["prefs"][prefs.PREF_DASHBOARD_LAYOUT] == layout
         assert prefs.PREF_DASHBOARD_LAYOUT in listed["keys"]
 
+    def test_roundtrip_cluster_scope(self, api) -> None:
+        """顶栏「集群作用域」按用户存服务端，换设备能恢复。
+
+        不校验那个 id 是否真实存在（连接可以被删掉，旧视角不该让保存失败），
+        但结构必须对：只接受字符串或空，其余一律 400。
+        """
+        headers = auth_headers(api)
+        url = f"/api/prefs/{prefs.PREF_CLUSTER_SCOPE}"
+
+        saved = api.put(url, json={"value": "abc123"}, headers=headers)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["value"] == "abc123"
+        assert api.get("/api/prefs", headers=headers).json()["prefs"][
+            prefs.PREF_CLUSTER_SCOPE
+        ] == "abc123"
+
+        # 空串 = 回到「全部集群」，是合法值
+        assert api.put(url, json={"value": ""}, headers=headers).json()["value"] == ""
+        # 结构不对：对象 / 超长字符串
+        assert api.put(url, json={"value": {"id": "x"}}, headers=headers).status_code == 400
+        assert (
+            api.put(url, json={"value": "x" * 200}, headers=headers).status_code == 400
+        )
+
     def test_layout_is_deduped(self, api) -> None:
         headers = auth_headers(api)
         resp = api.put(

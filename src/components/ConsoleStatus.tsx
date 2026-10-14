@@ -20,6 +20,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { clusterApi, healthApi } from '../api/endpoints';
 import { useAuth } from '../hooks/useAuth';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
 import { IconChevronDown, IconRefresh } from './Icons';
@@ -39,11 +40,13 @@ export function ConsoleStatus() {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const { hasPermission } = useAuth();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const health = useQuery({
     queryKey: ['health'],
     queryFn: healthApi.check,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
   });
 
@@ -53,7 +56,7 @@ export function ConsoleStatus() {
   const fleet = useQuery({
     queryKey: ['cluster', 'fleet-status'],
     queryFn: clusterApi.fleetStatus,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
     enabled: hasPermission('node.view'),
   });

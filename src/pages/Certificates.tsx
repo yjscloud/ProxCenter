@@ -27,6 +27,7 @@ import {
   IconSearch,
 } from "../components/Icons";
 import { useToast } from "../hooks/useToast";
+import { useRefreshInterval } from "../hooks/useRefreshInterval";
 import { useAuth } from "../hooks/useAuth";
 import { isRunning } from "../utils/status";
 import { formatDate, formatDateTime, formatRelative } from "../utils/format";
@@ -112,10 +113,12 @@ export function Certificates() {
   const [remoteSearch, setRemoteSearch] = useState("");
   const [busy, setBusy] = useState("");
 
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const query = useQuery({
     queryKey: ["certs"],
     queryFn: certsApi.get,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
   });
 

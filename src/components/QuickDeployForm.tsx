@@ -14,10 +14,11 @@
 
    两个刻意的固定做法：
 
-   * **链接克隆**：快速部署只做链接克隆 —— 秒级完成、不额外占空间，是「标准
-     机器」的常态；要独立磁盘请走「自定义部署」。正因如此，虚拟机的「存储」
-     在这里不出现：链接克隆不往任何存储写数据，摆一个必填的下拉框只会让人
-     以为必须选。
+   * **克隆方式**：初值取「设置 → 创建默认值」里的面板默认（未配置即链接克隆），
+     「系统镜像」卡里那个开关紧挨着模板下拉、同一行摆放 —— 它决定的正是「这个
+     模板怎么变成一台机器」，与模板本就是一回事。存储下拉框只在「磁盘真要落到
+     某个存储上」时出现：链接克隆不写任何存储（磁盘留在模板所在存储），
+     摆一个必填的下拉框只会让人以为必须选。
    * **静态 IP**：绝大多数机器要固定地址，所以默认静态，并从「网络 → IP 地址池」
      里自动挑一个空闲地址（可改）。池子为空时退回 DHCP，而不是让用户卡在
      一个选不出东西的下拉框前。
@@ -43,6 +44,8 @@ import {
   vmsApi,
 } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { invalidateQuota } from '../hooks/quotaCache';
+import { getGlobalScope } from '../api/scope';
 import { checkGuestSpec, remainingSummary, type QuotaViolation } from '../utils/quotaSpec';
 import { Card, CardHeader } from './ui/Card';
 import { Button, IconButton } from './ui/Button';
@@ -56,8 +59,10 @@ import {
 import { Notice } from './ui/EmptyState';
 import { Spinner } from './ui/Spinner';
 import { NodePicker } from './NodePicker';
+import { isPathDisabled, SSH_SECURITY_NAV_PATH } from './Sidebar';
 import { IconCloud, IconPlus, IconTrash } from './Icons';
 import { useToast } from '../hooks/useToast';
+import { useUiPrefs } from '../hooks/useUiPrefs';
 import { useAuth } from '../hooks/useAuth';
 import { useNodeStorages } from '../hooks/useNodeStorages';
 import { useT, type MessageKey } from '../i18n';
@@ -174,6 +179,11 @@ export function QuickDeployForm({
   const [templateRef, setTemplateRef] = useState(''); // "node/vmid"
   const [osTemplate, setOsTemplate] = useState('');
   const [storage, setStorage] = useState('');
+  /* 完整克隆：关 = 链接克隆（秒级完成、不额外占空间，但磁盘依赖模板）。
+     开启后把模板磁盘整份复制到所选存储 —— 创建慢一些、多占一份空间，换来的是
+     这台机器与模板彻底脱钩（模板删改都不影响它）。与自定义部署是同一件事。
+     初值不是写死的 false：打开时按面板默认（见下面的预填效果）落一次。 */
+  const [fullClone, setFullClone] = useState(false);
   /* 默认静态：机器一般要固定地址；网段与地址由下面的 effect 自动挑 */
   const [nics, setNics] = useState<QuickNic[]>(() => [blankNic()]);
   const [ciUser, setCiUser] = useState('root');
@@ -183,8 +193,20 @@ export function QuickDeployForm({
   const [manage, setManage] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  /* 「SSH 安全」入口被面板级开关关掉时，「接入安全管控」整个收起来（见下面的
+     渲染）：勾了它机器会被登记成受管主机，而看这些主机的地方（SSH 安全 /
+     登录审计 / 端口与进程 / 安全基线）都进不去了 —— 留一个「勾了没处看」的
+     开关只会让人困惑。
+     取值一并钉住：先勾上、之后入口被关掉时，不会把 true 悄悄提交上去。 */
+  const navDisabled = useUiPrefs().nav_disabled;
+  const sshNavOff = isPathDisabled(SSH_SECURITY_NAV_PATH, navDisabled);
+  const manageOn = manage && !sshNavOff;
+
   /** 用户自己点过 IP 获取方式：之后不再被「有没有可用网段」的自动判断覆盖 */
   const ipModeTouchedRef = useRef(false);
+
+  /** 已经按面板默认值预选过克隆方式：每次打开只填一次，不覆盖用户的选择 */
+  const cloneDefaultRef = useRef(false);
 
   /** 主网卡：IP 池自动挑地址那套只作用于它 */
   const primaryNic = nics[0];
@@ -217,6 +239,11 @@ export function QuickDeployForm({
     setCiUser('root');
     setPassword('');
     setManage(false);
+    /* 克隆方式回到面板默认值（下面那个效果会按「设置 → 创建默认值」预选）；
+       先落回链接克隆是为了「默认值还没取回来」时不残留上一次的选择 ——
+       上一次开了完整克隆就悄悄沿用下去，等于替用户改了磁盘语义 */
+    setFullClone(false);
+    cloneDefaultRef.current = false;
     ipModeTouchedRef.current = false;
     /* targetConn 不清：保留上次选的主机（多台 PVE 时省一次选择），下面那个
        effect 只在它为空时兜底选当前连接 */
@@ -230,6 +257,23 @@ export function QuickDeployForm({
     staleTime: 60_000,
     retry: false,
   });
+
+  /* 面板默认克隆方式（服务端设置，见「设置 → 创建默认值」）。这里只当**初值** */
+  const vmDefaultsQuery = useQuery({
+    queryKey: ['config', 'vm-defaults'],
+    queryFn: configApi.getVmDefaults,
+    enabled: open,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  /* 按面板默认值预选克隆方式。只在每次打开后**第一次**拿到默认值时填一次：
+     用户点过那个开关之后再回填，等于把他刚改的选择顶掉。 */
+  useEffect(() => {
+    if (!open || cloneDefaultRef.current || !vmDefaultsQuery.data) return;
+    cloneDefaultRef.current = true;
+    setFullClone(Boolean(vmDefaultsQuery.data.full_clone));
+  }, [open, vmDefaultsQuery.data]);
 
   /* 目标主机列表只有管理员拿得到（/connections 需要 settings.manage）；
      普通用户用面板当前连接 —— 单台 PVE 的面板上本来就该是这样 */
@@ -248,9 +292,14 @@ export function QuickDeployForm({
     staleTime: 60_000,
   });
 
-  /* 只有容器需要选存储（建 rootfs）：虚拟机的链接克隆不写任何存储，别白读一次。
+  /* 两处需要选存储：容器建 rootfs；虚拟机开了「完整克隆」时磁盘要有落点
+     （链接克隆不写任何存储，那条路就不白读一次）。
      候选只列**所选节点上**的存储池（含显式带连接，见 useNodeStorages）。 */
-  const storagesQuery = useNodeStorages(node, targetConn, open && !isVm);
+  const storagesQuery = useNodeStorages(
+    node,
+    targetConn,
+    open && (!isVm || fullClone),
+  );
 
   const bridgesQuery = useQuery({
     queryKey: ['nodes', targetConn, node, 'network'],
@@ -314,12 +363,17 @@ export function QuickDeployForm({
     }));
   }, [connectionsQuery.data, t]);
 
-  /* 默认落在「当前连接」上：不指定连接时后端会把所有 PVE 的节点合并返回 */
+  /* 默认落在顶栏「集群作用域」选的那一套，其次是兜底连接。
+     不指定连接时后端会把所有 PVE 的节点合并返回 —— 那个列表在创建表单里没法用。
+     先看作用域：用户刚把作用域切到 B，进向导却默认在 A，多半不是他想要的。 */
   useEffect(() => {
     if (!open || targetConn) return;
     const list = connectionsQuery.data ?? [];
-    const active = list.find((c) => c.active) ?? list[0];
-    if (active) setTargetConn(active.id);
+    const target =
+      list.find((c) => c.id === getGlobalScope()) ??
+      list.find((c) => c.active) ??
+      list[0];
+    if (target) setTargetConn(target.id);
   }, [open, targetConn, connectionsQuery.data]);
 
   /* 换主机：节点、存储、模板都不通用，全部清掉重选 */
@@ -534,9 +588,10 @@ export function QuickDeployForm({
     [bridgesQuery.data],
   );
 
-  /* 虚拟机的链接克隆不往任何存储写数据（磁盘留在模板所在存储），所以只有容器
-     建 rootfs 时才需要选存储 */
-  const storageNeeded = !isVm;
+  /* 什么时候要选存储：容器建 rootfs，或**虚拟机开了完整克隆**（磁盘要复制到
+     某个存储上）。链接克隆不往任何存储写数据（磁盘留在模板所在存储），
+     所以那条路不出现存储下拉 —— 摆一个必填框只会让人以为必须选。 */
+  const storageNeeded = !isVm || fullClone;
 
   const error = useMemo(() => {
     if (!name.trim()) return t('quickDeploy.errName');
@@ -617,13 +672,16 @@ export function QuickDeployForm({
             password: password || undefined,
             ip_configs: nics.map(nicIp),
           },
-          manage,
+          manage: manageOn,
           clone_from: {
             node: tplNode,
             vmid: Number(tplVmid),
-            /* 固定链接克隆：磁盘留在模板所在存储，秒级完成、不额外占空间。
-               需要独立磁盘（完整克隆）请用「自定义部署」。 */
-            full: false,
+            /* 克隆方式由「系统镜像」卡里的开关决定：
+               链接克隆（默认）：磁盘留在模板所在存储，秒级完成、不额外占空间；
+               完整克隆：整份复制到所选存储（要带 target_storage），创建慢、
+               多占一份空间，换来的是这台机器与模板彻底脱钩。 */
+            full: fullClone,
+            target_storage: fullClone ? storage : undefined,
             /* 规格里的磁盘是给新机器用的：模板盘更小时由后端扩容系统盘 */
             disk_size: spec.disk > 0 ? spec.disk : undefined,
           },
@@ -638,6 +696,9 @@ export function QuickDeployForm({
             : t('quickDeploy.createdVmHint', { vmid: result.vmid ?? '-' }),
         );
         queryClient.invalidateQueries({ queryKey: ['vms'] });
+        /* 多了一台机器 = 名下用量变了。额度读数有**好几份**（我的额度、平台台数、
+           用户/角色额度…），只刷 ['quota'] 会漏掉其余几份 —— 统一走 invalidateQuota。 */
+        invalidateQuota(queryClient);
         onCreated?.(result.vmid ?? 0);
         onClose();
       } else {
@@ -677,6 +738,8 @@ export function QuickDeployForm({
           t('quickDeploy.createdLxcHint', { vmid: result.vmid ?? '-' }),
         );
         queryClient.invalidateQueries({ queryKey: ['lxc'] });
+        /* 同虚拟机那条 */
+        invalidateQuota(queryClient);
         onCreated?.(result.vmid ?? 0);
         onClose();
       }
@@ -901,7 +964,24 @@ export function QuickDeployForm({
               />
             )}
 
-            {/* 容器建 rootfs 必须选存储；虚拟机的链接克隆不往任何存储写数据 */}
+            {/* 克隆方式紧挨着模板下拉（同一行右侧）：它决定的正是「这个模板怎么变成
+                一台机器」，与模板是同一件事，不该另起一行占位。
+                开关只留「完整克隆」四个字、不挂说明文字 —— 后果交给卡片底部那句
+                随开关变化的短提示（见下），这张卡要紧凑。
+                只有虚拟机克隆，容器是从 OS 模板建 rootfs，没有这一层。 */}
+            {isVm ? (
+              <div className="field-toggle">
+                <Switch
+                  checked={fullClone}
+                  onChange={setFullClone}
+                  label={t('quickDeploy.fullClone')}
+                />
+              </div>
+            ) : null}
+
+            {/* 容器建 rootfs 要选存储；虚拟机只有开了完整克隆才需要（磁盘要有落点）。
+                排在开关之后：虚拟机开完整克隆时它落到第二行、正好在模板下方；
+                容器没有开关，存储仍与系统模板并排（与改动前一致）。 */}
             {storageNeeded ? (
               <Select
                 label={t('quickDeploy.labelStorage')}
@@ -909,14 +989,20 @@ export function QuickDeployForm({
                 value={storage}
                 onChange={(e) => setStorage(e.target.value)}
                 options={storageOptions}
-                hint={t('quickDeploy.storageHint')}
+                hint={
+                  isVm
+                    ? t('quickDeploy.storageHintVm')
+                    : t('quickDeploy.storageHint')
+                }
               />
             ) : null}
           </div>
 
           {isVm && spec ? (
             <div className="mt-12 field-message">
-              {t('quickDeploy.linkedCloneNote', { n: spec.disk })}
+              {fullClone
+                ? t('quickDeploy.fullCloneNote', { n: spec.disk })
+                : t('quickDeploy.linkedCloneNote', { n: spec.disk })}
             </div>
           ) : null}
         </Card>
@@ -1077,12 +1163,14 @@ export function QuickDeployForm({
               开关）。快速部署走链接克隆，公钥由后端注入 cloud-init，机器起来后自动
               登记为受管主机。容器没有 cloud-init，后端 /api/lxc 也不接受这个字段。
               与网卡列表用一条分隔线隔开 —— 它不属于「某一张网卡」，而是整台机器的
-              选项，挨着最后一张卡会让人以为在说那张卡。 */}
-          {isVm ? (
+              选项，挨着最后一张卡会让人以为在说那张卡。
+              「SSH 安全」入口被面板级开关关掉时（sshNavOff）整项不出现：机器登记成
+              受管主机之后要在那个入口下面才能看到与管理。 */}
+          {isVm && !sshNavOff ? (
             <div className="qd-divider">
               <Switch
                 label={t('vmCreate.ciManage')}
-                checked={manage}
+                checked={manageOn}
                 onChange={setManage}
                 /* DHCP 与静态都能接入，差别只在登记时机（静态立刻登记，DHCP 等机器
                    自报地址）—— 文案里说清这件事，别让人以为 DHCP 用不了 */

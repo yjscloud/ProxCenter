@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -20,6 +21,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
+from app import ownership  # noqa: E402
 from app import pve as pve_module  # noqa: E402
 from app import store  # noqa: E402
 from app.pve import PveConnection, ProxmoxError  # noqa: E402
@@ -534,6 +536,18 @@ class TestReadRoutes:
         assert lvm["used"] == 100 * 1024**3
         assert 0 < lvm["usage"] < 1
 
+    def test_cluster_scope_reaches_connection_resolution(self, api) -> None:
+        """``X-PVE-Scope``（顶栏「集群作用域」）必须真的进到连接解析里。
+
+        作用域指向一个不存在的连接时，读接口要**明确**报「连接不存在」，而不是
+        静默回落到兜底连接 —— 否则用户以为在看 A 集群，实际读的是 B。错误里带上
+        那个 id，也证明这次请求是被作用域驱动的（而不是别的原因 404）。
+        """
+        headers = {**auth_headers(api), "X-PVE-Scope": "no-such-conn"}
+        resp = api.get("/api/nodes", headers=headers)
+        assert resp.status_code == 404
+        assert "no-such-conn" in resp.text
+
     def test_nextid_returns_int(self, api) -> None:
         resp = api.get("/api/cluster/nextid", headers=auth_headers(api))
         assert resp.json() == {"vmid": 105}
@@ -546,16 +560,16 @@ class TestReadRoutes:
         assert templates[0]["vmid"] == 9000
         assert templates[0]["template"] is True
 
-    def test_dashboard_summary_aggregates(self, api) -> None:
-        resp = api.get("/api/dashboard/summary", headers=auth_headers(api))
+    def test_dashboard_top_aggregates_running_vms(self, api) -> None:
+        """榜单汇总全部连接（只剩一台时可验证形状），且每条都带 connection_id ——
+        前端要靠它把条目链到正确的详情页。"""
+        resp = api.get("/api/dashboard/top?limit=5", headers=auth_headers(api))
         assert resp.status_code == 200
         body = resp.json()
-        assert body["vms"]["total"] == 2
-        assert body["vms"]["running"] == 1
-        assert body["vms"]["templates"] == 1
-        assert body["nodes"]["total"] == 1
-        assert body["nodes"]["online"] == 1
-        assert body["version"]["pve"] == "8.2.4"
+        assert body["total_running"] == 1
+        assert body["by_cpu"][0]["vmid"] == 100
+        assert body["by_memory"][0]["vmid"] == 100
+        assert "connection_id" in body["by_cpu"][0]
 
     def test_task_listing(self, api) -> None:
         resp = api.get("/api/tasks", headers=auth_headers(api))
@@ -1154,6 +1168,321 @@ class TestGuestDiskUsage:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 403
+
+
+# ------------------------------------------------------ 额度总览（/quota/overview）
+class TestQuotaOverviewEndpoint:
+    """管理端一次性拿到所有人的额度与用量。
+
+    这一层盯的是**权限**与**错误透传**：用量偏小时如果界面上看不出来，管理员会
+    按着偏小的数字去配额度。
+    """
+
+    def test_requires_a_management_permission(self, api) -> None:
+        viewer = user_with_permissions(api, ["vm.view"], "ov-viewer")
+        assert api.get("/api/quota/overview", headers=viewer).status_code == 403
+
+    def test_admin_gets_a_row_per_user(self, api) -> None:
+        api.post(
+            "/api/users",
+            json={
+                "username": "ov-a",
+                "password": "Unit-Test-Pa55word",
+                "role": "operator",
+            },
+            headers=auth_headers(api),
+        )
+        resp = api.get("/api/quota/overview", headers=auth_headers(api))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        assert "users" in body and "error" in body
+        names = {row["username"] for row in body["users"]}
+        assert {"admin", "ov-a"} <= names
+
+        row = next(r for r in body["users"] if r["username"] == "ov-a")
+        # 三组额度 + 三层解析后的生效值，形状与用户侧那份一致
+        assert set(row["limits"]) == {"vm", "ct", "snapshot"}
+        assert set(row["usage"]) == {"vm", "ct"}
+        assert row["source"] in ("user", "role", "none")
+        assert isinstance(row["bypass"], bool)
+
+    def test_rejects_a_user_with_only_read_permission(self, api) -> None:
+        reader = user_with_permissions(api, ["users.view"], "ov-reader")
+        resp = api.get("/api/quota/overview", headers=reader)
+        assert resp.status_code == 200, resp.text
+        assert isinstance(resp.json()["users"], list)
+
+
+# ------------------------------------------------- 客户机列表的归属人字段
+def _owner_rows() -> set:
+    """归属表当前的全部 ``(kind, ref)``，用来断言「没有写错桶」。
+
+    只看接口响应是不够的：容器的归属即使落进 KIND_VM，响应里的 owner 也照样是
+    对的（端点就是照它自己写的那行回的），要等到额度算账时才暴露。
+    """
+    conn = connect(settings.db_name)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT kind, ref FROM resource_owner")
+            return {(row[0], row[1]) for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
+def _seed_owner(kind: str, ref: str, username: str) -> None:
+    """直接往归属表插一行（走同步 pymysql，与应用里的连接池分开）。"""
+    conn = connect(settings.db_name)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO resource_owner (kind, ref, username, created) "
+                "VALUES (%s, %s, %s, %s)",
+                (kind, ref, username, int(time.time())),
+            )
+    finally:
+        conn.close()
+
+
+class TestGuestListOwnerField:
+    """列表每一行带不带归属人，决定了管理员**能不能看出**哪台没人认领。
+
+    无人认领的机器用量是「归属表 ∩ 实时清单」，它不算任何人的按人额度，却占着
+    平台台数上限 —— 列表里看不见就是个纯粹的盲区（也是一份白送的额度）。
+    """
+
+    def test_admin_gets_the_field_and_blank_means_unclaimed(self, api) -> None:
+        rows = api.get("/api/vms", headers=auth_headers(api)).json()
+        assert rows, "mock 里应当有虚拟机"
+        # 字段一定在（管理员才拿得到）。mock 的机器没有归属记录 → None。
+        assert all("owner" in row for row in rows)
+        assert all(row["owner"] is None for row in rows)
+
+    def test_normal_user_does_not_get_the_field(self, api) -> None:
+        """普通用户只看得见自己名下的机器，回填归属人对他没有意义。"""
+        viewer = user_with_permissions(api, ["vm.view"], "owner-viewer")
+        rows = api.get("/api/vms", headers=viewer).json()
+        assert all("owner" not in row for row in rows)
+
+    def test_owner_is_filled_from_the_ownership_table(self, api) -> None:
+        admin = auth_headers(api)
+        before = api.get("/api/vms", headers=admin).json()
+        target = next(row for row in before if row["vmid"] == 100)
+
+        _seed_owner(
+            ownership.KIND_VM,
+            ownership.vm_ref(
+                str(target.get("connection_id") or ""), target["node"], 100
+            ),
+            "alice",
+        )
+
+        after = api.get("/api/vms", headers=admin).json()
+        by_vmid = {row["vmid"]: row.get("owner") for row in after}
+        assert by_vmid[100] == "alice"
+        # 别的机器不受影响
+        assert by_vmid.get(9000) is None
+
+    def test_container_assigned_through_the_vm_endpoint_lands_in_the_ct_bucket(
+        self, api
+    ) -> None:
+        """容器的归属必须落进 ``KIND_CT``，不能落进 ``KIND_VM``。
+
+        落错的症状**不是**「看不到归属」—— ``owners_map_for`` 对容器有 legacy
+        回落，列表照样显示归属人。症状在**额度**上：``quota`` 构造 refs 时会把
+        ``KIND_VM`` 的记录并进容器那一组，于是这个容器同时算进虚拟机与容器两组，
+        两边的额度都被虚占。这类错账比「显示不出来」难查得多，所以在这里钉住。
+        """
+        admin = auth_headers(api)
+        api.post(
+            "/api/users",
+            json={
+                "username": "ct-owner",
+                "password": "Unit-Test-Pa55word",
+                "role": "viewer",
+            },
+            headers=admin,
+        )
+        # 走**虚拟机**那个端点，但声明这是容器 —— 端点必须按声明取类别
+        resp = api.put(
+            "/api/vms/pve1/9100/owner",
+            json={"username": "ct-owner", "guest_type": "lxc"},
+            headers=admin,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["owner"] == "ct-owner"
+
+        # 只关心**类别**：ref 里的连接前缀由请求时的连接解析决定，与本用例无关
+        rows = [kind for kind, ref in _owner_rows() if ref.endswith(":pve1:9100")]
+        assert rows == [ownership.KIND_CT]
+
+    def test_omitting_guest_type_still_records_a_vm(self, api) -> None:
+        """不传 guest_type 时按虚拟机处理 —— 老客户端的请求形状不能被改掉。"""
+        admin = auth_headers(api)
+        resp = api.put(
+            "/api/vms/pve1/9200/owner",
+            json={"username": None, "connection_id": None},
+            headers=admin,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["owner"] is None
+
+    def test_assigning_an_owner_shows_up_in_the_next_listing(self, api) -> None:
+        """回归：管理员指派归属之后，列表里那一行必须立刻带上 owner。
+
+        「无人认领的台数不减少」就是这里断的 —— 前端的计数直接数列表里
+        ``owner`` 为空的行，所以指派接口写进去的 ref 必须与列表回填时算的 ref
+        **完全一致**（连接 id + 节点 + VMID 三元组）。差一个前缀就等于没指派。
+        """
+        admin = auth_headers(api)
+        api.post(
+            "/api/users",
+            json={
+                "username": "claim-target",
+                "password": "Unit-Test-Pa55word",
+                "role": "viewer",
+            },
+            headers=admin,
+        )
+        before = api.get("/api/vms", headers=admin).json()
+        target = next(r for r in before if r["vmid"] == 100)
+        assert target["owner"] is None
+
+        resp = api.put(
+            f"/api/vms/{target['node']}/{target['vmid']}/owner",
+            json={"username": "claim-target", "connection_id": target.get("connection_id")},
+            headers=admin,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["owner"] == "claim-target"
+
+        after = api.get("/api/vms", headers=admin).json()
+        by_vmid = {r["vmid"]: r.get("owner") for r in after}
+        assert by_vmid[100] == "claim-target"
+        # 别的机器仍是无人认领 —— 不能一片全被认领
+        assert by_vmid.get(9000) is None
+
+    def test_containers_carry_it_too(self, api) -> None:
+        rows = api.get("/api/lxc", headers=auth_headers(api)).json()
+        assert all("owner" in row for row in rows)
+
+
+# --------------------------------------------------- 按用户 / 按角色分配的额度
+class TestUserQuota:
+    """按人分配的额度：写进去、读回来、重置回到继承。
+
+    这一组盯的是「管理员改过却像没改」。额度本身**没有缓存**（每次现读
+    ``user_quota`` 表），所以 HTTP 这一层如实落库是前提 —— 前端显示陈旧是
+    另一件事（见 Users.tsx 的 invalidate）。
+    """
+
+    def _user(self, api, username: str, role: str = "operator") -> str:
+        resp = api.post(
+            "/api/users",
+            json={"username": username, "password": "Unit-Test-Pa55word", "role": role},
+            headers=auth_headers(api),
+        )
+        assert resp.status_code == 200, resp.text
+        return username
+
+    def _role(self, api, role_id: str, quota: Any = None) -> str:
+        resp = api.post(
+            "/api/roles",
+            json={"id": role_id, "name": role_id, "permissions": ["vm.view"]},
+            headers=auth_headers(api),
+        )
+        assert resp.status_code in (200, 201), resp.text
+        if quota is not None:
+            saved = api.put(
+                f"/api/roles/{role_id}/quota",
+                json={"quota": quota},
+                headers=auth_headers(api),
+            )
+            assert saved.status_code == 200, saved.text
+        return role_id
+
+    def _put(self, api, username: str, quota: Any) -> Dict[str, Any]:
+        resp = api.put(
+            f"/api/users/{username}/quota",
+            json={"quota": quota},
+            headers=auth_headers(api),
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    def _get(self, api, username: str) -> Dict[str, Any]:
+        resp = api.get(f"/api/users/{username}/quota", headers=auth_headers(api))
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    def test_set_then_read_back(self, api) -> None:
+        self._user(api, "quota-a")
+        body = self._put(
+            api, "quota-a", {"vm": {"count": 3, "cores": 8}, "ct": {"count": 1}}
+        )
+
+        assert body["configured"] is True
+        assert body["source"] == "user"
+        assert body["updated_by"] == "admin"
+        assert body["quota"]["vm"]["count"] == 3
+        # 没填的项 = 这一项不限制，不是 0
+        assert body["quota"]["vm"]["memory_mb"] is None
+        assert body["quota"]["ct"]["count"] == 1
+
+        # 再读一次：确认真落了库，而不是只在响应里回显
+        again = self._get(api, "quota-a")
+        assert again["configured"] is True
+        assert again["quota"]["vm"]["count"] == 3
+        assert again["quota"]["vm"]["cores"] == 8
+
+    def test_reset_goes_back_to_inheriting_the_role(self, api) -> None:
+        """传 null = 清除这份配置。清完读回来必须是「没配过」，
+        而不是「配了一份全空的」—— 这两者在三层取值里含义完全不同。"""
+        self._role(api, "quota-role", {"vm": {"count": 5}})
+        self._user(api, "quota-b", role="quota-role")
+
+        # 先配一份用户级：应当盖过角色默认
+        own = self._put(api, "quota-b", {"vm": {"count": 2}})
+        assert own["source"] == "user"
+        assert own["effective"]["vm"]["count"] == 2
+
+        # 重置：回到角色默认的 5，而不是变成「不限制」
+        cleared = self._put(api, "quota-b", None)
+        assert cleared["configured"] is False
+        assert cleared["quota"] is None
+        assert cleared["source"] == "role"
+        assert cleared["effective"]["vm"]["count"] == 5
+
+        # 再读一次，确认库里那一行真的被删掉了
+        assert self._get(api, "quota-b")["configured"] is False
+
+    def test_explicit_unlimited_is_not_the_same_as_reset(self, api) -> None:
+        """「自定义但一项都不填」= 显式不限制，会盖掉角色默认 —— 与「重置」是两件事。
+        两者混了，管理员就再也没法把某个用户从角色默认里摘出来。"""
+        self._role(api, "quota-role-2", {"vm": {"count": 5}})
+        self._user(api, "quota-c", role="quota-role-2")
+
+        body = self._put(api, "quota-c", {"vm": {}, "ct": {}, "snapshot": {}})
+        assert body["configured"] is True  # 配过（不是重置）
+        assert body["source"] == "user"
+        assert body["effective"]["vm"]["count"] is None  # 但每一项都不限制
+
+    def test_overwrite_replaces_the_whole_thing(self, api) -> None:
+        """整份覆盖，不是逐字段合并：第二次只填 count，上一次的 cores 不该留下。"""
+        self._user(api, "quota-d")
+        self._put(api, "quota-d", {"vm": {"count": 3, "cores": 8}})
+
+        body = self._put(api, "quota-d", {"vm": {"count": 1}})
+        assert body["quota"]["vm"]["count"] == 1
+        assert body["quota"]["vm"]["cores"] is None
+
+    def test_unknown_user_is_rejected(self, api) -> None:
+        resp = api.put(
+            "/api/users/nobody/quota",
+            json={"quota": {"vm": {"count": 1}}},
+            headers=auth_headers(api),
+        )
+        assert resp.status_code == 404
 
 
 # --------------------------------------------------------- 虚拟机下发总配额

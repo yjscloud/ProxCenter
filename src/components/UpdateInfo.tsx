@@ -15,6 +15,7 @@ import { Button } from './ui/Button';
 import { Notice } from './ui/EmptyState';
 import { IconChevronDown, IconCopy } from './Icons';
 import { useToast } from '../hooks/useToast';
+import { formatDateTime } from '../utils/format';
 
 /** 这三块只依赖这几个字段（传完整的 UpdateStatus 也兼容） */
 export interface UpdateInfo {
@@ -49,7 +50,7 @@ export function UpdateVersionGrid({ status }: { status: UpdateInfo }) {
         <span className="set-info-label">{t('update.published')}</span>
         <span className="set-info-value fs-sm">
           {status.published_at
-            ? new Date(status.published_at).toLocaleString()
+            ? formatDateTime(status.published_at)
             : t('update.unknown')}
         </span>
       </div>
@@ -57,7 +58,7 @@ export function UpdateVersionGrid({ status }: { status: UpdateInfo }) {
         <span className="set-info-label">{t('update.checked')}</span>
         <span className="set-info-value fs-sm">
           {status.checked_at
-            ? new Date(status.checked_at * 1000).toLocaleString()
+            ? formatDateTime(status.checked_at)
             : t('update.never')}
         </span>
       </div>

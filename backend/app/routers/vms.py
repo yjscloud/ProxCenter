@@ -86,15 +86,11 @@ def _op_connection() -> str:
 def _managed_conn_id() -> str:
     """受管主机归属的连接 id（登记与清理都用它，两边必须是同一个值）。
 
-    与 :func:`_op_connection` 同源，差别只在兜底：老库只有一份 PVE 配置、
-    ``ACTIVE_ID_KEY`` 还没写过时，``get_active_connection_id()`` 是空串，而
-    真正生效的是 ``get_connections()[0]``。登记时存了空串，删机器时就再也
-    找不到那台主机，所以这里退回生效连接的 id。
+    与 :func:`_op_connection` 完全同源即可：``store.get_active_connection_id()``
+    已经保证返回真实存在的连接（老库没写过 ``ACTIVE_ID_KEY`` 时退回第一条），
+    这里不必再补一层「退回生效连接」的兜底。
     """
-    cid = _op_connection()
-    if cid:
-        return cid
-    return str((store.get_active_connection() or {}).get("id") or "")
+    return _op_connection()
 
 
 async def _require_guest_access(
@@ -292,28 +288,32 @@ async def collect_vms(
     # 没有归属记录的存量机器同样不返回（严格隔离），管理员不受限制。
     # 虚拟机与容器是两套归属（KIND_VM / KIND_CT），按每台的 type 取对应那张表。
     owner = security.visible_owner(user)
-    if owner is not None:
-        vm_owners = await ownership.owners_map(ownership.KIND_VM)
-        ct_owners = await ownership.owners_map_for(ownership.KIND_CT)
+    # 两类归属都取：普通用户那侧只用来**过滤**，能看全量的人那侧还要用来
+    # **回填**每一行的归属人 —— 列表里得看得到「这台归谁」，才筛得出「无人认领」
+    # 的机器（那种机器在按人分配的那层额度里不算任何人，是一份白送的额度）。
+    vm_owners = await ownership.owners_map(ownership.KIND_VM)
+    ct_owners = await ownership.owners_map_for(ownership.KIND_CT)
 
-        def _owned_by_user(item: Dict[str, Any]) -> bool:
-            owners = (
-                ct_owners
-                if str(item.get("type") or "qemu") == "lxc"
-                else vm_owners
-            )
-            return (
-                owners.get(
-                    ownership.vm_ref(
-                        str(item.get("connection_id") or ""),
-                        str(item.get("node") or ""),
-                        item.get("vmid"),
-                    )
+    def _owner_of(item: Dict[str, Any]) -> str:
+        owners = ct_owners if str(item.get("type") or "qemu") == "lxc" else vm_owners
+        return (
+            owners.get(
+                ownership.vm_ref(
+                    str(item.get("connection_id") or ""),
+                    str(item.get("node") or ""),
+                    item.get("vmid"),
                 )
-                == owner
             )
+            or ""
+        )
 
-        result = [v for v in result if _owned_by_user(v)]
+    if owner is not None:
+        result = [v for v in result if _owner_of(v) == owner]
+    else:
+        # 只看得见自己机器的人不需要这个字段（回填也只是把他自己重复一遍），
+        # 所以只给能看全量的人 —— 少一处「哪台归谁」的暴露面。
+        for item in result:
+            item["owner"] = _owner_of(item) or None
 
     result.sort(key=lambda v: (v.get("node") or "", v.get("vmid") or 0))
     return result
@@ -1398,6 +1398,13 @@ async def delete_vm(
     await guest_created.drop_record(_op_connection(), node, vmid, "qemu")
     # IP 缓存同样要清：VMID 回收后，旧地址会贴着同号的新机器显示一分钟
     await guestip.forget(_op_connection(), node, vmid, "qemu")
+    # 归属记录不删的话额度不会还给用户：用量是「归属表 ∩ PVE 实时清单」，
+    # PVE 又把最小的空闲 VMID 分给新机器 —— 旧记录撞上同号的新机器，那台机器
+    # 就被算到旧用户名下（见 ownership.forget_guest 的说明）。
+    await ownership.forget_guest(_op_connection(), node, vmid)
+    # 读数缓存里还留着这台机器，主动作废掉 —— 否则删除后的几秒内
+    # 「我的额度」仍旧显示旧用量，看起来就像额度没恢复。
+    quota.invalidate()
     # 面板为这台机器登记的受管主机（勾了「接入安全管控」才会有）也一并清掉，
     # 连同它在「SSH 安全 / 登录审计 / 端口与进程 / 安全基线」里的数据 ——
     # 机器都没了，再留着只会每轮巡检白拨一条 SSH。
@@ -1442,10 +1449,14 @@ async def set_vm_owner(
             raise HTTPException(status_code=404, detail=f"用户 {username} 不存在")
 
     ref = ownership.vm_ref(payload.connection_id or _op_connection(), node, vmid)
+    # 按类型取类别而不是写死 vm：容器被记进 KIND_VM 时额度会同时算进两组
+    # （见 VmOwnerIn.guest_type 的说明）。正常路径上前端按类型分派到 /lxc 那个
+    # 端点，这里只作兜底。
+    kind = ownership.kind_for_type(payload.guest_type)
     if username:
-        await ownership.set_owner(ownership.KIND_VM, ref, username)
+        await ownership.set_owner(kind, ref, username)
     else:
-        await ownership.delete_owner(ownership.KIND_VM, ref)
+        await ownership.delete_owner(kind, ref)
 
     await security.audit(
         request, user, "vm.assign" if username else "vm.unassign",

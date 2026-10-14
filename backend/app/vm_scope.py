@@ -32,8 +32,8 @@ from . import ownership, security
 from .pve import (
     ProxmoxError,
     all_connection_clients,
+    bound_connection,
     node_from_upid,
-    requested_connection,
     set_request_connection,
     vm_id_from_upid,
 )
@@ -122,10 +122,13 @@ async def bind_node_connection(node: str) -> None:
     请求落到「当前连接」而那台机器上没有这个节点时，PVE 会把这个名字当主机名
     去解析，回一句 ``hostname lookup 'x' failed`` —— 看起来像 PVE 的 DNS 坏了，
     实际是请求打错了机器。这里就地纠正，调用方不必自己判断。
+
+    只看**硬指定**（``X-PVE-Connection``）：顶栏的集群作用域是「我默认在看哪一套」，
+    不该拦住这次纠正 —— 否则作用域是 A 时点开 B 的节点，请求会打到 A 上。
     """
     from . import pve
 
-    if pve.requested_connection():
+    if pve.bound_connection():
         return
     try:
         cid = await resolve_node_connection(node)
@@ -183,8 +186,10 @@ async def bind_vm_connection(
 
     FastAPI 会把路径里的 ``{node}/{vmid}`` 注入进来（与 ``require_vm_access``
     同一套路）；没有这两个参数的接口取到 None，直接放行。
+
+    只看**硬指定**：顶栏集群作用域不该拦住这次纠正（见 :func:`bind_node_connection`）。
     """
-    if not node or vmid is None or requested_connection():
+    if not node or vmid is None or bound_connection():
         return
     conn_id = await resolve_vm_connection(node, vmid, security.visible_owner(user))
     if conn_id:
@@ -236,8 +241,11 @@ async def bind_task_connection(
     ``/tasks/{upid}`` 只给一个 UPID。不定位的话轮询会落到「当前连接」，而那台
     PVE 上根本没有这个任务，前端只能一直转圈到超时（表现为「关机中 / 删除中」
     永远不结束）。``/tasks`` 列表没有 upid，保持当前连接不动。
+
+    只看**硬指定**：否则顶栏作用域为 A 时，在 B 上发起的任务会被当成「已指定」，
+    永远不会被纠正到 B —— 正是上面那句「一直转圈」。
     """
-    if requested_connection() or not upid:
+    if bound_connection() or not upid:
         return
     target_node = node_from_upid(upid) or (node or "")
     if not target_node:

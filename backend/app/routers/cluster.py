@@ -1,18 +1,18 @@
 """Cluster-wide and per-node read endpoints."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import pvecache, security
+from .. import fleetstatus, pvecache, security
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
     all_connection_clients,
     connection_label,
     get_client,
-    parallel,
     requested_connection,
 )
 
@@ -30,30 +30,24 @@ def _raise(exc: ProxmoxError) -> None:
     )
 
 
-def _active_connection() -> Dict[str, str]:
-    """默认读取的那一套 PVE（id + 展示名）。
-
-    面板把多条 PVE 连接当**同级**，没有「主连接」这个概念；但少数接口
-    （``/health``、``/cluster/status``）一次只能读一台，需要一个确定目标。
-    那个目标由管理员在「设置 → 系统信息」里指定，这里把它一并返回 ——
-    否则多连接部署下「这个节点数是哪一台的」没人答得上来。
-    """
-    try:
-        from ..store import get_active_connection_id, get_connections
-
-        cid = str(get_active_connection_id() or "")
-        for profile in get_connections():
-            if str(profile.get("id") or "") == cid:
-                return {"id": cid, "name": connection_label(profile)}
-    except Exception:  # noqa: BLE001 - 拿不到名字不影响主数据
-        pass
-    return {"id": "", "name": ""}
-
-
 @router.get("/cluster/status")
 async def cluster_status(
     user: Dict[str, Any] = Depends(security.require_permission("node.view")),
 ) -> Dict[str, Any]:
+    """**单套**集群的状态：版本、仲裁、节点清单。
+
+    「单套」是字面意思 —— PVE 的 ``/cluster/status`` 只能读一台。它跟随顶栏的
+    集群作用域（``X-PVE-Scope``），作用域为「全部集群」时读兜底连接。
+
+    多 PVE 的部署里，需要**全机队**读数的地方不要用它：
+
+    * 全部连接的版本 / 仲裁 / 可达性 → ``/cluster/fleet-status``
+      （顶栏「控制台状态」、设置页系统信息、仪表盘的集群态势都用它）；
+    * 全部连接的节点清单 → ``/nodes``（未指定作用域时跨连接合并）。
+
+    保留它是因为「就这一套集群的详细状态」仍是合法需求（脚本、单集群部署），
+    前端只剩设置页在 fleet 读取失败时拿它当兜底。
+    """
     client = get_client()
     try:
         raw = await client.get("/cluster/status")
@@ -115,28 +109,82 @@ async def next_id(
         _raise(exc)
 
 
+def _flatten_scoped(
+    results: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]],
+) -> List[Dict[str, Any]]:
+    """把「每条连接一批数据」摊平成一条列表，并标注来源连接。
+
+    标注是必要的：任务 / 池子只存在于某一条连接上，多套 PVE 里节点名还可能重复
+    （两台都叫 ``pve``），不给来源的话界面上分不清这一行是谁的。
+    """
+    merged: List[Dict[str, Any]] = []
+    for profile, items in results:
+        cid = str(profile.get("id") or "")
+        label = connection_label(profile)
+        for item in items:
+            merged.append({**item, "connection_id": cid, "connection_name": label})
+    return merged
+
+
+async def _fan_out(
+    pairs: List[Tuple[Dict[str, Any], Any]], call: Any
+) -> List[Tuple[Dict[str, Any], List[Dict[str, Any]]]]:
+    """对每条已保存连接并发执行 ``call``，单条失败只跳过它自己。"""
+
+    async def one(
+        profile: Dict[str, Any], client: Any
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        try:
+            return profile, await call(client)
+        except ProxmoxError:
+            # 某一台连不上只跳过它，别让整页报错（与 /nodes 的失败语义一致）
+            return profile, []
+
+    return list(await asyncio.gather(*(one(p, c) for p, c in pairs)))
+
+
 @router.get("/cluster/tasks")
 async def cluster_tasks(
     node: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
     user: Dict[str, Any] = Depends(security.require_permission("task.view")),
 ) -> List[Dict[str, Any]]:
-    client = get_client()
-    try:
-        return await client.tasks(node=node, limit=limit)
-    except ProxmoxError as exc:
-        _raise(exc)
+    """最近任务，跨全部连接。
+
+    未指定 ``X-PVE-Connection``（顶栏作用域为「全部集群」）时**合并每一条连接**：
+    任务只存在于执行它的那台 PVE 上，只读兜底那一台的话，另外几套集群的任务
+    永远不会出现在列表里（与 ``/nodes``、``/vms`` 的「同级合并」同一套口径）。
+    指定了作用域时只查那一条 —— 这也是列表页里「只看这套集群」的落点。
+    """
+    pairs = all_connection_clients()
+    if requested_connection() or not pairs:
+        try:
+            return await get_client().tasks(node=node, limit=limit)
+        except ProxmoxError as exc:
+            _raise(exc)
+
+    # client.tasks 内部已按 starttime 倒序并各自截断，这里合并后再排一次、
+    # 再截断一次，得到的才是「全体连接里最近的 limit 条」
+    merged = _flatten_scoped(
+        await _fan_out(pairs, lambda c: c.tasks(node=node, limit=limit))
+    )
+    merged.sort(key=lambda t: t.get("starttime") or 0, reverse=True)
+    return merged[:limit]
 
 
 @router.get("/cluster/pools")
 async def cluster_pools(
     user: Dict[str, Any] = Depends(security.require_permission("node.view")),
 ) -> List[Dict[str, Any]]:
-    client = get_client()
-    try:
-        return await client.pools()
-    except ProxmoxError as exc:
-        _raise(exc)
+    """资源池列表。作用域口径与 :func:`cluster_tasks` 相同。"""
+    pairs = all_connection_clients()
+    if requested_connection() or not pairs:
+        try:
+            return await get_client().pools()
+        except ProxmoxError as exc:
+            _raise(exc)
+
+    return _flatten_scoped(await _fan_out(pairs, lambda c: c.pools()))
 
 
 # ------------------------------------------------------------------ nodes
@@ -301,96 +349,21 @@ async def cluster_ha_status(
 async def cluster_fleet_status(
     user: Dict[str, Any] = Depends(security.require_permission("node.view")),
 ) -> Dict[str, Any]:
-    """所有 PVE 连接的合计状态：给「控制台状态」与「设置 → 系统信息」用。
+    """所有 PVE 连接的合计状态：给「控制台状态」「设置 → 系统信息」以及仪表盘的
+    集群态势卡用。
 
     为什么需要它：面板把多条 PVE 连接当作**同级**（见 connections 的说明），
     而 ``/api/health`` 与 ``/api/cluster/status`` 只能读其中一套 —— 4 套连接里
     在全局位置显示「1 个节点」，会让人以为面板只连了一台机器。
 
-    逐条并发探测，单条失败只影响它自己（与大屏的聚合口径一致）；单机连接不去
-    问 HA，省一次上游请求。
+    探测本身搬到了 :func:`app.fleetstatus.collect`：集群仲裁巡检（告警）要用同一
+    份口径，两边各写一遍迟早会分叉成「页面红着、告警不响」。
     """
-    pairs = all_connection_clients()
-
     # 地址只给管理员：这个接口有 node.view 就能访问，而它会把每条连接的主机
     # 列出来 —— 连接配置属于管理信息，与 /connections 同一口径。
-    can_manage = security.has_user_permission(user, "settings.manage")
-
-    async def probe(profile: Dict[str, Any], client: Any) -> Dict[str, Any]:
-        item: Dict[str, Any] = {
-            "id": str(profile.get("id") or ""),
-            "name": connection_label(profile),
-            **(
-                {"host": str(profile.get("host") or "")} if can_manage else {}
-            ),
-            "ok": False,
-            "error": None,
-            "version": "",
-            "node_count": 0,
-            "cluster_mode": "standalone",
-            "quorate": None,
-            "ha_enabled": False,
-            "ha_resources": 0,
-        }
-        try:
-            version = await client.version() or {}
-            nodes = await client.nodes() or []
-        except ProxmoxError as exc:
-            item["error"] = exc.message
-            return item
-
-        item["ok"] = True
-        item["version"] = str(version.get("version") or "")
-        item["node_count"] = len(nodes)
-        item["cluster_mode"] = "cluster" if len(nodes) > 1 else "standalone"
-        if item["cluster_mode"] != "cluster":
-            return item
-
-        try:
-            status_list = await client.get("/cluster/ha/status/current") or []
-        except ProxmoxError:
-            return item
-
-        master = ""
-        for row in status_list:
-            if not isinstance(row, dict):
-                continue
-            kind = str(row.get("type") or "")
-            if kind == "quorum":
-                item["quorate"] = pve_flag(row.get("quorate") or 0) == 1
-            elif kind == "master":
-                # 空闲时 status 是「node02 (idle, ...)」而不是 "active"，只看有没有
-                master = str(row.get("node") or "")
-
-        # 资源列表单独问：没有 HA 资源的集群它直接 501，不能连累上面的判定
-        try:
-            resource_list = await client.get("/cluster/ha/status/resources") or []
-        except ProxmoxError:
-            resource_list = []
-        item["ha_resources"] = len(resource_list)
-        item["ha_enabled"] = bool(resource_list) or bool(master)
-        return item
-
-    items = await parallel([probe(profile, client) for profile, client in pairs])
-    totals = {
-        "connections": len(items),
-        "online": sum(1 for i in items if i["ok"]),
-        "nodes": sum(int(i["node_count"]) for i in items if i["ok"]),
-        "clusters": sum(1 for i in items if i["cluster_mode"] == "cluster"),
-        "standalone": sum(
-            1 for i in items if i["ok"] and i["cluster_mode"] == "standalone"
-        ),
-        "ha_enabled": sum(1 for i in items if i["ha_enabled"]),
-        "ha_resources": sum(int(i["ha_resources"]) for i in items),
-        "no_quorum": sum(1 for i in items if i["quorate"] is False),
-    }
-    return {
-        "connections": items,
-        "totals": totals,
-        # 只能读单台的接口（/health、/cluster/status）走这一套：
-        # 带上它是为了在界面上标出「这些数字读的是哪一台」
-        "default_connection": _active_connection(),
-    }
+    return await fleetstatus.collect(
+        can_manage=security.has_user_permission(user, "settings.manage")
+    )
 
 
 @router.get("/connections/status")

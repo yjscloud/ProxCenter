@@ -1608,6 +1608,16 @@
   flex-shrink: 0;
 }
 
+/* 二次确认弹窗（useStepUp）。
+   .modal-body 本身**不带子元素间距**，而这个正文会叠两个字段（密码 + 动态码，
+   开了两步验证时），不补间距两个字段会直接粘在一起。只作用于这一个弹窗，不去
+   动 .modal-body 的全局行为 —— 别的弹窗正文常常只有一个块，改动会波及它们。 */
+.modal-stepup .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 /* --- Drawer --- */
 .drawer-layer {
   justify-content: flex-end;
@@ -2066,6 +2076,59 @@
   color: var(--danger);
 }
 
+/* 用户表「已用」那一格：额度快满 / 已满时点出来。
+   这张表的用处就是让管理员**扫一眼知道该给谁放宽**，纯数字扫不出来。 */
+.quota-usage-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quota-usage-flag {
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.quota-usage-cell.is-low .quota-usage-flag {
+  background: var(--warning-dim);
+  color: var(--warning);
+}
+
+.quota-usage-cell.is-empty .quota-usage-flag {
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+/* 「N 台无人认领」：工具栏上的一个可点入口。
+   它不是统计数字，而是一个**跳板** —— 点一下就把列表筛到那几台，接着逐台指派
+   归属。用虚线边 + 警告色，与旁边的按钮区分开（旁边的都是操作，这个更像提示），
+   选中后转实线表示「筛的就是它」。 */
+.unowned-chip {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px dashed color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--warning-dim);
+  color: var(--warning);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.unowned-chip:hover,
+.unowned-chip.is-active {
+  border-style: solid;
+  border-color: var(--warning);
+}
+
 /* 明细浮层：贴触发控件下方绝对定位，与详情页的「更多操作」菜单同一套处理
    （页面一滚就收起）。两个宿主共用这套外观，差别只在展开方向：
      * .quota-popover —— 额度胶囊，在工具栏最右侧，right: 0 向左展开；
@@ -2100,6 +2163,18 @@
   gap: 6px;
 }
 
+/* 额度浮层比上面那个下限宽一档：一行要装下「标签 + 还剩 x + 已用 y / 上限 z」
+   三段，252px 装不下 —— 之前是靠标签和数值各自换行硬塞的。
+
+   max-width 是窄屏兜底：浮层是 right: 0 向左展开的，不加这道上限，一个超长的
+   「已用 / 上限」能把它撑出屏幕左边。正常宽度下碰不到它。 */
+.quota-popover {
+  /* 320 而不是 300：最宽的一行是「已超额 2 核」+「已用 100 / 上限 200 GB」，
+     300px 装不下会让其中一格折行。 */
+  min-width: 320px;
+  max-width: calc(100vw - 24px);
+}
+
 /* 可点开的 KPI 卡：宿主换成 <button> 之后要压掉浏览器默认样式 —— 字体不再从
    body 继承（按钮自带 UA 字体），文本对齐也会由左变居中，不重置的话数字和标签
    会当场跳位。外观必须与普通卡完全一致，只有鼠标指针能看出它可点。 */
@@ -2129,35 +2204,104 @@ button.kpi-card {
 .quota-popover-main strong {
   font-size: var(--font-size-md);
   color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
+/* 用尽时这颗数字点红：浮层顶部那句「还能下发」是全篇的结论，
+   红胶囊点开却是一颗黑数字会自相矛盾 */
+.quota-popover.is-empty .quota-popover-main strong {
+  color: var(--danger);
+}
+
+/* 一组条目**共用一个栅格**（而不是每行各一个）：行与行之间才会真正对齐。
+   每行各自成格时，「已用 / 上限」那列的宽度逐行不同，左边「还剩」的数字就会
+   左右参差 —— 磁盘那行最长，把同列其他行全推歪了。 */
 .quota-popover-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  /* 16px 而不是 12px：两列都是汉字收尾（「还剩 0 核」+「已用」），
+     12px 正好一个字宽，看着像连在一起的半句话 */
+  column-gap: 16px;
+  row-gap: 4px;
   padding-top: 8px;
   border-top: 1px solid var(--border-muted);
 }
 
 .quota-popover-block-title {
+  grid-column: 1 / -1;
   font-size: var(--font-size-xs);
   font-weight: 600;
   color: var(--text-muted);
 }
 
+/* 一行三段：标签 | 还剩 x | 已用 y / 上限 z。
+   原先是一个 flex 行内流（space-between），而标签的 flex-shrink 默认是 1 ——
+   数值一长它就被压缩，于是「磁盘」断成「磁 / 盘」；数值本身也跟着在窄列里
+   断成三行。拆成三格后标签不参与缩放，两段数字各自右对齐、各自不折行。
+
+   在 .quota-popover-block 里时行本身不生成盒子（display: contents），
+   它的三格直接落进上面那张共用栅格 —— 这样四行的列才是齐的。
+   独立使用时（用户页 KPI 卡的角色分布浮层）它自己就是一张两格的栅格。 */
 .quota-popover-line {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
+  /* 与改动前的 flex 那套 gap 一致 */
+  column-gap: 16px;
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
 }
 
-/* 「已用 x / 上限 y」跟在「还剩 z」后面，比它轻一档 */
+.quota-popover-block > .quota-popover-line {
+  display: contents;
+}
+
+/* 第二个格子一律右对齐：三段的额度行是「还剩」，两段的（KPI 分布 / 平台台数）
+   是那个唯一的值 —— 两者都该贴着右边缘，而不是飘在栅格中间 */
+.quota-popover-line > :nth-child(2) {
+  text-align: right;
+}
+
+.quota-popover-label {
+  white-space: nowrap;
+}
+
+/* 这一行真正的答案（还能用多少）：比旁边的「已用 / 上限」重一档，
+   数字用等宽字形，四行叠着看时位数能对齐 */
+.quota-popover-left {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 「已用 x / 上限 y」是给「还剩 z」做注解的，比它轻一档（也不再需要 margin —
+   位置由那 16px 列间距负责）。这一格是 auto 宽，正常情况按内容撑开、不会折行；
+   只有窄屏触到上面的 max-width 时才允许它自己换行降级。 */
 .quota-popover-detail {
-  margin-left: 8px;
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  /* 必须不折行：「已用 100 / 上限 200 GB」折成两行之后，这一行会高出一截，
+     而它上面的标签是对齐的 —— 整块看起来就散了。宽度不够时该撑的是浮层，
+     不是这一格。 */
+  white-space: nowrap;
+}
+
+/* 见底的那一项把「还剩」点红。**逐项**判断，不跟着 .quota-popover 的总体
+   状态走：磁 盘还剩 100 GB 的时候把它一起标红是在说谎 ——
+   「已用尽」指的是「有一项见底」，不等于每一项都见底 */
+.quota-popover-line.is-empty .quota-popover-left {
+  color: var(--danger);
+}
+
+/* 口径说明：比页脚那句话更轻 —— 它不是「下一步该做什么」，而是「这些数字
+   是怎么算出来的」 */
+.quota-popover-note {
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+  opacity: 0.85;
 }
 
 .quota-popover-foot {
@@ -2675,10 +2819,10 @@ body.is-col-resizing * {
 }
 
 /* ---------------------------------------------------------------------------
-   集群态势（Quorum / HA）
+   集群态势（全机队的 Quorum / HA）
    --------------------------------------------------------------------------- */
 
-/* 集群态势的状态点贴在 KpiCard 的大读数前面，与「正常 / 失去仲裁」同排 */
+/* 状态点贴在 KpiCard 的大读数前面，与「正常 / 降级 / 异常」同排 */
 .posture-inline {
   display: inline-flex;
   align-items: center;
@@ -2704,6 +2848,35 @@ body.is-col-resizing * {
   background: var(--danger);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 15%, transparent);
   animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* 降级（有连接不可达，但没有集群掉仲裁）：橙色但不脉冲 ——
+   脉冲留给「失去仲裁」那一档，两档都闪就看不出哪个更严重了。 */
+.posture-dot.is-warn {
+  background: var(--warning);
+}
+
+/* --- 下钻明细：区域 → 连接 → 节点 ---
+   层级本身直接复用三页那套 .node-groups / .tree-group / .tree-head / .tree-body
+   （连缩进竖线一起），这里只补两处细节：连接标题条上的「集群 · 节点 · 版本 ·
+   HA」小字，以及读不到节点时的那句提示。 */
+.posture-conn-meta {
+  min-width: 0;
+  max-width: 42ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+/* 连接不可达 / 令牌读不到节点时，三级里代替节点列表出现的那句 */
+.posture-empty {
+  margin: 0;
+  padding: 8px 4px;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2879,14 +3052,6 @@ body.is-col-resizing * {
   transition: width var(--transition);
 }
 
-/* 模板不计入运行状态：不写这一行，用户会把总数和侧边栏对不上 */
-.dist-foot {
-  padding-top: 10px;
-  border-top: 1px solid var(--border-muted);
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-}
-
 /* ---------------------------------------------------------------------------
    实时指标连接指示（仪表盘）
    注意：类名不能叫 .live-dot / .live-indicator —— charts.css 里已有一套
@@ -3045,6 +3210,48 @@ body.is-col-resizing * {
   gap: 16px;
   padding: 12px 4px;
   flex-wrap: wrap;
+}
+
+/* ---- 分页条 = 表格卡片的下沿（页脚）----
+   分页条一直是紧跟着 `.table-container` 渲染的（工具栏 + 表格本来就拼成一张卡，
+   见 layout.css 的 .toolbar + .table-container）。原先它漂在这张卡外面、直接落在
+   页面底色上，看着像另一块东西挂在那儿；这里让它接管卡片的下沿：表格容器让出
+   底边框与下圆角，分页条补上左右 / 下边框，上沿的那条线就是分隔线，
+   底色仍用卡片底色 —— 表格、分页条从此是一整张卡。
+
+   空列表（虚线框那张）一视同仁：分页条照样接在它下沿。原先给空状态留了一口气
+   （虚线框保持闭合、分页条退成独立小卡），结果「暂无快照」下面多空一道、
+   分页条孤零零挂在下面 —— 空列表本来就已经没内容，再空一道更像页面坏了。 */
+.table-container + .pagination {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 让出下沿：底边框与下圆角交给分页条，否则两张卡的边框会叠成一条 2px 粗线。
+   带上 .toolbar 是为了在「工具栏 + 表格」时压过 layout.css 里那条下圆角规则
+   （两边同权重时会由文件加载顺序决定，写清楚才不靠运气）。 */
+.table-container:has(+ .pagination),
+.toolbar + .table-container:has(+ .pagination) {
+  border-bottom: none;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* ---- 把 .page 的段间距在「同一张卡内部」抵消掉 ----
+   .page 是 flex 列 + --page-gap 间距（见 global.css），而我们这里的三段
+   （工具栏 / 表格 / 分页条）本来就该贴成一张卡：gap 会在它们之间各挤出
+   一条页面底色 —— 工具栏下面空一道、表格最后一行与分页条之间再空一道，
+   卡片看着就是散的。这两处按 gap 反向拉回来。
+
+   只对**直接挂在 .page 下的**那几段下手：工具栏与表格被包在别的容器里时
+   （虚拟机列表把它们放在一层 div 中、SSH 那几页在 Card 里），本来就没有
+   gap，不该再拉一次。 */
+.page > .toolbar + .table-container,
+.page > .table-container + .pagination {
+  margin-top: calc(-1 * var(--page-gap, 20px));
 }
 
 .pagination-info {
@@ -3573,27 +3780,14 @@ body.is-col-resizing * {
 }
 
 /* ---------------------------------------------------------------------------
-   角色卡片：沿用通用 entity-card，只收窄指标栏并锁住描述行数
+   角色列表（表格）：权限格 = 读数 + 一条细覆盖率条
    --------------------------------------------------------------------------- */
 
-/* 只有「权限 / 在用用户」两格，三列栅格会空出三分之一 */
-.role-card .entity-card-stats {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-/* 描述最多两行：自定义角色的长描述会把同一行的卡片撑得参差不齐 */
-.role-card-desc {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* 卡片底部（entity-card-footer）右侧的图标按钮组 */
-.role-card-actions {
+.role-perms-cell {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -3641,223 +3835,175 @@ body.is-col-resizing * {
 }
 
 /* ---------------------------------------------------------------------------
-   告警历史卡片
-   --------------------------------------------------------------------------- */
+   告警历史（表格）
+   ---------------------------------------------------------------------------
+   原来是几十张卡片堆成网格。卡片要一屏放得下才划算，可告警恰恰是「越堆越多」的
+   数据 —— 要找某一条只能一路滚到底，也没法横向比「哪台机器反复在告警」。
+   下面这几个格子都压在一行内，行高只由 .table-dense 的 6px 内边距决定。 */
 
-.alert-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
-}
-
-.alert-card {
-  position: relative;
-  display: flex;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-surface);
-  transition: border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
-}
-
-.alert-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-}
-
-.alert-card-stripe {
-  width: 4px;
-  flex-shrink: 0;
-}
-
-.alert-sent .alert-card-stripe {
-  background: linear-gradient(180deg, var(--success), rgba(52, 211, 153, 0.25));
-}
-
-.alert-sent:hover {
-  border-color: rgba(52, 211, 153, 0.45);
-}
-
-.alert-failed .alert-card-stripe {
-  background: linear-gradient(180deg, var(--danger), rgba(251, 113, 133, 0.25));
-}
-
-.alert-failed:hover {
-  border-color: rgba(251, 113, 133, 0.45);
-}
-
-/* 主动静默：既不是成功也不是失败，用中性灰。
-   它和「发送失败」必须一眼可辨 —— 前者是运维自己关掉了推送，后者才是真出了
-   问题；两者都是红色的话，割接窗口一过，真故障就淹没在一堆自己关出来的红条里。 */
-.alert-muted .alert-card-stripe {
-  background: linear-gradient(180deg, var(--text-muted), rgba(140, 140, 140, 0.18));
-}
-
-.alert-muted:hover {
-  border-color: var(--border-muted);
-}
-
-.alert-card-body {
-  flex: 1;
-  min-width: 0;
-  padding: 13px 15px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.alert-card-top {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.alert-card-icon {
+/* 时间：相对时间更好读，绝对时间挂 title */
+.alert-hist-time {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  flex-shrink: 0;
+  gap: 5px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
-.alert-card-icon.is-sent {
-  color: var(--success);
-  background: var(--success-dim);
+/* 规则名 + 归属用户徽章，超长省略。间隙给到 8px：12px 字号下规则名与徽章
+   贴在一起会读成一句话（「虚拟机CPU告警admin」） */
+.alert-hist-rule {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.alert-card-icon.is-failed {
-  color: var(--danger);
-  background: var(--danger-dim);
+.alert-hist-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
-.alert-card-icon.is-muted {
-  color: var(--text-muted);
+.alert-hist-metric-icon {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+/* 数值：一条 4px 占比 + 阈值刻度 + 数字，压在一行里。
+   刻度是这一格的灵魂 —— 「92%，阈值 85%」读成一句话，条形只负责给出直观印象。 */
+.alert-hist-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.alert-hist-bar {
+  position: relative;
+  /* 基准取 96px 而不是 auto：条里没有内容，basis 给 auto 会直接缩到
+     min-width，表格里那条永远是最短的 40px，刻度位置根本看不清。
+
+     max-width 放到 160px：定宽布局下「数值」列会按比例变宽（见 hostColumns 的
+     注释），宽屏上多出来的那一截由这根条吸收，格子右边不会又空出一块。 */
+  flex: 1 1 96px;
+  min-width: 40px;
+  max-width: 160px;
+  height: 4px;
+  border-radius: var(--radius-pill);
   background: var(--bg-hover);
 }
 
+.alert-hist-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+}
+
+/* 阈值刻度：细条上的深色刻度在深色填充上会糊掉，改成一道亮缺口 + 一圈暗边 ——
+   无论填充是绿是橙是红都能看清刻度在哪 */
+.alert-hist-bar-threshold {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--bg-elevated);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.22);
+}
+
+.alert-hist-num {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.alert-hist-thr {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 /* ---------------------------------------------------------------------------
-   告警通知渠道：一张卡片里放多条通道，靠分隔线区分
+   告警通知渠道：渠道标题行 + 渠道内的表单呼吸感
    ---------------------------------------------------------------------------
+   这组类名（.alc-ch / .alc-ch-name / .alc-ch-actions）原先**一个样式都没写**，
+   只在 JSX 里挂着。于是「一个渠道」实际渲染成：
 
-   通道的「头部」单独成块、表单跟在后面（而不是把表单也套进 section），这样两个
-   通道能共用同一套 .form-grid 缩进，不必为多一层嵌套重排整段表单。
-   --------------------------------------------------------------------------- */
+     * .alc-ch 是个普通 div —— 子元素按行内流排，名字和徽章挤成一行；
+     * .alc-ch-actions 是**块级** div —— 被顶到下一行，且上下零间距。
 
+   结果「发送测试 / 保存」紧贴在渠道名下面，中间连一条缝都没有，看着就是
+   两截挤在一起。现在它是正经的标题行：左边「图标 + 名字 + 状态徽章」，
+   右边操作按钮，同一行两端对齐。 */
 .alc-ch {
   display: flex;
   align-items: center;
-  gap: 10px;
   flex-wrap: wrap;
-  margin: 26px 0 14px;
-  padding-top: 18px;
+  gap: 10px 12px;
+}
+
+/* 第二条渠道起，上方拉一条分隔线。飞书与通用 Webhook 是**两条独立通道**
+   （可以只开一条，也可以都开），必须在视觉上能一眼看出是两块配置 ——
+   否则两组表单会连成一大片，读到一半分不清在配哪条。 */
+.alc-ch:not(.alc-ch--first) {
+  margin-top: 22px;
+  padding-top: 20px;
   border-top: 1px solid var(--border-muted);
 }
 
-/* 第一条通道紧跟在卡片标题下面：既不需要分隔线，也不该多出一段上间距 */
-.alc-ch--first {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
+/* 名字 + 徽章作为一个整体：窄屏放不下时让操作按钮换行，而不是把徽章从名字
+   旁边拆走 —— 拆开后「已加密保存」就不知道在说哪条渠道了。 */
+.alc-ch-id {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-width: 0;
 }
 
 .alc-ch-name {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-primary);
 }
 
+/* 图标退后一步：渠道名才是这一行的主角，图标也用强调色会让整行都在抢注意力 */
 .alc-ch-name svg {
-  color: var(--accent);
+  color: var(--text-muted);
 }
 
-/* 按钮推到最右：头部左边回答「是谁、什么状态」，右边回答「能对它做什么」 */
+/* margin-left: auto 把它推到右端。宽度不够时随 flex-wrap 掉到下一行，
+   此时 auto 依然生效，按钮仍然右对齐，不会孤零零挂在左侧。 */
 .alc-ch-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
   margin-left: auto;
 }
 
-.alert-card-title {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  font-size: var(--font-size-md);
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 标题行与下面第一排字段之间留出呼吸：贴在一起时，渠道名会被读成第一个
+   字段的标签（「飞书机器人」+ 输入框看着才像一对）。 */
+.alc-ch + .form-grid {
+  margin-top: 16px;
 }
 
-.alert-card-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+/* 渠道卡片内的字段间距比全局松一档。全局 --field-gap 是 6px，对这里 12px 的
+   说明文字（「已加密存储，当前地址：https://…」）太挤；说明还常是长句，
+   行高也要给足，否则三行说明糊成一块。 */
+.alc-channels .field {
+  gap: 8px;
 }
 
-.alert-card-target {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.alert-card-metric-icon {
-  display: inline-flex;
-  color: var(--accent);
-}
-
-.alert-card-time {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.alert-card-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.alert-card-bar {
-  position: relative;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-hover);
-  overflow: hidden;
-}
-
-.alert-card-bar-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: var(--radius-pill);
-  transition: width var(--transition);
-}
-
-.alert-card-bar-threshold {
-  position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 2px;
-  background: var(--text-primary);
-  opacity: 0.55;
-  border-radius: 2px;
-}
-
-.alert-card-metric-val {
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+.alc-channels .field-message {
+  line-height: 1.7;
 }
 
 /* ---------------------------------------------------------------------------
@@ -4370,6 +4516,10 @@ body.is-col-resizing * {
   margin-bottom: 6px;
 }
 
+/* 注：`.table-colbar` 只是 columnMenu 的默认落点。列表页现在都把列设置按钮
+   直接排进工具栏（见 GuestList），这条窄条就整条不再出现 —— 一个按钮不值得
+   多占一行，也不会把上面的工具栏与下面的表格从中间切断。 */
+
 .colset {
   position: relative;
   display: inline-flex;
@@ -4669,9 +4819,17 @@ body.is-col-resizing * {
   background: var(--accent-dim);
 }
 
-/* 已吊销 / 已过期的令牌：压暗，但仍然可读，便于事后追溯 */
+/* 已吊销 / 已过期的令牌：压暗的是「这条记录已失效」这件事，但仍然可读，
+   便于事后追溯。
+
+   注意压暗落在**内容区**而不是整个 .profile-item：原先整行 opacity:.66，
+   连行内那颗按钮一起压 —— 「删除」正是这一行唯一可做的事，淡到像禁用就等于
+   没给入口（子元素设 opacity:1 也救不回来，父级 opacity 作用于整个子树）。 */
 .profile-item.is-muted {
   background: transparent;
+}
+
+.profile-item.is-muted > .profile-item-main {
   opacity: 0.66;
 }
 
@@ -4707,6 +4865,28 @@ body.is-col-resizing * {
   border-radius: var(--radius);
   color: var(--text-muted);
   font-size: var(--font-size-sm);
+}
+
+/* ---- 等高且不留空洞的卡片 ----
+   同一行里的两张卡由 grid 默认的 align-items:stretch 拉成等高 —— 这本身是对的
+   （并排两块高矮不一会显得没对齐），但内容少的那张底部就会空出一大块，看着像
+   没加载完。
+
+   解法不是取消等高，而是让卡片内部撑满、把「操作行」压到底部：
+   状态与说明留在顶部，按钮贴在下沿，中间那段空白就成了有意的呼吸感。
+   需要贴底的那一行自己带 .dyn-foot（不是所有行都该贴底：夹在中间的表单字段
+   被拉开只会显得散）。 */
+.profile-card-fill {
+  display: flex;
+  flex-direction: column;
+}
+
+.profile-card-fill .dyn-list {
+  flex: 1;
+}
+
+.profile-card-fill .dyn-foot {
+  margin-top: auto;
 }
 
 /* ---- 我的权限 ---- */

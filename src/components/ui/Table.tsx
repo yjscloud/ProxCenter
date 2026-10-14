@@ -54,6 +54,34 @@ export interface SortState {
   direction: SortDirection;
 }
 
+/**
+ * 按受控排序状态给**整份数据**排序。
+ *
+ * 抽出来是为了让「排序 + 分页」的列表能按正确顺序处理：前端分页是先切片的，
+ * 若先切片再排序，排的只是当前这一页 —— 第 2 页里最大的那条照样留在第 2 页。
+ * 所以分页的页面要先用它排完整份数据，再交给 usePaged 切片（见 GuestList）。
+ * 表格内部也用它，两处规则完全一致：数字比大小，其余按中文 locale 比较。
+ */
+export function sortRows<T>(
+  rows: T[],
+  columns: Array<Column<T>>,
+  sort: SortState | null | undefined,
+): T[] {
+  if (!sort) return rows;
+  const col = columns.find((c) => c.key === sort.key);
+  const value = col?.sortValue;
+  if (!value) return rows;
+  const dir = sort.direction === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = value(a);
+    const vb = value(b);
+    if (typeof va === 'number' && typeof vb === 'number') {
+      return (va - vb) * dir;
+    }
+    return String(va).localeCompare(String(vb), 'zh-CN') * dir;
+  });
+}
+
 export interface TableProps<T> {
   columns: Array<Column<T>>;
   rows: T[];
@@ -78,6 +106,13 @@ export interface TableProps<T> {
   className?: string;
   /** 行悬浮提示 */
   rowTitle?: (row: T) => string;
+  /**
+   * 行被指向时回调。给「点开这一行还要再拉一次接口」的列表用：鼠标移过去就开始
+   * 预取，点下去时数据往往已经在路上了（存储内容页就是这么用的，那里的接口在
+   * PVE 侧要真扫一遍目录，慢得肉眼可见）。
+   * 调用方自己做防抖 —— 扫过十行不该是十次请求。
+   */
+  onRowHover?: (row: T) => void;
   /** 是否允许拖拽调整列宽（默认开启；双击把手可恢复该列默认宽度） */
   resizable?: boolean;
   /**
@@ -106,6 +141,7 @@ export function Table<T>({
   onSortChange,
   className,
   rowTitle,
+  onRowHover,
   resizable = true,
   columnMenu,
 }: TableProps<T>) {
@@ -202,22 +238,14 @@ export function Table<T>({
     [widths],
   );
 
-  /* ---- 排序处理 ---- */
-  let displayRows = rows;
-  if (sort) {
-    const col = columns.find((c) => c.key === sort.key);
-    if (col?.sortValue) {
-      const dir = sort.direction === 'asc' ? 1 : -1;
-      displayRows = [...rows].sort((a, b) => {
-        const va = col.sortValue!(a);
-        const vb = col.sortValue!(b);
-        if (typeof va === 'number' && typeof vb === 'number') {
-          return (va - vb) * dir;
-        }
-        return String(va).localeCompare(String(vb), 'zh-CN') * dir;
-      });
-    }
-  }
+  /* ---- 排序处理 ----
+     用的是与分页列表同一个 sortRows（见它的注释）：分页的页面已经先把整份数据
+     排好、再切页传进来，这里重排当前这一页结果不变，只是保证两条路径的排序
+     规则一模一样。 */
+  const displayRows = useMemo(
+    () => sortRows(rows, columns, sort),
+    [rows, columns, sort],
+  );
 
   const handleSortClick = (col: Column<T>) => {
     if (!col.sortable || !onSortChange) return;
@@ -380,6 +408,7 @@ export function Table<T>({
                   clickable ? 'is-clickable' : ''
                 }`}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
+                onMouseEnter={onRowHover ? () => onRowHover(row) : undefined}
                 tabIndex={clickable ? 0 : undefined}
                 onKeyDown={
                   clickable

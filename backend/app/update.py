@@ -57,6 +57,10 @@ FIRST_DELAY = 15 * 60
 MANUAL_COOLDOWN = 60
 #: 「更新中」超过这个时长仍未换版本，就当这次更新失败了（部署脚本卡住、网络断等）。
 APPLYING_TIMEOUT = 30 * 60
+#: 脚本报成功、面板进程却迟迟没重启：等这么久还不重启就当这次更新失败了（见
+#: :func:`_applying_state`）。重启是同步发生的（deploy.sh 的 [4/5] 步），这点宽限只是
+#: 留给「面板正在重启、这个响应还是旧进程发出来的」这类时序缝隙。
+RESTART_GRACE = 60
 #: 出网超时。GitHub 在国外，但只取一个小 JSON，15 秒足够。
 TIMEOUT = httpx.Timeout(15.0, connect=8.0)
 
@@ -256,8 +260,16 @@ async def save_state(state: Dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------ 部署形态
-def _run(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 15) -> Tuple[int, str]:
-    """跑一条**只读**命令。失败返回 ``(-1, 原因)``，绝不抛异常。"""
+def _run(
+    cmd: List[str], cwd: Optional[Path] = None, timeout: int = 15, *, strip: bool = True
+) -> Tuple[int, str]:
+    """跑一条**只读**命令。失败返回 ``(-1, 原因)``，绝不抛异常。
+
+    ``strip=False`` 给的是**位置敏感**的输出：``git status --porcelain`` 的第一行以空格
+    开头（未暂存的改动写作 ``" M <path>"``），顺手 strip 一下就变成 ``"M <path>"``，
+    再按「前三个字符是状态位」去切，路径会被咬掉第一个字母 —— 界面上显示成
+    ``ackage-lock.json``（实测踩到，见 :func:`_porcelain_path`）。
+    """
     try:
         proc = subprocess.run(
             cmd,
@@ -268,6 +280,8 @@ def _run(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 15) -> Tuple
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return -1, str(exc)
+    if not strip:
+        return proc.returncode, proc.stdout or ""
     text = (proc.stdout or "").strip() or (proc.stderr or "").strip()
     return proc.returncode, text
 
@@ -289,6 +303,20 @@ def service_name() -> str:
     return ""
 
 
+def service_id(name: str = "") -> str:
+    """服务名去掉 ``.service`` 后缀 —— 这才是 ``deploy.sh --service`` 要的形状。
+
+    为什么不能把 :func:`service_name` 的结果直接转手：deploy.sh 自己会拼
+    ``/etc/systemd/system/<名字>.service`` 并 ``systemctl restart <名字>``。cgroup 里读到
+    的却是**完整单元名**（``proxcenter.service``），原样传进去就变成
+    ``/etc/systemd/system/proxcenter.service.service``，然后去重启那个刚写出来的假单元 ——
+    真正的面板进程纹丝不动，代码根本没换。0.2.8 → 0.2.9 实测踩到：日志里写着
+    「Wrote /etc/systemd/system/proxcenter.service.service」，而 [5/5] 的健康检查
+    回来还是 ``"version":"0.2.8"``。
+    """
+    return re.sub(r"\.service$", "", (name if name else service_name()).strip())
+
+
 def in_docker() -> bool:
     return Path("/.dockerenv").exists() or os.environ.get("PROXCENTER_IN_DOCKER") == "1"
 
@@ -299,6 +327,10 @@ def _porcelain_path(line: str) -> str:
     格式是 ``XY <path>``（重命名是 ``XY <old> -> <new>``），XY 恒为两个字符，
     所以第 4 个字符起就是文件名。带空格或以非 ASCII 开头的路径会被 git 加上引号，
     这里一并剥掉，免得界面上显示成 ``"\\346\\226\\207\\344\\273\\266"``。
+
+    前提是这一行**没有被 strip 过**：XY 里那个表示未暂存的空格去掉之后，文件名会被
+    切掉第一个字母（``package-lock.json`` → ``ackage-lock.json``）。取输出的地方要么
+    用 :func:`_run` 的 ``strip=False``，要么自己别 strip（见 :func:`git_info`）。
     """
     text = line[3:] if len(line) > 3 else line
     if " -> " in text:
@@ -319,7 +351,11 @@ def git_info(root: Path = ROOT) -> Dict[str, Any]:
     tag_code, tag = _run(["git", "describe", "--tags", "--exact-match"], root)
     if tag_code != 0:
         tag = ""
-    code, dirty = _run(["git", "status", "--porcelain", "--untracked-files=no"], root)
+    # strip=False：porcelain 的第一行以空格开头（未暂存的改动），strip 掉会让
+    # _porcelain_path 少切一个字母，界面上看到的文件名就是残的。
+    code, dirty = _run(
+        ["git", "status", "--porcelain", "--untracked-files=no"], root, strip=False
+    )
     files = [line for line in dirty.splitlines() if line.strip()] if code == 0 else []
     return {
         "is_git": True,
@@ -426,7 +462,10 @@ def deployment() -> Dict[str, Any]:
     return {
         "form": form,
         "root": str(ROOT),
-        "service": service,
+        # service：交给 deploy.sh --service 与 systemctl 的**裸**名（proxcenter）
+        # unit：完整单元名（proxcenter.service），只用于界面展示
+        "service": service_id(service),
+        "unit": service,
         "managed": bool(service) and git.get("root") == str(ROOT),
         "is_root": is_root,
         "writable": writable,
@@ -556,14 +595,74 @@ def _failure_hint(applying: Dict[str, Any]) -> str:
     )
 
 
+def _process_started_at() -> float:
+    """当前面板进程的启动时间（epoch 秒）。读不到（非 Linux / 无 /proc）返回 0。
+
+    靠 ``/proc/self/stat`` 的 ``starttime``（自开机起的 tick 数）加减 ``/proc/uptime``
+    反推。它回答的是一个版本号回答不了的问题：**面板进程到底重启过没有**（见
+    :func:`_applying_state`）。
+    """
+    try:
+        stat = Path("/proc/self/stat").read_text(encoding="utf-8", errors="ignore")
+        # comm 字段（第 2 个）自己可能带空格和括号，所以从最后一个 ")" 之后开始切
+        fields = stat.rsplit(")", 1)[1].split()
+        ticks = int(fields[19])  # starttime 是第 22 个字段，切掉前两个后正好落在下标 19
+        uptime = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+        return time.time() - uptime + ticks / (os.sysconf("SC_CLK_TCK") or 100)
+    except (OSError, ValueError, IndexError, AttributeError):
+        return 0.0
+
+
+def _restart_hint() -> str:
+    """脚本成功、面板进程却没重启时给出的「下一步」。
+
+    这是「更新看起来做完了、版本却没变」里最容易被误判成「版本号写错了」的一种：
+    代码已经换了，跑着的还是旧进程（见 :func:`service_id` 里记的那次实测）。
+    """
+    service = service_id() or "proxcenter"
+    return i18n.pick(
+        "更新脚本本身执行成功了，但面板进程始终没有重启，所以内存里跑的还是旧代码。"
+        "多半是重启到了另一个 systemd 单元（例如多带了一层 .service 后缀的那个），"
+        f"或者有一个手工启动的实例占着端口。执行 sudo systemctl restart {service} "
+        "后刷新本页即可。",
+        "The update script itself succeeded, but the panel process never restarted, so the "
+        "old code is still the one running. It was most likely restarted onto a different "
+        "systemd unit (for example one with a doubled .service suffix), or a manually "
+        f"started instance is holding the port. Run sudo systemctl restart {service} and "
+        "reload this page.",
+    )
+
+
+def _record_outcome(
+    state: Dict[str, Any], applying: Dict[str, Any], ok: bool, *, at: int = 0, hint: str = ""
+) -> None:
+    """给这次更新定个性：写进 ``last_update``，并把 ``applying`` 标记清掉。"""
+    last: Dict[str, Any] = {
+        "tag": str(applying.get("tag") or ""),
+        "ok": ok,
+        "at": at or int(time.time()),
+        "log": str(applying.get("log") or ""),
+    }
+    if hint:
+        last["hint"] = hint
+    state["last_update"] = last
+    state.pop("applying", None)
+
+
 def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
     """把「更新中」这个状态收干净。
 
     面板自己重启后没人会去回写结果，所以这里**惰性判定**：
+
     * 版本已经等于目标 tag → 成功，清掉标记并记一笔；
     * 脚本写下的结果文件说 ``code != 0`` → **立刻**算失败 —— 这是最常见的失败路径
       （脚本几秒内就退出），界面不该为此干等 :data:`APPLYING_TIMEOUT` 那么久还显示
       「正在更新中」（实测踩过：deploy.sh 在环境检查那一步就退了，界面卡住不动）；
+    * 脚本说成功（``code == 0``）时**不能只看版本号**，还要看面板进程有没有真的重启：
+      重启到了别的单元、或手工实例占着端口时，代码换了而进程没换，版本号自然对不上；
+      反过来，发布时漏改了 ``__version__``（v0.2.9 里写的还是 ``0.2.8``）同样对不上，
+      但那种情况**确实更新成功了**。用「当前进程的启动时间晚于本次更新开始」把两者
+      分开：该成功的判成功，进程始终没换的当场报失败，而不是干等 30 分钟；
     * 超过 :data:`APPLYING_TIMEOUT` 还没换过来 → 视为失败（脚本卡住 / 机器断电）；
     * 其余情况照实返回，界面上显示「更新进行中」。
     """
@@ -573,36 +672,26 @@ def _applying_state(state: Dict[str, Any]) -> Dict[str, Any]:
     tag = str(applying.get("tag") or "")
     started = int(applying.get("started_at") or 0)
     done = bool(tag) and parse_version(tag) and parse_version(tag) == parse_version(__version__)
-    if done:
-        state["last_update"] = {
-            "tag": tag,
-            "ok": True,
-            "at": int(time.time()),
-            "log": str(applying.get("log") or ""),
-        }
-        state.pop("applying", None)
-        return {}
     outcome = _read_result(applying)
+    at = int(outcome.get("at") or 0)
+    if not done and outcome.get("code") == "0":
+        boot = _process_started_at()
+        if boot and started and boot > started:
+            # 进程是在本次更新开始之后起来的：内存里跑的就是刚切过来的那份代码
+            done = True
+        elif boot and at and time.time() - at > RESTART_GRACE:
+            # 脚本成功退出、面板却始终没重启：代码换了，但生效不了
+            _record_outcome(state, applying, False, at=at, hint=_restart_hint())
+            return {}
+    if done:
+        _record_outcome(state, applying, True)
+        return {}
     if outcome and outcome.get("code") not in (None, "0"):
-        state["last_update"] = {
-            "tag": tag,
-            "ok": False,
-            "at": int(outcome.get("at") or time.time()),
-            "log": str(applying.get("log") or ""),
-            # 失败时多给一句「该做什么」：原始日志是给开发者看的，用户只能来问
-            "hint": _failure_hint(applying),
-        }
-        state.pop("applying", None)
+        # 失败时多给一句「该做什么」：原始日志是给开发者看的，用户只能来问
+        _record_outcome(state, applying, False, at=at, hint=_failure_hint(applying))
         return {}
     if started and time.time() - started > APPLYING_TIMEOUT:
-        state["last_update"] = {
-            "tag": tag,
-            "ok": False,
-            "at": int(time.time()),
-            "log": str(applying.get("log") or ""),
-            "hint": _failure_hint(applying),
-        }
-        state.pop("applying", None)
+        _record_outcome(state, applying, False, hint=_failure_hint(applying))
         return {}
     return dict(applying)
 
@@ -728,7 +817,10 @@ def _script_text(
       :func:`_read_progress`）。
     """
     root = dep.get("root") or str(ROOT)
-    service = str(dep.get("service") or "proxcenter")
+    # 这里再归一化一次：deploy.sh 自己拼 `<名字>.service`，传进去的必须是裸名。
+    # 万一调用方给的还是完整单元名（历史状态里的 service 字段就是这样），
+    # 拼出来的 proxcenter.service.service 会让整次更新重启一个假单元（见 service_id）。
+    service = service_id(str(dep.get("service") or "")) or "proxcenter"
     pip = str(ROOT / ".venv" / "bin" / "pip")
     outcome = result or log.with_suffix(".result")
     stamp = log.stem.replace("update-", "")
@@ -797,6 +889,19 @@ else
   echo "            想挂回分支：git checkout $TARGET_BRANCH"
 fi
 echo "[$(date -Is)] 代码已切到 {tag}（commit $(git rev-parse --short HEAD)）"'''
+        # git 安装才有「工作区」这个概念：装完把被构建过程改写的锁文件复原（见下面的注释）
+        cleanup_section = '''# 构建过程会重写 package-lock.json（npm 版本 / registry 元数据差异），工作区因此多出
+# 一处「未提交改动」—— 下一次一键更新就会被「先 stash 本地改动」这道门槛挡住
+# （界面上那行「未提交的改动：package-lock.json」就是它，实测踩到过）。仓库里的锁文件
+# 才是准的，构建完复原一次，工作区保持干净，下次仍然是一键更新。
+if [ -n "$(git status --porcelain --untracked-files=no -- package-lock.json)" ]; then
+  echo "[$(date -Is)] npm 改写了 package-lock.json，恢复为仓库里的版本（保持工作区干净）"
+  git checkout -- package-lock.json
+fi'''
+
+    if archive:
+        # 源码包安装没有 .git：上面那类「工作区」自愈全部不适用
+        cleanup_section = ""
 
     return f"""#!/usr/bin/env bash
 # 由 ProxCenter 生成：把面板从 {__version__} 更新到 {tag}（{'源码包安装' if archive else 'git 工作区'}）。
@@ -825,6 +930,7 @@ if ! ./deploy.sh --service "{service}"; then
   echo "            修好上面的报错后手工重跑：cd {root} && sudo ./deploy.sh"
   exit 1
 fi
+{cleanup_section}
 rm -rf "$TMP"
 echo "PROGRESS 99 verify"
 echo "[$(date -Is)] 更新完成，当前版本：$(git describe --tags 2>/dev/null || grep -o '[0-9]*\\.[0-9]*\\.[0-9]*' backend/app/__init__.py | head -1)"
@@ -1042,10 +1148,13 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # 「只差工作区干净」要单独报出来：界面据此给一个次级按钮（先 stash 本地改动再更新）。
     # 否则只要用户手里有未提交改动，这个功能就等于不存在 —— 而开发机上几乎总是有。
     ready_dirty = ready or _apply_ready(dep, applying, allow_dirty=True)[0]
-    if ready and not available:
-        ready, reason = False, i18n.pick("当前已是最新版本。", "Already up to date.")
     if not available:
         ready_dirty = False
+        if not applying:
+            # 已经是最新版本时，「不能一键更新」的原因就是它本身。否则这里会把顺带的
+            # 「工作区有 N 处未提交改动」当成理由显示出来，让人以为更新被那道门槛挡住了
+            # （实测：更新完之后工作区里留着被 npm 改写的 package-lock.json）。
+            ready, reason = False, i18n.pick("当前已是最新版本。", "Already up to date.")
     manual = manual_commands(dep, str(latest.get("tag") or ""), await get_repo())
     # 更新结束（成功或失败）后提醒一次：脚本是在面板之外跑完的，而它最后一步就是重启
     # 面板 —— 没人会在那里写消息，所以在这里补上，用 notified 标记保证只发一次。
@@ -1085,7 +1194,9 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "deployment": {
             "form": dep.get("form"),
             "root": dep.get("root"),
+            # service 是交给 systemctl / deploy.sh 的裸名；unit 是给人看的完整单元名
             "service": dep.get("service"),
+            "unit": dep.get("unit"),
             "managed": dep.get("managed"),
             "is_root": dep.get("is_root"),
             "git": dep.get("git"),

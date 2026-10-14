@@ -34,6 +34,7 @@ import {
  *  tsc 拦不住，改错一个字母只会在界面上显示出键名本身。 */
 const FORM_KEY: Record<string, MessageKey> = {
   git: 'update.form.git',
+  archive: 'update.form.archive',
   docker: 'update.form.docker',
   other: 'update.form.other',
 };
@@ -79,7 +80,9 @@ export function PanelUpdateCard() {
         {t('update.deployForm')}：
         {t(FORM_KEY[data.deployment?.form ?? 'other'] ?? 'update.form.other')}
         {data.deployment?.service ? (
-          <span className="mono"> · {data.deployment.service}</span>
+          /* 显示完整单元名（proxcenter.service）：它才是 `systemctl status` 认的那个名字；
+             deployment.service 是不带后缀的裸名，只给 deploy.sh --service 用 */
+          <span className="mono"> · {data.deployment.unit || data.deployment.service}</span>
         ) : null}
       </div>
 

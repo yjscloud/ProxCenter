@@ -6483,6 +6483,7 @@ export const en: Partial<Record<MessageKey, string>> = {
     'This dist/ was produced by an older build script, so it cannot be matched against the backend. Run npm run build to rebuild it (builds since 0.2.2 carry the marker).',
   'update.deployForm': 'Deployment',
   'update.form.git': 'Source + systemd',
+  'update.form.archive': 'Release tarball (no git) + systemd',
   'update.form.docker': 'Docker container',
   'update.form.other': 'Other (see manual commands)',
 

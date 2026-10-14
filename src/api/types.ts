@@ -3961,10 +3961,16 @@ export interface UpdateGitInfo {
 
 /** 面板「是怎么装的」：这决定更新能不能一键做 */
 export interface UpdateDeployment {
-  form?: 'docker' | 'git' | 'other';
+  form?: 'docker' | 'git' | 'archive' | 'other';
   root?: string;
-  /** 当前进程所属的 systemd 服务名（空串 = 不是 systemd 托管的） */
+  /**
+   * 服务名（**不带** `.service`）—— 这个值会交给 `deploy.sh --service` 与 systemctl。
+   * 带不带后缀不是小事：deploy.sh 自己拼 `<名字>.service`，多带一层就会写出
+   * `proxcenter.service.service` 并去重启那个假单元（详见后端 app.update.service_id）。
+   */
   service?: string;
+  /** 完整单元名（`proxcenter.service`）；只用于界面展示，空串 = 不是 systemd 托管的 */
+  unit?: string;
   /** 真的由 systemd 托管：手工起的实例重启的是另一个进程，代码不会换 */
   managed?: boolean;
   is_root?: boolean;

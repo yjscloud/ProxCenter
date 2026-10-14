@@ -99,6 +99,13 @@ def _dep(**over: Any) -> Dict[str, Any]:
     return base
 
 
+def _dep_dirty(**over: Any) -> Dict[str, Any]:
+    """工作区脏的那种部署形态（调用方拿它验证「理由该怎么显示」）。"""
+    dep = _dep(**over)
+    dep["git"] = dict(dep["git"], dirty=True, dirty_files=1, dirty_paths=["package-lock.json"])
+    return dep
+
+
 def _viewer_headers(panel, username: str = "updateviewer") -> Dict[str, str]:
     admin = auth_headers(panel)
     panel.post(
@@ -245,6 +252,42 @@ class TestManualCommands:
         assert any("构建前端" in line for line in lines)
 
 
+class TestDirtyPaths:
+    """「未提交的改动」列出来的文件名。
+
+    实测踩到过一次：界面上显示的是 ``ackage-lock.json`` —— 取 git 输出时顺手 strip 了
+    一下，porcelain 第一行状态位前面的那个空格没了，再按「前三个字符是状态位」去切，
+    文件名就被咬掉一个字母。只有第一行会中招（后面那些行的空格被换行保护住了），
+    所以「一处改动」的时候看起来就像文件真的叫这个名字。
+    """
+
+    def test_parses_status_prefix_and_quoted_paths(self) -> None:
+        assert update._porcelain_path(" M package-lock.json") == "package-lock.json"
+        assert update._porcelain_path("M  backend/app/update.py") == "backend/app/update.py"
+        assert update._porcelain_path('R  old.txt -> "new name.txt"') == "new name.txt"
+
+    def test_the_first_line_of_a_real_repo_keeps_its_first_letter(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        (repo / "package-lock.json").write_text("{}", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "x")
+        (repo / "package-lock.json").write_text('{"a": 1}', encoding="utf-8")
+
+        info = update.git_info(repo)
+        assert info["is_git"] is True
+        assert info["dirty"] is True
+        assert info["dirty_files"] == 1
+        assert info["dirty_paths"] == ["package-lock.json"]
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
 class TestUpdateScript:
     def test_every_step_is_checked_and_the_log_is_kept(self) -> None:
         log = Path("/srv/proxcenter/logs/update-20261006-120000.log")
@@ -253,9 +296,41 @@ class TestUpdateScript:
         assert "git fetch --tags --prune origin" in text
         assert "git rev-parse --verify --quiet" in text
         assert 'git checkout "v0.1.5"' in text
-        assert './deploy.sh --service "proxcenter.service"' in text
+        assert './deploy.sh --service "proxcenter"' in text
         # 刻意不用 set -e：失败时要把原因留在日志里，而不是静默退出
         assert "set -euo" not in text
+
+    def test_service_name_loses_exactly_one_suffix(self) -> None:
+        """``--service`` 要的是**裸**服务名，不是 cgroup 里读到的完整单元名。
+
+        deploy.sh 自己拼 ``/etc/systemd/system/<名字>.service`` 并 ``systemctl restart
+        <名字>``；把 ``proxcenter.service`` 原样转手，它就会写出
+        ``proxcenter.service.service`` 并去重启那个刚写出来的假单元 —— 真正的面板进程
+        纹丝不动，代码根本没换（0.2.8 → 0.2.9 实测踩到：日志里写着「Wrote
+        /etc/systemd/system/proxcenter.service.service」，而 [5/5] 的健康检查回来
+        还是 ``"version":"0.2.8"``）。
+        """
+        assert update.service_id("proxcenter.service") == "proxcenter"
+        assert update.service_id("proxcenter") == "proxcenter"
+        assert update.service_id("") == ""
+        # 已经带后缀的旧状态也不能拼出两层
+        text = update._script_text(
+            _dep(service="proxcenter.service"), "v0.1.5", Path("/tmp/x.log")
+        )
+        assert './deploy.sh --service "proxcenter"' in text
+        assert ".service.service" not in text
+
+    def test_the_lockfile_rewritten_by_npm_is_restored(self) -> None:
+        """npm install 会重写 package-lock.json，工作区因此变脏。
+
+        脏了的下一次更新就会被「先 stash 本地改动」挡住 —— 而这不是用户改的东西。
+        脚本在 deploy.sh 成功之后把它复原，一键更新才一直是一键更新。
+        """
+        text = update._script_text(_dep(), "v0.1.5", Path("/tmp/x.log"))
+        assert 'git checkout -- package-lock.json' in text
+        # 源码包安装没有 git：那段自愈不该出现（否则会白失败一次）
+        archive = update._script_text(_archive_dep(), "v0.1.5", Path("/tmp/x.log"))
+        assert "package-lock.json" not in archive
 
     def test_local_changes_are_stashed_instead_of_clobbered(self) -> None:
         """开发机上工作区几乎总是脏的：更新必须先 stash，且不能再用 --force。
@@ -340,10 +415,57 @@ class TestApplyingState:
         assert state["last_update"]["ok"] is False
         assert "applying" not in state
 
-    def test_result_code_zero_does_not_fake_success(self, tmp_path: Path) -> None:
-        """``code=0`` 只说明脚本跑完了：版本没换过来就还不能算成功。"""
+    def test_result_code_zero_does_not_fake_success(self, tmp_path: Path, monkeypatch) -> None:
+        """``code=0`` 只说明脚本跑完了 —— 面板进程没重启过就还不能算成功。
+
+        「更新成功」的真正凭据是**新代码在跑**，版本号只是它的一个侧面（见下一条用例）。
+        """
         result = tmp_path / "update.result"
         result.write_text("code=0\nat=1760000000\n", encoding="utf-8")
+        # 当前进程远早于本次更新就开始跑了：说明脚本没把它换掉
+        monkeypatch.setattr(update, "_process_started_at", lambda: time.time() - 10000)
+        state: Dict[str, Any] = {
+            "applying": {
+                "tag": "v9.9.9",
+                "started_at": int(time.time()),
+                "result": str(result),
+            }
+        }
+        assert update._applying_state(state) == {}
+        assert state["last_update"]["ok"] is False
+        # 说清是哪一步没成：否则用户只会看到「更新失败」和一堆 git / npm 输出
+        assert "重启" in state["last_update"]["hint"]
+
+    def test_restarted_panel_counts_as_success_even_if_the_version_string_did_not_move(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """发布时漏改了 ``__version__``（v0.2.9 里写的还是 ``0.2.8``）也要判成成功。
+
+        只看版本号的话，这次更新会永久停在「正在更新中，请等面板重启」—— 界面卡住、
+        一键更新的按钮跟着一起坏掉，30 分钟后还会被误判成失败发一条假提醒。
+        进程在更新开始之后重启过，就说明跑在内存里的确实是刚切过来的那份代码。
+        """
+        result = tmp_path / "update.result"
+        result.write_text("code=0\nat=1760000001\n", encoding="utf-8")
+        monkeypatch.setattr(update, "_process_started_at", lambda: time.time() - 10)
+        state: Dict[str, Any] = {
+            "applying": {
+                "tag": "v9.9.9",
+                "started_at": int(time.time()) - 600,
+                "result": str(result),
+            }
+        }
+        assert update._applying_state(state) == {}
+        assert state["last_update"]["ok"] is True
+        assert "applying" not in state
+
+    def test_unreadable_process_start_falls_back_to_waiting(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """进程启动时间读不到（非 Linux）时退回旧口径：不猜结论，继续显示「更新中」。"""
+        result = tmp_path / "update.result"
+        result.write_text("code=0\nat=1760000000\n", encoding="utf-8")
+        monkeypatch.setattr(update, "_process_started_at", lambda: 0.0)
         state: Dict[str, Any] = {
             "applying": {
                 "tag": "v9.9.9",
@@ -460,6 +582,35 @@ class TestUpdateApi:
         resp = api.post("/api/update/apply", json={}, headers=auth_headers(api))
         assert resp.status_code == 400
         assert "systemd" in resp.json()["detail"]
+
+    def test_up_to_date_reason_wins_over_the_dirty_worktree(self, api, monkeypatch) -> None:  # noqa: F811
+        """已经是最新版本时，「不能一键更新」的理由就是它自己。
+
+        否则界面上会把顺带的「工作区有 1 处未提交改动」显示成理由，让人以为更新被那道
+        门槛挡住了 —— 而那一处多半只是 npm 重写过的 package-lock.json（实测踩到）。
+        """
+        headers = auth_headers(api)
+        monkeypatch.setattr(update, "deployment", _dep_dirty)
+        # 检查到的最新版本就是当前版本：已经是最新，只是工作区里还留着改动
+        monkeypatch.setattr(
+            update,
+            "fetch_latest",
+            _fake_fetch(
+                {
+                    "tag_name": f"v{update.__version__}",
+                    "name": update.__version__,
+                    "body": "",
+                    "html_url": "",
+                    "published_at": "2026-10-06T00:00:00Z",
+                }
+            ),
+        )
+        api.post("/api/update/check", headers=headers)
+        body = api.get("/api/update/status", headers=headers).json()
+        assert body["update_available"] is False
+        assert body["can_apply"] is False
+        assert body["can_apply_dirty"] is False
+        assert "最新" in body["reason"]
 
     def test_scheduler_job_is_registered(self, api) -> None:  # noqa: F811
         """自动检查挂在调度器上（间隔与启停可在「后台作业」页里改）。"""

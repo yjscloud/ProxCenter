@@ -29,6 +29,8 @@ export interface UpdateInfo {
   can_apply: boolean;
   reason: string;
   manual: string[];
+  /** 条件都满足、只差「工作区干净」—— 只有这种时候文件名才值得列出来（见下） */
+  can_apply_dirty?: boolean;
   /** 未提交改动涉及的文件名；列在「为什么不能一键更新」下面，给用户一个下一步 */
   dirty_paths?: string[];
 }
@@ -79,17 +81,22 @@ export function UpdateNoticeLine({ status }: { status: UpdateInfo }) {
   if (status.can_apply) {
     return <Notice tone="info">{t('update.applyHint')}</Notice>;
   }
+  /* 文件名只在「挡路的正是那处改动」时列出来。
+     否则「正在更新中」「当前已是最新版本」这些理由下面也会挂着一行「未提交的改动」，
+     看着像是它把更新挡住了 —— 实测就出现过：更新卡在「正在更新中」的那一屏底下
+     挂着 package-lock.json，让人以为是锁文件的问题（它只是 npm install 顺手改的）。 */
+  const dirtyPaths = status.can_apply_dirty ? status.dirty_paths ?? [] : [];
   return (
     <Notice tone="warning" title={t('update.reasonTitle')}>
       {status.reason}
       {/* 把「有 N 处改动」落成具体文件名：用户扫一眼就知道是不是自己改的。
           实测最常见的一处就是 package-lock.json —— 部署脚本跑 npm install 时
           被重写的，看一眼就能放心点「继续更新」。 */}
-      {status.dirty_paths?.length ? (
+      {dirtyPaths.length ? (
         <div className="mt-8">
           <div className="fs-xs text-muted">{t('update.dirtyFiles')}</div>
           <div className="mono fs-xs" style={{ whiteSpace: 'pre-wrap' }}>
-            {status.dirty_paths.join('\n')}
+            {dirtyPaths.join('\n')}
           </div>
         </div>
       ) : null}

@@ -6356,6 +6356,7 @@ export const zhCN = {
     '这份 dist/ 是用旧版本的构建方式产出的，无法确认它和后端是否配套。执行 npm run build 重新构建即可（0.2.2 起的构建会带上标记）。',
   'update.deployForm': '部署形态',
   'update.form.git': '源码 + systemd',
+  'update.form.archive': '源码包（无 git）+ systemd',
   'update.form.docker': 'Docker 容器',
   'update.form.other': '其它（见手工命令）',
 

@@ -30,6 +30,7 @@ import {
   IconUser,
 } from '../components/Icons';
 import { roleMeta } from '../utils/status'
+import { formatDate, formatDateTime } from '../utils/format';
 import { tStatic, useT } from '../i18n';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
@@ -74,17 +75,21 @@ function tokenState(t: ApiToken): {
  */
 function tokenExpiry(t: ApiToken): string {
   if (!t.expires_at) return tStatic('profile.tokenNeverExpires');
-  const at = new Date(t.expires_at * 1000);
   const days = Math.ceil((t.expires_at * 1000 - Date.now()) / 86_400_000);
+  /* 走统一的格式化：面板设置里的时区对这里同样生效（原先用的 toLocaleString
+     直接吃浏览器时区，与表格里的时间可能对不上） */
   if (days <= 0) {
-    return tStatic('profile.tokenExpiredAt', { date: at.toLocaleDateString() });
+    return tStatic('profile.tokenExpiredAt', { date: formatDate(t.expires_at) });
   }
-  return tStatic('profile.tokenExpiresIn', { date: at.toLocaleDateString(), n: days });
+  return tStatic('profile.tokenExpiresIn', {
+    date: formatDate(t.expires_at),
+    n: days,
+  });
 }
 
 function tokenLastUsed(t: ApiToken): string {
   if (!t.last_used) return tStatic('profile.tokenNeverUsed');
-  const at = new Date(t.last_used * 1000).toLocaleString();
+  const at = formatDateTime(t.last_used);
   return t.last_ip ? `${at} · ${t.last_ip}` : at;
 }
 
@@ -151,7 +156,13 @@ export function Profile() {
   const [tokenBusy, setTokenBusy] = useState(false);
   /* 创建成功那一刻的明文：只活在这次表单里，关掉弹框就再也取不回来了 */
   const [issued, setIssued] = useState<ApiTokenCreated | null>(null);
-  const [revokeTarget, setRevokeTarget] = useState<ApiToken | null>(null);
+  /* 令牌的两个破坏性动作共用一个确认框：吊销（让它失效，记录留着）与
+     删除记录（连那条历史一起抹掉）。文案与后果不同，所以把「做什么」也放进
+     state，而不是开两个几乎一样的弹窗状态。 */
+  const [tokenAction, setTokenAction] = useState<{
+    kind: 'revoke' | 'purge';
+    token: ApiToken;
+  } | null>(null);
 
   /* ---- 我的角色与权限 ---- */
   const permsQuery = useQuery({
@@ -353,16 +364,24 @@ export function Profile() {
     }
   };
 
-  const revokeToken = async () => {
-    const target = revokeTarget;
-    if (!target) return;
+  const runTokenAction = async () => {
+    const action = tokenAction;
+    if (!action) return;
+    const { kind, token } = action;
     try {
-      await tokensApi.revoke(target.id);
-      setRevokeTarget(null);
+      if (kind === 'revoke') {
+        await tokensApi.revoke(token.id);
+      } else {
+        await tokensApi.purge(token.id);
+      }
+      setTokenAction(null);
       await tokensQuery.refetch();
       toast.success(
-        t('profile.tokenRevokedToast'),
-        t('profile.tokenRevokedDetail', { name: target.name }),
+        t(kind === 'revoke' ? 'profile.tokenRevokedToast' : 'profile.tokenPurgedToast'),
+        t(
+          kind === 'revoke' ? 'profile.tokenRevokedDetail' : 'profile.tokenPurgedDetail',
+          { name: token.name },
+        ),
       );
     } catch (err) {
       toast.error(t('common.opFailed'), errorMessage(err));
@@ -440,7 +459,9 @@ export function Profile() {
                   : t('profile.tfaOff')}
             </span>
           </a>
-          <a className="profile-stat" href="#profile-security">
+          {/* 登录设备现在独占一个区块（见 #profile-sessions），锚点跟着挪过去，
+              别再指到「登录与安全」——那一条里已经没有它了 */}
+          <a className="profile-stat" href="#profile-sessions">
             <span className="profile-stat-label">{t('profile.statSessions')}</span>
             <span className="profile-stat-value">{sessions.length}</span>
           </a>
@@ -463,10 +484,13 @@ export function Profile() {
         </div>
       </section>
 
+      {/* 四个锚点对应四个区块。第三项从写死的「API Token」换成「登录设备」：
+          API Token 已经并进「登录与安全」那一行，再留一条指回同一行的链接
+          只是把导航撑长；而独立成一行的登录设备反倒没了入口。 */}
       <nav className="profile-nav" aria-label={t('profile.navAria')}>
         <a href="#profile-account">{t('profile.navAccount')}</a>
         <a href="#profile-security">{t('profile.navSecurity')}</a>
-        <a href="#profile-tokens">API Token</a>
+        <a href="#profile-sessions">{t('profile.sessionsTitle')}</a>
         <a href="#profile-perms">{t('profile.navPerms')}</a>
       </nav>
 
@@ -605,7 +629,7 @@ export function Profile() {
 
       <div className="grid grid-2" id="profile-security">
         {/* ---------------- 两步验证 ---------------- */}
-        <Card collapsible={false}>
+        <Card collapsible={false} className="profile-card-fill">
           <CardHeader
             title={t('profile.tfaTitle')}
             subtitle={t('profile.tfaSubtitle')}
@@ -676,7 +700,7 @@ export function Profile() {
                       maxLength={6}
                     />
                   </Field>
-                  <div className="form-row">
+                  <div className="form-row dyn-foot">
                     <Button
                       variant="primary"
                       icon={<IconCheck size={15} />}
@@ -698,7 +722,7 @@ export function Profile() {
                   </div>
                 </>
               ) : (
-                <div className="form-row">
+                <div className="form-row dyn-foot">
                   <Button
                     variant="primary"
                     icon={<IconShield size={15} />}
@@ -710,7 +734,10 @@ export function Profile() {
                 </div>
               )
             ) : tfa?.required ? (
-              <div className="fs-sm text-muted">{t('profile.tfaCannotDisable')}</div>
+              /* 这一态只有一句话，同样贴底：贴着状态徽章留一大片空白更像没写完 */
+              <div className="fs-sm text-muted dyn-foot">
+                {t('profile.tfaCannotDisable')}
+              </div>
             ) : (
               <>
                 <Field label={t('profile.fieldCurrentPwd')} required>
@@ -731,7 +758,7 @@ export function Profile() {
                     maxLength={16}
                   />
                 </Field>
-                <div className="form-row">
+                <div className="form-row dyn-foot">
                   <Button
                     variant="danger"
                     onClick={() => void disableTfa()}
@@ -745,72 +772,14 @@ export function Profile() {
           </div>
         </Card>
 
-        {/* ---------------- 登录设备 ---------------- */}
-        <Card collapsible={false}>
-          <CardHeader
-            title={t('profile.sessionsTitle')}
-            subtitle={t('profile.sessionsSubtitle')}
-            icon={<IconKey size={16} />}
-          />
-          <div className="dyn-list">
-            {sessionsQuery.isError ? (
-              <Notice tone="warning" title={t('profile.sessionsLoadFailed')}>
-                {errorMessage(sessionsQuery.error)}
-              </Notice>
-            ) : sessions.length === 0 ? (
-              <div className="profile-empty">{t('profile.noSessions')}</div>
-            ) : (
-              sessions.map((s) => (
-                <div key={s.id} className={`profile-item${s.current ? ' is-current' : ''}`}>
-                  <div className="profile-item-main">
-                    <div className="profile-item-title">
-                      <span className="mono">{s.ip || t('profile.unknownSource')}</span>
-                      {s.current ? (
-                        <Badge variant="accent" size="sm">
-                          {t('profile.currentDevice')}
-                        </Badge>
-                      ) : null}
-                    </div>
-                    <div className="profile-item-meta">
-                      {new Date(s.created * 1000).toLocaleString()} ·{' '}
-                      {s.user_agent || t('profile.unknownClient')}
-                    </div>
-                  </div>
-                  {s.current ? null : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void revokeSession(s.id)}
-                    >
-                      {t('profile.revokeSession')}
-                    </Button>
-                  )}
-                </div>
-              ))
-            )}
-
-            <div className="form-row">
-              <Button
-                variant="ghost"
-                onClick={() => void sessionsQuery.refetch()}
-                disabled={sessionsQuery.isFetching}
-              >
-                {t('profile.refreshList')}
-              </Button>
-              <Button variant="danger" onClick={() => void handleLogoutAll()}>
-                {t('profile.logoutAll')}
-              </Button>
-            </div>
-          </div>
-        </Card>
-
-      </div>
-
-      {/* ---------------- 个人 API Token ----------------
-          令牌单独占满一行：名称、创建时间、有效期、最后使用（含来源 IP）
-          这些串起来很长，挤在半栏里必然折行折得没法看。 */}
-      <div id="profile-tokens">
-        <Card collapsible={false}>
+        {/* ---------------- API Token ----------------
+            与两步验证并排：两张都是「中等高度、内容不多的凭据卡」，各占半栏
+            正好等高。原先令牌独占整行、右半边一直空着，而两步验证被旁边的
+            「登录设备」拉高、底部空出一大块 —— 两者换个搭档，两个问题一起
+            没了。令牌那条 meta（创建 / 有效期 / 最后使用）在半栏里会折成
+            两行，但 .profile-item-meta 用的是 overflow-wrap: anywhere，
+            只折行、不截断。 */}
+        <Card collapsible={false} className="profile-card-fill" id="profile-tokens">
           <CardHeader
             title={t('profile.tokensTitle')}
             subtitle={t('profile.tokensSubtitle')}
@@ -850,7 +819,7 @@ export function Profile() {
                       </div>
                       <div className="profile-item-meta">
                         {t('profile.tokenCreatedAt', {
-                          date: new Date(tok.created * 1000).toLocaleString(),
+                          date: formatDateTime(tok.created),
                         })}{' '}
                         ·{' '}
                         {t('profile.tokenValidFor', {
@@ -862,12 +831,26 @@ export function Profile() {
                         })}
                       </div>
                     </div>
-                    {dead ? null : (
+                    {/* 有效令牌 → 吊销；已失效的 → 删除记录。
+                        早先 dead 分支直接渲染 null，于是吊销过的条目既不能
+                        再吊销（本就失效）也不能删，只能永远灰在那里，直到
+                        调度器 30 天后顺手清掉 —— 用户想自己收拾干净都做不到。 */}
+                    {dead ? (
                       <Button
                         variant="ghost"
                         size="sm"
                         icon={<IconTrash size={14} />}
-                        onClick={() => setRevokeTarget(tok)}
+                        title={t('profile.purgeHint')}
+                        onClick={() => setTokenAction({ kind: 'purge', token: tok })}
+                      >
+                        {t('profile.purge')}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<IconTrash size={14} />}
+                        onClick={() => setTokenAction({ kind: 'revoke', token: tok })}
                       >
                         {t('profile.revoke')}
                       </Button>
@@ -877,7 +860,7 @@ export function Profile() {
               })
             )}
 
-            <div className="profile-item profile-item-foot">
+            <div className="profile-item profile-item-foot dyn-foot">
               <div className="profile-item-meta">
                 {tokenMeta
                   ? t('profile.tokenUsage', {
@@ -910,6 +893,69 @@ export function Profile() {
             </div>
 
             <div className="fs-xs text-muted">{t('profile.tokenFootnote')}</div>
+          </div>
+        </Card>
+      </div>
+
+      {/* ---------------- 登录设备 ----------------
+          改成独占整行：它是「一条一条列出来」的清单，越宽越好读。
+          之前和两步验证并排时，它反而把旁边那张卡拉出了大片空白。 */}
+      <div id="profile-sessions">
+        <Card collapsible={false}>
+          <CardHeader
+            title={t('profile.sessionsTitle')}
+            subtitle={t('profile.sessionsSubtitle')}
+            icon={<IconKey size={16} />}
+          />
+          <div className="dyn-list">
+            {sessionsQuery.isError ? (
+              <Notice tone="warning" title={t('profile.sessionsLoadFailed')}>
+                {errorMessage(sessionsQuery.error)}
+              </Notice>
+            ) : sessions.length === 0 ? (
+              <div className="profile-empty">{t('profile.noSessions')}</div>
+            ) : (
+              sessions.map((s) => (
+                <div key={s.id} className={`profile-item${s.current ? ' is-current' : ''}`}>
+                  <div className="profile-item-main">
+                    <div className="profile-item-title">
+                      <span className="mono">{s.ip || t('profile.unknownSource')}</span>
+                      {s.current ? (
+                        <Badge variant="accent" size="sm">
+                          {t('profile.currentDevice')}
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <div className="profile-item-meta">
+                      {formatDateTime(s.created)} ·{' '}
+                      {s.user_agent || t('profile.unknownClient')}
+                    </div>
+                  </div>
+                  {s.current ? null : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void revokeSession(s.id)}
+                    >
+                      {t('profile.revokeSession')}
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+
+            <div className="form-row">
+              <Button
+                variant="ghost"
+                onClick={() => void sessionsQuery.refetch()}
+                disabled={sessionsQuery.isFetching}
+              >
+                {t('profile.refreshList')}
+              </Button>
+              <Button variant="danger" onClick={() => void handleLogoutAll()}>
+                {t('profile.logoutAll')}
+              </Button>
+            </div>
           </div>
         </Card>
       </div>
@@ -1056,16 +1102,24 @@ export function Profile() {
         </div>
       </Modal>
 
-      {/* ---------------- API Token：吊销确认 ---------------- */}
+      {/* ---------------- API Token：吊销 / 删除记录 确认 ----------------
+          两个动作共用一个对话框，只换文案与确认按钮：
+            吊销 → 「立刻失效，脚本会开始收到 401」，记录留着
+            删除 → 「记录从列表移除」，令牌本就已经失效 */}
       <ConfirmDialog
-        open={revokeTarget !== null}
-        onCancel={() => setRevokeTarget(null)}
-        onConfirm={() => void revokeToken()}
-        title={t('profile.revokeTitle')}
-        message={t('profile.revokeMessage', {
-          name: revokeTarget?.name ?? '',
-        })}
-        confirmText={t('profile.revokeConfirm')}
+        open={tokenAction !== null}
+        onCancel={() => setTokenAction(null)}
+        onConfirm={() => void runTokenAction()}
+        title={t(
+          tokenAction?.kind === 'purge' ? 'profile.purgeTitle' : 'profile.revokeTitle',
+        )}
+        message={t(
+          tokenAction?.kind === 'purge' ? 'profile.purgeMessage' : 'profile.revokeMessage',
+          { name: tokenAction?.token.name ?? '' },
+        )}
+        confirmText={t(
+          tokenAction?.kind === 'purge' ? 'profile.purgeConfirm' : 'profile.revokeConfirm',
+        )}
         danger
       />
     </PageShell>

@@ -1,10 +1,10 @@
 """Aggregated dashboard data.
 
-The dashboard needs cluster-wide totals in one round trip. Fetching them here
+The dashboard needs fleet-wide totals in one round trip. Fetching them here
 (rather than making the browser run a dozen requests) keeps the UI fast and
 lets us degrade gracefully when a node is offline.
 
-三个接口都套了一层很短的进程内缓存（见 :mod:`app.pvecache`）：仪表盘是定时轮询的
+两个接口都套了一层很短的进程内缓存（见 :mod:`app.pvecache`）：仪表盘是定时轮询的
 页面，多个标签页 / 多个人同时看时，同一批数据在几秒内重复打 PVE 纯属浪费。
 """
 from __future__ import annotations
@@ -12,17 +12,42 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from .. import __version__, metrics, ownership, pvecache, security, store
-from ..formatters import normalize_storage, pve_flag
-from ..pve import ProxmoxError, all_connection_clients, get_client, requested_connection
+from .. import metrics, ownership, pvecache, security, store
+from ..pve import (
+    ProxmoxError,
+    all_connection_clients,
+    client_for_connection,
+    get_client,
+    requested_connection,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
+
+
+def _scope_pairs() -> List[Tuple[Dict[str, Any], Any]]:
+    """本次请求要统计的连接。
+
+    顶栏「集群作用域」聚焦某套集群时**只统计那一条** —— 榜单与容量预测都属于
+    「资源」口径，应当和列表页看的是同一套（聚焦 A 集群却在榜单上看到 B 集群的
+    机器，点进去还会跳到别的集群）。作用域为「全部集群」时才是全机队合并。
+
+    作用域指向的连接已被删除时，``client_for_connection`` 会抛出与其它接口
+    一致的 404，前端的选择器收到连接列表后也会自动回到「全部集群」。
+    """
+    scoped = requested_connection()
+    if scoped:
+        profile = next(
+            (c for c in store.get_connections() if str(c.get("id")) == scoped), None
+        )
+        return [(profile or {}, client_for_connection(scoped))]
+    pairs = all_connection_clients()
+    return pairs or [({}, get_client())]
 
 #: 只读集群数据的缓存时长（秒）。短到几乎不影响观感，又能把「同一时刻的重复拉取」
 #: 合并成一次 PVE 请求。
@@ -33,157 +58,6 @@ DASHBOARD_TTL = 10.0
 CAPACITY_TTL = 30.0
 
 
-def _connection_scope() -> str:
-    """当前请求选中的 PVE 连接标识（多连接部署下必须进缓存 key）。"""
-    return requested_connection() or "-"
-
-
-def _owner_connection() -> str:
-    """归属判定用的连接 id（与 ``routers/vms.py`` 的 ``_op_connection`` 同一口径）。
-
-    归属 ref 形如 ``<连接>:<节点>:<vmid>``，这里必须给出**真实**的连接 id ——
-    不能用 :func:`_connection_scope` 里的 ``"-"`` 占位，那个是缓存 key 用的。
-    """
-    return requested_connection() or str(store.get_active_connection_id() or "")
-
-
-@router.get("/dashboard/summary")
-async def dashboard_summary(
-    # 总览页同时统计虚拟机与容器，也是登录后的默认落地页：任一类查看权限即可
-    user: Dict[str, Any] = Depends(
-        security.require_any_permission("vm.view", "ct.view")
-    ),
-) -> Dict[str, Any]:
-    """集群总览。节点数据直接取自 ``cluster/resources`` —— 它本来就带 node 行，
-    不必再单独调一次 ``/nodes``（这正是这个接口「聚合」的意义）。
-    """
-
-    async def _build() -> Dict[str, Any]:
-        client = get_client()
-
-        try:
-            resources, version = await asyncio.gather(
-                client.cluster_resources(),
-                client.version(),
-            )
-        except ProxmoxError as exc:
-            raise HTTPException(
-                status_code=exc.status_code if exc.status_code < 600 else 500,
-                detail=exc.message,
-            ) from exc
-
-        resources = resources or []
-        # 节点行本来就在 /cluster/resources 里（无 type 过滤时它返回 node / qemu /
-        # lxc / storage 全部），所以正常情况下不必再单独调一次 /nodes。
-        nodes = [item for item in resources if item.get("type") == "node"]
-        if not nodes:
-            # 兼容：少数 PVE 版本的 cluster/resources 不带 node 行 —— 这时回落单独
-            # 查一次，保证「集群节点」卡片在任何版本都有数据。
-            try:
-                nodes = await client.nodes() or []
-            except ProxmoxError:
-                nodes = []
-
-        vms = [r for r in resources if r.get("type") == "qemu"]
-        containers = [r for r in resources if r.get("type") == "lxc"]
-        storages = [r for r in resources if r.get("type") == "storage"]
-
-        running = [v for v in vms if v.get("status") == "running"]
-        stopped = [v for v in vms if v.get("status") == "stopped"]
-        templates = [v for v in vms if pve_flag(v.get("template", 0)) == 1]
-
-        # Aggregate node capacity and current usage.
-        total_cpu = sum(n.get("maxcpu") or 0 for n in nodes)
-        used_cpu = sum((n.get("cpu") or 0) * (n.get("maxcpu") or 0) for n in nodes)
-        total_mem = sum(n.get("maxmem") or 0 for n in nodes)
-        used_mem = sum(n.get("mem") or 0 for n in nodes)
-        total_disk = sum(n.get("maxdisk") or 0 for n in nodes)
-        used_disk = sum(n.get("disk") or 0 for n in nodes)
-
-        # Storage is reported per node, so dedupe shared storages by name.
-        storage_map: Dict[str, Dict[str, Any]] = {}
-        for item in storages:
-            name = item.get("storage")
-            if not name:
-                continue
-            normalized = normalize_storage(item, item.get("node"))
-            existing = storage_map.get(name)
-            if existing is None:
-                storage_map[name] = normalized
-            elif normalized.get("total") and not existing.get("total"):
-                storage_map[name] = normalized
-
-        storage_total = sum(s.get("total") or 0 for s in storage_map.values())
-        storage_used = sum(s.get("used") or 0 for s in storage_map.values())
-
-        # Recent tasks — reuse the fan-out helper, but never fail the dashboard
-        # because one node is unreachable.
-        recent_tasks: List[Dict[str, Any]] = []
-        try:
-            from ..formatters import normalize_task
-
-            tasks = await client.tasks(limit=10)
-            recent_tasks = [normalize_task(t) for t in tasks]
-        except ProxmoxError:
-            recent_tasks = []
-
-        return {
-            "version": {
-                "pve": version.get("version"),
-                "release": version.get("release"),
-                "panel": __version__,
-            },
-            "vms": {
-                "total": len(vms),
-                "running": len(running),
-                "stopped": len(stopped),
-                "templates": len(templates),
-                "other": len(vms) - len(running) - len(stopped),
-            },
-            "containers": {"total": len(containers)},
-            "nodes": {
-                "total": len(nodes),
-                "online": sum(1 for n in nodes if n.get("status") == "online"),
-                "offline": sum(1 for n in nodes if n.get("status") != "online"),
-                "cpu_total": total_cpu,
-                "cpu_used": round(used_cpu, 2),
-                "cpu_usage": round(used_cpu / total_cpu, 4) if total_cpu else 0,
-                "mem_total": total_mem,
-                "mem_used": used_mem,
-                "mem_usage": round(used_mem / total_mem, 4) if total_mem else 0,
-                "disk_total": total_disk,
-                "disk_used": used_disk,
-                "disk_usage": round(used_disk / total_disk, 4) if total_disk else 0,
-                "detail": [
-                    {
-                        "node": n.get("node"),
-                        "status": n.get("status"),
-                        "cpu": n.get("cpu"),
-                        "maxcpu": n.get("maxcpu"),
-                        "mem": n.get("mem"),
-                        "maxmem": n.get("maxmem"),
-                        "disk": n.get("disk"),
-                        "maxdisk": n.get("maxdisk"),
-                        "uptime": n.get("uptime"),
-                    }
-                    for n in nodes
-                ],
-            },
-            "storage": {
-                "total": storage_total,
-                "used": storage_used,
-                "avail": max(storage_total - storage_used, 0),
-                "usage": round(storage_used / storage_total, 4) if storage_total else 0,
-                "count": len(storage_map),
-            },
-            "recent_tasks": recent_tasks,
-        }
-
-    return await pvecache.cached(
-        f"dashboard:summary:{_connection_scope()}", DASHBOARD_TTL, _build
-    )
-
-
 @router.get("/dashboard/top")
 async def dashboard_top(
     limit: int = 5,
@@ -192,39 +66,61 @@ async def dashboard_top(
         security.require_any_permission("vm.view", "ct.view")
     ),
 ) -> Dict[str, Any]:
-    """The busiest VMs by CPU and memory, for the dashboard leaderboards."""
+    """The busiest VMs by CPU and memory, for the dashboard leaderboards.
 
+    统计范围见 :func:`_scope_pairs`：顶栏作用域聚焦某套集群时只统计它，
+    「全部集群」时合并全部连接。早先它只读兜底那一台（``get_client()``），
+    多套 PVE 的部署里另外几套上跑满 CPU 的机器永远上不了榜。
+
+    条目里带回 ``connection_id``：归属过滤要按各连接自己的 ref 前缀查，
+    前端也要靠它把榜单条目链到正确的详情页。
+    """
     # 用户隔离：普通用户只看自己名下的机器（与 /vms 列表同一套归属口径）。
     # 这个接口原先直接返回集群全量 —— 普通用户在仪表盘上就能读到别人机器的
-    # 名字与占用，顺着 node/vmid 还能摸到详情接口。管理员是超管视角（scope 为 None）。
-    scope = security.visible_owner(user)
+    # 名字与占用，顺着 node/vmid 还能摸到详情接口。管理员是超管视角（owner 为 None）。
+    owner = security.visible_owner(user)
 
     async def _build() -> Dict[str, Any]:
-        client = get_client()
-        try:
-            resources = await client.cluster_resources("vm")
-        except ProxmoxError as exc:
+        pairs = _scope_pairs()
+        results = await asyncio.gather(
+            *(client.cluster_resources("vm") for _profile, client in pairs),
+            return_exceptions=True,
+        )
+
+        running: List[Tuple[str, Dict[str, Any]]] = []
+        failure: Optional[ProxmoxError] = None
+        for (profile, _client), result in zip(pairs, results):
+            if isinstance(result, BaseException):
+                if isinstance(result, ProxmoxError):
+                    # 某一台连不上只跳过它，不影响其它主机的榜单
+                    failure = failure or result
+                    continue
+                # 非 PVE 异常（配置缺失、鉴权失败之类）保持向上冒泡，
+                # 不要伪装成「榜单就是空的」
+                raise result
+            cid = str(profile.get("id") or "")
+            for row in result or []:
+                if row.get("type") == "qemu" and row.get("status") == "running":
+                    running.append((cid, row))
+
+        # 一台都没读到、且确有失败：把 PVE 的错误原样上报，
+        # 否则界面会显示「暂无数据」，把「连不上」说成「没有忙碌的机器」
+        if not running and failure is not None:
             raise HTTPException(
-                status_code=exc.status_code if exc.status_code < 600 else 500,
-                detail=exc.message,
-            ) from exc
+                status_code=failure.status_code if failure.status_code < 600 else 500,
+                detail=failure.message,
+            )
 
-        running = [
-            r for r in (resources or [])
-            if r.get("type") == "qemu" and r.get("status") == "running"
-        ]
-
-        if scope is not None:
+        if owner is not None:
             owners = await ownership.owners_map_for(ownership.KIND_VM)
-            conn = _owner_connection()
             running = [
-                r
-                for r in running
-                if ownership.vm_owner_from(owners, r.get("node"), r.get("vmid"), conn)
-                == scope
+                (cid, row)
+                for cid, row in running
+                if ownership.vm_owner_from(owners, row.get("node"), row.get("vmid"), cid)
+                == owner
             ]
 
-        def entry(vm: Dict[str, Any]) -> Dict[str, Any]:
+        def entry(connection_id: str, vm: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 "node": vm.get("node"),
                 "vmid": vm.get("vmid"),
@@ -234,25 +130,29 @@ async def dashboard_top(
                 "mem": vm.get("mem") or 0,
                 "maxmem": vm.get("maxmem") or 1,
                 "uptime": vm.get("uptime"),
+                "connection_id": connection_id,
             }
 
-        by_cpu = sorted(running, key=lambda v: v.get("cpu") or 0, reverse=True)
+        by_cpu = sorted(running, key=lambda item: item[1].get("cpu") or 0, reverse=True)
         by_mem = sorted(
             running,
-            key=lambda v: (v.get("mem") or 0) / max(v.get("maxmem") or 1, 1),
+            key=lambda item: (item[1].get("mem") or 0)
+            / max(item[1].get("maxmem") or 1, 1),
             reverse=True,
         )
 
         return {
-            "by_cpu": [entry(v) for v in by_cpu[:limit]],
-            "by_memory": [entry(v) for v in by_mem[:limit]],
+            "by_cpu": [entry(cid, vm) for cid, vm in by_cpu[:limit]],
+            "by_memory": [entry(cid, vm) for cid, vm in by_mem[:limit]],
             "total_running": len(running),
         }
 
-    # 缓存必须按**用户**分档：这个进程内缓存原先只按连接分 key，管理员那份
-    # （不过滤）与普通用户那份（过滤后）会互相命中 —— 谁先请求，下一个人就读到
-    # 对方的数据，隔离等于白做。
-    key = f"dashboard:top:{limit}:{_connection_scope()}:{scope or '-'}"
+    # 缓存按**用户** + **连接作用域**分档：
+    #   * 用户 —— 这个进程内缓存原先只按连接分 key，管理员那份（不过滤）与普通用户
+    #     那份（过滤后）会互相命中，谁先请求下一个人就读到对方的数据，隔离等于白做；
+    #   * 连接作用域 —— 作用域变了统计范围就变了，不分开会把上一个作用域的结果
+    #     直接喂给下一个（切回「全部集群」却还看到单集群的榜单）。
+    key = f"dashboard:top:{limit}:{requested_connection() or '-'}:{owner or '-'}"
     return await pvecache.cached(key, DASHBOARD_TTL, _build)
 
 
@@ -343,7 +243,7 @@ async def dashboard_capacity(
         series: Dict[int, float] = {}  # time -> 集群已用字节（跨节点求和）
         capacity = 0.0  # 当前集群根分区总容量（字节）
 
-        for _profile, client in all_connection_clients():
+        for _profile, client in _scope_pairs():
             try:
                 nodes = await client.nodes() or []
             except ProxmoxError:
@@ -383,5 +283,9 @@ async def dashboard_capacity(
         # 用同一套算法，两条路径给出的天数口径才一致。
         return _predict(sorted(series.items()), capacity, "pve")
 
-    # 这个接口遍历**所有**连接（不是当前请求那一台），所以 key 不带连接作用域
-    return await pvecache.cached(f"dashboard:capacity:{timeframe}", CAPACITY_TTL, _build)
+    # 统计范围见 _scope_pairs（作用域聚焦时只算那一套），所以 key 必须带上它 ——
+    # 否则切作用域会直接命中上一个范围的结果
+    scope_key = requested_connection() or "-"
+    return await pvecache.cached(
+        f"dashboard:capacity:{timeframe}:{scope_key}", CAPACITY_TTL, _build
+    )

@@ -530,24 +530,48 @@ function OwnerMiniDialog({
   const [owner, setOwner] = useState('');
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** 读失败时禁止保存：见 submit 里的说明 */
+  const [loadError, setLoadError] = useState('');
+  /** 管理员是否动过下拉 —— 「清除」与「还没选」的唯一区别 */
+  const [touched, setTouched] = useState(false);
 
   useEffect(() => {
     if (!vm) return;
     setBusy(false);
+    setTouched(false);
+    setLoadError('');
     setLoading(true);
+    /* ``type`` 必须带上：guestsApi 靠它决定打 /vms 还是 /lxc 那个端点。
+       漏了会回落成 qemu，于是**容器**的归属被写进 KIND_VM 桶 —— 列表因为
+       有 legacy 回落还看得出归属，但额度会把它同时算进虚拟机与容器两组
+       （见 backend/app/quota.py 里 refs 的构造）。 */
     guestsApi
-      .getOwner({ node: vm.node, vmid: vm.vmid }, vm.connection_id)
+      .getOwner({ node: vm.node, vmid: vm.vmid, type: vm.type }, vm.connection_id)
       .then((res) => setOwner(res.owner ?? ''))
-      .catch(() => setOwner(''))
+      .catch((err) => {
+        setOwner('');
+        setLoadError(errorMessage(err));
+      })
       .finally(() => setLoading(false));
-  }, [vm?.node, vm?.vmid]);
+  }, [vm?.node, vm?.vmid, vm?.type]);
 
   const submit = async () => {
-    if (!vm) return;
+    if (!vm || loading) return;
+    if (loadError) {
+      toast.error(t('guestList.assignLoadFailed'), loadError);
+      return;
+    }
+    /* 空值 = 清除归属。没动过下拉时空值只说明「还没选人」，不能当成清除 ——
+       否则在输完用户名直接点保存（点外面会收起并丢掉搜索词）时，
+       一次保存就把归属抹了，而且全程不报错。 */
+    if (!owner.trim() && !touched) {
+      toast.error(t('guestList.assignPickFirst'));
+      return;
+    }
     setBusy(true);
     try {
       const res = await guestsApi.assignOwner(
-        { node: vm.node, vmid: vm.vmid },
+        { node: vm.node, vmid: vm.vmid, type: vm.type },
         owner.trim() || null,
         vm.connection_id,
       );
@@ -577,7 +601,12 @@ function OwnerMiniDialog({
           <Button variant="secondary" onClick={onClose} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button variant="primary" onClick={() => void submit()} loading={busy}>
+          <Button
+            variant="primary"
+            onClick={() => void submit()}
+            loading={busy}
+            disabled={loading || Boolean(loadError)}
+          >
             {t('common.save')}
           </Button>
         </>
@@ -585,11 +614,27 @@ function OwnerMiniDialog({
     >
       <UserSelect
         label={t('guestList.assignField')}
-        hint={loading ? t('guestList.assignLoading') : undefined}
+        hint={
+          loading
+            ? t('guestList.assignLoading')
+            : owner.trim()
+              ? t('guestList.assignCurrent', { name: owner.trim() })
+              : undefined
+        }
+        /* 空项的含义要说清：它不是「不填」，而是「让这台机器变回无人认领」 */
+        emptyLabel={t('guestList.assignEmpty')}
         value={owner}
-        onChange={setOwner}
-        disabled={loading}
+        onChange={(next) => {
+          setOwner(next);
+          setTouched(true);
+        }}
+        disabled={loading || Boolean(loadError)}
       />
+      {loadError ? (
+        <Notice tone="danger" title={t('guestList.assignLoadFailed')}>
+          {loadError}
+        </Notice>
+      ) : null}
     </Modal>
   );
 }

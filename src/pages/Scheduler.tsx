@@ -41,10 +41,8 @@ import {
 } from '../components/Icons';
 import { formatUptime, formatRelative, formatDateTime } from '../utils/format';
 import { useToast } from '../hooks/useToast';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useT, type TFunc } from '../i18n';
-
-/* 自刷周期：比调度器的 tick（1 秒）慢得多，但足够让「下次执行」看起来是活的 */
-const REFRESH = 5_000;
 
 /* 间隔编辑里的一键预设。覆盖「巡检类」与「清理类」两个量级。 */
 const INTERVAL_PRESETS = [
@@ -94,10 +92,12 @@ export function Scheduler() {
   const [intervalDraft, setIntervalDraft] = useState('');
   const [saving, setSaving] = useState(false);
 
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const query = useQuery({
     queryKey: ['scheduler'],
     queryFn: schedulerApi.list,
-    refetchInterval: REFRESH,
+    refetchInterval: refresh,
   });
 
   const jobs = query.data?.jobs ?? [];

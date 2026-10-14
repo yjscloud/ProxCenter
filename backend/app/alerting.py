@@ -239,6 +239,16 @@ NOTIFY_SOURCES: List[Dict[str, str]] = [
         "description": "受保护备份丢失或被改动",
     },
     {
+        "id": "quorum",
+        "label": "集群仲裁巡检",
+        "description": "任意一套 PVE 集群失去仲裁（含非默认读取的连接）",
+    },
+    {
+        "id": "quota",
+        "label": "用户资源额度",
+        "description": "某人的额度快用完或已超出（通知发给本人）",
+    },
+    {
         "id": "alert_rootcause",
         "label": "告警根因聚合",
         "description": "多条告警疑似同源时，聚合成一条根因报告",
@@ -256,6 +266,8 @@ SOURCE_PORTGUARD = "portguard"
 SOURCE_SSHGUARD = "sshguard"
 SOURCE_SSHREMOTE = "sshremote"
 SOURCE_BACKUPGUARD = "backupguard"
+SOURCE_QUORUM = "quorum"
+SOURCE_QUOTA = "quota"
 SOURCE_ROOTCAUSE = "alert_rootcause"
 
 NOTIFY_SOURCES_KEY = "alert_notify_sources"

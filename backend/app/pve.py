@@ -1242,8 +1242,20 @@ _REVISION_TTL_SECONDS = 3.0
 # ``X-PVE-Connection`` header. A context variable carries the choice down to
 # :func:`get_client`, which keeps every endpoint free of an extra parameter and
 # guarantees the choice never leaks into an unrelated request.
+#
+# 两个 header，两级强度：
+#
+#   * ``X-PVE-Connection`` —— **硬指定**。调用点明确知道「这台机器在哪条连接上」
+#     （创建向导选了目标主机、详情页 URL 上带了 ?connection=）。谁都别改它。
+#   * ``X-PVE-Scope`` —— **软作用域**。顶栏「集群作用域」选的那一套，只是「我现在
+#     在看哪套集群」这个页面级偏好。它能决定列表类接口读哪一套，但**不该阻止**
+#     后端把「只有一个节点名 / 一个 VMID」的请求纠正到机器真正所在的那台 ——
+#     详情页、电源操作、任务轮询都靠那套自动定位（见 :mod:`app.vm_scope`）。
+#     若把软作用域也发成 X-PVE-Connection，自动定位会以为自己被显式指定过而放弃，
+#     于是「作用域 = A 时操作 B 的机器」会打到 A 上，任务轮询还会永远转圈。
 # --------------------------------------------------------------------------
 _request_connection: ContextVar[str] = ContextVar("pve_request_connection", default="")
+_request_scope: ContextVar[str] = ContextVar("pve_request_scope", default="")
 
 # Clients for non-active connections, keyed by connection id. Each entry stores
 # a fingerprint of the profile it was built from, so an edited profile is picked
@@ -1252,13 +1264,26 @@ _scoped_clients: Dict[str, Tuple[str, ProxmoxClient]] = {}
 
 
 def set_request_connection(conn_id: str) -> Token:
-    """Scope the current request to a saved connection（空串 = 当前连接）。"""
+    """**硬**指定本次请求的目标连接（空串 = 未指定）。"""
     return _request_connection.set((conn_id or "").strip())
 
 
 def reset_request_connection(token: Token) -> None:
     try:
         _request_connection.reset(token)
+    except ValueError:
+        # Token was created in another context; nothing to restore.
+        pass
+
+
+def set_request_scope(conn_id: str) -> Token:
+    """设置本次请求的**软**作用域（顶栏「集群作用域」；空串 = 全部集群）。"""
+    return _request_scope.set((conn_id or "").strip())
+
+
+def reset_request_scope(token: Token) -> None:
+    try:
+        _request_scope.reset(token)
     except ValueError:
         # Token was created in another context; nothing to restore.
         pass
@@ -1335,7 +1360,20 @@ def _scoped_client(conn_id: str) -> Optional[ProxmoxClient]:
 
 
 def requested_connection() -> str:
-    """本次请求通过 X-PVE-Connection 指定的连接 id（空串 = 未指定）。"""
+    """本次请求要读哪一条连接（空串 = 未指定 → 聚合全部 / 回落兜底连接）。
+
+    硬指定优先，其次是顶栏的软作用域 —— 读数据的接口（列表、统计、缓存 key、
+    归属 ref 前缀）都按它分流，所以「聚焦某套集群」才真的只读那一套。
+    """
+    return _request_connection.get() or _request_scope.get()
+
+
+def bound_connection() -> str:
+    """本次请求是否被**硬**指定过连接（软作用域不算）。
+
+    ``vm_scope`` 的三个 ``bind_*`` 只看它：软作用域表达的是「我默认在看哪一套」，
+    不该阻止后端把「只给了节点名 / VMID」的请求纠正到机器真正所在的那台。
+    """
     return _request_connection.get()
 
 
@@ -1429,7 +1467,8 @@ def get_client() -> ProxmoxClient:
     """
     global _client, _config_revision, _revision_checked_at
 
-    scoped = _request_connection.get()
+    # 硬指定与软作用域都算「本次请求要打哪一台」，只是前者不允许被自动定位覆盖
+    scoped = requested_connection()
     if scoped and scoped != _active_connection_id():
         scoped_client = _scoped_client(scoped)
         if scoped_client is None:

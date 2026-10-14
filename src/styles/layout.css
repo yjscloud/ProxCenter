@@ -648,11 +648,6 @@
   color: var(--text-primary);
 }
 
-.user-role {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
 @media (max-width: 640px) {
   .user-meta {
     display: none;
@@ -809,6 +804,69 @@
 
   .lang-select.is-topbar select {
     max-width: 74px;
+  }
+}
+
+/* --- 集群作用域（顶栏）---
+   与旁边的语言下拉同一套外观：顶栏右侧已经很挤，再放一个「有明显边框的控件」
+   只会把注意力从页面内容上拉走。原生 select 同样不能继承字色字体，逐项对齐。 */
+.scope-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+
+.scope-select select {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.scope-select select option {
+  color: #111;
+  background: #fff;
+}
+
+.scope-select.is-topbar {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: var(--font-size-sm);
+  gap: 7px;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.scope-select.is-topbar:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.scope-select.is-topbar select {
+  /* 连接名可能很长（「北京-机房A-主集群」），但顶栏不能让它把状态点挤走 */
+  width: auto;
+  max-width: 132px;
+}
+
+@media (max-width: 900px) {
+  /* 中等宽度以下收掉图标：选择器本身必须留着 —— 它决定「看到的是哪一套集群」，
+     藏起来用户就不知道自己在看谁 */
+  .scope-select.is-topbar {
+    padding: 6px 8px;
+  }
+
+  .scope-select.is-topbar > svg {
+    display: none;
+  }
+
+  .scope-select.is-topbar select {
+    max-width: 104px;
   }
 }
 
@@ -1424,6 +1482,21 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+/* 栅格里放一个「只有开关、没有输入框」的字段（如快速部署的「完整克隆」）。
+   它要跟**旁边那个输入框**对齐，而不是跟自己那一行的顶部对齐：上面还有一行
+   字段标签（.field-label），所以按 .field-row 里行内按钮同一套算法跳过标签
+   那一行；再用 min-height 兜住控件高度（34px = .select / .input 的高度），
+   让 22px 的开关在框内居中。 */
+.field-toggle {
+  display: flex;
+  align-items: center;
+  /* 不跟着栅格拉伸：拉伸后高度会变成「同伴那个字段 + 它的说明行」的总高，
+     开关就会在整格里居中 —— 看着对得上纯属巧合。钉在自己这 34px 里才对得准。 */
+  align-self: start;
+  margin-top: calc(var(--field-label-line) + var(--field-gap));
+  min-height: 34px;
 }
 
 @media (max-width: 640px) {
@@ -2327,270 +2400,95 @@
 }
 
 /* ---------------------------------------------------------------------------
-   节点卡片：沿用通用 entity-card，只把重复的资源展示收进一格
+   节点卡里的指标：CPU / 内存 / 磁盘 三格
    --------------------------------------------------------------------------- */
 
-/* 三个指标各占一行横向排开。
-   之前试过三列并排，但卡片宽度有限，每列只剩约 110px ——
-   进度条被压成一小截、文字也挤在一起。纵向排就没有这个问题。 */
+/* 三格并排：每张节点卡现在占满一整行（三级树里一行一张），宽度不再是限制 ——
+   跨节点竖着扫一眼就能比较。窄屏交给 auto-fit 自己收成两格 / 一格。
+   最初是纵向三行（那时卡片被网格摊成三百来像素宽，并排会被压成一小截）。 */
 .node-metrics {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px 18px;
 }
 
 .node-metric {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
   min-width: 0;
 }
 
-/* 定宽 + 右对齐：三行的图标列、数值列、容量列都能对齐 */
+/* 标签在左、数值在右：一行读完「这是什么」与「有多满」 */
+.node-metric-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .node-metric-label {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-width: 44px;
-  flex-shrink: 0;
   font-size: var(--font-size-xs);
   color: var(--text-muted);
   white-space: nowrap;
 }
 
 .node-metric-value {
-  min-width: 48px;
-  flex-shrink: 0;
-  text-align: right;
   font-family: var(--font-mono);
   font-size: var(--font-size-md);
   font-weight: 700;
   white-space: nowrap;
 }
 
-/* 进度条吃掉剩余宽度，这条会很长 */
-.node-metric > .progress-wrap {
-  flex: 1;
-  min-width: 0;
-}
-
 .node-metric-sub {
-  min-width: 54px;
-  flex-shrink: 0;
-  text-align: right;
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-muted);
   white-space: nowrap;
 }
 
-.node-card-note .input-wrap {
-  height: 30px;
-}
-
-.node-card-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-muted);
-  flex-wrap: wrap;
-}
-
 /* ---------------------------------------------------------------------------
-   节点列表视图
+   三级树（区域 → PVE / 节点 → 内容）
    ---------------------------------------------------------------------------
-   节点一多，卡片就变成「一片长得差不多的方块」：45 个要滚五六屏，而且
-   CPU / 内存 的迷你条各自缩在不同宽度里，横向没法比较。
-   列表视图把每个指标固定在同一列上 —— 竖着扫一眼就知道谁快满了。
-
-   列顺序（nth-child 与表头行共用）：
-     1 节点 · 2 状态 · 3 CPU · 4 内存 · 5 磁盘 · 6 运行时长 · 7 备注 · 8 箭头
+   节点、网络、存储三页是同一个问题的三个切面，用的也是同一套层级语言：
+   每层一条可折叠的 tree-head 标题条（区域再重一档），内容缩进在 tree-body
+   的竖线里，最内层各自是一张卡片 / 一张表。.node-groups 是它们共同的外层
+   容器（区域之间留 24px，比层内的 16px 松一档）。
    --------------------------------------------------------------------------- */
 
 .node-groups {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 24px;
 }
 
-.node-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-muted);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font-size: var(--font-size-sm);
-}
+/* ---------------------------------------------------------------------------
+   节点卡（节点页三级树的第三级）
+   ---------------------------------------------------------------------------
+   这里只补节点卡自己的内部布局：左边三根指标条，右边运行时长与备注。
+   --------------------------------------------------------------------------- */
 
-.node-group-head svg,
-.node-group-title svg {
-  color: var(--accent);
-  flex-shrink: 0;
-}
-
-.node-group-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-/* 树状分层（区域 → 连接 → 节点）之后，连接的那行标题变成了折叠开关。
-   这两个类原先只是静态标题行，现在整行可点，所以按按钮重置一遍外观。 */
-.node-group-head,
-.node-group-title {
-  width: 100%;
-  border: 0;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.node-group-head:hover,
-.node-group-title:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.node-group-head:focus-visible,
-.node-group-title:focus-visible {
-  /* 内描边：整行都是点击区，外描边会溢出到相邻元素上 */
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* 折叠箭头要留住自己的弱化色 —— 上面那条「组标题里的图标用主色」是给服务器
-   图标定的，箭头跟着变蓝会让人以为它是个可点的独立按钮 */
-.node-group-head .tree-head-icon svg,
-.node-group-title .tree-head-icon svg {
-  color: var(--text-muted);
-}
-
-/* 收起时箭头从「向下」翻成「向右」（与卡片折叠按钮同一套语言） */
-.node-group-head[aria-expanded='false'] .tree-head-icon,
-.node-group-title[aria-expanded='false'] .tree-head-icon {
-  transform: rotate(-90deg);
-}
-
-.node-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.node-list-row {
+/* 左边给指标（它要长，进度条才看得出差别），右边是运行时长与备注 */
+.node-card-body {
   display: grid;
-  grid-template-columns:
-    minmax(150px, 1.6fr) 108px minmax(110px, 1fr) minmax(110px, 1fr)
-    minmax(110px, 1fr) 108px minmax(120px, 1fr) 18px;
+  grid-template-columns: minmax(0, 2.4fr) minmax(200px, 1fr);
+  gap: 20px;
   align-items: center;
-  gap: 12px;
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--border-muted);
-  cursor: pointer;
-  transition: background var(--transition-fast);
+  padding: 12px 18px 16px;
 }
 
-.node-list-row:last-child {
-  border-bottom: none;
-}
-
-.node-list-row:not(.is-head):hover {
-  background: var(--bg-hover);
-}
-
-.node-list-row:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--focus-ring);
-}
-
-.node-list-row > svg {
-  color: var(--text-muted);
-  transition: transform var(--transition-fast), color var(--transition-fast);
-}
-
-.node-list-row:not(.is-head):hover > svg {
-  color: var(--accent);
-  transform: translateX(2px);
-}
-
-/* 离线节点整行压暗：一眼能从一屏节点里挑出来 */
-.node-list-row.is-offline {
-  background: color-mix(in srgb, var(--text-muted) 5%, transparent);
-}
-
-.node-list-row.is-head {
-  cursor: default;
-  background: var(--bg-elevated);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  color: var(--text-muted);
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.node-list-name {
+.node-card-aside {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 8px;
   min-width: 0;
 }
 
-.node-list-status {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-
-.node-list-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.node-list-note .input-wrap {
-  height: 28px;
-}
-
-/* 中等宽度先收掉磁盘列（CPU / 内存 才是最常看的两个） */
-@media (max-width: 1280px) {
-  .node-list-row {
-    grid-template-columns:
-      minmax(140px, 1.5fr) 104px minmax(105px, 1fr) minmax(105px, 1fr)
-      104px minmax(110px, 1fr) 18px;
-  }
-
-  .node-list-row > *:nth-child(5) {
-    display: none;
-  }
-}
-
-/* 窄屏只留「节点 / 状态 / CPU / 内存」：运维在手机上主要看谁挂了 */
-@media (max-width: 900px) {
-  .node-list-row {
-    grid-template-columns: minmax(120px, 1.4fr) 96px minmax(90px, 1fr) minmax(90px, 1fr);
-    gap: 10px;
-    padding: 9px 12px;
-  }
-
-  .node-list-row > *:nth-child(6),
-  .node-list-row > *:nth-child(7),
-  .node-list-row > *:nth-child(8) {
-    display: none;
-  }
+.node-card-aside .input-wrap {
+  height: 30px;
 }
 
 /* 用户编辑里的权限勾选区 */
@@ -3104,77 +3002,6 @@
   min-width: 0;
 }
 
-/* 简洁版连接列表（覆盖上面的卡片式样式） */
-.set-conn-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-/* 左侧两行（名称/地址 + 元信息），右侧一列操作按钮，整体只占两行高度 */
-.set-conn-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 3px 14px;
-  padding: 11px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-}
-
-.set-conn-actions {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-}
-
-.set-conn-row .set-conn-main,
-.set-conn-row .set-conn-tags {
-  min-width: 0;
-}
-
-/* 第二行元信息压成一行，超出省略，避免撑宽整行 */
-.set-conn-row .set-conn-meta {
-  flex-wrap: nowrap;
-  gap: 12px;
-  overflow: hidden;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.set-conn-row .set-conn-meta > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 第二行元信息（Token / 控制台 / 默认节点）压成一行，超出省略，避免撑宽整行 */
-.set-conn-row .set-conn-meta {
-  flex-wrap: nowrap;
-  gap: 12px;
-  overflow: hidden;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.set-conn-row .set-conn-meta > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.set-conn-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.set-conn-row .set-conn-name {
-  font-weight: 600;
-}
-
 .set-conn-tags {
   display: flex;
   flex-wrap: wrap;
@@ -3202,12 +3029,6 @@
   margin-top: 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-muted);
-}
-
-/* 「默认读取的 PVE」下拉：整行不超过一屏的三分之一，别和下面的节点表抢宽度 */
-.set-default-conn {
-  max-width: 420px;
-  margin-top: 12px;
 }
 
 .set-form-block-head:first-child {
@@ -3513,94 +3334,11 @@
   white-space: nowrap;
 }
 
-.set-conn-meta {
-  margin-left: auto;
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
-  text-align: right;
-}
-
-/* ---- 集群节点条目 ---- */
+/* ---- 节点选择列表（用户编辑里的权限勾选区） ---- */
 .set-node-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.set-node-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 11px 14px 11px 17px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  overflow: hidden;
-}
-
-.set-node-item::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 3px;
-  background: var(--border);
-}
-
-.set-node-item.is-online::before {
-  background: var(--success);
-}
-
-.set-node-item.is-offline::before {
-  background: var(--danger);
-}
-
-.set-node-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.set-node-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  border-radius: 8px;
-  background: var(--accent-dim);
-  color: var(--accent);
-}
-
-.set-node-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.set-node-name {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.set-node-note {
-  flex: 1;
-  min-width: 220px;
-}
-
-.set-node-note .input-wrap {
-  height: 30px;
-}
-
-.set-node-note .input {
-  font-size: var(--font-size-sm);
 }
 
 @media (max-width: 640px) {
@@ -3804,10 +3542,12 @@
 .baseline-count.is-unknown { background: var(--bg-hover); color: var(--text-muted); }
 
 /* ---- 总览：服务器卡片 ---- */
+/* minmax 从 310 抬到 330：再窄就得让待处理 chip 折成两行，卡片反而更高；
+   10px 间距把「一屏能看到几台」的差距拉开。 */
 .baseline-host-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 10px;
 }
 
 /* 列表视图里的评分与三色计数 */
@@ -3890,7 +3630,7 @@
 .baseline-host-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
   flex: 1;
 }
 
@@ -3938,6 +3678,128 @@
 .baseline-dot.is-high { background: var(--danger); }
 .baseline-dot.is-medium { background: var(--warning); }
 .baseline-dot.is-low { background: var(--accent); }
+
+/* ---- 待处理项：横向 chip 流 ----
+   「待处理」是列表视图里唯一没有固定宽度的列，table 的 auto 布局会把剩余宽度
+   全喂给它。条目竖着排时内容只占住左侧一小条，右边空出几百像素的空洞（最刺眼
+   的一处），行高还被 4 条待处理一路撑到近 90px。
+
+   横向 chip 流同时解掉两个问题：条目顺着列宽铺开，空洞消失；4 条在常见宽度下
+   一行放得下，行高回到单行。竖排那套 .baseline-issue-list 保留给安全基线页。*/
+.baseline-chips {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  gap: 4px 5px;
+}
+
+.baseline-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* chip 内各段统一省略号收尾（主值 / 补充说明），完整内容挂在 title 上 */
+.baseline-chip > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 竖排时圆点靠上对齐用的上边距，chip 里是居中对齐，必须清掉 */
+.baseline-chip .baseline-dot {
+  margin-top: 0;
+}
+
+.baseline-chip.is-high {
+  background: var(--danger-dim);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+}
+.baseline-chip.is-medium {
+  background: var(--warning-dim);
+  border-color: color-mix(in srgb, var(--warning) 28%, transparent);
+}
+.baseline-chip.is-low {
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
+}
+
+/* 安全基线的 chip 另开一套染色维度：底色表示**这台机器的实际结果**
+   （不合格 / 待改进 / 未知），圆点仍表示检查项本身的严重度 —— 一件事一个颜色，
+   混用两套会让人分不清红点到底在说「检查项危险」还是「这台没过」。 */
+.baseline-chip.is-fail {
+  background: var(--danger-dim);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+}
+.baseline-chip.is-warn {
+  background: var(--warning-dim);
+  border-color: color-mix(in srgb, var(--warning) 28%, transparent);
+}
+
+/* 「+N」：这一行还没列完，虚线空心以区别于真实条目 */
+.baseline-chip.is-more {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--border);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+
+/* 不可达：一整行只有一句提示，不值得套 chip */
+.baseline-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--danger);
+}
+
+/* ---- 列表视图：监听/开放/非预期 的三色占比条 ----
+   数字读得出「有多少」，条读得出「是什么构成」—— 三个数字竖着看和横着看
+   完全是两回事，而这一列恰恰是横向比对的重点。 */
+.baseline-list-counts-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.baseline-list-bar {
+  display: flex;
+  width: 100%;
+  min-width: 56px;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--bg-hover);
+}
+
+.baseline-list-bar > span {
+  display: block;
+  height: 100%;
+}
+
+.baseline-list-bar .is-expected { background: color-mix(in srgb, var(--success) 45%, transparent); }
+.baseline-list-bar .is-exposed { background: var(--warning); }
+.baseline-list-bar .is-unexpected { background: var(--danger); }
+
+/* 安全基线的同一根条：绿=通过 橙=待改进 红=不合格，未判定的留白。
+   与卡片里 6px 的 .baseline-bar 同义，只是更细，给列表的横向比对用。 */
+.baseline-list-bar .is-pass { background: var(--success); }
+.baseline-list-bar .is-warn { background: var(--warning); }
+.baseline-list-bar .is-fail { background: var(--danger); }
 
 .baseline-host-foot {
   display: flex;
@@ -4410,6 +4272,81 @@
   color: var(--danger);
   font-size: var(--font-size-sm);
   line-height: 1.5;
+}
+
+/* 两步验证步骤顶部的说明条：它讲的是「接下来要输什么、备用手段是什么」，
+   属于指引而非报错。原先复用 .login-error、只把底色换成中性灰，红框红字
+   原样留着 —— 一进来就是一片红，像已经验证失败了。 */
+.login-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.login-notice svg {
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* 「信任设备」勾选行：贴着动态码输入框，说明文字比勾选框文案再小一号。
+   .login-form 是 flex column + align-items:stretch，这里靠左排版即可。 */
+.login-trust {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 负外边距把这一行往输入框那边收一点：它属于上一个字段的附加选项，
+     不该按兄弟字段的 16px 间距等距排开 */
+  margin-top: -6px;
+}
+
+.login-trust > .fs-xs {
+  /* 说明文字与勾选框文案左对齐（勾选框本身有缩进，这里跟着走） */
+  padding-left: 24px;
+}
+
+/* 表单里的次级文字按钮（如两步验证的「返回重新输入账号密码」）。
+   这个类原先**没有任何 CSS 定义**，于是那个 <button> 拿到浏览器默认样式，
+   又被 .login-form 的 align-items:stretch 拉成整行 —— 一根灰色实心横条压在
+   主按钮上方，和它的次要身份完全不符。这里把它还原成一颗文字链接：
+   没有底色和边框，居中、次要色，悬浮才浮出强调色。 */
+.login-link-btn {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.login-link-btn:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.login-link-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-link-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .login-health {

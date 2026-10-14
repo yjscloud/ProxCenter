@@ -32,6 +32,7 @@ import {
   vmsApi,
 } from '../api/endpoints';
 import { useAuth } from '../hooks/useAuth';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import {
   IconAlert,
   IconBell,
@@ -110,8 +111,9 @@ export function Workbench() {
   const connStatusQuery = useQuery({
     queryKey: ['connections', 'status'],
     queryFn: connectionsApi.status,
-    /* 这个接口逐台真实探活，原先 30 秒一轮对「首页待办」来说过于频繁。
-       后端另有 30 秒缓存；这里放宽到 3 分钟，多开标签也不会反复打 PVE。 */
+    /* **不跟**「数据刷新间隔」，刻意固定在 3 分钟：这个接口逐台真实探活，
+       按设置里的间隔（默认 30 秒、最小可到 5 秒）反复打会把 PVE 敲满。
+       后端另有 30 秒缓存；多开标签也不会反复打 PVE。 */
     staleTime: 120_000,
     refetchInterval: 180_000,
     enabled: isAdmin,
@@ -130,10 +132,11 @@ export function Workbench() {
     staleTime: 60_000,
   });
 
+  const refresh = useRefreshInterval();
   const alertsQuery = useQuery({
     queryKey: ['alerts'],
     queryFn: alertsApi.get,
-    refetchInterval: 60_000,
+    refetchInterval: refresh,
     enabled: canAlert,
   });
 

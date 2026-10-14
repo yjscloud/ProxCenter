@@ -136,6 +136,8 @@ export function VmImportWizard({ open, onClose, onCreated }: VmImportWizardProps
     queryKey: ['vm-import', 'progress', importUpid],
     queryFn: () => vmTransferApi.importProgress(importUpid, node),
     enabled: Boolean(importUpid) && busy,
+    /* **不跟**「数据刷新间隔」：这里盯的是一次导入的进度条，
+       该由这个过程本身决定节奏（3 秒），不是「多久刷一次数据」 */
     refetchInterval: 3000,
     retry: false,
   });

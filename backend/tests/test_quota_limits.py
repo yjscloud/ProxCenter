@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,10 @@ sys.path.insert(0, str(BACKEND_DIR))
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
 from app import ownership, quota, vmconfig  # noqa: E402
+from app.pve import ProxmoxError  # noqa: E402
+from app.config import settings  # noqa: E402
 from app.schemas import QuotaLimitsIn  # noqa: E402
+from conftest import clean_mysql_db, connect  # noqa: E402,F401
 
 
 MIB = 1024**2
@@ -600,3 +604,465 @@ class TestOwnedRefsInRows:
     def test_empty_inputs(self) -> None:
         assert quota.owned_refs_in_rows([], {"x"}) == set()
         assert quota.owned_refs_in_rows([_row(1)], set()) == set()
+
+
+# ------------------------------------------------------ 删除机器时的归属清理
+async def _with_pool(coro):
+    """跑完协程顺手关掉连接池（它绑在 asyncio.run 新建的循环上）。"""
+    from app import database
+
+    try:
+        return await coro
+    finally:
+        await database.close_pool()
+
+
+def _db_run(coro):
+    return asyncio.run(_with_pool(coro))
+
+
+def _sql(sql: str, params: tuple | None = None):
+    """同步执行一条 SQL（conftest 的 connect 是 autocommit）。
+
+    走的是**裸 pymysql**，占位符是 ``%s``（面板自己的 database 层才把 ``?`` 翻过去）。
+    """
+    conn = connect(settings.db_name)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            if cursor.description:
+                return list(cursor.fetchall())
+            return []
+    finally:
+        conn.close()
+
+
+@pytest.fixture()
+def owner_db(clean_mysql_db):
+    """建归属表 + 额度/角色表，不启动 app。
+
+    归属对账与额度总览都要读这三张表（resource_owner / user_quota / roles），
+    只建一张的话总览那两个用例会撞「表不存在」。
+    """
+    from app import store
+
+    _db_run(ownership.init_table())
+    _db_run(quota.init_table())
+    _db_run(store.init_db())
+    yield
+
+
+class TestForgetGuest:
+    """删机器时清归属。
+
+    不清就会错伤别人：用量是「归属表 ∩ PVE 实时清单」，而 PVE 把最小的空闲 VMID
+    分给新机器 —— 旧记录撞上重建的同号机器，那台新机器就被算到旧用户名下。
+    回归现象就是「机器删了，额度却没还回来」。
+    """
+
+    def test_removes_guest_and_its_snapshots(self, owner_db) -> None:
+        conn, node = "conn-1", "pve1"
+        guest = ownership.vm_ref(conn, node, 100)
+        _db_run(ownership.set_owner(ownership.KIND_VM, guest, "alice"))
+        _db_run(ownership.set_owner(ownership.KIND_SNAPSHOT, f"{guest}/snap1", "alice"))
+        _db_run(
+            ownership.set_owner(
+                ownership.KIND_VM, ownership.vm_ref(conn, node, 101), "bob"
+            )
+        )
+
+        # 本体 + 快照两条，别的不动
+        assert _db_run(ownership.forget_guest(conn, node, 100)) == 2
+        left = {tuple(row) for row in _sql("SELECT kind, ref FROM resource_owner")}
+        assert left == {(ownership.KIND_VM, ownership.vm_ref(conn, node, 101))}
+
+    def test_ct_kind_is_cleared_as_well(self, owner_db) -> None:
+        """容器记在 KIND_CT，但升级前记在 KIND_VM —— 两个都要清。"""
+        conn, node = "conn-1", "pve1"
+        ref = ownership.vm_ref(conn, node, 200)
+        _db_run(ownership.set_owner(ownership.KIND_CT, ref, "alice"))
+        _db_run(ownership.set_owner(ownership.KIND_VM, ref, "alice"))
+        assert _db_run(ownership.forget_guest(conn, node, 200)) == 2
+        assert _sql("SELECT ref FROM resource_owner") == []
+
+    def test_legacy_prefix_is_cleared_too(self, owner_db) -> None:
+        """单连接时代的 ``-:节点:vmid`` 记录同样要清，否则换过版本建的机器会漏。"""
+        _db_run(
+            ownership.set_owner(
+                ownership.KIND_CT, ownership.vm_ref("", "pve1", 100), "alice"
+            )
+        )
+        assert _db_run(ownership.forget_guest("conn-1", "pve1", 100)) == 1
+        assert _sql("SELECT ref FROM resource_owner") == []
+
+    def test_a_longer_vmid_is_not_matched(self, owner_db) -> None:
+        """前缀匹配不能变成「擦掉整个节点」：100 与 1000 必须分得清。"""
+        _db_run(
+            ownership.set_owner(
+                ownership.KIND_VM, ownership.vm_ref("conn-1", "pve1", 1000), "alice"
+            )
+        )
+        assert _db_run(ownership.forget_guest("conn-1", "pve1", 100)) == 0
+        assert len(_sql("SELECT ref FROM resource_owner")) == 1
+
+    def test_another_connection_is_not_touched(self, owner_db) -> None:
+        """两台 PVE 上「同名节点 + 相同 VMID」是可能的：只清本次操作那条连接。"""
+        _db_run(
+            ownership.set_owner(
+                ownership.KIND_VM, ownership.vm_ref("conn-2", "pve1", 100), "alice"
+            )
+        )
+        assert _db_run(ownership.forget_guest("conn-1", "pve1", 100)) == 0
+        assert len(_sql("SELECT ref FROM resource_owner")) == 1
+
+    def test_is_idempotent(self, owner_db) -> None:
+        _db_run(
+            ownership.set_owner(
+                ownership.KIND_VM, ownership.vm_ref("conn-1", "pve1", 100), "alice"
+            )
+        )
+        assert _db_run(ownership.forget_guest("conn-1", "pve1", 100)) == 1
+        # 第二次已经没有可删的，如实回 0 而不是报错
+        assert _db_run(ownership.forget_guest("conn-1", "pve1", 100)) == 0
+
+
+# ---------------------------------------------- 额度总览（overview）与台数读数
+class _Rows:
+    """``guest_rows`` 的替身：直接给一份读数，不碰 PVE。"""
+
+    def __init__(self, rows, error=""):
+        self._rows, self._error = rows, error
+
+    async def __call__(self):
+        return self._rows, self._error
+
+
+class _Users:
+    """``store.list_users`` 的替身：直接给用户列表（它返回列表，不是元组）。"""
+
+    def __init__(self, users):
+        self._users = users
+
+    async def __call__(self, status=None):
+        return self._users
+
+
+def _overview(monkeypatch, rows, users, error=""):
+    monkeypatch.setattr(quota, "guest_rows", _Rows(rows, error))
+    monkeypatch.setattr(quota.store, "list_users", _Users(users))
+    return _db_run(quota.overview())
+
+
+class TestCountGuestsUsesCachedRows:
+    """全局台数读数必须**复用**按人分配那层的缓存读数。
+
+    两层本来就是同一件事的两个视角（全平台 / 某个人）。原先各拉一次
+    ``cluster_resources``：既浪费，也可能因为两次拉取隔了几秒而给出
+    **互相矛盾**的两个数字 —— 用户看到的台数和配额算的台数会打架。
+    """
+
+    def test_counts_from_the_shared_rows(self, monkeypatch) -> None:
+        rows = [
+            {"type": "qemu", "node": "pve1", "vmid": 100},
+            {"type": "qemu", "node": "pve1", "vmid": 9000},  # 模板也算
+            {"type": "lxc", "node": "pve1", "vmid": 110},
+        ]
+        monkeypatch.setattr(quota, "guest_rows", _Rows(rows))
+        import asyncio
+
+        assert asyncio.run(quota.count_guests("vm")) == (2, "")
+        assert asyncio.run(quota.count_guests("lxc")) == (1, "")
+
+    def test_propagates_incomplete_reads(self, monkeypatch) -> None:
+        """读数不全要把错误原样传出去 —— 那个数会偏小，界面必须说得出来。"""
+        monkeypatch.setattr(quota, "guest_rows", _Rows([], "PVE 连不上"))
+        import asyncio
+
+        assert asyncio.run(quota.count_guests("vm")) == (0, "PVE 连不上")
+
+
+class TestOverview:
+    """额度总览：一次读数算全员，口径必须与用户侧那份**完全一致**。"""
+
+    def _own(self, kind, ref, username):
+        _db_run(ownership.set_owner(kind, ref, username))
+
+    def test_one_user_only(self, owner_db, monkeypatch) -> None:
+        self._own(ownership.KIND_VM, ownership.vm_ref("c1", "pve1", 100), "alice")
+        self._own(ownership.KIND_VM, ownership.vm_ref("c1", "pve1", 101), "alice")
+        _db_run(
+            quota.set_user_limits("alice", {"vm": {"count": 3}}, "admin")
+        )
+
+        rows = [
+            _row(100, connection_id="c1", cores=2, memory_bytes=4 * GIB, disk_bytes=32 * GIB),
+            _row(101, connection_id="c1", cores=2, memory_bytes=4 * GIB, disk_bytes=32 * GIB),
+        ]
+        out = _overview(
+            monkeypatch,
+            rows,
+            [{"username": "alice", "role": "operator", "permissions": []}],
+        )["users"]
+
+        (item,) = out
+        assert item["source"] == "user"
+        assert item["limits"]["vm"]["count"] == 3
+        assert item["usage"]["vm"]["count"] == 2
+        assert item["usage"]["vm"]["cores"] == 4
+        # 还剩 1 台
+        assert item["remaining"]["vm"]["count"] == 1
+
+    def test_falls_back_to_role_default(self, owner_db, monkeypatch) -> None:
+        # set_role_limits 走的是 UPDATE，角色得先存在才有行可更新
+        _sql(
+            "INSERT INTO roles (id, name, permissions, created) "
+            "VALUES (%s, %s, %s, %s)",
+            ("qa-role", "qa-role", "[]", int(time.time())),
+        )
+        _db_run(quota.set_role_limits("qa-role", {"vm": {"count": 9}}))
+        out = _overview(
+            monkeypatch,
+            [],
+            [{"username": "bob", "role": "qa-role", "permissions": []}],
+        )["users"]
+
+        (item,) = out
+        assert item["source"] == "role"
+        assert item["effective" if False else "limits"]["vm"]["count"] == 9
+
+    def test_no_limits_anywhere_is_unlimited(self, owner_db, monkeypatch) -> None:
+        out = _overview(
+            monkeypatch,
+            [],
+            [{"username": "carol", "role": "nobody", "permissions": []}],
+        )["users"]
+
+        (item,) = out
+        assert item["source"] == "none"
+        assert item["limits"]["vm"]["count"] is None
+        assert item["remaining"]["vm"]["count"] is None
+
+    def test_wildcard_role_is_marked_bypass(self, owner_db, monkeypatch) -> None:
+        """带 * 的角色不受额度约束：总览上要点出来，否则管理员会以为配了就会生效。"""
+        out = _overview(
+            monkeypatch,
+            [],
+            # 走用户级权限覆盖（effective_permissions 只认 permissions_override，
+            # 角色那套是从库里查的）
+            [{"username": "root2", "role": "r", "permissions_override": ["*"]}],
+        )["users"]
+        assert out[0]["bypass"] is True
+
+    def test_reads_are_shared_and_errors_propagate(self, monkeypatch) -> None:
+        result = _overview(
+            monkeypatch, [], [], error="PVE 连不上"
+        )
+        assert result["error"] == "PVE 连不上"
+        assert result["users"] == []
+
+    def test_container_refs_are_counted_for_the_owner(self, owner_db, monkeypatch) -> None:
+        """容器记在 KIND_CT 下，但归属记录可能记在 KIND_VM（升级前的存量）——
+        与 owned_refs_for 的回落规则一致，总览也得一样。"""
+        self._own(ownership.KIND_CT, ownership.vm_ref("c1", "pve1", 110), "dave")
+        rows = [_row(110, connection_id="c1", kind="lxc")]
+        out = _overview(
+            monkeypatch,
+            rows,
+            [{"username": "dave", "role": "operator", "permissions": []}],
+        )["users"]
+
+        (item,) = out
+        assert item["usage"]["ct"]["count"] == 1
+        # vm 组不含它（vm 组只数 KIND_VM 的 ref）
+        assert item["usage"]["vm"]["count"] == 0
+
+
+# ------------------------------------------------- 归属对账（reconcile_owners）
+class _LiveClient:
+    """只实现对账用到的 ``cluster_resources``。"""
+
+    def __init__(self, guests):
+        # [(节点, VMID, 类型), ...]
+        self._guests = guests
+
+    async def cluster_resources(self, rtype=None):
+        return [
+            {"node": node, "vmid": vmid, "type": kind}
+            for node, vmid, kind in self._guests
+        ]
+
+
+class _DeadClient:
+    """读数失败的那条连接。"""
+
+    async def cluster_resources(self, rtype=None):
+        raise ProxmoxError("PVE 连不上", 500)
+
+
+def _reconcile(monkeypatch, targets):
+    monkeypatch.setattr(quota, "all_connection_clients", lambda: targets)
+    return _db_run(quota.reconcile_owners())
+
+
+def _stored_refs():
+    return {(kind, ref) for kind, ref, _user in _db_run(ownership.all_refs())}
+
+
+class TestReconcileOwners:
+    """归属对账。这一组盯的是**安全边界** —— 它会删数据，宁可不做也不能删错。
+
+    背景：归属表是面板自己维护的第二份账，只在部分写入路径上更新，于是会漂
+    （机器在 PVE 侧被删 → 残留；在 PVE 侧被建 → 无人认领）。用量正是
+    「归属表 ∩ 实时清单」，所以两种漂法都会算错。
+    """
+
+    def _own(self, kind, ref, username="alice"):
+        _db_run(ownership.set_owner(kind, ref, username))
+
+    def test_removes_records_of_machines_that_are_gone(
+        self, owner_db, monkeypatch
+    ) -> None:
+        gone = ownership.vm_ref("c1", "pve1", 100)
+        kept = ownership.vm_ref("c1", "pve1", 101)
+        self._own(ownership.KIND_VM, gone)
+        self._own(ownership.KIND_VM, kept, "bob")
+
+        result = _reconcile(
+            monkeypatch, [({"id": "c1"}, _LiveClient([("pve1", 101, "qemu")]))]
+        )
+
+        assert result["removed"] == 1
+        assert _stored_refs() == {(ownership.KIND_VM, kept)}
+
+    def test_a_live_machine_keeps_its_records(self, owner_db, monkeypatch) -> None:
+        """活着的机器一条都不能动 —— 包括它名下的快照行。
+
+        回归点：快照的归属是挂在客户机 ref 后面的（``<guest>/<快照名>``），
+        判定「机器还在不在」时必须只看前半段，否则活机器的快照行会被整片删掉。
+        """
+        guest = ownership.vm_ref("c1", "pve1", 100)
+        self._own(ownership.KIND_VM, guest)
+        self._own(ownership.KIND_SNAPSHOT, f"{guest}/snap1")
+        self._own(ownership.KIND_SNAPSHOT, f"{guest}/snap2")
+
+        result = _reconcile(
+            monkeypatch, [({"id": "c1"}, _LiveClient([("pve1", 100, "qemu")]))]
+        )
+
+        assert result["removed"] == 0
+        assert len(_stored_refs()) == 3
+
+    def test_snapshot_rows_follow_the_machine_out(self, owner_db, monkeypatch) -> None:
+        guest = ownership.vm_ref("c1", "pve1", 100)
+        self._own(ownership.KIND_VM, guest)
+        self._own(ownership.KIND_SNAPSHOT, f"{guest}/snap1")
+
+        result = _reconcile(monkeypatch, [({"id": "c1"}, _LiveClient([]))])
+
+        assert result["removed"] == 2
+        assert _stored_refs() == set()
+
+    def test_unreadable_connection_skips_the_whole_round(
+        self, owner_db, monkeypatch
+    ) -> None:
+        """**最重要的一条**：任一连接读失败就整轮跳过。
+
+        拿半份清单去对账，会把那条连接上所有机器的归属记录删掉 ——
+        用户凭空多出额度。晚一轮发现脏数据远比这个轻。
+        """
+        self._own(ownership.KIND_VM, ownership.vm_ref("c2", "pve2", 200))
+
+        result = _reconcile(
+            monkeypatch,
+            [
+                ({"id": "c1"}, _LiveClient([])),
+                ({"id": "c2"}, _DeadClient()),
+            ],
+        )
+
+        assert result["removed"] == 0
+        assert result["refused"]
+        # c1 上读到了、但它名下的记录本来就没了；c2 读不到，那条必须原样留着
+        assert _stored_refs() == {
+            (ownership.KIND_VM, ownership.vm_ref("c2", "pve2", 200))
+        }
+
+    def test_records_of_a_removed_connection_are_left_alone(
+        self, owner_db, monkeypatch
+    ) -> None:
+        """指向「当前没配上的连接」的记录不删：把那台 PVE 接回来还要用。"""
+        self._own(ownership.KIND_VM, ownership.vm_ref("gone", "pve9", 900))
+
+        result = _reconcile(
+            monkeypatch, [({"id": "c1"}, _LiveClient([("pve1", 100, "qemu")]))]
+        )
+
+        assert result["removed"] == 0
+        assert len(_stored_refs()) == 1
+
+    def test_legacy_prefix_record_survives_while_the_machine_lives(
+        self, owner_db, monkeypatch
+    ) -> None:
+        """存量 ``-:节点:VMID`` 记录：机器还在就必须留住。
+
+        这是最容易误删的一种 —— 它的前缀和读数行的连接 id 永远对不上，
+        只按字面比对的话会被当成「机器已不在」。
+        """
+        self._own(ownership.KIND_VM, ownership.vm_ref("", "pve1", 100))
+
+        result = _reconcile(
+            monkeypatch, [({"id": "c1"}, _LiveClient([("pve1", 100, "qemu")]))]
+        )
+
+        assert result["removed"] == 0
+        assert _stored_refs() == {
+            (ownership.KIND_VM, ownership.vm_ref("", "pve1", 100))
+        }
+
+    def test_orphan_machines_are_reported_not_assigned(
+        self, owner_db, monkeypatch
+    ) -> None:
+        """无人认领只**报出来**，不自动指派 —— 该给谁是人决定的。"""
+        self._own(ownership.KIND_VM, ownership.vm_ref("c1", "pve1", 100), "alice")
+
+        result = _reconcile(
+            monkeypatch,
+            [
+                (
+                    {"id": "c1"},
+                    _LiveClient(
+                        [
+                            ("pve1", 100, "qemu"),  # 有主
+                            ("pve1", 101, "qemu"),  # 无主
+                            ("pve1", 102, "lxc"),  # 无主（容器同样要算）
+                        ]
+                    ),
+                )
+            ],
+        )
+
+        assert result["orphans"] == 2
+        assert sorted(result["orphan_refs"]) == [
+            ownership.vm_ref("c1", "pve1", 101),
+            ownership.vm_ref("c1", "pve1", 102),
+        ]
+        # 一条归属都没被"顺手"补上
+        assert len(_stored_refs()) == 1
+
+    def test_non_guest_kinds_are_never_touched(self, owner_db, monkeypatch) -> None:
+        """别类归属（受管主机、导入文件、告警规则…）不在这本账里，一律不碰。"""
+        self._own(ownership.KIND_SSH_HOST, "host-1")
+        self._own(ownership.KIND_IMPORT, "-:local:import/x.ova")
+        self._own(ownership.KIND_ALERT_RULE, "rule-1")
+
+        result = _reconcile(monkeypatch, [({"id": "c1"}, _LiveClient([]))])
+
+        assert result["removed"] == 0
+        assert len(_stored_refs()) == 3
+
+    def test_idempotent(self, owner_db, monkeypatch) -> None:
+        self._own(ownership.KIND_VM, ownership.vm_ref("c1", "pve1", 100))
+        targets = [({"id": "c1"}, _LiveClient([]))]
+
+        assert _reconcile(monkeypatch, targets)["removed"] == 1
+        assert _reconcile(monkeypatch, targets)["removed"] == 0

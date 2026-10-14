@@ -1174,3 +1174,4 @@ class TestConsoleWsUrl:
         url = self._client().console_ws_url("pve1", 100, "xterm", 5901, "abc")
         assert "/vncwebsocket?" in url
         assert "termwebsocket" not in url
+

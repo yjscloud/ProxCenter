@@ -24,6 +24,7 @@ import {
   quotaApi,
 } from '../api/endpoints';
 import { errorMessage } from '../api/client';
+import { getGlobalScope } from '../api/scope';
 import { checkGuestSpec, remainingSummary } from '../utils/quotaSpec';
 import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
@@ -137,12 +138,27 @@ export interface LxcCreateWizardProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (vmid: number) => void;
+  /**
+   * 「模板 → 系统模板」卡片点「创建容器」进来时预选的模板 volid。
+   * 只在**打开那一刻**生效：之后表单完全归用户，不会覆盖他的改动。
+   */
+  initialTemplate?: string;
+  /**
+   * 上面那个模板所在的节点。模板是**节点级**资源（存在该节点的存储上），
+   * 少了它预选必然落空 —— 选中的 volid 不在当前节点的模板列表里。
+   */
+  initialNode?: string;
+  /** 模板所在的 PVE 连接：与节点同理，不指定就会落到「当前连接」上 */
+  initialConnection?: string;
 }
 
 export function LxcCreateWizard({
   open,
   onClose,
   onCreated,
+  initialTemplate,
+  initialNode,
+  initialConnection,
 }: LxcCreateWizardProps) {
   const t = useT();
   const toast = useToast();
@@ -206,10 +222,19 @@ export function LxcCreateWizard({
   useEffect(() => {
     if (!open) return;
     setStep(0);
-    setForm(INITIAL);
+    /* 从系统模板卡片进来时带上了目标节点与模板（见 props 注释）。
+       三个值必须一起落：只给模板不给节点，选中的 volid 不在当前节点的模板
+       列表里，下拉会显示成空值 —— 看着像预选失败。 */
+    setForm({
+      ...INITIAL,
+      ...(initialNode ? { node: initialNode } : {}),
+      ...(initialTemplate ? { ostemplate: initialTemplate } : {}),
+    });
+    if (initialConnection) setTargetConn(initialConnection);
     setErrors({});
     setMode('quick');
     modeTouchedRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   /* ---- 基础数据 ---- */
@@ -251,17 +276,24 @@ export function LxcCreateWizard({
     [connectionsQuery.data, t],
   );
 
-  /* 打开时默认落在面板当前连接上（与虚拟机向导一致） */
+  /* 打开时默认落在顶栏「集群作用域」选的那一套，其次是兜底连接（与虚拟机向导一致） */
   useEffect(() => {
     if (!open || targetConn) return;
     const conns = connectionsQuery.data ?? [];
-    const target = conns.find((c) => c.active) ?? conns[0];
+    const target =
+      conns.find((c) => c.id === getGlobalScope()) ??
+      conns.find((c) => c.active) ??
+      conns[0];
     if (target) setTargetConn(target.id);
   }, [open, targetConn, connectionsQuery.data]);
 
-  /* 换了主机，节点名不通用（每台 PVE 各有自己的节点），清掉让用户重选 */
+  /* 换了主机，节点名不通用（每台 PVE 各有自己的节点），清掉让用户重选。
+     例外：从系统模板卡片带进来的预选节点要留住 —— 这个 effect 会在
+     targetConn 从空变成实际连接时跑一次，正好是预选刚落下的那一刻，
+     无差别清空就等于把预选抹掉。 */
   useEffect(() => {
-    setForm((f) => (f.node ? { ...f, node: '' } : f));
+    setForm((f) => (f.node && f.node !== initialNode ? { ...f, node: '' } : f));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetConn]);
 
   const nodesQuery = useQuery({
@@ -441,10 +473,13 @@ export function LxcCreateWizard({
       await runner.run(Promise.resolve(created), {
         title: t('lxcWizard.createTask', { name: payload.name }),
         node: form.node,
-        invalidate: [['vms'], ['lxc'], ['cluster']],
+        invalidate: [['vms'], ['lxc'], ['cluster'], ['quota']],
       });
       onCreated?.(created.vmid);
       void queryClient.invalidateQueries({ queryKey: ['vms'] });
+      /* 刚建出来一台，名下用量变了：额度胶囊带 30 秒 staleTime，
+         不主动作废就会挂着创建前的已用数。 */
+      void queryClient.invalidateQueries({ queryKey: ['quota'] });
       onClose();
     } catch {
       /* toast 已提示 */

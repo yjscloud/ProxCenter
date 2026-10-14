@@ -28,9 +28,7 @@ import { Modal } from './ui/Modal';
 import { NotificationPanel } from './NotificationPanel';
 import { IconBell } from './Icons';
 import { useT } from '../i18n';
-
-/** 未读数轮询间隔。告警本身有冷却（默认 600s），30 秒足够及时。 */
-const POLL_MS = 30_000;
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 
 /** 弹窗里一次拉多少条 */
 const PANEL_LIMIT = 100;
@@ -38,12 +36,15 @@ const PANEL_LIMIT = 100;
 export function NotificationBell() {
   const t = useT();
   const [open, setOpen] = useState(false);
+  /* 未读数轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（铃铛常驻在顶栏，
+     不随切页卸载，所以设置改了会立刻接上）。 */
+  const refresh = useRefreshInterval();
 
   /* 只看未读数：那是常驻轮询，没打开窗口也不该把整份消息搬来搬去 */
   const unreadQuery = useQuery({
     queryKey: ['notifications', 'unread'],
     queryFn: notificationsApi.unread,
-    refetchInterval: POLL_MS,
+    refetchInterval: refresh,
     staleTime: 10_000,
     retry: false,
   });

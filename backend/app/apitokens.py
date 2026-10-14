@@ -209,6 +209,30 @@ async def revoke(token_id: int, username: Optional[str] = None) -> bool:
         return int(cursor.rowcount or 0) > 0
 
 
+async def purge(token_id: int, username: Optional[str] = None) -> bool:
+    """从列表里**真正删掉**一枚已经失效的令牌记录。
+
+    只接受已失效的（已吊销或已过期）：一枚还能用的令牌不该在没有任何记录的情况下
+    凭空消失 —— 想删就得先吊销。这样审计链不会断在「它到底有没有被吊销过」这一步。
+
+    ``username`` 非空时同时作为归属条件（防越权删掉别人的令牌）。
+    """
+    now = time.time()
+    conditions = ["id = ?", "(revoked = 1 OR (expires_at > 0 AND expires_at <= ?))"]
+    params: List[Any] = [int(token_id), now]
+    if username:
+        conditions.append("username = ?")
+        params.append(username)
+
+    async with database.connect() as db:
+        cursor = await db.execute(
+            f"DELETE FROM api_tokens WHERE {' AND '.join(conditions)}",
+            tuple(params),
+        )
+        await db.commit()
+        return int(cursor.rowcount or 0) > 0
+
+
 async def revoke_all(username: str) -> int:
     """吊销某人的全部令牌（改密码 / 删号 / 管理员踢下线时调用）。"""
     async with database.connect() as db:

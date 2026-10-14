@@ -164,7 +164,7 @@ export const guestsApi = {
   assignOwner: (g: GuestRef, username: string | null, connectionId?: string) =>
     isLxc(g)
       ? lxcApi.assignOwner(g.node, g.vmid, username, connectionId)
-      : vmsApi.assignOwner(g.node, g.vmid, username, connectionId),
+      : vmsApi.assignOwner(g.node, g.vmid, username, connectionId, g.type),
 
   /**
    * 改名。

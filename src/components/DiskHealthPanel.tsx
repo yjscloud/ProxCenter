@@ -48,11 +48,21 @@ function wearoutColor(remain: number): string {
 }
 
 /** 展开行：单块磁盘的 SMART 明细 */
-function DiskSmartDetail({ node, disk }: { node: string; disk: string }) {
+function DiskSmartDetail({
+  node,
+  disk,
+  conn,
+}: {
+  node: string;
+  disk: string;
+  conn: string;
+}) {
   const t = useT();
   const query = useQuery({
-    queryKey: ['health', 'smart', node, disk],
-    queryFn: () => healthApi.diskSmart(node, disk),
+    queryKey: ['health', 'smart', conn, node, disk],
+    /* 必须带上连接：节点名在每台 PVE 上都是本地的，不带就会打到「兜底连接」，
+       在同名节点的另一台主机上读同一块盘的 SMART（与 zfs / disks 两个查询口径一致） */
+    queryFn: () => healthApi.diskSmart(node, disk, conn),
     staleTime: 60_000,
     retry: false,
   });
@@ -270,7 +280,7 @@ export function DiskHealthPanel({
               <span className="fw-600 mono">{expanded}</span>
               <span className="fs-xs text-muted">{t('disk.smartDetails')}</span>
             </div>
-            <DiskSmartDetail node={node} disk={expanded} />
+            <DiskSmartDetail node={node} disk={expanded} conn={conn} />
           </div>
         ) : null}
       </Card>

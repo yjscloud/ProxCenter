@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 from . import database
@@ -120,6 +120,78 @@ async def delete_owner(kind: str, ref: str) -> None:
             "DELETE FROM resource_owner WHERE kind = ? AND ref = ?", (kind, ref)
         )
         await db.commit()
+
+
+async def all_refs() -> List[Tuple[str, str, str]]:
+    """整张归属表的 ``(kind, ref, username)``。
+
+    给对账作业用。不按类别分批拿是刻意的：对账要比对的是「这本账 vs PVE 实际
+    清单」，分几次拿中间可能被写操作插进来，而对账**会删记录** —— 拿一份自相
+    矛盾的快照去删，比晚一轮更糟。
+    """
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT kind, ref, username FROM resource_owner"
+        )
+        return [
+            (str(kind), str(ref or ""), str(username or ""))
+            for kind, ref, username in await cursor.fetchall()
+        ]
+
+
+async def forget_refs(pairs: Sequence[Tuple[str, str]]) -> int:
+    """按 ``(kind, ref)`` 批量删归属记录，返回删除条数。
+
+    与 :func:`forget_guest` 的分工：那个是「删一台机器」的精确清理（走删除接口），
+    这个是「对账时按清单批量清」。两者都不做归属的重新指派 —— 机器还在但没人
+    认领是**事实**，该由管理员决定给谁，不该由作业猜。
+    """
+    doomed = [(str(kind), str(ref)) for kind, ref in pairs if ref]
+    if not doomed:
+        return 0
+    async with database.connect() as db:
+        for kind, ref in doomed:
+            await db.execute(
+                "DELETE FROM resource_owner WHERE kind = ? AND ref = ?", (kind, ref)
+            )
+        await db.commit()
+    return len(doomed)
+
+
+async def forget_guest(connection_id: str, node: str, vmid: Any) -> int:
+    """删掉一台机器的全部归属记录（客户机本体 + 它名下的快照），返回删除条数。
+
+    机器都没了，这些记录再没有任何价值，却会**错伤别人**：用量是「归属表 ∩ PVE
+    实时清单」的交集（见 :func:`quota.summarise_usage`），而 PVE 分配 VMID 用的是
+    「最小的空闲号」—— 删掉 100 之后再建一台，新机器多半还是 100。旧记录一旦撞上
+    这个号，那台**新**机器就被算到旧用户名下，于是「我把机器删了，额度却没还回来」。
+
+    三个前缀都要认，缺一个就会漏：
+      * ``<连接>:<节点>:<vmid>`` —— 现在的写法；
+      * ``-:<节点>:<vmid>`` —— 单连接时代的存量记录（见 :func:`quota._legacy_refs`）；
+      * 上面两者加 ``/快照名`` —— 快照归属是挂在客户机 ref 后面的。
+
+    两类 kind 一起清（``vm`` / ``ct``）而不只清对应的那一个：容器在升级前记在
+    ``vm`` 下（见 :func:`migrate_guest_kinds`），只按类型清会留下存量垃圾。
+    """
+    prefixes = (vm_ref(connection_id, node, vmid), vm_ref("", node, vmid))
+    async with database.connect() as db:
+        cursor = await db.execute("SELECT kind, ref FROM resource_owner")
+        rows = await cursor.fetchall()
+        doomed = [
+            (str(kind), str(ref or ""))
+            for kind, ref in rows
+            if any(
+                str(ref or "") == prefix or str(ref or "").startswith(f"{prefix}/")
+                for prefix in prefixes
+            )
+        ]
+        for kind, ref in doomed:
+            await db.execute(
+                "DELETE FROM resource_owner WHERE kind = ? AND ref = ?", (kind, ref)
+            )
+        await db.commit()
+    return len(doomed)
 
 
 async def get_owner(kind: str, ref: str) -> Optional[str]:

@@ -159,7 +159,6 @@ import type {
   DiskSmart,
   FaqItem,
   Paginated,
-  PanelSettings,
   SiteInfo,
   UiPrefs,
   RrdPoint,
@@ -193,6 +192,7 @@ import type {
   VmDiskUsage,
   VmHardwareResult,
   MyQuotaReport,
+  QuotaOverviewReport,
   QuotaLimits,
   RoleQuotaReport,
   UserQuotaReport,
@@ -206,13 +206,13 @@ import type {
   VncProxyResponse,
   CloudInitConfig,
   TemplateItem,
+  CtSystemTemplate,
   CloudImageItem,
   TemplateFromImageRequest,
   TemplateBuildResult,
   TemplateCloneRequest,
   TemplateCloneResult,
   CapacityForecast,
-  DashboardSummary,
   DashboardTop,
   IsoItem,
   AlertRecord,
@@ -262,8 +262,14 @@ export const authApi = {
       '/auth/reset-password',
       { token, password },
     ),
-  /** 登录第二步：mfa_token + 动态码（或一次性恢复码） */
-  loginMfa: (body: { mfa_token: string; code: string }) =>
+  /**
+   * 登录第二步：mfa_token + 动态码（或一次性恢复码）。
+   *
+   * `trust_device` 勾上时，验证通过后后端会登记一台信任设备并下发 cookie，
+   * 之后 7 天内在同一台浏览器上只需口令即可登录。是否真的签发还取决于面板开关
+   * （第一步返回的 `trust_device_available`）。
+   */
+  loginMfa: (body: { mfa_token: string; code: string; trust_device?: boolean }) =>
     post<LoginResponse>('/auth/login/2fa', body),
   /**
    * 用 HttpOnly 里的 refresh cookie 换新 access token。
@@ -370,9 +376,10 @@ export const configApi = {
     post<ConnectionTestResult>('/config/connection/test', body),
   /** 环境自检：探测当前凭据的有效权限，并解释各项限制 */
   diagnostics: () => get<DiagnosticsResult>('/config/diagnostics'),
-  /** 面板级创建默认值（当前只有默认 DNS），创建向导向所有用户预填 */
+  /** 面板级创建默认值（默认 DNS + 默认克隆方式），创建向导向所有用户预填 */
   getVmDefaults: () => get<VmDefaults>('/config/vm-defaults'),
-  saveVmDefaults: (dns: string) => put<VmDefaults>('/config/vm-defaults', { dns }),
+  /** 整份保存（与 IP 池同一契约）：漏传的字段会被写回默认值，所以要传全 */
+  saveVmDefaults: (body: VmDefaults) => put<VmDefaults>('/config/vm-defaults', body),
   /**
    * 资源规格（套餐）。管理员在设置页维护、下单页读取，因此**读取只要求登录**；
    * 保存是整份覆盖（与 IP 池同一契约），需要 settings.manage，
@@ -476,6 +483,11 @@ export const mailApi = {
    --------------------------------------------------------------------------- */
 
 export const clusterApi = {
+  /**
+   * 集群版本与仲裁。**只能读一台**（PVE 的 /cluster/status 是单集群接口）：
+   * 跟着顶栏作用域走，作用域为「全部集群」时读兜底连接。要「全机队」的版本 /
+   * 仲裁请用 :func:`fleetStatus`。
+   */
   status: () => get<ClusterStatus>('/cluster/status'),
   /** 集群仲裁与 HA 运行状态（多节点集群掉仲裁意味着整群只读） */
   haStatus: () => get<ClusterHaStatus>('/cluster/ha-status'),
@@ -603,12 +615,13 @@ export const connectionsApi = {
   update: (id: string, body: ConnectionConfigInput & { name?: string }) =>
     put<ConnectionProfile>(`/connections/${id}`, body),
   /**
-   * 指定「默认读取的那一台」。
+   * 指定「集群级接口的兜底读取目标」。
    *
-   * 多台 PVE 仍是**同级**的，没有哪台更「正式」—— 这个指针只服务少数一次只能
-   * 读单台的接口（健康探活、`/cluster/status`）。后端仍会自动维护它（第一条连接
-   * 创建时置为它，删除时顺延），但管理员可以在「设置 → 系统信息」里改，
-   * 否则多连接部署下「节点数只有 1 个」这类读数没人解释得清。
+   * 多台 PVE 仍是**同级**的，没有哪台更「正式」—— 列表类接口（节点 / 虚拟机 /
+   * 存储）默认合并全部连接，只有「一次只能读一台」的接口（健康探活、
+   * `/cluster/status` 的版本与仲裁）才回落到它。后端会自动维护它（第一条连接
+   * 创建时置为它，删除时顺延），管理员可在「设置 → 系统信息」这一处更换 ——
+   * 节点页不再放这个开关，免得看起来像「有一台是主集群」。
    */
   activate: (id: string) => post<{ active: string }>(`/connections/${id}/activate`),
   remove: (id: string) => del<{ deleted: string; remaining: number }>(`/connections/${id}`),
@@ -783,10 +796,16 @@ export const vmsApi = {
     vmid: number,
     username: string | null,
     connectionId?: string,
+    /** 客户机类型：容器必须传 'lxc'，否则归属会落进 vm 桶，额度同时算两组 */
+    guestType?: string,
   ) =>
     put<{ node: string; vmid: number; owner: string | null }>(
       `/vms/${node}/${vmid}/owner`,
-      { username, connection_id: connectionId || null },
+      {
+        username,
+        connection_id: connectionId || null,
+        guest_type: guestType ?? null,
+      },
     ),
 
   /* 快照 */
@@ -1092,6 +1111,14 @@ export const tokensApi = {
     post<ApiTokenCreated>('/tokens', body),
   /** 吊销（软删除，列表里仍置灰可见，便于事后追溯） */
   revoke: (id: number) => del<{ ok: boolean; revoked: number; active: number }>(`/tokens/${id}`),
+  /**
+   * 把一枚**已经失效**（已吊销或已过期）的令牌记录从列表里删掉。
+   *
+   * 与吊销分成两个接口，因为后果不同：吊销是「让它失效」，删除是「连同那条记录
+   * 也不要了」。后端只接受已失效的条目 —— 有效令牌先吊销再删，否则一枚正在被脚本
+   * 使用的凭据会没有任何痕迹地消失。删不掉时回 404（与吊销同一口径，不区分原因）。
+   */
+  purge: (id: number) => del<{ ok: boolean; purged: number; active: number }>(`/tokens/${id}/record`),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1279,6 +1306,13 @@ export const quotaApi = {
    * 看别人的额度是管理端的事（``usersApi.getQuota`` / ``rolesApi.getQuota``）。
    */
   mine: () => get<MyQuotaReport>('/quota/me'),
+  /**
+   * **所有用户**的额度与用量一览（管理端，需 ``users.view``）。
+   *
+   * 与 `mine` 同一套口径，只是把读数取一次、按归属分桶算全 —— 管理端要知道
+   * 「谁快满了」不必逐个打开用户编辑器，也不必为此发 N 次 PVE 请求。
+   */
+  overview: () => get<QuotaOverviewReport>('/quota/overview'),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1305,6 +1339,14 @@ export const templatesApi = {
       ...(guestType ? { params: { guest_type: guestType } } : {}),
       ...scoped(connectionId),
     }),
+  /**
+   * 所有节点上的容器**系统模板**（vztmpl 文件，跨连接聚合）。
+   *
+   * 与 `list()` 的区别是关键：`list()` 返回「被转成模板的机器」（有 VMID，用来克隆），
+   * 这个返回「存储里的模板**文件**」（没有 VMID，用来新建容器）。PVE 里两者都叫
+   * 「模板」——模板页原先只统计前者，于是「我有 2 个容器模板」显示成 0。
+   */
+  vztmpl: () => get<CtSystemTemplate[]>('/templates/vztmpl'),
   /** 某节点上可用的 cloud 镜像（.img/.qcow2）*/
   images: (node: string, connectionId?: unknown) =>
     get<CloudImageItem[]>('/templates/images', {
@@ -1328,7 +1370,6 @@ export const templatesApi = {
    --------------------------------------------------------------------------- */
 
 export const dashboardApi = {
-  summary: () => get<DashboardSummary>('/dashboard/summary'),
   top: (limit = 5) =>
     get<DashboardTop>('/dashboard/top', { params: { limit } }),
   capacity: (timeframe: 'week' | 'month' | 'year' = 'month') =>
@@ -1450,36 +1491,8 @@ export const api = {
   connections: connectionsApi,
 };
 
-/* ---------------------------------------------------------------------------
-   面板本地设置（localStorage）
-   --------------------------------------------------------------------------- */
-
-const SETTINGS_KEY = 'pve_panel_settings';
-
-export const defaultSettings: PanelSettings = {
-  refreshInterval: Number(import.meta.env.VITE_REFRESH_INTERVAL) || 10_000,
-  pageSize: Number(import.meta.env.VITE_PAGE_SIZE) || 20,
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
-};
-
-export function loadSettings(): PanelSettings {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return defaultSettings;
-    const parsed = JSON.parse(raw) as Partial<PanelSettings>;
-    return { ...defaultSettings, ...parsed };
-  } catch {
-    return defaultSettings;
-  }
-}
-
-export function saveSettings(settings: PanelSettings): void {
-  try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  } catch {
-    /* 忽略 */
-  }
-}
+/* 面板本地设置（刷新间隔 / 每页条数 / 时区）已挪到 utils/panelSettings.ts：
+   那是「存在这台浏览器里」的偏好，不是接口，放在这一层只会让人觉得它没人用。 */
 
 /* ---------------------------------------------------------------------------
    内网穿透（frp 客户端）—— 按职责拆为服务端（admin）+ 规则（按用户归属）

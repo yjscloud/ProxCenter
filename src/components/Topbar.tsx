@@ -8,8 +8,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { healthApi } from '../api/endpoints';
 import { useAuth } from '../hooks/useAuth';
 import { useUiPrefs } from '../hooks/useUiPrefs';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { isPathDisabled } from './Sidebar';
-import { Badge } from './ui/Badge';
 import { IconButton } from './ui/Button';
 import {
   IconChevronDown,
@@ -23,7 +23,7 @@ import {
 } from './Icons';
 import { NotificationBell } from './NotificationBell';
 import { ConsoleStatus } from './ConsoleStatus';
-import { roleMeta } from '../utils/status';
+import { ScopeSelect } from './ScopeSelect';
 import { useI18n, useT } from '../i18n';
 import { LanguageSelect } from './LanguageSelect';
 
@@ -54,11 +54,13 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  /* 健康状态轮询 */
+  /* 健康状态轮询：间隔跟「设置 → 面板设置 → 数据刷新间隔」走
+     （顶栏不随切页卸载，所以设置改了会由 useRefreshInterval 立刻接上） */
+  const refresh = useRefreshInterval();
   const health = useQuery({
     queryKey: ['health'],
     queryFn: healthApi.check,
-    refetchInterval: 30_000,
+    refetchInterval: refresh,
     retry: false,
   });
 
@@ -92,8 +94,6 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
     return () => document.removeEventListener('keydown', handler);
   }, [menuOpen]);
 
-  const role = roleMeta(user?.role, t);
-
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -111,6 +111,10 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
         {/* 后端 / PVE 状态收敛成一个「控制台状态」入口：常态一个状态点，
             点开才看明细。顶栏只有这么大，不能给常驻徽章越堆越多 */}
         <ConsoleStatus />
+
+        {/* 当前看哪一套集群。紧挨状态点：两者一个回答「好不好」，
+            一个回答「在看谁」。只有一套 PVE 时它自己会隐藏 */}
+        <ScopeSelect />
 
         {/* 全局搜索入口：快捷键之外也给一个看得见的按钮，否则没人知道有这功能 */}
         {onOpenSearch ? (
@@ -161,7 +165,6 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
             </span>
             <span className="user-meta">
               <span className="user-name">{user?.username ?? t('topbar.notLoggedIn')}</span>
-              <span className="user-role">{role.label}</span>
             </span>
             <IconChevronDown size={14} />
           </button>
@@ -170,9 +173,6 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
             <div className="user-dropdown" role="menu">
               <div className="user-dropdown-header">
                 <span className="user-dropdown-name">{user?.username}</span>
-                <Badge variant={role.variant} size="sm">
-                  {role.label}
-                </Badge>
               </div>
               <div className="user-dropdown-divider" />
               {/* 所有用户可用：改邮箱与密码。入口被关闭时整项不出现 */}

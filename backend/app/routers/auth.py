@@ -1,11 +1,25 @@
 """Authentication endpoints."""
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from .. import captcha, crypto, i18n, mailer, panel_url, password_reset, prefs, security, store, throttle, totp
+from .. import (
+    captcha,
+    crypto,
+    i18n,
+    mailer,
+    panel_url,
+    password_reset,
+    prefs,
+    security,
+    store,
+    throttle,
+    totp,
+    trusteddevices,
+)
 from ..config import settings
 from ..schemas import (
     ForgotPasswordIn,
@@ -262,19 +276,31 @@ async def login(
 
     # 两步验证：口令对了，但还不算登录成功 —— 先发一枚只能走完这次验证的
     # 临时凭据，避免把 access token 直接交给只掌握了密码的一方。
+    #
+    # 例外：这台设备在信任期内（当初登录时勾了「信任设备」）。
+    # 跳过的**只是第二因子**，口令仍然必须在上面验过 —— 信任设备不是免密登录。
+    # 判定全在服务端（见 app.trusteddevices）：cookie 里只是一枚随机口令，
+    # 客户端伪造不出「可信」这个结论。
+    trusted_device = False
     if user.get("totp_enabled"):
-        version = int(user.get("token_version", 0) or 0)
-        await store.add_audit(
-            username=user["username"],
-            action="auth.login",
-            result="mfa_required",
-            detail="密码校验通过，等待两步验证",
-            ip=ip,
+        trusted_device = await trusteddevices.is_trusted(
+            request.cookies.get(security.TRUSTED_COOKIE), str(user["username"])
         )
-        return LoginResponse(
-            mfa_required=True,
-            mfa_token=security.create_mfa_token(user["username"], version),
-        )
+        if not trusted_device:
+            version = int(user.get("token_version", 0) or 0)
+            await store.add_audit(
+                username=user["username"],
+                action="auth.login",
+                result="mfa_required",
+                detail="密码校验通过，等待两步验证",
+                ip=ip,
+            )
+            return LoginResponse(
+                mfa_required=True,
+                mfa_token=security.create_mfa_token(user["username"], version),
+                # 让第二步知道该不该显示「信任设备」勾选框（见 schemas.LoginResponse）
+                trust_device_available=bool(settings.totp_trust_enabled),
+            )
 
     # 登录成功：清掉失败计数（账号与 IP 两个维度），再签发会话
     await throttle.clear_login_failures(payload.username, ip)
@@ -284,6 +310,9 @@ async def login(
         username=user["username"],
         action="auth.login",
         result="success",
+        # 审计里点明「这一步没输动态码，是因为信任设备」：只写 success 的话，
+        # 事后翻日志看不出这此登录到底有没有过第二因子。
+        detail="两步验证已跳过（信任设备，未过期）" if trusted_device else "",
         ip=ip,
     )
 
@@ -333,6 +362,27 @@ async def login_mfa(
 
     await throttle.clear_login_failures(username, ip)
     access = await _issue_session(response, user, request)
+
+    # 勾了「信任设备」：登记一台信任设备并下发 cookie。之后 7 天内，这台浏览器
+    # 只要口令对就能直接登录（第二因子被跳过），到期或换密码 / 开关 2FA 即失效。
+    #
+    # 只在**走到这一步**（动态码或恢复码已验过）才签发 —— 放在前面等于没验证就发。
+    if payload.trust_device and settings.totp_trust_enabled:
+        plain, expires_at = await trusteddevices.remember(
+            username,
+            ip=ip,
+            user_agent=request.headers.get("user-agent", ""),
+        )
+        security.set_trusted_cookie(
+            response, plain, max_age=int(expires_at - time.time())
+        )
+        await security.audit(
+            request,
+            user,
+            "auth.trust_device",
+            detail=f"信任本设备 {trusteddevices.TRUST_DAYS} 天（免两步验证）",
+        )
+
     await store.add_audit(
         username=username,
         action="auth.login",
@@ -632,7 +682,7 @@ async def logout_all(
     response: Response,
     user: Dict[str, Any] = Depends(security.get_current_user),
 ) -> Dict[str, Any]:
-    """退出所有设备：撤销全部会话、吊销全部 API Token，并把会话版本 +1。
+    """退出所有设备：撤销全部会话、吊销全部 API Token、清掉信任设备，并把会话版本 +1。
 
     会话版本一变，所有已经发出去的 access token（包括当前这枚）立刻失效，
     所以前端拿到这个响应后应当回到登录页。
@@ -640,6 +690,10 @@ async def logout_all(
     这里连 API Token 一起吊销：用户点这个按钮的心智是「把我在外面的东西全
     停掉」（丢了电脑、怀疑泄漏），留一类长期凭据活着不符合预期。令牌是自助
     管理的，需要时重新签发即可。
+
+    信任设备同理必须一起清：它同样是一份「不需要再输动态码」的长期凭证，
+    而且是丢电脑时最先该担心那一类 —— 留着它，用户以为已经把那台机器赶走了，
+    实际上对方 7 天内还能只凭口令进来。
     """
     revoked = await security.revoke_user_credentials(user["username"])
     security.clear_session_cookies(response)
@@ -776,6 +830,10 @@ async def totp_enable(
     await store.set_totp(
         user["username"], enabled=True, recovery=totp.hash_recovery_codes(codes)
     )
+    # 绑定（含重新绑定）2FA 时把旧的信任设备整批作废。绑定是一次「换锁」：
+    # 之前被信任的设备可能正是这次换锁的原因（手机丢了、换认证器），
+    # 留着它们等于新锁配着旧钥匙。
+    await trusteddevices.forget_all(user["username"])
     await security.audit(request, user, "auth.totp_enable")
     return {
         "ok": True,
@@ -820,6 +878,10 @@ async def totp_disable(
         raise HTTPException(status_code=400, detail="动态码不正确")
 
     await store.set_totp(user["username"], secret="", enabled=False, recovery="[]")
+    # 关闭 2FA 同样清掉全部信任设备。信任记录的含义是「第二因子已在这台设备上
+    # 通过」，2FA 一关这个前提就不成立了；更关键的是**将来重新开启时**旧记录
+    # 会立刻复活成一条可绕过的通道 —— 那是「关了又开」最容易被漏掉的一个洞。
+    await trusteddevices.forget_all(user["username"])
     await security.audit(request, user, "auth.totp_disable")
     return {"ok": True, "message": "两步验证已关闭"}
 

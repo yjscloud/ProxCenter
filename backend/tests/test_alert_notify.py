@@ -153,7 +153,15 @@ def _all_channels_on() -> Dict[str, Any]:
 class TestNotifySourcesConfig:
     def test_registry_is_stable(self, db) -> None:
         ids = [item["id"] for item in alerting.NOTIFY_SOURCES]
-        assert ids == ["resource", "portguard", "sshguard", "sshremote", "backupguard"]
+        assert ids == [
+            "resource",
+            "portguard",
+            "sshguard",
+            "sshremote",
+            "backupguard",
+            "quorum",
+            "alert_rootcause",
+        ]
         assert alerting.NOTIFY_SOURCE_IDS == tuple(ids)
         # 审计日志要把 id 翻成人话，标签不能缺
         assert all(alerting.NOTIFY_LABELS[i] for i in ids)
@@ -166,6 +174,8 @@ class TestNotifySourcesConfig:
             "SOURCE_SSHGUARD",
             "SOURCE_SSHREMOTE",
             "SOURCE_BACKUPGUARD",
+            "SOURCE_QUORUM",
+            "SOURCE_ROOTCAUSE",
         ):
             assert getattr(alerting, name) in alerting.NOTIFY_SOURCE_IDS
 

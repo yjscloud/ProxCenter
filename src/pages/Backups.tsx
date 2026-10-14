@@ -20,7 +20,7 @@ import { Card, CardHeader, KpiCard } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
 import { Input, Select, Switch, Textarea, Field } from '../components/ui/Input';
-import { Table, Pagination, type Column } from '../components/ui/Table';
+import { Table, type Column } from '../components/ui/Table';
 import { Modal } from '../components/ui/Modal';
 import { ErrorState, Notice, CollapsibleCard } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
@@ -41,6 +41,7 @@ import {
 } from '../components/Icons';
 import { formatBytes, formatDateTime, formatRelative } from '../utils/format';
 import { backupModeOptions, compressOptions } from '../utils/status';
+import { PagerBar, usePaged } from '../hooks/usePaged';
 import { useTaskRunner, type TaskRunner } from '../hooks/useTaskRunner';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
@@ -493,8 +494,6 @@ function BackupFilesTab({
   const [node, setNode] = useState('');
   const [storage, setStorage] = useState('');
   const [search, setSearch] = useState('');
-  const [page, setPage] = useState(1);
-  const pageSize = 25;
   const [restoreTarget, setRestoreTarget] = useState<BackupRow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BackupRow | null>(null);
   const [busy, setBusy] = useState(false);
@@ -598,14 +597,12 @@ function BackupFilesTab({
     return [...filtered].sort((a, b) => (b.ctime ?? 0) - (a.ctime ?? 0));
   }, [listQuery.data, search]);
 
-  useEffect(() => {
-    setPage(1);
-  }, [search, node, storage]);
-
-  const paged = useMemo(
-    () => items.slice((page - 1) * pageSize, page * pageSize),
-    [items, page],
-  );
+  /* 分页交给统一的分页 hook（原先在这一段手写页码 / 每页条数 + 手动切片）：
+     它一并处理「筛选条件换了回第 1 页」与「删到最后一页时越界夹取」，
+     并带出「每页 N 条」下拉与「跳至 _ 页」，与其它列表的分页条完全一致。
+     切片对象是上面那份**已按备份时间倒序**的 items —— 先排序再分页，
+     否则排的只是当前这一页。 */
+  const pager = usePaged(items, `${search}|${node}|${storage}`);
 
   const stats = useMemo(() => {
     const list = listQuery.data ?? [];
@@ -869,7 +866,7 @@ function BackupFilesTab({
         <>
           <Table<BackupRow>
             columns={columns}
-            rows={paged}
+            rows={pager.rows}
             /* 卷标识在不同 PVE 上可能重名，行键必须带上来源连接 */
             rowKey={(b) => `${b.connection_id ?? ''}:${b.volid}`}
             loading={listQuery.isLoading}
@@ -895,12 +892,8 @@ function BackupFilesTab({
             }
             rowTitle={(b) => b.volid}
           />
-          <Pagination
-            page={page}
-            pageSize={pageSize}
-            total={items.length}
-            onChange={setPage}
-          />
+          {/* 分页条接在表格下沿，成为同一张卡的页脚（见 .pagination 的样式） */}
+          <PagerBar pager={pager} />
         </>
       )}
 
@@ -1162,6 +1155,11 @@ function BackupJobsTab({
     },
   ];
 
+  /* 备份计划同样分页：计划数随机器增多，一屏也铺不完。
+     这一栏没有搜索 / 筛选，resetKey 给个固定值就够 —— 删掉计划导致页数变少时，
+     越界仍由 hook 夹回最后一页。 */
+  const jobPage = usePaged(jobsQuery.data ?? [], 'jobs');
+
   return (
     <>
       {!isAdmin ? (
@@ -1214,30 +1212,34 @@ function BackupJobsTab({
           onRetry={() => void jobsQuery.refetch()}
         />
       ) : (
-        <Table<JobRow>
-          columns={columns}
-          rows={jobsQuery.data ?? []}
-          /* 任务号是各主机各自编的，两台 PVE 都可能有 job_id=1 —— 键必须带上连接 */
-          rowKey={(j) => `${j.connection_id ?? ''}:${j.job_id}`}
-          loading={jobsQuery.isLoading}
-          caption={t('backups.jobsCaption')}
-          emptyTitle={t('backups.jobsEmpty')}
-          emptyDescription={t('backups.jobsEmptyDesc')}
-          emptyAction={
-            canBackup ? (
-              <Button
-                variant="primary"
-                icon={<IconPlus size={15} />}
-                onClick={() => {
-                  setEditTarget(null);
-                  setEditorOpen(true);
-                }}
-              >
-                {t('backups.newPlan')}
-              </Button>
-            ) : undefined
-          }
-        />
+        <>
+          <Table<JobRow>
+            columns={columns}
+            rows={jobPage.rows}
+            /* 任务号是各主机各自编的，两台 PVE 都可能有 job_id=1 —— 键必须带上连接 */
+            rowKey={(j) => `${j.connection_id ?? ''}:${j.job_id}`}
+            loading={jobsQuery.isLoading}
+            caption={t('backups.jobsCaption')}
+            emptyTitle={t('backups.jobsEmpty')}
+            emptyDescription={t('backups.jobsEmptyDesc')}
+            emptyAction={
+              canBackup ? (
+                <Button
+                  variant="primary"
+                  icon={<IconPlus size={15} />}
+                  onClick={() => {
+                    setEditTarget(null);
+                    setEditorOpen(true);
+                  }}
+                >
+                  {t('backups.newPlan')}
+                </Button>
+              ) : undefined
+            }
+          />
+          {/* 分页条接在表格下沿，成为同一张卡的页脚（见 .pagination 的样式） */}
+          <PagerBar pager={jobPage} />
+        </>
       )}
 
       <JobEditor

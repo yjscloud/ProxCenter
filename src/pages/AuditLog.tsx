@@ -13,6 +13,8 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Input, Select, Field } from '../components/ui/Input';
 import { Table, Pagination, type Column } from '../components/ui/Table';
+import { PAGE_SIZE_OPTIONS } from '../hooks/usePaged';
+import { panelPageSize } from '../utils/panelSettings';
 import { EmptyState, ErrorState, Notice, CollapsibleCard } from '../components/ui/EmptyState';
 import {
   IconAudit,
@@ -48,8 +50,6 @@ const RESULT_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
   { label: 'audit.resultPartial', value: 'partial' },
 ];
 
-const PAGE_SIZES = [20, 50, 100] as const;
-
 /** 常用动作前缀（后端 action 命名约定）*/
 const ACTION_FILTERS: ReadonlyArray<{ label: MessageKey; value: string }> = [
   { label: 'audit.actionAll', value: '' },
@@ -78,6 +78,39 @@ const RANGE_OPTIONS: ReadonlyArray<{ label: MessageKey; value: string }> = [
    页面
    --------------------------------------------------------------------------- */
 
+/**
+ * 审计 detail 的两种形态。
+ *
+ * 后端 ``store.add_audit`` 会把 dict/list 编码成 JSON 再落库，所以额度那几处写的
+ * ``{"reason": "quota", ...}`` 拿回来是**可解析的 JSON**；其余调用点传的仍是纯文本
+ * （成功/失败的说明）。两种都要能读，所以这里先试解析、失败就当文本。
+ *
+ * 这条能力是「只看被额度挡住的」能做得精确的原因：光看 ``result === 'denied'``
+ * 只能旁证（denied 目前确实只有额度会写），按 ``reason`` 才是**直接**判据。
+ */
+function auditDetail(entry: AuditEntry): string | Record<string, unknown> {
+  const raw = entry.detail;
+  if (typeof raw !== 'string' || !raw) return '';
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : raw;
+  } catch {
+    return raw;
+  }
+}
+
+/** detail 的纯文本形态（搜索与展示都用它） */
+function auditDetailText(entry: AuditEntry): string {
+  const parsed = auditDetail(entry);
+  return typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
+}
+
+/** 拒绝原因（后端写的 ``reason``）；纯文本的 detail 没有它，返回空串 */
+function auditReason(entry: AuditEntry): string {
+  const parsed = auditDetail(entry);
+  return typeof parsed === 'string' ? '' : String(parsed.reason ?? '');
+}
+
 export function AuditLog() {
   const t = useT();
   const toast = useToast();
@@ -87,8 +120,14 @@ export function AuditLog() {
   const [result, setResult] = useState('');
   const [range, setRange] = useState('');
   const [search, setSearch] = useState('');
+  /* 「只看被额度挡住的」的服务端那一半（result=denied）交给 queryParams，
+     这一半按 reason 在当前页里再收窄 —— 光靠 result 只是旁证。 */
+  const [quotaOnly, setQuotaOnly] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number>(50);
+  /* 初始每页条数跟随「设置 → 面板设置 → 列表每页条数」（原先写死 50）。
+     这一页是**服务端分页**（limit / offset），所以用不了 usePaged 的前端切片，
+     只借它的默认值与候选值，保证各列表的条数口径一致。 */
+  const [pageSize, setPageSize] = useState<number>(() => panelPageSize());
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   /* ---- 时间范围 → ISO 字符串 ---- */
@@ -131,15 +170,20 @@ export function AuditLog() {
   const items = useMemo(() => {
     const list = auditQuery.data?.items ?? [];
     const q = search.trim().toLowerCase();
-    if (!q) return list;
     return list.filter(
       (e) =>
+        /* 额度拒绝的原因有 quota（超额）与 quota_stats（读数取不全，按 fail-closed
+           拒绝）。两者都是「额度这一层挡的」，都该出现在这个视图里。 */
+        (!quotaOnly ||
+          auditReason(e) === 'quota' ||
+          auditReason(e) === 'quota_stats') &&
+        (q === '' ||
         e.action.toLowerCase().includes(q) ||
         e.target.toLowerCase().includes(q) ||
-        (e.detail ?? '').toLowerCase().includes(q) ||
-        e.username.toLowerCase().includes(q),
+        auditDetailText(e).toLowerCase().includes(q) ||
+        e.username.toLowerCase().includes(q)),
     );
-  }, [auditQuery.data, search]);
+  }, [auditQuery.data, search, quotaOnly]);
 
   const total = auditQuery.data?.total ?? 0;
 
@@ -171,10 +215,11 @@ export function AuditLog() {
     setResult('');
     setRange('');
     setSearch('');
+    setQuotaOnly(false);
     setPage(1);
   };
 
-  const hasFilters = Boolean(username || action || result || range || search);
+  const hasFilters = Boolean(username || action || result || range || search || quotaOnly);
 
   /* ---- 导出 CSV（当前页） ---- */
   const exportCsv = () => {
@@ -436,6 +481,28 @@ export function AuditLog() {
               />
             </Field>
 
+            {/* 「被额度挡住」的一键入口。额度是唯一需要管理员**持续**看的拒绝：
+                「谁建不了机器」直接决定要不要给谁放宽。放在结果筛选旁边而不是
+                藏进下拉里 —— 那个下拉叫「结果」，没人会想到去那里找额度。
+
+                判据就是 ``result=denied``：后端只有额度那几处会写它
+                （app/quota.py 的 enforce_* / enforce_snapshot，以及 bulk 里
+                转发过来的同一个异常）。别的失败一律是 ``failed``。 */}
+            <Field label={t('audit.fieldQuota')}>
+              <Button
+                variant={result === 'denied' ? 'primary' : 'secondary'}
+                size="sm"
+                aria-pressed={quotaOnly}
+                onClick={() => {
+                  const next = !quotaOnly;
+                  setQuotaOnly(next);
+                  setResult(next ? 'denied' : '');
+                }}
+              >
+                {t('audit.onlyQuotaDenied')}
+              </Button>
+            </Field>
+
             <Field label={t('audit.fieldRange')}>
               <Select
                 value={range}
@@ -503,6 +570,18 @@ export function AuditLog() {
             }
             onRowClick={(e) => toggleExpand(e.id)}
             rowTitle={() => t('audit.rowTitle')}
+          />
+
+          {/* 分页条紧跟表格 —— 它会接成这张表格卡的下沿（见 .pagination 的样式）。
+              它原先摆在展开详情与空状态**之后**，中间隔着几张详情卡，等于又被推回
+              卡片外面：翻页信息与表格分了家。 */}
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onChange={setPage}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageSizeChange={setPageSize}
           />
 
           {/* 展开详情 */}
@@ -583,25 +662,6 @@ export function AuditLog() {
             />
           ) : null}
 
-          <Pagination
-            page={page}
-            pageSize={pageSize}
-            total={total}
-            onChange={setPage}
-            pageSizeOptions={[...PAGE_SIZES]}
-            onPageSizeChange={setPageSize}
-          />
-
-          {total > 0 ? (
-            <div className="fs-sm text-muted">
-              {t('audit.rangeLine', {
-                start: offset + 1,
-                end: Math.min(offset + items.length, total),
-                total,
-              })}
-              {search ? t('audit.rangeLineFiltered', { n: items.length }) : ''}
-            </div>
-          ) : null}
         </>
       )}
 

@@ -18,7 +18,9 @@ from .pve import (
     ProxmoxError,
     get_client,
     reset_request_connection,
+    reset_request_scope,
     set_request_connection,
+    set_request_scope,
 )
 from .routers import (
     ai as ai_router,
@@ -96,6 +98,7 @@ from . import site
 from . import sshguard
 from . import sshremote
 from . import throttle
+from . import trusteddevices
 from . import update
 # 面板版本的唯一来源（package.json 与 CHANGELOG 跟着它走）
 from . import __version__
@@ -106,6 +109,8 @@ from .routers import frp as frp_router
 from . import backupguard
 from . import buildinfo
 from . import portguard
+from . import quotaalert
+from . import quorumguard
 # 资源额度：按所有者分配的核数 / 内存 / 磁盘 / 快照额度（见 app/quota.py 下半部分）
 from . import quota
 from . import database
@@ -159,11 +164,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await notifications.init_table()
     # 个人 API Token 表（脚本 / 外部系统用的长期凭据，见 app.apitokens）
     await apitokens.init_table()
+    # 信任设备表（登录两步验证的「7 天内免二次校验」，见 app.trusteddevices）
+    await trusteddevices.init_table()
     # 每用户的界面偏好（仪表盘布局等，见 app.prefs）
     await prefs.init_table()
     # 清掉过期的令牌黑名单条目与早已过期的会话记录（纯残留清理，失败不影响启动）
     try:
         await purge_expired_tokens()
+        await trusteddevices.purge_expired()
         await throttle.cleanup()
     except Exception:  # noqa: BLE001
         logger.exception("清理过期令牌/限流数据失败，忽略")
@@ -425,11 +433,16 @@ app.add_middleware(
 
 
 class PveConnectionScopeMiddleware:
-    """把 ``X-PVE-Connection`` 请求头绑定到本次请求。
+    """把 ``X-PVE-Connection`` / ``X-PVE-Scope`` 请求头绑定到本次请求。
 
     面板可以配置多台 Proxmox，绝大多数请求作用于「当前连接」；但创建虚拟机的
     向导允许临时指定另一台主机。该请求头让 :func:`get_client` 在本次请求内返回
     对应主机的客户端，从而所有读写接口都无需额外参数即可支持多主机。
+
+    两个头强度不同（见 :mod:`app.pve` 的说明）：
+      * ``X-PVE-Connection`` 是**硬指定** —— 调用点知道机器在哪条连接上；
+      * ``X-PVE-Scope`` 是**软作用域** —— 顶栏「集群作用域」，会让读数据的接口
+        只读那一套，但按节点 / VMID 能定位到别处时允许被覆盖。
 
     刻意写成原生 ASGI 中间件而不是 ``BaseHTTPMiddleware``：选择结果存放在
     contextvar 中，原生 ASGI 能让下游应用运行在同一个任务里，取值才可靠。
@@ -444,19 +457,24 @@ class PveConnectionScopeMiddleware:
             return
 
         conn_id = ""
+        scope_id = ""
         accept_language = ""
         for key, value in scope.get("headers") or []:
             if key == b"x-pve-connection":
                 conn_id = value.decode("latin-1").strip()
+            elif key == b"x-pve-scope":
+                scope_id = value.decode("latin-1").strip()
             elif key == b"accept-language":
                 # 界面语言（见 i18n.py）：权限目录、内置角色名、FAQ 与错误消息按它返回
                 accept_language = value.decode("latin-1").strip()
 
         i18n.set_language(accept_language)
         token = set_request_connection(conn_id)
+        scope_token = set_request_scope(scope_id)
         try:
             await self.app(scope, receive, send)
         finally:
+            reset_request_scope(scope_token)
             reset_request_connection(token)
 
 
@@ -754,6 +772,17 @@ ALERT_INTERVAL = 60
 PORTS_INTERVAL = 5 * ALERT_INTERVAL
 # 受保护备份核对：要走 PVE 逐个存储拉内容，与端口巡检同频足够
 BACKUP_CHECK_INTERVAL = PORTS_INTERVAL
+# 集群仲裁巡检：逐套 PVE 探测（每套 2~3 个上游请求），而且要覆盖**所有**连接，
+# 不能像资源告警那样只读默认那一台。失去仲裁不会自己恢复，5 分钟查一次足够 ——
+# 这条规则的意义是「别让它静悄悄过去」，不是秒级发现。
+QUORUM_INTERVAL = 5 * ALERT_INTERVAL
+
+# 额度预警：要逐人向 PVE 枚举一遍用量（同一份读数也喂给用户页那两列），比读
+# cluster/resources 重一些；5 分钟一次。阈值本身是「剩余 20%」这种缓慢变化的量，
+# 再密也只是反复命中同一条冷却，不会更早发现问题。
+QUOTA_ALERT_INTERVAL = 5 * ALERT_INTERVAL
+# 首次给足延迟：启动时连接可能还没配好，白跳一轮没有代价
+QUOTA_ALERT_FIRST_DELAY = 180
 # 主机登录审计：登录历史变化慢，5 分钟汇入一次足够
 HOST_AUDIT_INTERVAL = 300
 # 受管主机核对：虚拟机可能在 PVE 上被直接删掉（不走面板的删除接口），
@@ -798,6 +827,12 @@ GUEST_IP_WARM_FIRST_DELAY = 45
 # （创建快照时会主动作废缓存，不等它）。
 QUOTA_RECONCILE_INTERVAL = 900
 QUOTA_RECONCILE_FIRST_DELAY = 120
+# 归属对账：把面板那本归属账和 PVE 的实际清单对齐（见 quota.reconcile_owners）。
+# 它做的是**删除**，节奏不宜太急 —— 一条连接读失败就整轮跳过，所以偶尔漏一轮
+# 没有代价；间隔决定「PVE 侧手工删掉一台之后，残留的归属最多留多久」。
+OWNER_RECONCILE_INTERVAL = 1800
+# 首次给足延迟：启动时连接可能还没配好 / PVE 还没就绪，读失败也只会白跳一轮
+OWNER_RECONCILE_FIRST_DELAY = 300
 
 
 def _job(
@@ -865,6 +900,25 @@ def _quota_summary(result: Any) -> str:
     if not refreshed and not over:
         return "无变化"
     return f"刷新 {refreshed} 台" + (f"，{over} 人超额" if over else "")
+
+
+def _owners_summary(result: Any) -> str:
+    """归属对账的摘要：清了几条、还有几台没人认领。"""
+    if not isinstance(result, dict):
+        return ""
+    refused = str(result.get("refused") or "")
+    if refused:
+        return f"读数不完整，已跳过（{refused}）"
+    removed = int(result.get("removed") or 0)
+    orphans = int(result.get("orphans") or 0)
+    if not removed and not orphans:
+        return "无变化"
+    parts = []
+    if removed:
+        parts.append(f"清理 {removed} 条残留归属")
+    if orphans:
+        parts.append(f"{orphans} 台无人认领")
+    return "，".join(parts)
 
 
 def _import_summary(result: Any) -> str:
@@ -936,6 +990,36 @@ scheduler.register(
         alerting.evaluate,
         ALERT_INTERVAL,
         summarize=_count("命中"),
+    )
+)
+# 集群仲裁：资源告警比的是「某个对象的使用率」，而且只读默认连接那一套 ——
+# 非默认集群掉仲裁在那边永远不会响，所以单独一个作业逐套 PVE 检查
+# （见 app.quorumguard；探测与仪表盘集群态势卡共用 app.fleetstatus）。
+scheduler.register(
+    _job(
+        "quorum",
+        "集群仲裁巡检",
+        "安全巡检",
+        "逐套 PVE 检查集群仲裁，失去仲裁即告警（含非默认读取的连接）",
+        quorumguard.evaluate,
+        QUORUM_INTERVAL,
+        summarize=_count("命中"),
+    )
+)
+
+# 用户额度预警：资源告警比的是「某台机器的使用率」，额度比的是「某人名下还剩
+# 多少」，判据与对象都不同，放进规则表表达不了（见 app.quotaalert 的说明）。
+# 通知发给**本人** —— 额度用完的后果落在那个人身上。
+scheduler.register(
+    _job(
+        "quota_alert",
+        "用户额度预警",
+        "安全巡检",
+        "算出谁的额度快用完或已超出，逐人走各自的告警通道",
+        quotaalert.evaluate,
+        QUOTA_ALERT_INTERVAL,
+        summarize=_count("命中"),
+        first_delay=QUOTA_ALERT_FIRST_DELAY,
     )
 )
 scheduler.register(
@@ -1021,6 +1105,20 @@ scheduler.register(
         QUOTA_RECONCILE_INTERVAL,
         summarize=_quota_summary,
         first_delay=QUOTA_RECONCILE_FIRST_DELAY,
+    )
+)
+# 归属对账：面板那本归属账会漂（PVE 侧手工增删的机器、被调低的额度、残留的快照行）。
+# 面板自己的删除路径已经逐条清过，但逐个端点补不是办法 —— 这里兜底。
+scheduler.register(
+    _job(
+        "owner_reconcile",
+        "归属记录对账",
+        "数据清理",
+        "比对面板的归属账与 PVE 实际清单：清掉已消失机器的残留记录，并报出无人认领的机器",
+        quota.reconcile_owners,
+        OWNER_RECONCILE_INTERVAL,
+        summarize=_owners_summary,
+        first_delay=OWNER_RECONCILE_FIRST_DELAY,
     )
 )
 scheduler.register(
@@ -1132,6 +1230,17 @@ scheduler.register(
         "数据清理",
         "清理过期 / 已吊销超过 30 天的 API Token 记录",
         apitokens.purge_expired,
+        TOKEN_PURGE_INTERVAL,
+        summarize=_purge_summary,
+    )
+)
+scheduler.register(
+    _job(
+        "trusted_devices_purge",
+        "信任设备残留清理",
+        "数据清理",
+        "清理已过期的信任设备记录（登录两步验证的「7 天免校验」）",
+        trusteddevices.purge_expired,
         TOKEN_PURGE_INTERVAL,
         summarize=_purge_summary,
     )

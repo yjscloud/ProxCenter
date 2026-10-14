@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { clusterApi, exportUrl, tasksApi } from '../api/endpoints';
+import { clusterApi, exportUrl, nodesApi, tasksApi } from '../api/endpoints';
 import { errorMessage, isNotImplemented } from '../api/client';
 import { PageShell } from '../components/Layout';
 import { KpiCard } from '../components/ui/Card';
@@ -14,6 +14,7 @@ import { Button, IconButton } from '../components/ui/Button';
 import { Input, Select, Switch } from '../components/ui/Input';
 import { Table, type Column } from '../components/ui/Table';
 import { PagerBar, usePaged } from '../hooks/usePaged';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { Drawer } from '../components/ui/Modal';
 import { EmptyState, ErrorState, Notice } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
@@ -66,10 +67,6 @@ const WS_LABEL: Record<
   error: { text: 'tasks.wsError', variant: 'danger' },
 };
 
-/* 任务列表默认每页行数。后端一次给 300 条，全量渲染会让滚动明显发涩，
-   所以前端分页；具体条数由列表底部的「每页 N 条」下拉决定（见 usePaged）。 */
-const DEFAULT_PAGE_SIZE = 20;
-
 /* ---------------------------------------------------------------------------
    页面
    --------------------------------------------------------------------------- */
@@ -98,23 +95,26 @@ export function Tasks() {
   /* ---- 任务列表 ---- */
   /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval）；
+     这一页的「自动刷新」开关管的是**开不开**轮询，间隔仍由设置决定 */
+  const refresh = useRefreshInterval();
 
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', nodeFilter],
     queryFn: () => clusterApi.tasks({ node: nodeFilter || undefined, limit: 300 }),
     enabled: pveReady,
-    refetchInterval: autoRefresh && pveReady ? 5_000 : false,
+    refetchInterval: autoRefresh && pveReady ? refresh : false,
     staleTime: 2_000,
   });
 
-  /* 集群状态（节点名来自它的 .nodes）。
-     键必须是 ['cluster','status']：Nodes / Settings / Dashboard 都用这个键，
-     写成 ['nodes'] 会和那 12 处 nodesApi.list 的**节点数组**撞在同一个缓存条目上 ——
-     谁先取到就把形状写进缓存，另一边按另一种形状去读就炸
-     （表现是 Guests 等页报「xxx.data.map is not a function」）。 */
-  const clusterQuery = useQuery({
-    queryKey: ['cluster', 'status'],
-    queryFn: () => clusterApi.status(),
+  /* 节点名下拉的数据源是**聚合的** `/nodes`（与节点页共用 ['nodes'] 这份缓存）。
+     原来读 `/cluster/status`，而那条接口只能读一套连接：多集群部署下下拉里只有
+     其中一台的节点名，下面的任务列表却是跨连接合并的 —— 想按别的集群的节点筛，
+     选项根本不存在。换成 /nodes 之后它还会跟着顶栏作用域走，两边口径一致。 */
+  const nodesQuery = useQuery({
+    queryKey: ['nodes'],
+    queryFn: nodesApi.list,
+    enabled: pveReady,
     staleTime: 30_000,
   });
 
@@ -136,12 +136,15 @@ export function Tasks() {
   });
 
   const nodeOptions = useMemo(() => {
-    const names = (clusterQuery.data?.nodes ?? []).map((n) => n.name);
+    /* 去重：多套 PVE 上都有同名节点是常态，同一个名字在筛选下拉里出现两次没有意义 */
+    const names = Array.from(
+      new Set((nodesQuery.data ?? []).map((n) => n.node).filter(Boolean)),
+    ).sort();
     return [
       { label: t('common.allNodes'), value: '' },
-      ...names.sort().map((name) => ({ label: name, value: name })),
+      ...names.map((name) => ({ label: name, value: name })),
     ];
-  }, [clusterQuery.data, t]);
+  }, [nodesQuery.data, t]);
 
   /* ---- 过滤 ---- */
   const tasks = useMemo(() => {
@@ -172,12 +175,9 @@ export function Tasks() {
      一次拉 300 条全铺在页面上，浏览器要渲染几千个单元格，滚动明显发涩，而且
      一路滚到底也找不到「最新一条在哪」。这里交给统一的分页 hook：
      它管页码越界夹取、筛选条件变化回第一页，并提供「每页 N 条」下拉。
+     初始条数取「设置 → 面板设置 → 列表每页条数」，不再自己写死一个默认值。
      筛选条件作为 resetKey —— 换了条件还停在第 7 页只会看到一张空表。 */
-  const pager = usePaged(
-    tasks,
-    `${nodeFilter}|${statusFilter}|${search}`,
-    DEFAULT_PAGE_SIZE,
-  );
+  const pager = usePaged(tasks, `${nodeFilter}|${statusFilter}|${search}`);
   const pageTasks = pager.rows;
 
   const stats = useMemo(() => {
@@ -207,6 +207,27 @@ export function Tasks() {
   };
 
   /* ---- 表格列 ---- */
+  /* 任务跨多条 PVE 合并时补一列「来源」：任务只存在于执行它的那台，两台 PVE 都有
+     名为 pve1 的节点时，光看「节点」列分不清这一行是谁的。
+     只在**未筛选**的全量列表上判断，免得一筛就少一列、表格来回跳。 */
+  const multiSource = useMemo(
+    () => (tasksQuery.data ?? []).some((task) => task.connection_name),
+    [tasksQuery.data],
+  );
+
+  const sourceColumn: Column<TaskInfo> = {
+    key: 'connection',
+    header: t('tasks.colConnection'),
+    width: 150,
+    render: (task) => (
+      <span className="fs-sm text-secondary truncate" title={task.connection_name}>
+        {task.connection_name || '—'}
+      </span>
+    ),
+    sortable: true,
+    sortValue: (task) => task.connection_name ?? '',
+  };
+
   const columns: Array<Column<TaskInfo>> = [
     {
       key: 'type',
@@ -231,6 +252,7 @@ export function Tasks() {
         </div>
       ),
     },
+    ...(multiSource ? [sourceColumn] : []),
     {
       key: 'user',
       header: t('tasks.colUser'),
@@ -591,7 +613,9 @@ function TaskLogDrawer({
     queryKey: ['task', 'detail', task?.node, task?.upid],
     queryFn: () => tasksApi.detail(task!.upid, task!.node),
     enabled: Boolean(task),
-    // 运行中的任务定时回填，避免 WS 丢包导致日志不全
+    /* 运行中的任务定时回填，避免 WS 丢包导致日志不全。
+       **不跟**面板设置里的数据刷新间隔：它盯的是「这一个任务」的日志，
+       是过程内的回填，不是刷新列表数据。 */
     refetchInterval:
       task && task.status === 'running' ? 4_000 : false,
     retry: 1,

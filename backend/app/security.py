@@ -15,7 +15,7 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 
 from .config import settings
-from . import apitokens, i18n, store
+from . import apitokens, i18n, store, trusteddevices
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,10 @@ REFRESH_COOKIE = "panel_refresh"
 REFRESH_COOKIE_PATH = "/api/auth"
 CSRF_COOKIE = "panel_csrf"
 CSRF_COOKIE_PATH = "/"
+# 「信任设备」cookie：登录时勾了「7 天内免二次校验」才下发。路径限定在
+# /api/auth —— 它只对登录两个端点有意义，别的请求带上它没有用处。
+TRUSTED_COOKIE = "panel_trusted"
+TRUSTED_COOKIE_PATH = "/api/auth"
 CSRF_HEADER = "x-csrf-token"
 
 # 角色要求两步验证但用户还没绑定（TOTP_REQUIRED_ROLES）时，只放行这些接口，
@@ -740,6 +744,38 @@ def set_csrf_cookie(response: Response, value: str = "") -> str:
     return token
 
 
+def set_trusted_cookie(response: Response, token: str, max_age: int) -> None:
+    """下发「信任设备」cookie（登录时勾了「7 天内免二次校验」）。
+
+    路径刻意限定在 ``/api/auth``：这枚 cookie 只对登录两个端点有意义，
+    其余接口带着它既没用、又白白多暴露一次。HttpOnly 是必须的 —— 它是
+    「少输一次动态码」的凭据，前端没有任何理由读它。
+
+    ``max_age`` 由 :func:`app.trusteddevices.remember` 的到期时间算出，
+    保证 cookie 的生命周期与服务端记录**完全一致**：cookie 还在、记录已删
+    （或反之）都不该出现。
+    """
+    response.set_cookie(
+        key=TRUSTED_COOKIE,
+        value=token,
+        max_age=max(0, int(max_age)),
+        path=TRUSTED_COOKIE_PATH,
+        httponly=True,
+        secure=settings.secure_cookie,
+        samesite="lax",
+    )
+
+
+def clear_trusted_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=TRUSTED_COOKIE,
+        path=TRUSTED_COOKIE_PATH,
+        httponly=True,
+        secure=settings.secure_cookie,
+        samesite="lax",
+    )
+
+
 def clear_csrf_cookie(response: Response) -> None:
     response.delete_cookie(
         key=CSRF_COOKIE,
@@ -1012,27 +1048,32 @@ def require_step_up() -> Callable[..., Any]:
 
 # --------------------------------------------------------------- 凭据生命周期
 async def revoke_user_credentials(username: str) -> Dict[str, int]:
-    """撤销某人的**全部**凭据：浏览器会话 + API Token，并让会话版本 +1。
+    """撤销某人的**全部**凭据：浏览器会话 + API Token + 信任设备，并让会话版本 +1。
 
-    三件事必须一起做，少一件就会留下还在生效的后门：
+    四件事必须一起做，少一件就会留下还在生效的后门：
 
     * ``refresh_tokens`` 置 revoked —— 浏览器再刷新不出新的 access token；
     * ``api_tokens`` 置 revoked —— 脚本手里的长期令牌立刻失效；
+    * ``trusted_devices`` 整批删除 —— 否则「信任设备」会把第二步验证**绕过**
+      7 天，改密码本意是把所有人赶出去，结果那台被信任的机器连密码都不用输
+      就进来了，等于换密码没换成；
     * ``token_version`` +1 —— 已经发出、尚未到期的 access token 立刻作废。
 
-    第二件是新增的一环：改密码 / 重置密码 / 管理员踢下线时若只撤会话，
-    那枚**可能永不过期**的令牌还能照用 —— 「密码我已经改了」就成了自我安慰。
-    规则统一为「改凭据即轮换凭据」，所以改密码会连带吊销自己已签发的令牌；
-    令牌是自助管理的，重新签发一次即可，代价远小于漏掉一枚。
+    第二、三件都是「撤会话还不够」的补丁：只撤会话的话，那枚**可能永不过期**的
+    API Token 还能照用、那台被信任的设备还能照进 ——「密码我已经改了」就成了
+    自我安慰。规则统一为「改凭据即轮换凭据」，所以改密码会连带吊销自己已签发的
+    令牌与信任设备；两者都是自助恢复的（重新签发 / 下次登录重勾），代价远小于漏掉。
 
     返回各项撤销的数量，让接口如实回报（而不是笼统说一句「已退出」）。
     """
     sessions = await store.revoke_user_refresh_tokens(username)
     tokens = await apitokens.revoke_all(username)
+    devices = await trusteddevices.forget_all(username)
     version = await store.bump_token_version(username)
     return {
         "sessions": sessions,
         "api_tokens": tokens,
+        "trusted_devices": devices,
         "token_version": version,
     }
 
@@ -1241,7 +1282,10 @@ async def audit(
     action: str,
     target: str = "",
     result: str = "success",
-    detail: str = "",
+    # **可以是结构化的**：dict / list 会由 :func:`app.store.add_audit` 编码成 JSON
+    # 再落库，所以界面能按字段筛（例如额度那几处写的 ``{"reason": "quota"}``）。
+    # 标注写 str 是不实的 —— 它会让严格的类型检查把现成的九个调用点全报一遍错。
+    detail: Any = "",
 ) -> None:
     await store.add_audit(
         username=user.get("username", "anonymous"),

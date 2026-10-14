@@ -254,7 +254,11 @@ a:focus:not(:focus-visible) {
 .page {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  /* 页面里各段（卡片）之间的间距。做成变量是因为「拼成同一张卡的几段」
+     （工具栏 / 表格 / 分页条）要用负外边距把它抵消掉 —— 见 components.css
+     里分页条那组规则：它们本就该贴在一起，gap 会在中间挤出一条页面底色。 */
+  --page-gap: 20px;
+  gap: var(--page-gap);
 }
 
 .page-header {

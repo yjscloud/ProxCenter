@@ -8,11 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
-from .. import security
+from .. import pvecache, security
 from ..pve import (
     ProxmoxClient,
     ProxmoxError,
     all_connection_clients,
+    bound_connection,
     connection_label,
     get_client,
     requested_connection,
@@ -59,10 +60,11 @@ async def bind_node_connection(node: Optional[str] = None) -> None:
     """路由级依赖：只给了节点名时，把请求绑定到拥有该节点的 PVE。
 
     与 :func:`app.vm_scope.bind_vm_connection` 同一套路 —— FastAPI 会把同名的
-    查询参数 ``node`` 注入进来；显式带了 ``X-PVE-Connection`` 时一律不干预。
+    查询参数 ``node`` 注入进来；**硬指定**了 ``X-PVE-Connection`` 时一律不干预
+    （顶栏的软作用域不算，见 :func:`app.pve.bound_connection`）。
     推断本身复用 :func:`app.vm_scope.resolve_node_connection`（备份下载也要用）。
     """
-    if not node or requested_connection():
+    if not node or bound_connection():
         return
     conn_id = await resolve_node_connection(node)
     if conn_id:
@@ -182,6 +184,16 @@ async def list_storages(
     ]
 
 
+#: 存储内容列表的缓存时长（秒）。
+#:
+#: ``/nodes/{node}/storage/{storage}/content`` 是 PVE 里最慢的只读接口之一：
+#: 目录型 / NFS / CIFS 存储每次都要真的扫一遍目录，冷缓存下几秒很常见。
+#: 而这一页的用法是「点开一个存储看一眼、再点开另一个」——不缓存的话，每次点击
+#: 都要重新扫一遍。20 秒足够覆盖「来回翻看几个存储」这一段，又短到不会让
+#: 「刚上传的文件」长时间看不到（上传 / 删除成功后会主动作废缓存）。
+_CONTENT_TTL = 20.0
+
+
 @router.get("/storages/content")
 async def storage_content(
     node: str,
@@ -193,8 +205,17 @@ async def storage_content(
     user: Dict[str, Any] = Depends(security.require_permission("storage.view")),
 ) -> List[Dict[str, Any]]:
     client = get_client()
+    # 连接作用域必须进 key：两台 PVE 上完全可能有同名节点 + 同名存储
+    cache_key = (
+        f"storage-content:{requested_connection() or ''}"
+        f":{node}:{storage}:{content or ''}:{vmid or ''}"
+    )
     try:
-        items = await client.storage_content(node, storage, content=content, vmid=vmid)
+        items = await pvecache.cached(
+            cache_key,
+            _CONTENT_TTL,
+            lambda: client.storage_content(node, storage, content=content, vmid=vmid),
+        )
     except ProxmoxError as exc:
         _raise(exc)
 
@@ -260,6 +281,8 @@ async def delete_storage_content(
     await security.audit(
         request, user, "storage.delete", target=f"{node}/{storage}/{volid}"
     )
+    # 删掉的卷得立刻从列表里消失，不能等 TTL 到期
+    pvecache.invalidate("storage-content:")
     # PVE performs this synchronously and returns null.
     return {"task": None, "deleted": volid}
 
@@ -320,6 +343,9 @@ async def upload_to_storage(
     await security.audit(
         request, user, "storage.upload", target=f"{node}/{storage}/{filename}"
     )
+
+    # 新文件要能被下一次列表刷新看到，不能等 TTL 到期
+    pvecache.invalidate("storage-content:")
 
     payload = resp.json().get("data")
     return {"task": payload if isinstance(payload, str) else "", "filename": filename}

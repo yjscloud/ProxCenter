@@ -6,14 +6,16 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../hooks/useAuth';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { authApi, healthApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
+import { Checkbox, Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
 import { SliderCaptcha } from '../components/SliderCaptcha';
 import {
   IconAlert,
+  IconChevronLeft,
   IconEye,
   IconEyeOff,
   IconKey,
@@ -35,6 +37,12 @@ export function Login() {
   /* 两步验证：密码通过后后端给一枚临时凭据，用它 + 动态码换正式令牌 */
   const [mfaToken, setMfaToken] = useState('');
   const [mfaCode, setMfaCode] = useState('');
+  /* 「信任设备（7 天后重新校验）」。默认**不勾** —— 勾上等于把第二因子在这台
+     浏览器上关掉 7 天，属于用户主动降低安全性的选择，不能替他默认选好。 */
+  const [trustDevice, setTrustDevice] = useState(false);
+  /* 面板是否允许信任设备（第一步由后端告知）。管理员关掉时整个勾选框不出现 ——
+     勾了不生效比不给勾更让人困惑。 */
+  const [trustAvailable, setTrustAvailable] = useState(false);
   /* 顶部横幅：只放「不属于某个输入框」的错误（审批未通过、网络故障…） */
   const [error, setError] = useState<string | null>(null);
   /* 字段级错误：密码/验证码输错时标红对应的输入框，而不是只给一句笼统提示 */
@@ -45,12 +53,14 @@ export function Login() {
     mfa?: string;
   }>({});
   const [submitting, setSubmitting] = useState(false);
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   /* 后端连接状态 */
   const health = useQuery({
     queryKey: ['health'],
     queryFn: healthApi.check,
-    refetchInterval: 15_000,
+    refetchInterval: refresh,
     retry: false,
   });
 
@@ -154,6 +164,7 @@ export function Login() {
       if (res.mfa_required) {
         // 口令对了，还差动态码：切到第二步，别把密码留在内存里
         setMfaToken(res.mfa_token ?? '');
+        setTrustAvailable(Boolean(res.trust_device_available));
         setPassword('');
         return;
       }
@@ -200,7 +211,7 @@ export function Login() {
     setError(null);
     setFieldErrors({});
     try {
-      const res = await completeMfa(mfaToken, code);
+      const res = await completeMfa(mfaToken, code, trustDevice);
       navigate(res.totp_setup_required ? '/profile' : '/dashboard', {
         replace: true,
       });
@@ -255,7 +266,7 @@ export function Login() {
 
         {mfaToken ? (
           <>
-            <div className="login-error" style={{ background: 'var(--surface-2)' }}>
+            <div className="login-notice">
               <IconShield size={16} />
               <span>{t('auth.mfa.notice')}</span>
             </div>
@@ -272,17 +283,21 @@ export function Login() {
               error={fieldErrors.mfa}
               required
             />
-            <button
-              type="button"
-              className="login-link-btn"
-              onClick={() => {
-                setMfaToken('');
-                setMfaCode('');
-                setFieldErrors({});
-              }}
-            >
-              {t('auth.mfa.back')}
-            </button>
+            {/* 「信任设备」：勾上之后这台浏览器 7 天内只需口令即可登录。
+                放在输入框下方、主按钮上方，与参考实现一致 —— 它是这次提交的
+                一个附加选项，贴着要提交的内容，而不是另一个独立动作。
+                说明文字刻意写出代价（「同一台浏览器」），不让人以为换个设备也免验。 */}
+            {trustAvailable ? (
+              <div className="login-trust">
+                <Checkbox
+                  checked={trustDevice}
+                  disabled={submitting}
+                  onChange={(e) => setTrustDevice(e.target.checked)}
+                  label={t('auth.mfa.trustDevice', { days: 7 })}
+                />
+                <div className="fs-xs text-muted">{t('auth.mfa.trustDeviceHint')}</div>
+              </div>
+            ) : null}
           </>
         ) : (
           <>
@@ -406,7 +421,31 @@ export function Login() {
               : t('auth.login.submit')}
         </Button>
 
-        {mfaToken ? null : (
+        {/* 主按钮下方这一行，两步是两种「退路」：
+              登录步骤 → 没有账号？去注册
+              两步验证 → 返回重新输入账号密码
+            两者位置相同、分量相同（都是文字链接），主线动作始终只有上方那颗主按钮。
+            原先「返回」摆在动态码输入框和主按钮**之间**，还带着浏览器默认的
+            整行灰底，读起来像是「填完这里再点一次」的第二步，主次完全颠倒。 */}
+        {mfaToken ? (
+          <button
+            type="button"
+            className="login-link-btn"
+            disabled={submitting}
+            onClick={() => {
+              setMfaToken('');
+              setMfaCode('');
+              setFieldErrors({});
+              /* 勾选也一并清掉：退回去多半是要换个账号登录，而「信任设备」
+                 是替**当前这个账号**做的安全让步，不能顺延到下一个人。 */
+              setTrustDevice(false);
+              setTrustAvailable(false);
+            }}
+          >
+            <IconChevronLeft size={14} />
+            {t('auth.mfa.back')}
+          </button>
+        ) : (
           <div className="login-register-hint">
             {t('auth.login.noAccount')}
             <Link to="/register">{t('auth.login.registerLink')}</Link>

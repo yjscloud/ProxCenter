@@ -1039,8 +1039,46 @@ def get_connections() -> List[Dict[str, Any]]:
     return []
 
 
+def connection_ids() -> List[str]:
+    """已保存连接的 id 列表（**不解密密钥**）。
+
+    只用来判断「某个连接 id 还在不在」（兜底指针是否失效、作用域是否有效）。
+    整份 profile 的解密不必出现在这种判断里 —— 它在每请求路径上会被调到若干次。
+    """
+    ids: List[str] = []
+    raw = _read_setting_raw(CONNECTIONS_KEY)
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            data = []
+        if isinstance(data, list):
+            ids = [str(d.get("id") or "") for d in data if isinstance(d, dict)]
+    if ids:
+        return ids
+    # 升级兼容：还没有多连接列表时，旧的单份配置就是唯一那条连接（见 get_connections）
+    if _read_json_dict(CONNECTION_KEY).get("host"):
+        return ["default"]
+    return []
+
+
 def get_active_connection_id() -> str:
-    return _read_setting_raw(ACTIVE_ID_KEY)
+    """「兜底读取」连接的 id，**保证是当前真实存在的连接**。
+
+    存的 id 缺失或已指向被删掉的连接时，返回第一条连接的 id —— 与
+    :func:`get_active_connection` 的兜底保持同一个答案。
+
+    为什么必须自洽：调用点常拿这个 id 去拼归属 ref（``<连接>:<节点>:<vmid>``）或
+    缓存 key。给出一个已删除的 id，归属记录会整片对不上（普通用户看到的列表直接
+    变空），而两条路径给出不同答案更难排查。没有任何连接时返回空串。
+    """
+    ids = connection_ids()
+    if not ids:
+        return ""
+    stored = _read_setting_raw(ACTIVE_ID_KEY)
+    if stored and stored in ids:
+        return stored
+    return ids[0]
 
 
 def get_active_connection() -> Dict[str, Any]:
@@ -1055,10 +1093,12 @@ def get_active_connection() -> Dict[str, Any]:
 
 
 def get_connection_config() -> Dict[str, Any]:
-    """当前生效连接的配置。
+    """「兜底连接」的配置。
 
-    各业务模块（``pve.get_client`` 等）都通过它取 Proxmox 连接，所以
-    「切换当前连接」会对所有页面即时生效。
+    ``pve.get_client`` 在请求既没带 ``X-PVE-Connection``、也无法按 node / vmid
+    推断出连接时用它 —— 也就是「一次只能读一台」的那批接口（健康探活、
+    集群版本 / 仲裁）。它不是「主集群」：多条连接一律同级，列表类接口默认
+    遍历全部连接合并返回。
     """
     return dict(get_active_connection())
 

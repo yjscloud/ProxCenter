@@ -23,6 +23,7 @@ import {
 import { setPageConnection, isNotImplemented } from '../api/client';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import { AskAiButton } from '../components/AskAiButton';
 import { Breadcrumb } from '../components/Topbar';
@@ -258,12 +259,14 @@ export function VmDetail() {
      轮询兜底，不需要再加一层重试。 */
   /* 未配置连接时不必发请求：页面会直接给出「去添加连接」的引导 */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const vmQuery = useQuery({
     queryKey: ['vm', node, vmid],
     queryFn: () => vmsApi.detail(node, vmid),
     enabled: pveReady && validParams,
-    refetchInterval: pveReady ? 10_000 : false,
+    refetchInterval: pveReady ? refresh : false,
     retry: false,
   });
 
@@ -283,7 +286,7 @@ export function VmDetail() {
     queryKey: ['cluster', 'tasks', node, 20],
     queryFn: () => clusterApi.tasks({ node, limit: 20 }),
     enabled: validParams,
-    refetchInterval: 15_000,
+    refetchInterval: refresh,
     retry: false,
   });
 
@@ -3484,12 +3487,13 @@ function MonitorTab({
 }) {
   const t = useT();
   const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
+  /* 曲线也跟「数据刷新间隔」走：想更实时就把设置调到 5 秒（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const rrdQuery = useQuery({
     queryKey: ['vm', node, vmid, 'rrd', timeframe],
     queryFn: () => vmsApi.rrddata(node, vmid, timeframe),
-    // 监控页要求实时感：5 秒拉一次，配合数值缓动与曲线动画
-    refetchInterval: 5_000,
+    refetchInterval: refresh,
     retry: false,
   });
 

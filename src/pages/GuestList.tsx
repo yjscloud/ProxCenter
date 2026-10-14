@@ -50,16 +50,18 @@ import {
   Select,
   Switch,
 } from '../components/ui/Input';
-import { Table, type Column, type SortState } from '../components/ui/Table';
+import { Table, sortRows, type Column, type SortState } from '../components/ui/Table';
 import { useColumnSettings } from '../components/ui/ColumnSettings';
+import { PagerBar, usePaged } from '../hooks/usePaged';
 import { InlineMeter } from '../components/ui/ProgressBar';
 import { Notice } from '../components/ui/EmptyState';
 import { QuotaChip } from '../components/QuotaChip';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { ConfirmDialog, useConfirm } from '../components/ui/ConfirmDialog';
 import { UserSelect } from '../components/ui/UserSelect';
-import { AI_ASSISTANT_PERMISSION } from '../components/AskAiButton';
+import { useAiAssistantEntry } from '../components/AskAiButton';
 import { useSnapshotQuota } from '../hooks/useSnapshotQuota';
 import { useNodeStorages } from '../hooks/useNodeStorages';
 import { VmCreateWizard } from '../components/VmCreateWizard';
@@ -202,21 +204,55 @@ function AssignOwnerDialog({
   const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** 打开时读到的归属。与 `username` 分开：它回答的是「本来是谁」 */
+  const [current, setCurrent] = useState('');
+  /** 读失败的原因。读不到当前归属时**不允许保存**（见下面的 submit） */
+  const [loadError, setLoadError] = useState('');
+  /**
+   * 管理员是否动过这个下拉。
+   *
+   * 它是「清除归属」与「还没选人」之间唯一的区别 —— 后端把空 username 当成
+   * 「清除」，而清空这个框只需要一次误点（或者输了用户名直接点保存，点外面
+   * 收起时搜索词被丢掉、value 根本没变）。没有这个标记的话，一次保存就能把
+   * 已经设好的归属抹掉，而且**全程不报错**，toast 还会说「归属已清除」。
+   */
+  const [touched, setTouched] = useState(false);
 
   /* 打开时读取当前归属 */
   useEffect(() => {
     if (!vm) return;
     setBusy(false);
+    setTouched(false);
+    setLoadError('');
     setLoading(true);
     guestsApi
       .getOwner(vm, vm.connection_id)
-      .then((res) => setUsername(res.owner ?? ''))
-      .catch(() => setUsername(''))
+      .then((res) => {
+        setCurrent(res.owner ?? '');
+        setUsername(res.owner ?? '');
+      })
+      /* 读失败**不能**静默当成「本来就没有归属」：那会让管理员在一个未知的
+         状态上做决定 —— 界面上是空的，他若随手一存就是把别人的归属清掉。 */
+      .catch((err) => {
+        setCurrent('');
+        setUsername('');
+        setLoadError(errorMessage(err));
+      })
       .finally(() => setLoading(false));
   }, [vm]);
 
   const submit = async () => {
-    if (!vm) return;
+    if (!vm || loading) return;
+    if (loadError) {
+      toast.error(t('guestList.assignLoadFailed'), loadError);
+      return;
+    }
+    /* 没动过下拉且结果为空 —— 不当作「清除」。要清除得明确选那一项，
+       那一下点击本身就是确认（选项文案也写清了后果，见 emptyLabel）。 */
+    if (!username && !touched) {
+      toast.error(t('guestList.assignPickFirst'));
+      return;
+    }
     setBusy(true);
     try {
       const res = await guestsApi.assignOwner(
@@ -250,7 +286,14 @@ function AssignOwnerDialog({
           <Button variant="secondary" onClick={onClose} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button variant="primary" onClick={() => void submit()} loading={busy}>
+          <Button
+            variant="primary"
+            onClick={() => void submit()}
+            loading={busy}
+            /* 读失败时禁止保存：在一个未知的当前状态上保存，等于赌一把
+               「反正它也没有归属」。 */
+            disabled={loading || Boolean(loadError)}
+          >
             {t('common.save')}
           </Button>
         </>
@@ -260,11 +303,29 @@ function AssignOwnerDialog({
           归属在库里就是用户名字符串，手打拼错一个字母等于「指派给一个不存在的人」 */}
       <UserSelect
         label={t('guestList.assignField')}
-        hint={loading ? t('guestList.assignLoading') : undefined}
+        hint={
+          loading
+            ? t('guestList.assignLoading')
+            : /* 把「本来是谁」也摆出来：空输入框在别处常表示「没填」，
+                 而这里它表示「清除」，不写明当前值就得靠管理员自己记。 */
+              current
+              ? t('guestList.assignCurrent', { name: current })
+              : undefined
+        }
         value={username}
-        onChange={setUsername}
-        disabled={loading}
+        /* 空项的含义要说清：它不是「不填」，而是「让这台机器变回无人认领」 */
+        emptyLabel={t('guestList.assignEmpty')}
+        onChange={(next) => {
+          setUsername(next);
+          setTouched(true);
+        }}
+        disabled={loading || Boolean(loadError)}
       />
+      {loadError ? (
+        <Notice tone="danger" title={t('guestList.assignLoadFailed')}>
+          {loadError}
+        </Notice>
+      ) : null}
     </Modal>
   );
 }
@@ -317,7 +378,8 @@ function RowMenu({
   const L = useKindLabels(kind);
   /* 逐个动作按**后端接口真正要求的那把钥匙**判：没权限的入口不摆出来，而不是
      让人点进去吃 403（权限点随类型走：虚拟机 vm.*、容器 ct.*）。 */
-  const permPrefix = kind === 'lxc' ? 'ct' : 'vm';
+  const isLxc = kind === 'lxc';
+  const permPrefix = isLxc ? 'ct' : 'vm';
   const canCloneRow = hasPermission(`${permPrefix}.clone`);
   /* 转模板是集群级能力（后端 vms.py / lxc.py 都要 template.manage） */
   const canToTemplate = hasPermission('template.manage');
@@ -326,6 +388,14 @@ function RowMenu({
      （原先与「修改配置」共用 config，矩阵上却写着迁移仅管理员）。 */
   const canMigrateRow = hasPermission(`${permPrefix}.migrate`);
   const canDeleteRow = hasPermission(`${permPrefix}.delete`);
+  /* 「问 AI」能不能出现：与详情页那个按钮同一套判定（权限 + 面板级开关），
+     见 AskAiButton.useAiAssistantEntry */
+  const aiAvailable = useAiAssistantEntry();
+  /* 「问 AI」只给虚拟机留。判定与入口写在一起，因为分隔线跟着它走：
+     容器这一侧少了一项，若还照常画那条分隔线，菜单顶部就只剩一条孤零零的线。
+     anyAction 也换成它 —— 否则「只有 AI 入口可用」的用户在容器列表上会看到一个
+     能点亮、点开却空空的菜单。 */
+  const showAskAi = aiAvailable && !isLxc;
   /* 菜单里有没有可做的事：一件都没有就把整个入口禁掉（点开是空壳） */
   const anyAction =
     canCloneRow ||
@@ -336,7 +406,7 @@ function RowMenu({
     canAssign ||
     canResetPassword ||
     canDeleteRow ||
-    hasPermission(AI_ASSISTANT_PERMISSION);
+    showAskAi;
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -460,10 +530,15 @@ function RowMenu({
           }}
         >
           {/* 放在最前：机器出问题时，「让 AI 看看」是最先想找的入口。
-              但要先有 AI 排查助手的权限 —— 没有的人点进去只会被路由守卫弹回
-              仪表盘，等于摆了个走不通的按钮（AskAiButton 用的是同一把钥匙）。 */}
-          {hasPermission(AI_ASSISTANT_PERMISSION)
-            ? readonlyItem(t('guestList.askAi'), <IconSparkle size={15} />, () => {
+              但要么有 AI 排查助手的权限、要么这个入口没被面板级开关关掉 —— 否则
+              点进去只会被路由守卫弹回仪表盘（与详情页那个按钮同一套判定，
+              见 AskAiButton.useAiAssistantEntry）。
+
+              容器不摆这一项（见 showAskAi）。分隔线跟着它一起渲染，否则容器
+              列表的菜单顶部会剩一条没有上文的分隔线。 */}
+          {showAskAi ? (
+            <>
+              {readonlyItem(t('guestList.askAi'), <IconSparkle size={15} />, () => {
                 const params = new URLSearchParams();
                 if (askHostId) params.set('host', askHostId);
                 params.set(
@@ -474,9 +549,10 @@ function RowMenu({
                   }),
                 );
                 navigate(`/ai-assistant?${params.toString()}`);
-              })
-            : null}
-          <div className="user-dropdown-divider" />
+              })}
+              <div className="user-dropdown-divider" />
+            </>
+          ) : null}
           {canCloneRow
             ? item(t('guestList.cloneTitle', { noun: L.noun }), <IconCopy size={15} />, onClone)
             : null}
@@ -566,6 +642,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   // 这些恰恰需要被看见的机器一起藏掉，而页面看着像个空列表 —— 用户的第一反应是
   // 「我的机器呢」，要去猜还有状态筛选这回事。想安静的可以自己筛。
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  /* 归属筛选：只给能看全量机器的人（管理员）。「无归属」的机器在按人分配的
+     额度里不算任何人 —— 面板外建的、或归属记录丢了的，就是一份白送的额度，
+     而此前在界面上完全看不见。 */
+  const [ownerFilter, setOwnerFilter] = useState<'all' | 'unowned'>('all');
   const [sort, setSort] = useState<SortState | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
@@ -620,6 +700,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错；
      配好之后这个值自动变回 true，轮询自己接上 */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const guestsQuery = useQuery({
     queryKey: isLxc
@@ -636,11 +718,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             type: 'qemu',
             connectionId: connFilter || undefined,
           }),
-    /* 60 秒：IP 列现在读后端的落库快照（后台作业预热，见 app.inspection），
-       请求本身已经很便宜；轮询周期放宽到一分钟，进一步减少无谓的重复请求。
-       列表要的是「状态大致是新的」，这个粒度足够。 */
+    /* IP 列现在读后端的落库快照（后台作业预热，见 app.inspection），请求本身
+       已经很便宜；间隔由「数据刷新间隔」定，列表要的是「状态大致是新的」。 */
     enabled: pveReady,
-    refetchInterval: pveReady ? 60_000 : false,
+    refetchInterval: pveReady ? refresh : false,
   });
 
   /* 连接点列表：节点选择器的选项要靠它圈定范围（而非从已过滤的节点里反推，
@@ -791,6 +872,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         if (statusFilter === 'all') return false;
       }
 
+      // 归属过滤。只认真实的空值：后端只给能看全量的人回填这个字段，
+      // 拿不到时不会误判成「无归属」。
+      if (ownerFilter === 'unowned' && vm.owner) return false;
+
       if (tokens.length === 0) return true;
       const haystack = [
         vm.name,
@@ -807,7 +892,14 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         .toLowerCase();
       return tokens.every((token) => haystack.includes(token));
     });
-  }, [guestsQuery.data, search, statusFilter, manualIpOf]);
+  }, [guestsQuery.data, search, statusFilter, ownerFilter, manualIpOf]);
+
+  /* 「无人认领」的台数。从已加载的清单里数，不另发请求 —— 列表本来就是它算出来的。
+     模板不算在内：模板页另有归属语义，这里要的是「能认领的机器」。 */
+  const unownedCount = useMemo(
+    () => (guestsQuery.data ?? []).filter((vm) => !vm.template && !vm.owner).length,
+    [guestsQuery.data],
+  );
 
   /* ---- 选择 ---- */
   /* 多台 PVE 合并展示时，不同主机的同名节点/VMID 会撞车，键里必须带连接 */
@@ -853,12 +945,21 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   /* ---- 刷新 ----
      两个列表是独立缓存，这里始终把 ['vms'] 与 ['lxc'] 一起失效：
      电源 / 克隆等动作在两边都可能改到对方列表里的行（例如容器页操作，
-     虚拟机页的统计数字也会变），只刷自己这一份会留下过期数据。 */
+     虚拟机页的统计数字也会变），只刷自己这一份会留下过期数据。
+
+     额度那两份也要一起失效，**这是「删了机器额度却没恢复」的元凶**：
+     用量是从「归属表 ∩ PVE 实时清单」现算的，后端每次都会给对的数；但
+     额度查询带 30 秒 staleTime，删除后没有任何东西去作废它，于是胶囊上
+     一直挂着删除前的已用数，看着就像额度根本没还回来。
+       * ['quota'] —— 「我的额度」（GET /quota/me）
+       * ['guests'] —— 列表页顶部那份全局台数读数 */
   const invalidateGuests = useCallback(
     (guest?: VmSummary) => {
       void queryClient.invalidateQueries({ queryKey: ['vms'] });
       void queryClient.invalidateQueries({ queryKey: ['lxc'] });
       void queryClient.invalidateQueries({ queryKey: ['cluster'] });
+      void queryClient.invalidateQueries({ queryKey: ['quota'] });
+      void queryClient.invalidateQueries({ queryKey: ['guests'] });
       if (guest) {
         void queryClient.invalidateQueries({
           queryKey: [isLxc ? 'lxc' : 'vm', guest.node, guest.vmid],
@@ -1021,7 +1122,16 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       await runner.run(guestsApi.remove(vm), {
         title: t('guestList.deleteTask', { name: vm.name || vm.vmid }),
         node: vm.node,
-        invalidate: [['vms'], ['lxc'], ['cluster'], ['storages']],
+        /* 额度两份必须一起作废：机器没了，名下用量要立刻降下来。
+           漏掉它们就会出现「删除成功、额度不动」的观感（见 invalidateGuests）。 */
+        invalidate: [
+          ['vms'],
+          ['lxc'],
+          ['cluster'],
+          ['storages'],
+          ['quota'],
+          ['guests'],
+        ],
         destructive: true,
       });
       setDeleteTarget(null);
@@ -1391,6 +1501,28 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       width: 140,
       render: (vm) => <TagList tags={parseTags(vm.tags)} max={2} />,
     },
+      /* 「归属」列**只对管理员存在**。
+         普通用户看到的每一台都是自己的，这一列对他既没有信息量，又会误导：
+         后端刻意不给非管理员回填 ``owner``（少一处「哪台归谁」的暴露面），
+         所以他这一列**每行都是「无人认领」** —— 连他自己名下那台也是。
+         看起来像「我的机器全是无主的」，实际上只是这一列压根不该出现。 */
+      ...(isAdmin
+        ? [
+            {
+              key: 'owner',
+              header: t('guestList.colOwner'),
+              width: 132,
+              render: (vm: VmSummary) =>
+                vm.owner ? (
+                  <span className="truncate" title={vm.owner}>
+                    {vm.owner}
+                  </span>
+                ) : (
+                  <span className="fs-xs text-muted">{t('guestList.ownerNone')}</span>
+                ),
+            } satisfies Column<VmSummary>,
+          ]
+        : []),
     {
       key: 'actions',
       header: t('common.actions'),
@@ -1508,6 +1640,21 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   /* 列显隐与顺序：按账号存在 localStorage，虚拟机与容器各记一份
      （两边的列不完全一样，共用一份配置会互相打架）。 */
   const cols = useColumnSettings(columns, isLxc ? 'lxc' : 'vms');
+
+  /* ---- 排序 + 分页 ----
+     这两步的**顺序不能反**：先按整份 filtered 排好，再交给 usePaged 切页。
+     反过来的话排的只是当前这一页 —— 第 2 页里 CPU 最高的那台排不到前面来，
+     翻页时排序看起来像坏了。排序规则与表格内部共用同一个 sortRows。
+     筛选条件（连接 / 节点 / 状态 / 关键词）作为重置键：换了条件还停在第 5 页
+     只会看到一张空表。 */
+  const sorted = useMemo(
+    () => sortRows(filtered, cols.columns, sort),
+    [filtered, cols.columns, sort],
+  );
+  const guestPage = usePaged(
+    sorted,
+    `${connFilter}|${nodeFilter}|${statusFilter}|${ownerFilter}|${search}`,
+  );
 
   /* 未配置时查询被 enabled 关掉、不出错也不出数据：这里一并按「取不到数据」处理，
      否则页面会渲染成一张空表，比报错更让人摸不着头脑 */
@@ -1751,6 +1898,22 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               ]}
               aria-label={t('guestList.statusFilterAria')}
             />
+            {/* 归属筛选只给管理员：普通用户看到的每一台都是自己的，这一档对他
+                没有意义。管理员则需要它来找出「没人认领」的机器 ——
+                那种机器在按人分配的额度里不算任何人。 */}
+            {isAdmin ? (
+              <Select
+                value={ownerFilter}
+                onChange={(e) =>
+                  setOwnerFilter(e.target.value as 'all' | 'unowned')
+                }
+                options={[
+                  { label: t('guestList.ownerAll'), value: 'all' },
+                  { label: t('guestList.ownerUnowned'), value: 'unowned' },
+                ]}
+                aria-label={t('guestList.ownerFilterAria')}
+              />
+            ) : null}
           </div>
           <div className="toolbar-right">
             {/* 额度只有管理员设过时才存在；两层合成一颗，明细点开看（见 QuotaChip） */}
@@ -1760,6 +1923,25 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               unit={L.unit}
               noun={L.noun}
             />
+            {/* 无人认领是个**入口**而不是统计数字：点一下就把列表筛到那几台，
+                接着逐台指派归属。没有它，这类机器在界面上完全看不见。 */}
+            {isAdmin && unownedCount > 0 ? (
+              <button
+                type="button"
+                className={`unowned-chip${
+                  ownerFilter === 'unowned' ? ' is-active' : ''
+                }`}
+                aria-pressed={ownerFilter === 'unowned'}
+                onClick={() =>
+                  setOwnerFilter((prev) =>
+                    prev === 'unowned' ? 'all' : 'unowned',
+                  )
+                }
+                title={t('guestList.unownedHint')}
+              >
+                {t('guestList.unownedCount', { n: unownedCount })}
+              </button>
+            ) : null}
             <span className="fs-sm text-muted">
               {t('guestList.showing', {
                 shown: filtered.length,
@@ -1767,6 +1949,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 unit: L.unit,
               })}
             </span>
+            {/* 「列」按钮直接排进状态栏这一行：原先交给 Table 渲染，它会落在表格
+                上方单独一条工具条里（.table-colbar）——为了一个按钮多占一整行，
+                还把这张卡从中间切成两截。渲染位置本来就由调用方决定（见
+                useColumnSettings 的说明），这里跟读数并排最省地方。 */}
+            {cols.menu}
           </div>
         </div>
 
@@ -1781,8 +1968,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         ) : (
           <Table<VmSummary>
             columns={cols.columns}
-            columnMenu={cols.menu}
-            rows={filtered}
+            rows={guestPage.rows}
             rowKey={rowKeyOf}
             loading={guestsQuery.isLoading}
             caption={t('guestList.caption', { noun: L.noun })}
@@ -1815,6 +2001,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             }
           />
         )}
+
+        {/* 分页条接在表格下沿 —— 工具栏 + 表格 + 分页条是同一张卡（见 .pagination
+            的样式）。出错时不出分页：那会儿没有列表可翻 */}
+        {!hasError ? <PagerBar pager={guestPage} /> : null}
       </div>
 
       {/* ---- 改名 ----

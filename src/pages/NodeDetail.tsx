@@ -33,6 +33,7 @@ import { DetailSkeleton } from '../components/ui/Spinner';
 import { ErrorState, Notice } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Table, type Column } from '../components/ui/Table';
 import {
@@ -170,12 +171,14 @@ export function NodeDetail() {
 
   /* 未配置连接时后端对每个请求都回 428，轮询没有意义（配好后自动恢复） */
   const pveReady = usePveReady();
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const nodesQuery = useQuery({
     queryKey: ['nodes', conn],
     queryFn: () => nodesApi.list(conn),
     enabled: pveReady,
-    refetchInterval: pveReady ? 10_000 : false,
+    refetchInterval: pveReady ? refresh : false,
   });
 
   const nodeInfo: NodeInfo | undefined = useMemo(
@@ -190,7 +193,7 @@ export function NodeDetail() {
     queryKey: ['nodes', conn, node, 'status'],
     queryFn: () => nodesApi.status(node, conn),
     enabled: Boolean(node),
-    refetchInterval: 15_000,
+    refetchInterval: refresh,
   });
 
   if (!node) {
@@ -1530,10 +1533,11 @@ function NodeStorageTab({ node, conn }: { node: string; conn: string }) {
 
 function NodeTasksTab({ node }: { node: string }) {
   const t = useT();
+  const refresh = useRefreshInterval();
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', node, 50],
     queryFn: () => clusterApi.tasks({ node, limit: 50 }),
-    refetchInterval: 10_000,
+    refetchInterval: refresh,
     retry: false,
   });
 
@@ -1634,12 +1638,13 @@ function NodeTasksTab({ node }: { node: string }) {
 function NodeMonitorTab({ node, conn }: { node: string; conn: string }) {
   const t = useT();
   const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
+  /* 曲线也跟「数据刷新间隔」走：想更实时就把设置调到 5 秒（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
 
   const rrdQuery = useQuery({
     queryKey: ['nodes', conn, node, 'rrd', timeframe],
     queryFn: () => nodesApi.rrddata(node, timeframe, conn),
-    // 监控页要求实时感：5 秒拉一次，配合数值缓动与曲线动画
-    refetchInterval: 5_000,
+    refetchInterval: refresh,
     retry: false,
   });
 

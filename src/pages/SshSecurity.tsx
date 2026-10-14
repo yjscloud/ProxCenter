@@ -38,6 +38,7 @@ import {
 } from '../components/Icons';
 import { formatDateTime, formatNumber, formatRelative } from '../utils/format';
 import { PagerBar, usePaged } from '../hooks/usePaged';
+import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../hooks/useToast';
 import { LocalHostNotice, useLocalHost } from '../components/LocalHostNotice';
@@ -76,11 +77,13 @@ export function SshSecurity() {
      本机数据只有管理员能读（后端按归属隔离），而且**必须已导入**（未导入是 409）。
      两个条件不满足就不发请求，免得一进页面就吃三个错误。 */
   const localReady = isAdmin && localHostInfo.enabled;
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  const refresh = useRefreshInterval();
   const overviewQuery = useQuery({
     queryKey: ['ssh', 'overview'],
     queryFn: () => sshApi.overview(),
     enabled: localReady,
-    refetchInterval: 60_000,
+    refetchInterval: refresh,
     retry: false,
   });
   const loginsQuery = useQuery({
@@ -100,7 +103,7 @@ export function SshSecurity() {
   const fleetQuery = useQuery({
     queryKey: ['ssh', 'fleet'],
     queryFn: () => sshFleetApi.overview(),
-    refetchInterval: 120_000,
+    refetchInterval: refresh,
     retry: false,
   });
   const hostsQuery = useQuery({

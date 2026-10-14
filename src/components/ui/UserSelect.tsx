@@ -27,6 +27,13 @@ export interface UserSelectProps {
   onChange: (username: string) => void;
   /** 允许「不指派」：列表首项用于清空归属（默认允许） */
   allowEmpty?: boolean;
+  /**
+   * 空选项的文案。**破坏性的调用方必须换成自己那句**。
+   *
+   * 默认的「（不指派）」读起来像「不设这一项」，而在指派归属的弹窗里它真正的
+   * 含义是「让这台机器变回无人认领」—— 点错了要等下一台机器建出来才发现少了一个归属。
+   */
+  emptyLabel?: string;
   label?: ReactNode;
   hint?: string;
   placeholder?: string;
@@ -44,6 +51,7 @@ export function UserSelect({
   value,
   onChange,
   allowEmpty = true,
+  emptyLabel,
   label,
   hint,
   placeholder,
@@ -100,9 +108,9 @@ export function UserSelect({
       hint: u.email ?? '',
     }));
     return allowEmpty
-      ? [{ value: '', label: t('userSelect.none'), hint: '' }, ...items]
+      ? [{ value: '', label: emptyLabel ?? t('userSelect.none'), hint: '' }, ...items]
       : items;
-  }, [users, keyword, allowEmpty, t]);
+  }, [users, keyword, allowEmpty, emptyLabel, t]);
 
   /* 收起时显示已选值，展开且开始输入后显示搜索词 */
   const text = keyword ?? value;

@@ -162,6 +162,36 @@ function readCollapsedSections(): string[] {
  * ``adminOnly``（只认 role == admin），而后端按权限放行 —— 同一件事判两次、判据
  * 还不一样，结果就是「勾了权限也进不去」。
 */
+/**
+ * 「SSH 安全」入口的路径。
+ *
+ * 单独抽出来是因为除了导航栏，**创建虚拟机**时的「接入安全管控」开关也要跟着它：
+ * 勾了那个开关，机器会被登记成受管主机，而看这些主机的地方（SSH 安全 / 登录审计 /
+ * 端口与进程 / 安全基线）全在这个入口下面 —— 入口被面板级开关关掉之后，那个开关
+ * 就变成「勾了没处看」。两处判定必须同源，所以路径只写一遍
+ * （见 QuickDeployForm 与 VmCreateWizard）。
+ */
+export const SSH_SECURITY_NAV_PATH = '/ssh-security/config';
+
+/**
+ * 「AI 排查助手」入口的路径。
+ *
+ * 同 SSH 安全：入口被面板级开关关掉之后，散落在各页面里的「问 AI」按钮也必须
+ * 一起消失 —— 点过去只会被路由守卫弹回来。判定集中在 AskAiButton 的
+ * `useAiAssistantEntry`，这里只负责让路径只写一遍。
+ */
+export const AI_ASSISTANT_NAV_PATH = '/ai-assistant';
+
+/**
+ * 「容器」入口的路径。
+ *
+ * 同 SSH 安全 / AI 助手：入口被面板级开关关掉之后，**别处零散的容器入口也得
+ * 一起消失**，否则点过去只会被路由守卫弹回来。已知的一处是模板页的「容器模板」
+ * 标签页 —— 那里装的是容器系统模板（vztmpl）与已转模板的容器，容器都不要了，
+ * 留着这个页签只会给出一个死入口。判定必须同源，所以路径只写一遍。
+ */
+export const LXC_NAV_PATH = '/lxc';
+
 export const NAV_SECTIONS: NavSection[] = [
   {
     id: 'overview',
@@ -270,7 +300,8 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     /* 只留「防」与「查」：网络策略（防火墙）、主机加固与体检（SSH 安全 /
        安全基线 / 端口与进程）、追溯（登录审计）。
-       「处置」已经挪到数据保护，这一组从 6 项降到 5 项。
+       两次外移把这组收回 5 项：处置类（应急响应）在「数据保护」，
+       解读类（AI 排查助手）在「观测与集成」。
 
        注意：其中 4 项读的是**主机级**数据（宿主机登录爆破、基线评分、端口与
        进程清单），默认只有管理员有对应权限 —— 普通用户看到的这一组只剩
@@ -291,7 +322,7 @@ export const NAV_SECTIONS: NavSection[] = [
         /* 默认落在「主机与告警配置」而不是监测数据：SSH 凭据与告警策略是这台
            面板真正要人去配的东西，监测数据配好了就只是看。两个页面顶部都有一组
            subnav 可以互相跳，所以监测数据并没有变成不可达 —— 只是深了一层。 */
-        to: '/ssh-security/config',
+        to: SSH_SECURITY_NAV_PATH,
         labelKey: 'nav.sshSecurity',
         icon: <IconTerminal size={18} />,
         permission: 'ssh.view',
@@ -303,29 +334,25 @@ export const NAV_SECTIONS: NavSection[] = [
         permission: 'ssh.view',
       },
       {
-        to: '/ports',
-        labelKey: 'nav.ports',
-        icon: <IconActivity size={18} />,
-        permission: 'ports.view',
-      },
-      {
         to: '/security-baseline',
         labelKey: 'nav.securityBaseline',
         icon: <IconCheck size={18} />,
         permission: 'baseline.view',
       },
       {
-        /* AI 排查助手：解读上面这些巡检结果。与安全基线同一档权限 ——
-           能看体检报告的人就能让 AI 解读一遍（它只读，不改任何东西）。 */
-        to: '/ai-assistant',
-        labelKey: 'nav.aiAssistant',
-        icon: <IconSparkle size={18} />,
-        permission: 'baseline.view',
+        /* 端口与进程排在安全基线**之后**：两者问的都是「这台机器有没有问题」，
+           基线管的是配置面（口令、补丁、内核参数），端口管的是运行面（谁在监听、
+           进程可不可疑）。先看配置、再看运行面，是从静态到动态的排查顺序。 */
+        to: '/ports',
+        labelKey: 'nav.ports',
+        icon: <IconActivity size={18} />,
+        permission: 'ports.view',
       },
     ],
   },
   {
-    /* 「看」与「接」：告警是观测，证书与机器人是外部通道。
+    /* 这一组回答「现在怎么样、有事谁告诉我」：告警与证书盯着外部，机器人是对外
+       通道，AI 排查助手则是把巡检 / 基线结果读成结论的那一环。
        证书不算监控，但它和告警一样是「系统在替你盯着外面的事」。 */
     id: 'observability',
     titleKey: 'nav.section.observability',
@@ -349,6 +376,18 @@ export const NAV_SECTIONS: NavSection[] = [
         labelKey: 'nav.feishuBot',
         icon: <IconChat size={18} />,
         permission: 'settings.manage',
+      },
+      /* AI 排查助手：紧跟在机器人下面 —— 两者都是「有事时把结论送到你面前」的
+         一端（机器人送告警，它送归因）。原先挂在「安全」组末尾，与安全基线同档
+         看着顺，但那组会因此变成 6 项；它真正消费的是巡检 / 基线结果、面向的是
+         排障，归到观测更贴。
+         权限仍是 baseline.view：后端 ai 路由的 VIEW 守卫、路由守卫与
+         AskAiButton 用的是同一把钥匙（只有模型配置要 settings.manage）。 */
+      {
+        to: AI_ASSISTANT_NAV_PATH,
+        labelKey: 'nav.aiAssistant',
+        icon: <IconSparkle size={18} />,
+        permission: 'baseline.view',
       },
     ],
   },

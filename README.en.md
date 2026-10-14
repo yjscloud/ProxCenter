@@ -317,6 +317,7 @@ that matter:
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | Lockout, counted per account and per source IP |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | `720` / `14` | Token lifetimes; the latter is how long one login can last |
 | `TOTP_REQUIRED_ROLES` | empty | Roles forced to set up two-factor authentication, for example `admin` |
+| `TOTP_TRUST_ENABLED` | `true` | Whether the login page may offer "trust this device" (skip the code on the same browser for 7 days). Set to `false` to require the second factor on every login |
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | Per-IP limits for `/api/*` and for the sensitive endpoints |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions ask for your password again |
 | `PVE_HOST` / `PVE_PORT` | empty / `8006` | Proxmox address (no protocol) and API port |

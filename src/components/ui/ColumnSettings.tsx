@@ -12,10 +12,13 @@
 
    用法：
      const cols = useColumnSettings(columns, 'vms');
-     <Table columns={cols.columns} columnMenu={cols.menu} ... />
+     <Table columns={cols.columns} ... />
+     并把 cols.menu 放进页面工具栏（见 GuestList）
 
-   `columnMenu` 交给 Table 渲染在表格上方右对齐的位置；也可以自己放进页面的
-   工具栏（放哪儿都行，面板在容器外，不会被表格的横向滚动裁掉）。
+   `cols.menu` 交给谁渲染都行：给 Table 的 `columnMenu` 会落在表格上方一条
+   窄工具条里（.table-colbar），自己放进页面工具栏则和读数、筛选按钮排在同一行。
+   列表页用后者 —— 一个按钮不值得多占一行，也不会把工具栏与表格从中间切开。
+   放在容器外是为了不被表格的横向滚动裁掉，放进工具栏同样满足。
    ========================================================================== */
 
 import {

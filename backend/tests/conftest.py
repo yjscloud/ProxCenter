@@ -46,6 +46,9 @@ TABLES = (
     "audit_log",
     "settings",
     "resource_owner",
+    # 按人分配的额度配置。不清的话上一条用例给某人设的额度会跟到下一条用例，
+    # 「默认继承角色」「重置后回到不限」这类断言就会命中上一轮的残留。
+    "user_quota",
     "password_reset",
     "alert_history",
     "alert_active",
@@ -72,6 +75,10 @@ TABLES = (
     # 个人 API Token：不清的话上一条用例签发的令牌会出现在下一条用例的列表里，
     # 更糟的是「配额已满」「吊销后 active 归零」这类断言会跟着误判。
     "api_tokens",
+    # 信任设备：不清的话上一条用例签发的信任记录会让下一条用例的
+    # 「登录仍需第二步」直接失败（第二步被信任设备跳过），而那种失败
+    # 看起来像鉴权出了洞，排查方向会完全跑偏。
+    "trusted_devices",
     # 用户界面偏好：不清的话上一条用例存的仪表盘布局会出现在下一条用例里，
     # 「新用户默认没有任何偏好」这类断言就会误判。
     "user_prefs",
@@ -101,8 +108,31 @@ def test_database_name() -> str:
     return os.environ.get("TEST_DB_NAME", "").strip() or f"{settings.db_name}_test"
 
 
+def _assert_is_test_database(name: str) -> None:
+    """拒绝在**非测试库**上执行清库。
+
+    ``settings.db_name`` 只在 :func:`mysql_test_db` 这个 session fixture 里被改写成
+    ``<库名>_test``。任何**绕过 pytest** 的调用（``python -c "from tests.conftest
+    import drop_all_tables; drop_all_tables()"``、临时脚本、交互式排查）拿到的都还是
+    生产库名，而 ``drop_all_tables`` 一路 ``DROP TABLE`` 下去 —— 那是不可撤销的。
+
+    所以这道校验不能只写在 fixture 里：函数自己必须认得出「我现在连的是不是测试库」，
+    在真正执行之前。
+    """
+    expected = test_database_name()
+    if name == expected:
+        return
+    raise RuntimeError(
+        f"拒绝清空 {name!r}：它不是测试库（应为 {expected!r}）。\n"
+        f"settings.db_name 只在 pytest 的 session fixture 里被改写成测试库；"
+        f"在 fixture 之外调用本函数，拿到的是**生产库**名。\n"
+        f"确实要清空生产库请显式设置环境变量：TEST_DB_NAME={name}"
+    )
+
+
 def drop_all_tables() -> None:
     """清空测试库：删掉面板的所有表，让下一个用例从零开始。"""
+    _assert_is_test_database(settings.db_name)
     conn = connect(settings.db_name)
     try:
         with conn.cursor() as cursor:

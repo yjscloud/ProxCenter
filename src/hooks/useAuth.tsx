@@ -44,8 +44,15 @@ export interface AuthContextValue {
      */
     captcha?: { id: string; code?: string; x?: number },
   ) => Promise<LoginResponse>;
-  /** 登录第二步：动态码或一次性恢复码，成功后写入会话 */
-  completeMfa: (mfaToken: string, code: string) => Promise<LoginResponse>;
+  /**
+   * 登录第二步：动态码或一次性恢复码，成功后写入会话。
+   * `trustDevice` 为真时同时登记一台信任设备（7 天内在同一台浏览器上免二次校验）。
+   */
+  completeMfa: (
+    mfaToken: string,
+    code: string,
+    trustDevice?: boolean,
+  ) => Promise<LoginResponse>;
   logout: () => Promise<void>;
   /** 退出所有设备（撤销全部会话，含当前这台） */
   logoutAll: () => Promise<void>;
@@ -222,8 +229,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   /* --- 登录第二步：动态码 / 恢复码 --- */
   const completeMfa = useCallback(
-    async (mfaToken: string, code: string) => {
-      const res = await authApi.loginMfa({ mfa_token: mfaToken, code });
+    async (mfaToken: string, code: string, trustDevice = false) => {
+      const res = await authApi.loginMfa({
+        mfa_token: mfaToken,
+        code,
+        trust_device: trustDevice,
+      });
       adoptSession(res);
       return res;
     },

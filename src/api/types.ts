@@ -1305,10 +1305,21 @@ export interface VmNetworkConfig {
   bridge?: string;
   model?: string;
   macaddr?: string;
-  vlan_tag?: number;
-  firewall?: boolean;
-  rate?: number;
-  tag?: number;
+  /* VLAN tag：后端两个字段名都出现过（PVE 配置里写作 tag） */
+  vlan_tag?: number | string;
+  tag?: number | string;
+  /* 开关与数值参数：PVE 配置里全是字符串（firewall=1 / link_down=1 / mtu=14500），
+     过 JSON 后也可能是数字或 bool，所以这里按实际放宽 */
+  firewall?: boolean | string | number;
+  /** 限速，单位 MB/s */
+  rate?: number | string;
+  /** 链路被人为关闭（link_down=1） */
+  link_down?: boolean | string | number;
+  mtu?: number | string;
+  /** 多队列网卡队列数 */
+  queues?: number | string;
+  /** PVE 原始配置值，展示与排障用 */
+  raw?: string;
 }
 
 export interface VmAgentInterface {

@@ -26,6 +26,7 @@ import { usePveReady } from '../hooks/usePveStatus';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import { AskAiButton } from '../components/AskAiButton';
+import { NicSpecTags } from '../components/NicSpecTags';
 import { Breadcrumb } from '../components/Topbar';
 import {
   Card,
@@ -1140,6 +1141,7 @@ function OverviewTab({
                               }`
                             : t('vmDetail.ipDhcp')}
                         </span>
+                        <NicSpecTags spec={n} fields={NIC_SPEC_OVERVIEW} />
                       </div>
                     </div>
                   </div>
@@ -1743,8 +1745,11 @@ function HardwareTab({
                     title={`${nicName} (${n.model ?? '—'})`}
                     value={`${n.bridge ?? t('vmDetail.noBridge')}${
                       vlan ? ` · VLAN ${vlan}` : ''
-                    }${n.firewall ? t('vmDetail.nicFirewall') : ''}`}
+                    }`}
                     hint={`${n.macaddr ? `${n.macaddr} · ` : ''}${ipLabel}`}
+                    /* 上面两行只够看清「通到哪」，型号 / 防火墙 / MTU / 限速 / 链路
+                       这些 PVE 后台会列出来的参数补在标签行，省得再翻原始 JSON */
+                    tags={<NicSpecTags spec={n} fields={NIC_SPEC_EXTRA} />}
                     editable={canEdit}
                     onEdit={() => {
                       setEditKey(name);
@@ -2244,11 +2249,25 @@ function AddNetworkModal({
 
 /* --------------------------------------------------------------------------- */
 
+/* 网卡参数标签要展示哪些字段。
+   两个 Tab 里网桥 / VLAN / MAC 已经用文字写出来了，标签行只补那些「原来没露面」
+   的 PVE 参数（型号、限速、MTU、多队列、链路状态），避免同一屏里同一件事说两遍。 */
+const NIC_SPEC_EXTRA = [
+  'model',
+  'firewall',
+  'mtu',
+  'rate',
+  'queues',
+  'link_down',
+] as const;
+const NIC_SPEC_OVERVIEW = ['firewall', 'mtu', 'rate', 'queues', 'link_down'] as const;
+
 function HwRow({
   label,
   title,
   value,
   hint,
+  tags,
   editable,
   onEdit,
   onRemove,
@@ -2258,6 +2277,8 @@ function HwRow({
   title: string;
   value: string;
   hint?: string;
+  /** 网卡参数这类「附加信息」，渲染在 hint 下面的一行标签 */
+  tags?: ReactNode;
   editable: boolean;
   onEdit?: () => void;
   /** 传入即在右侧多一个「移除」按钮（会走二次确认） */
@@ -2274,6 +2295,7 @@ function HwRow({
             {value || '—'}
           </span>
           {hint ? <span className="fs-xs text-muted mono">{hint}</span> : null}
+          {tags}
         </div>
       </div>
       {onEdit || onRemove || extraActions ? (

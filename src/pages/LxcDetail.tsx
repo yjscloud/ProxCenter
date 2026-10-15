@@ -23,6 +23,7 @@ import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { Breadcrumb } from '../components/Topbar';
+import { NicSpecTags } from '../components/NicSpecTags';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, InfoGrid, InfoRow, KpiCard } from '../components/ui/Card';
 import { Badge, TagList } from '../components/ui/Badge';
@@ -96,6 +97,10 @@ function toNumber(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 }
+
+/* 容器网卡的参数标签要展示哪些字段：网桥 / IP / 网关 / MAC 上面已经写了，
+   这里只补 VLAN、防火墙、MTU、限速这些原来没露面的。 */
+const LXC_NIC_SPEC = ['vlan', 'firewall', 'mtu', 'rate'] as const;
 
 /* Tab 清单带图标，与虚拟机详情页（VmDetail 的 TABS）同一套写法。
    胶囊分段控件只有纯文字：标签一多就分不清是「存储」还是「存储配置」，而且两页
@@ -1088,6 +1093,9 @@ export function LxcDetail() {
                           {n.hwaddr ? (
                             <span className="fs-xs text-muted mono">{n.hwaddr}</span>
                           ) : null}
+                          {/* 上面是「通到哪」，下面补 PVE 后台会列的其余参数：
+                              VLAN / 防火墙 / MTU / 限速。 */}
+                          <NicSpecTags spec={n} fields={LXC_NIC_SPEC} />
                         </div>
                       </div>
                     </div>

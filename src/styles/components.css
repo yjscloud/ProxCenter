@@ -633,6 +633,14 @@
   cursor: help;
 }
 
+/* 网卡「链路断开」这类异常参数：跟普通灰标签区分开 —— 排障时一眼就能看出
+   这条网卡是被人为关掉的，不用再去猜客户机里为什么没网络 */
+.tag-warn {
+  color: var(--warning);
+  background: var(--warning-dim);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
 .tag-remove {
   background: none;
   border: none;

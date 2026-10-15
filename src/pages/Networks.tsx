@@ -86,8 +86,6 @@ export function Networks() {
     staleTime: 60_000,
   });
   const connectionList = connectionsQuery.data ?? [];
-  /* 只有一条连接时显示它反而是噪音（谁都只有那一个） */
-  const showConnection = connectionList.length > 1;
   const connNameOf = useCallback(
     (id?: string) => {
       if (!id) return '';
@@ -224,19 +222,25 @@ export function Networks() {
     });
   }, [pveGroups, connRegionOf, t]);
 
-  /* 有任一条连接填了区域才渲染这一层 */
-  const showRegion = regionGroups.some((group) => group.id !== '');
+  /* ---- 三层固定铺满：区域 / 机房 → 连接 → 节点 ----
+     与节点页同一套写法。区域层照渲染，没填区域的连接归到「未分区」；连接层在
+     区域层出现时也必须跟着出现 —— 少一级的话剩下那几行会往上顶，读者看不出
+     这里是三级。 */
+  const showRegion = regionGroups.length > 0;
+  /* 连接层：多条连接时本来就要分组；只有一条连接时它是「区域 → 连接 → 节点」
+     中间的那一级，同样不能省。 */
+  const showConnection = connectionList.length > 1 || showRegion;
 
-  /* 两级的展开状态，**默认值相反**：
+  /* 两级的展开状态，**默认值相反**（与节点页同一套）：
 
-       * 区域（机房标签）**默认展开**：它只是一层分组，展开它等于把下面那几条连接
-         列出来 —— 也就是「一条连接都没填区域」时本来就一眼能看到的东西。默认收起
-         的话，多机房部署里一进页面只看到几行区域名，什么都得点一下；
-       * 连接**默认收起**：它下面才是节点表格，节点一多就是好几屏，而标题行上已经
-         写着「几个节点、几个接口、几个掉线」—— 先看概况再决定展开哪台机器。
+      * 区域（机房标签）**默认展开**：它只是一层分组，收起它等于把下面那几条连接
+        一起藏掉 —— 多机房部署里一进页面只看到几行区域名，什么都得点一下；
+      * 连接**默认收起**：它下面才是接口表，一台机器十几个口一多就是好几屏，
+        标题行上已经写着「几个节点、几个接口、几个掉线」—— 先看概况再决定展开
+        哪台机器（存储页那边连接默认展开：那一层下面只有存储池，不占屏）。
 
-     所以区域存「已收起」、连接存「已展开」：各自的默认值就是空数组，不必在拿到
-     数据之后再补一次状态（那会多一帧的闪烁）。 */
+    所以区域存「已收起」、连接存「已展开」：各自的默认值就是空数组，不必在拿到
+    数据之后再补一次状态（那会多一帧的闪烁），定时刷新也不会把已展开的连接又收回去。 */
   const [collapsedRegions, setCollapsedRegions] = useState<string[]>([]);
   const [expandedConns, setExpandedConns] = useState<string[]>([]);
 
@@ -263,7 +267,7 @@ export function Networks() {
     allRegionIds.every((id) => !collapsedRegions.includes(id)) &&
     allConnIds.every((id) => expandedConns.includes(id));
 
-  /* 一键展开 / 收起把两层一起改 —— 区域那份存的是「已收起」，展开即清空 */
+  /* 一键展开 / 收起把两层一起改 —— 区域那份存的是「已收起」，连接那份是「已展开」 */
   const setAllExpanded = (open: boolean) => {
     setCollapsedRegions(open ? [] : allRegionIds);
     setExpandedConns(open ? allConnIds : []);
@@ -418,7 +422,8 @@ export function Networks() {
   /* 树的第二层：一条 PVE 连接 + 它下面的节点卡。
      抽成函数是因为它嵌在区域层里 —— 直接写在 JSX 里会叠到四层缩进，很难读。 */
   const renderConnectionGroup = (pve: (typeof pveGroups)[number]) => {
-    const connOpen = !showConnection || expandedConns.includes(pve.id);
+    /* 连接默认收起（见上面两级状态的说明）：空数组 = 全部收起 */
+    const connOpen = expandedConns.includes(pve.id);
     const ifaceCount = pve.items.reduce((n, g) => n + g.ifaces.length, 0);
     const downCount = pve.items.reduce(
       (n, g) => n + g.ifaces.filter((i) => !i.active).length,

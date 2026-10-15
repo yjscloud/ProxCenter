@@ -38,11 +38,13 @@ import {
   setGlobalScope,
 } from '../api/scope';
 import { useGlobalScope } from '../hooks/useGlobalScope';
+import { useAuth } from '../hooks/useAuth';
 import { IconLayers } from './Icons';
 import { useT } from '../i18n';
 
 export function ScopeSelect() {
   const t = useT();
+  const { isAdmin } = useAuth();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   /* 当前值直接订阅模块级作用域：本组件是它的唯一编辑入口，
@@ -114,7 +116,10 @@ export function ScopeSelect() {
     void queryClient.invalidateQueries();
   }, [prefsQuery.data, conns, urlScope, scope, queryClient]);
 
-  if (!multi) return null;
+  /* 同样只在「有多套 PVE」时才有意义；普通用户再看一层：切换集群是运维视角，
+     不给他们展示。注意这个早返回在几个 effect **之后** —— 副作用照常生效，
+     免得普通用户打开带 ?scope= 的分享链接时，作用域不会被采纳。 */
+  if (!multi || !isAdmin) return null;
 
   const choose = (next: string) => {
     if (next === scope) return;

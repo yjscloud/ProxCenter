@@ -39,7 +39,7 @@ export function ConsoleStatus() {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const { hasPermission } = useAuth();
+  const { hasPermission, isAdmin } = useAuth();
   /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
   const refresh = useRefreshInterval();
 
@@ -119,6 +119,10 @@ export function ConsoleStatus() {
       : connected
         ? t('status.console.summaryConnected')
         : t('status.console.summaryDisconnected');
+
+  /* 普通用户看不到「控制台状态」：它汇总的是后端 / PVE 机队健康，属于运维视角。
+     管理员照常。放在所有 hook 之后返回，避免破坏 hook 调用顺序。 */
+  if (!isAdmin) return null;
 
   return (
     <div className="topbar-status" ref={rootRef}>

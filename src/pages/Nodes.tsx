@@ -192,8 +192,9 @@ export function Nodes() {
   }, [list, search, connFilter, sortKey]);
 
   /* ---- 按来源 PVE 分组 ----
-     多主机同名节点最容易踩坑，分组后「这是哪台机器上的 node1」一目了然；
-     只有一条连接时不分组（组标题纯属占地方）。 */
+     多主机同名节点最容易踩坑，分组后「这是哪台机器上的 node1」一目了然。
+     这一层是三级树的第二级：哪怕只有一条连接也照渲染 —— 它是「区域」与
+     「节点」中间的那一级，省掉它区域下面就直接挂着节点，层级读不出来。 */
   const groups = useMemo(() => {
     const map = new Map<string, { label: string; nodes: NodeInfo[] }>();
     for (const node of visible) {
@@ -210,11 +211,12 @@ export function Nodes() {
     }
     return [...map.entries()].map(([id, value]) => ({ id, ...value }));
   }, [visible, t]);
-  const grouped = groups.length > 1;
 
   /* ---- 区域 / 机房（填在连接上的标签）----
+     三级树的最外层：区域 / 机房 → 连接 → 节点（与网络页同一套层级语言）。
      多机房时它比连接更粗一级：否则七八条连接还是平铺在一起，只是平铺的单位从
-     节点变成了连接。一条连接都没填区域时这一层整个不渲染，页面与改动前一致。 */
+     节点变成了连接。一条连接都没填区域时归到「未分区」这一组，这一层照样
+     渲染 —— 少一层的话连接行会顶到最上面，读者就看不出这里是三级。 */
   const regionGroups = useMemo(() => {
     const regionOf = (connId: string) => {
       const hit = conns.find((item) => String(item.id) === connId);
@@ -243,14 +245,22 @@ export function Nodes() {
       return a.label.localeCompare(b.label);
     });
   }, [groups, conns, t]);
-  const showRegion = regionGroups.some((group) => group.id !== '');
+  /* 有分组就有区域层（含兜底的「未分区」）；节点列表为空时下面整块不渲染，
+     这一层自然也不会出现。 */
+  const showRegion = regionGroups.length > 0;
+
+  /* 连接是中间那一级：区域层出现时它必须跟着出现，否则三级树缺一级；
+     多条连接时本来也要按连接分组。 */
+  const grouped = groups.length > 1 || showRegion;
 
   /* 两级折叠状态分两套语义，因为默认值刚好相反：
        * 区域默认**展开**（存「已收起」）—— 区域一般只有一两个，收起它等于把内容藏两层；
        * 连接默认**收起**（存「已展开」）—— 节点一多要滚好几屏，先列出有哪些 PVE、
          想看哪台再点开；节点卡本身也是默认收起（见 NodeCard），点开才看指标。
-     连接存成「已展开」而不是「已收起」：默认值就是空数组，不必等节点数据到了再
-     挨个补 id（那会先闪一帧全展开），10 秒轮询也不会把已展开的连接又收回去。 */
+    连接存成「已展开」而不是「已收起」：默认值就是空数组，不必等节点数据到了再
+    挨个补 id（那会先闪一帧全展开），10 秒轮询也不会把已展开的连接又收回去。
+    只有一条连接时也是收起 —— 三级树先给出「区域 → 连接」的层级，节点卡
+    点开连接再看（标题条上写着几个节点、几个离线）。 */
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const toggleGroup = (id: string) => {
     setCollapsedGroups((list) =>
@@ -503,11 +513,9 @@ export function Nodes() {
             />
             {/* 连接与节点卡都是默认收起的：不说清楚怎么展开，一列标题条
                 会被读成「这里没有节点」。
-                但只有一条连接时**连接那一层不渲染**（见 grouped），提示里
-                再写「点击连接展开」就是在让人去点一个不存在的东西。 */}
-            <span className="fs-sm text-muted">
-              {t(grouped ? 'nodes.expandHint' : 'nodes.expandHintSingle')}
-            </span>
+                只有一条连接时那一级照旧渲染（见 grouped），所以这行提示
+                照样是对着一条真实存在的标题条说的。 */}
+            <span className="fs-sm text-muted">{t('nodes.expandHint')}</span>
           </div>
           <div className="toolbar-right">
             <span className="fs-sm text-muted">
@@ -646,17 +654,10 @@ export function Nodes() {
                     }
                   >
                     {region.conns.map((group) => {
-/* 没有标题条时必须**当作展开**。
-                         标题条只在多条连接时渲染（见下面的 grouped），而 openConns
-                         默认是空 —— 于是只有一条 PVE 时既没有可点的开关、
-                         卡片又被判成收起，页面看着像「这台 PVE 没有节点」。
-                         折叠是为了省滚动，不是为了把内容藏掉且再也拿不出来。
-
-                         网络页是同一套三层树，那边从一开始就写对了
-                         （Networks.tsx 的 ``!showConnection || expandedConns…``）；
-                         这里是照它抄的时候漏了那半个条件。 */
-                      const connOpen =
-                        !grouped || openConns.includes(group.id);
+                      /* 连接默认收起（省滚动），只有一条连接时也一样收起；
+                         折叠是为了省滚动，不是为了把内容藏掉且再也拿不出来 ——
+                         标题条本身就是开关，上面还写着几个节点、几个离线。 */
+                      const connOpen = openConns.includes(group.id);
                       const offlineCount = group.nodes.filter(
                         (n) => n.status !== 'online',
                       ).length;

@@ -468,6 +468,35 @@ function PanelSection() {
         title={t('settings.panelTitle')}
         subtitle={t('settings.panelSubtitle')}
         icon={<IconSettings size={17} />}
+        /* 保存 / 恢复默认挪到标题栏右上角，与本站其它设置卡同一套写法；
+           改过还没存时另挂一个徽章 —— 保存按钮的 disabled 只说明「没得存」，
+           说不出「已经改过」 */
+        actions={
+          <>
+            {dirty ? (
+              <Badge variant="warning" size="sm" dot>
+                {t('settings.unsaved')}
+              </Badge>
+            ) : null}
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<IconRefresh size={14} />}
+              onClick={reset}
+            >
+              {t('settings.restoreDefault')}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<IconSave size={14} />}
+              onClick={save}
+              disabled={!dirty}
+            >
+              {t('settings.saveSettings')}
+            </Button>
+          </>
+        }
       />
 
       <div className="dyn-list mt-16">
@@ -531,24 +560,6 @@ function PanelSection() {
         <span className="mono">localStorage.pve_panel_settings</span>
         {t('settings.localNoticePost')}
       </Notice>
-
-      <div className="set-action-bar">
-        <Button
-          variant="primary"
-          icon={<IconSave size={15} />}
-          onClick={save}
-          disabled={!dirty}
-        >
-          {t('settings.saveSettings')}
-        </Button>
-        <Button variant="secondary" onClick={reset}>
-          {t('settings.restoreDefault')}
-        </Button>
-        <span className="set-action-spacer" />
-        {dirty ? (
-          <span className="fs-sm text-warning">{t('settings.unsaved')}</span>
-        ) : null}
-      </div>
     </Card>
   );
 }

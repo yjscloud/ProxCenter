@@ -298,11 +298,14 @@ export function Storages() {
         return a.label.localeCompare(b.label);
       });
   }, [storages, conns, t]);
-  /** 一个区域都没配时，这一层整个不渲染（页面与改动前一样平铺节点） */
-  const showRegion = regionGroups.some((group) => group.id !== '');
-  /** 只有一条连接时「连接」那层只有一个取值，渲染出来除了占一行没有任何作用 */
+  /* ---- 三层固定铺满：区域 / 机房 → 连接 → 节点 ----
+     与节点页、网络页同一套写法：区域层照渲染，没填区域的连接归到「未分区」；
+     连接层在区域层出现时也必须跟着出现 —— 少一级的话剩下那几行会往上顶，
+     读者看不出这里是三级。 */
+  const showRegion = regionGroups.length > 0;
   const showConnection =
-    new Set(storages.map((item) => item.connection_id ?? '')).size > 1;
+    new Set(storages.map((item) => item.connection_id ?? '')).size > 1 ||
+    showRegion;
 
   /* 三级的折叠状态分两套语义，因为默认值刚好相反：
        * 区域 / 连接默认**展开**（存「已收起」）—— 进这一页就是来看存储的；
@@ -839,7 +842,7 @@ export function Storages() {
                         return (
                           <section className="tree-group" key={`conn:${conn.id}`}>
                             {/* 二级：连接（存储所在的那台 PVE）。只有一条连接时
-                                这一层只有一个取值，不渲染 */}
+                                也照渲染 —— 它是「区域 → 连接 → 节点」中间那一级 */}
                             {showConnection ? (
                               <button
                                 type="button"

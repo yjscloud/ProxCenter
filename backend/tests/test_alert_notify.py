@@ -541,6 +541,123 @@ class TestConvergence:
         assert [r["alarm_key"] for r in _run(alerting.visible_active())] == [legacy]
 
 
+# ============================================================ 邮件提醒节奏
+class TestMailRhythm:
+    """邮件通道自己的重复提醒节奏：间隔 + 次数上限。
+
+    以前邮件没有节奏可言 —— 它蹭的是飞书那份 cooldown，改飞书的冷却会连带改掉
+    邮件，一台机器持续高负载就按那个节奏一直重发。
+    """
+
+    def test_interval_and_repeats_survive_a_roundtrip(self, db) -> None:
+        _run(
+            alerting.save_alert_email(
+                {
+                    "enabled": True,
+                    "recipients": "ops@example.com",
+                    "interval": 600,
+                    "max_repeats": 5,
+                },
+                owner="admin",
+            )
+        )
+        cfg = _run(alerting.load_alert_email("admin"))
+        assert cfg["interval"] == 600
+        assert cfg["max_repeats"] == 5
+
+    def test_zero_is_a_value_not_an_omission(self, db) -> None:
+        """0 是有含义的：0 间隔 = 只提醒首次，0 次数 = 不限。
+
+        按 falsy 处理会让它悄悄退回默认值，用户以为设了「只提醒一次」，
+        实际还在按 30 分钟重发。
+        """
+        _run(
+            alerting.save_alert_email(
+                {
+                    "enabled": True,
+                    "recipients": "ops@example.com",
+                    "interval": 0,
+                    "max_repeats": 0,
+                },
+                owner="admin",
+            )
+        )
+        cfg = _run(alerting.load_alert_email("admin"))
+        assert cfg["interval"] == 0
+        assert cfg["max_repeats"] == 0
+
+    def test_blank_falls_back_to_defaults(self, db) -> None:
+        _run(
+            alerting.save_alert_email(
+                {
+                    "enabled": True,
+                    "recipients": "ops@example.com",
+                    "interval": "",
+                    "max_repeats": None,
+                },
+                owner="admin",
+            )
+        )
+        cfg = _run(alerting.load_alert_email("admin"))
+        assert cfg["interval"] == alerting.DEFAULT_ALERT_EMAIL["interval"]
+        assert cfg["max_repeats"] == alerting.DEFAULT_ALERT_EMAIL["max_repeats"]
+
+    def test_dirty_value_falls_back_instead_of_crashing(self, db) -> None:
+        _run(
+            alerting.save_alert_email(
+                {
+                    "enabled": True,
+                    "recipients": "ops@example.com",
+                    "interval": "abc",
+                    "max_repeats": "-3",
+                },
+                owner="admin",
+            )
+        )
+        cfg = _run(alerting.load_alert_email("admin"))
+        assert cfg["interval"] == alerting.DEFAULT_ALERT_EMAIL["interval"]
+        # 负数夹到 0（等价于「只提醒首次」），而不是原样存进去
+        assert cfg["max_repeats"] == 0
+
+    def test_mail_counter_is_not_wiped_by_other_sources(self, db) -> None:
+        """邮件计数单独落库：别的告警来源写 mark_active 时不会把它清零。
+
+        这两个字段若并进 ACTIVE_COLUMNS，五个来源共写一张表，任何一个来源
+        写一次状态就会把计数抹掉 —— 「最多提醒 N 次」便永远数不到。
+        """
+        key = alerting.alarm_key("admin", "cpu", "node1")
+        _run(
+            alerting.mark_active(
+                key,
+                {
+                    "username": "admin",
+                    "rule_id": "cpu",
+                    "target": "node1",
+                    "ts": 1_700_000_000,
+                },
+            )
+        )
+        _run(alerting.mark_mail_sent(key, 1_700_000_100, 2))
+
+        # 资源告警的下一轮：只推进整轮时间戳，不带邮件字段
+        _run(
+            alerting.mark_active(
+                key,
+                {
+                    "username": "admin",
+                    "rule_id": "cpu",
+                    "target": "node1",
+                    "ts": 1_700_000_600,
+                },
+            )
+        )
+
+        row = _run(alerting.load_active())[key]
+        assert int(row["ts"]) == 1_700_000_600
+        assert int(row["mail_ts"]) == 1_700_000_100
+        assert int(row["mail_count"]) == 2
+
+
 # ============================================================ 接口
 class TestNotifySourcesApi:
     def test_overview_exposes_registry_and_state(self, api) -> None:

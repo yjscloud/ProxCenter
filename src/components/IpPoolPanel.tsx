@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { connectionsApi, ipPoolsApi, nodesApi } from '../api/endpoints';
+import { connectionsApi, ipPoolsApi, nodesApi, usersApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Card, CardHeader } from './ui/Card';
 import { Button, IconButton } from './ui/Button';
@@ -44,6 +44,9 @@ function newPool(): IpPool {
     nodes: [],
     connections: [],
     vlan: null,
+    /* 新池默认是「公共池」：只有管理员看得到、也只有管理员能用。要分给某个用户，
+       得显式选一个归属 */
+    owner: '',
   };
 }
 
@@ -373,6 +376,24 @@ export function IpPoolPanel() {
     () => connectionsQuery.data ?? [],
     [connectionsQuery.data],
   );
+  /* 归属用户的候选名单：只有改得了池的人（管理员）才拉得动 /users —— 普通用户是
+     只读视图，既用不到这份名单，也不该白吃一个 403 */
+  const usersQuery = useQuery({
+    queryKey: ['users', 'ip-pool-owner'],
+    queryFn: () => usersApi.list(),
+    enabled: canManageNet,
+    staleTime: 300_000,
+    retry: false,
+  });
+  /* admin 不进候选：管理员看的是全部池，「公共池」那一档就是给他自己用的 */
+  const ownerOptions = useMemo(
+    () =>
+      (usersQuery.data ?? [])
+        .map((u) => u.username)
+        .filter((name) => name && name !== 'admin')
+        .sort(),
+    [usersQuery.data],
+  );
   const connNameOf = useCallback(
     (id: string) => {
       const hit = connections.find((item) => String(item.id) === id);
@@ -422,6 +443,9 @@ export function IpPoolPanel() {
         nodes: p.nodes ?? [],
         connections: p.connections ?? [],
         vlan: p.vlan ?? null,
+        /* 同样必须一起映射：保存发的是整份池，漏了 owner 就等于把池改回公共池，
+           已经分给客户的地址会被收回去 */
+        owner: p.owner ?? '',
       })),
     );
   }, [query.data]);
@@ -514,6 +538,8 @@ export function IpPoolPanel() {
             <thead>
               <tr>
                 <th>{t('ippool.colName')}</th>
+                {/* 归属列只对管理员有意义：普通用户看到的本来就只有自己的池 */}
+                {canManageNet ? <th>{t('ippool.colOwner')}</th> : null}
                 <th>{t('ippool.colBridge')}</th>
                 <th>{t('ippool.colVlan')}</th>
                 <th>{t('ippool.colScope')}</th>
@@ -539,6 +565,30 @@ export function IpPoolPanel() {
                       />
                     </div>
                   </td>
+                  {canManageNet ? (
+                    <td>
+                      {/* 把这套地址分给谁：普通用户登录后只列得出归属是自己的池，
+                          在创建虚拟机 / 加网卡时也就只能从自己的池里取地址 */}
+                      <select
+                        className="select"
+                        value={p.owner ?? ''}
+                        onChange={(e) => patch(i, { owner: e.target.value })}
+                      >
+                        <option value="">{t('ippool.ownerPublic')}</option>
+                        {/* 当前归属的用户可能已被删除（或列表还没拉回来）：把他并进
+                            选项里，否则下拉会显示成「公共」，一保存就把池收走了 */}
+                        {[p.owner, ...ownerOptions]
+                          .filter(
+                            (name, idx, arr) => name && arr.indexOf(name) === idx,
+                          )
+                          .map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                      </select>
+                    </td>
+                  ) : null}
                   <td>
                     <div className="input-wrap">
                       <input

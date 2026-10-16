@@ -119,12 +119,12 @@ const SECTION_PREFIX = "alert-";
 /** 分组键：与下面 section.group 对应，文案在组件内取词 */
 type SectionGroup = "channels" | "records";
 
-function newRule(): AlertRule {
+function newRule(targetType: "node" | "vm" = "node"): AlertRule {
   return {
     // 同一毫秒内连续新增两条会撞 id，加随机后缀避免被后端按 id 合并
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name: tStatic("alerts.newRuleName"),
-    target_type: "node",
+    target_type: targetType,
     target: "*",
     metric: "cpu",
     threshold: 80,
@@ -208,11 +208,20 @@ export function Alerts() {
     retry: false,
   });
 
+  /* 「告警按用户隔离，管理员额外能看到全部」—— 这个判断要早于下面的节点查询，
+     所以放在这里。 */
+  const isAdmin = !!query.data?.is_admin;
+  /* 节点清单只给管理员拉：「告警对象」里的「宿主机」那一档只对管理员开放
+     （普通用户的下拉里根本没有它），所以没必要替他请求一次注定用不上的列表。 */
   const nodesQuery = useQuery({
     queryKey: ["nodes"],
     queryFn: nodesApi.list,
     staleTime: 60_000,
+    enabled: isAdmin,
   });
+  /* 管理员也可能读不到 —— PVE 全掉线时就是。这时要说一句，否则「宿主机」那一档
+     下面只剩一个「全部」，看起来像功能坏了。 */
+  const hostListUnavailable = isAdmin && nodesQuery.isError;
 
   const vmsQuery = useQuery({
     queryKey: ["vms", "all"],
@@ -262,7 +271,14 @@ export function Alerts() {
     if (rules === null) setRules(query.data.rules ?? []);
     if (feishu === null) setFeishu(query.data.feishu ?? {});
     if (emailCfg === null) {
-      setEmailCfg(query.data.email ?? { enabled: false, recipients: '' });
+      setEmailCfg(
+        query.data.email ?? {
+          enabled: false,
+          recipients: '',
+          interval: 1800,
+          max_repeats: 3,
+        },
+      );
     }
     if (hook === null) {
       setHook(
@@ -390,8 +406,8 @@ export function Alerts() {
      静默期间就是干净的零条。 */
   const records = query.data?.history ?? [];
   // 告警按用户隔离：通知通道永远是自己那一份，管理员额外能看到全部规则与历史
+  // （isAdmin 定义在上面节点查询之前，那份查询要用它）
   const ownUsername = String(query.data?.own_username ?? "");
-  const isAdmin = !!query.data?.is_admin;
   /* 邮件通道是否可用的两个前提：全局 SMTP 配好了、自己填了（或有）收件地址 */
   const mailReady = !!query.data?.mail_ready;
   const accountEmail = String(query.data?.account_email ?? "");
@@ -1299,6 +1315,42 @@ export function Alerts() {
                 mono
               />
             </Field>
+            {/* 重复提醒的节奏：以前邮件没有自己的节奏，只能蹭飞书的冷却，
+                同一台机器持续高负载会一直重发 */}
+            <div className="field-row">
+              <Field
+                label={t("alerts.mailIntervalLabel")}
+                hint={t("alerts.mailIntervalHint")}
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  value={emailCfg.interval}
+                  onChange={(e) =>
+                    setEmailCfg({
+                      ...emailCfg,
+                      interval: Number(e.target.value) || 0,
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label={t("alerts.mailMaxRepeatsLabel")}
+                hint={t("alerts.mailMaxRepeatsHint")}
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  value={emailCfg.max_repeats}
+                  onChange={(e) =>
+                    setEmailCfg({
+                      ...emailCfg,
+                      max_repeats: Number(e.target.value) || 0,
+                    })
+                  }
+                />
+              </Field>
+            </div>
           </div>
         ) : (
           <div className="skeleton skeleton-text" />
@@ -1323,7 +1375,15 @@ export function Alerts() {
                 variant="ghost"
                 size="sm"
                 icon={<IconPlus size={14} />}
-                onClick={() => setRules([...(rules ?? []), newRule()])}
+                /* 普通用户没有「宿主机」这一档，就以「虚拟机」起步；管理员仍按
+                   原来的默认（宿主机），只是列表读不到时也退回「虚拟机」，免得
+                   先撞一次空下拉 */
+                onClick={() =>
+                  setRules([
+                    ...(rules ?? []),
+                    newRule(isAdmin && !hostListUnavailable ? "node" : "vm"),
+                  ])
+                }
               >
                 {t("alerts.addRule")}
               </Button>
@@ -1352,6 +1412,13 @@ export function Alerts() {
             </>
           }
         />
+        {/* 宿主机列表读不到（PVE 连不上）时，「宿主机」这一档选不出具体主机。
+            原先只是静默空着，看起来像功能坏了；这里把原因写明。 */}
+        {hostListUnavailable ? (
+          <Notice tone="info" title={t("alerts.nodesUnavailableTitle")}>
+            {t("alerts.nodesUnavailable")}
+          </Notice>
+        ) : null}
         {rules && rules.length > 0 ? (
           <div className="table-container">
             <table className="table table-dense">
@@ -1399,7 +1466,15 @@ export function Alerts() {
                           patch(i, { target_type: e.target.value, target: "*" })
                         }
                       >
-                        <option value="node">{t("alerts.targetNode")}</option>
+                        {/* 「宿主机」是集群基础设施的监控，只对管理员开放：普通
+                            用户的下拉里不出现这一档。历史遗留的 node 规则仍要如实
+                            显示（补一个禁用的当前项），不能让它悄悄变成「虚拟机」
+                            而误导人。 */}
+                        {isAdmin || r.target_type === "node" ? (
+                          <option value="node" disabled={!isAdmin}>
+                            {t("alerts.targetNode")}
+                          </option>
+                        ) : null}
                         <option value="vm">{t("alerts.targetVm")}</option>
                       </select>
                     </td>

@@ -190,7 +190,15 @@ async def cluster_pools(
 # ------------------------------------------------------------------ nodes
 @router.get("/nodes")
 async def list_nodes(
-    user: Dict[str, Any] = Depends(security.require_permission("node.view")),
+    # 这份清单同时服务两类人：看节点状态的人（node.view），以及**要建机器、
+    # 必须先挑一台宿主机**的人（vm.create / ct.create）。后者若没有 node.view，
+    # 创建虚拟机 / 容器的向导里节点下拉就是空的，机器直接建不出来 —— 而「建机器」
+    # 本来就要求看得见有哪些宿主机，这与节点监控是两件事。
+    # 放宽的只是只读的节点概况（cpu/mem/disk/uptime 等），写操作仍在各自接口按
+    # node.* 判一次。
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("node.view", "vm.create", "ct.create")
+    ),
 ) -> List[Dict[str, Any]]:
     """节点列表。
 

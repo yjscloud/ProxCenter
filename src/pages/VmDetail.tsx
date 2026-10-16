@@ -27,6 +27,7 @@ import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import { AskAiButton } from '../components/AskAiButton';
 import { NicSpecTags } from '../components/NicSpecTags';
+import { PoolIpSelect } from '../components/PoolIpSelect';
 import { Breadcrumb } from '../components/Topbar';
 import {
   Card,
@@ -723,7 +724,13 @@ export function VmDetail() {
         ) : null}
 
         {tab === 'hardware' ? (
-          <HardwareTab vm={vm} node={node} vmid={vmid} onChanged={invalidate} />
+          <HardwareTab
+            vm={vm}
+            node={node}
+            vmid={vmid}
+            connectionId={pageConnection}
+            onChanged={invalidate}
+          />
         ) : null}
 
         {tab === 'console' ? (
@@ -1218,11 +1225,14 @@ function HardwareTab({
   vm,
   node,
   vmid,
+  connectionId,
   onChanged,
 }: {
   vm: VmDetailType;
   node: string;
   vmid: number;
+  /** 当前所在的 PVE 连接：地址池的适用范围要按「哪一台 PVE 上的哪个节点」判 */
+  connectionId: string;
   onChanged: () => void;
 }) {
   const t = useT();
@@ -1332,6 +1342,12 @@ function HardwareTab({
       setBusy(false);
     }
   };
+
+  /* 正在编辑 IP 的那张网卡：地址池要按它的网桥 / VLAN 筛，否则会把别的二层网络的
+     地址列出来 —— 同一个节点上 vmbr0 与 vmbr1 常常是两套网段 */
+  const editingNic = ipEditNet
+    ? vm.networks.find((n) => nicKey(n) === ipEditNet)
+    : undefined;
 
   /* ---- 磁盘扩容 ---- */
   const doResize = async () => {
@@ -1852,6 +1868,20 @@ function HardwareTab({
         }
       >
         <div className="flex flex-col gap-16">
+          {/* 从地址池挑一个空闲地址，省得去「网络」页抄一遍（抄错一位就不通） */}
+          <PoolIpSelect
+            enabled={Boolean(ipEditNet)}
+            scope={{
+              node,
+              connection: connectionId,
+              bridge: editingNic?.bridge,
+              vlan: nicVlanOf(editingNic),
+            }}
+            onPick={(ip, gw) => {
+              setIpValue(ip);
+              setGwValue(gw);
+            }}
+          />
           <Input
             label={t('vmDetail.nicIpLabel')}
             value={ipValue}
@@ -2342,6 +2372,15 @@ function buildIpconfig(ip: string, gateway: string): string {
   const clean = ip.trim();
   if (!clean || clean.toLowerCase() === 'dhcp') return 'ip=dhcp';
   return gateway.trim() ? `ip=${clean},gw=${gateway.trim()}` : `ip=${clean}`;
+}
+
+/** 网卡的 VLAN 标签：后端两个字段名（vlan_tag / tag）都出现过，且可能是字符串。 */
+function nicVlanOf(
+  n: { vlan_tag?: number | string; tag?: number | string } | undefined,
+): number | null {
+  const raw = n?.vlan_tag ?? n?.tag;
+  const num = Number(raw);
+  return Number.isFinite(num) && num > 0 ? num : null;
 }
 
 /** 网卡名：后端可能返回 interface（net0）或 key，二者兼容。 */

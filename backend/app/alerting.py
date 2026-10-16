@@ -197,6 +197,14 @@ DEFAULT_FEISHU: Dict[str, Any] = {
 DEFAULT_ALERT_EMAIL: Dict[str, Any] = {
     "enabled": False,
     "recipients": "",
+    # 重复提醒的节奏。**邮件原先没有自己的节奏**：它蹭的是飞书那份 cooldown
+    # （默认 600 秒），而且改飞书的冷却会连邮件一起改 —— 一台机器持续高负载，
+    # 一小时就能刷出 6 封邮件，用户还找不到地方关。
+    #
+    # interval    同一告警两次提醒之间至少间隔多少秒；0 = 只提醒首次
+    # max_repeats 同一告警最多提醒几次（含首次）；0 = 不限，直到恢复为止
+    "interval": 1800,
+    "max_repeats": 3,
 }
 
 # =============================================================== 推送来源开关
@@ -423,6 +431,11 @@ CREATE TABLE IF NOT EXISTS alert_active (
     ts          BIGINT,
     quiet_cycles INT NOT NULL DEFAULT 0,
     notify_source VARCHAR(32),
+    -- 邮件通道自己的提醒节奏（ts 是飞书 / Webhook 的冷却时间戳，两者互不干扰）。
+    -- 不复用 ts：否则「调飞书的冷却」会连带改掉邮件的节奏，那正是要修掉的问题。
+    -- mail_ts = 上次给这个对象发邮件的时间；mail_count = 已经发了几封。
+    mail_ts     BIGINT NOT NULL DEFAULT 0,
+    mail_count  INT NOT NULL DEFAULT 0,
     PRIMARY KEY (alarm_key),
     KEY idx_alert_active_owner (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -457,6 +470,16 @@ async def init_table() -> None:
             # 旧库补列：可空 —— 升级前写下的行为 NULL，按「来源未知」处理（照常展示）
             await db.execute(
                 "ALTER TABLE alert_active ADD COLUMN notify_source VARCHAR(32)"
+            )
+        if "mail_ts" not in columns:
+            # 旧库补列：邮件通道的提醒节奏。默认 0 = 「还没发过邮件」，
+            # 存量正在告警的对象下一轮会照常收到第一封，不会被静默吞掉。
+            await db.execute(
+                "ALTER TABLE alert_active ADD COLUMN mail_ts BIGINT NOT NULL DEFAULT 0"
+            )
+        if "mail_count" not in columns:
+            await db.execute(
+                "ALTER TABLE alert_active ADD COLUMN mail_count INT NOT NULL DEFAULT 0"
             )
         # 归属进了主键，key 会变长（旧表的 191 位不够装）
         cursor = await db.execute(
@@ -956,7 +979,28 @@ async def load_alert_email(owner: str = "") -> Dict[str, Any]:
 
     cfg["enabled"] = bool(cfg.get("enabled"))
     cfg["recipients"] = ",".join(mailer.recipients_of(cfg.get("recipients")))
+    cfg["interval"] = _non_negative_int(
+        cfg.get("interval"), int(DEFAULT_ALERT_EMAIL["interval"])
+    )
+    cfg["max_repeats"] = _non_negative_int(
+        cfg.get("max_repeats"), int(DEFAULT_ALERT_EMAIL["max_repeats"])
+    )
     return cfg
+
+
+def _non_negative_int(value: Any, fallback: int) -> int:
+    """把界面传来的秒数 / 次数归一成非负整数；空值或脏值退回默认。
+
+    「0」是有含义的取值（0 间隔 = 只提醒首次、0 次数 = 不限），所以**不能**
+    按 falsy 处理 —— 空串 / None 才算没填。
+    """
+    if value is None or value == "":
+        return max(0, fallback)
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        return max(0, fallback)
+    return max(0, num)
 
 
 async def save_alert_email(raw: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
@@ -971,6 +1015,12 @@ async def save_alert_email(raw: Dict[str, Any], owner: str = "") -> Dict[str, An
     cfg = {
         "enabled": bool(raw.get("enabled")),
         "recipients": ",".join(recipients),
+        "interval": _non_negative_int(
+            raw.get("interval"), int(DEFAULT_ALERT_EMAIL["interval"])
+        ),
+        "max_repeats": _non_negative_int(
+            raw.get("max_repeats"), int(DEFAULT_ALERT_EMAIL["max_repeats"])
+        ),
     }
     await store.set_setting(
         alert_email_key(owner), json.dumps(cfg, ensure_ascii=False)
@@ -1451,6 +1501,21 @@ async def mark_active(key: str, row: Dict[str, Any]) -> None:
         await db.commit()
 
 
+async def mark_mail_sent(key: str, ts: int, count: int) -> None:
+    """只更新邮件通道的提醒节奏，不动其它列。
+
+    单独一条 UPDATE 而不是把这两列并进 :data:`ACTIVE_COLUMNS`：那张表的列由五个
+    告警来源共用，别的来源调 mark_active 时不带邮件计数，一并写就会把计数清零 ——
+    「最多提醒 N 次」便永远数不到。调用前该行已由 mark_active 建好。
+    """
+    async with database.connect() as db:
+        await db.execute(
+            "UPDATE alert_active SET mail_ts = ?, mail_count = ? WHERE alarm_key = ?",
+            (int(ts), int(count), key),
+        )
+        await db.commit()
+
+
 async def clear_active(key: str) -> None:
     async with database.connect() as db:
         await db.execute("DELETE FROM alert_active WHERE alarm_key = ?", (key,))
@@ -1703,6 +1768,11 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         email_cfg = await email_channel(rule_owner)
         webhook_cfg = await webhook_channel(rule_owner)
         cooldown = int(feishu.get("cooldown") or 600)
+        # 邮件有自己的一套节奏（间隔 + 次数上限），不再跟飞书的冷却绑定：
+        # 以前它只能蹭 feishu.cooldown，调飞书的冷却会连带改掉邮件，反之亦然。
+        mail_on = bool(email_cfg.get("enabled"))
+        mail_interval = int(email_cfg.get("interval") or 0)
+        mail_max = int(email_cfg.get("max_repeats") or 0)
         for rule in owner_rules:
             target_type = rule.get("target_type")
             want = rule.get("target") or "*"
@@ -1748,7 +1818,18 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 # 该提醒还是提醒，但历史不再记第二条（见 record 的 repeat 参数）
                 prev = active.get(key) or {}
                 last = float(prev.get("ts") or 0)
-                if now - last < cooldown:
+                base_due = now - last >= cooldown
+                # 邮件单独判一次：间隔 + 次数上限。两次判断互不牵连，所以
+                # 「飞书还在冷却」不会把邮件一起按住，反之亦然。
+                mail_ts = float(prev.get("mail_ts") or 0)
+                mail_count = int(prev.get("mail_count") or 0)
+                mail_due = mail_on and (mail_max <= 0 or mail_count < mail_max)
+                if mail_due:
+                    # 第一封一定发；之后按间隔，interval=0 表示只提醒首次
+                    mail_due = mail_count == 0 or (
+                        mail_interval > 0 and now - mail_ts >= mail_interval
+                    )
+                if not base_due and not mail_due:
                     continue
                 metric_label = i18n.tr(
                     METRIC_LABELS.get(rule.get("metric"), str(rule.get("metric")))
@@ -1814,13 +1895,17 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 alert_title = kind + i18n.tr("：") + label
                 ok, detail = await dispatch(
                     rule_owner,
-                    feishu,
-                    email_cfg,
+                    # 本轮不该发的通道就地置为未启用：dispatch 只管「发什么」，
+                    # 「这一步该不该发」由上面的 base_due / mail_due 决定。
+                    feishu if base_due else {**feishu, "enabled": False},
+                    email_cfg if mail_due else {**email_cfg, "enabled": False},
                     alert_title,
                     text,
                     card,
                     source=SOURCE_RESOURCE,
-                    webhook=webhook_cfg,
+                    # 本轮不该发的通道就地置为未启用：dispatch 只管「发什么」，
+                    # 「这一步该不该发」由上面的 base_due / mail_due 决定。
+                    webhook=webhook_cfg if base_due else {**webhook_cfg, "enabled": False},
                     context={
                         "level": "alarm",
                         "title": alert_title,
@@ -1849,7 +1934,13 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     "node": node,
                     "ip": ip,
                     "vmid": vmid,
-                    "ts": int(now),
+                    # ts 是飞书 / Webhook 的冷却时间戳：只有这一轮真按整轮节奏发过
+                    # 才推进它，否则「仅邮件提醒」那轮会把飞书的节奏一起往后推。
+                    "ts": int(now) if base_due else int(last),
+                    # 这两列不在 ACTIVE_COLUMNS 里，mark_active 不会写它们；放进
+                    # state 只是让内存里的 active 行带着最新的邮件计数进入下一轮。
+                    "mail_ts": int(now) if mail_due else int(mail_ts),
+                    "mail_count": mail_count + (1 if mail_due else 0),
                     # 只给站内消息用来判断该跳 /vms 还是 /lxc：qemu 与 lxc 的
                     # 详情页是两套。mark_active 按固定列写库，多出来的键会被忽略，
                     # 但它会留在内存里的 active 行上，恢复通知也能用上。
@@ -1857,6 +1948,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     "notify_source": SOURCE_RESOURCE,
                 }
                 await mark_active(key, state)
+                if mail_due:
+                    # 邮件计数单独落库（理由见 mark_mail_sent 的注释）
+                    await mark_mail_sent(key, int(now), mail_count + 1)
                 active[key] = dict(state, alarm_key=key)
                 entry = {
                     **state,

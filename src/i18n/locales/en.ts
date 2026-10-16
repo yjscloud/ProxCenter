@@ -3883,7 +3883,15 @@ export const en: Partial<Record<MessageKey, string>> = {
   'ippool.apiMid2': ' and refresh the page — the new',
   'ippool.apiPost': ' endpoint only takes effect after a restart.',
   'ippool.colName': 'Name',
+  /* Ownership: a pool is “whose addresses these are”, so once assigned only that user sees it */
+  'ippool.colOwner': 'Assigned to',
+  'ippool.ownerPublic': 'Shared (admin only)',
   'ippool.colBridge': 'Bridge',
+  /* “Pick from IP pool” dropdown for editing/adding NICs — same source as the create wizard */
+  'poolIpSelect.label': 'Pick from IP pool',
+  'poolIpSelect.placeholder': 'Choose a free address…',
+  'poolIpSelect.hint': 'Fills in the address and gateway',
+  'poolIpSelect.empty': 'No usable IP pool (or the pool has no free address)',
   /* A pool records which L2 network it belongs to: the bridge alone is not enough,
      since one vmbr0 can carry several VLAN segments. Blank = any VLAN. */
   'ippool.colVlan': 'VLAN',
@@ -6395,6 +6403,11 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.recipientsHintAccount': 'Leave blank to send to your account email: {email}',
   'alerts.recipientsHintNoAccount': 'If left blank and your account has no email, nothing is delivered; filling in recipients directly is recommended',
   'alerts.recipientsPlaceholder': 'Separate multiple addresses with commas',
+  /* The email channel's own repeat rhythm (previously it borrowed the Feishu cooldown) */
+  'alerts.mailIntervalLabel': 'Repeat interval (seconds)',
+  'alerts.mailIntervalHint': 'The same alert is not emailed again within this window; 0 = notify once only',
+  'alerts.mailMaxRepeatsLabel': 'Max notifications',
+  'alerts.mailMaxRepeatsHint': 'Including the first one; 0 = unlimited until the object recovers',
   'alerts.rulesTitle': 'Alert rules',
   'alerts.rulesSubtitleAdmin': 'Rules are isolated per user and administrators can see all of them; other users’ rules are read-only and saving only updates your own',
   'alerts.rulesSubtitleUser': 'Rules belong to you and alerts are only delivered to the Feishu bot you configured; choosing “All” as the target monitors every object',
@@ -6410,6 +6423,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.colEnabled': 'Enabled',
   'alerts.targetNode': 'Host',
   'alerts.targetVm': 'Virtual machine',
+  /* “Host” targets are admin-only, so a missing list has exactly one cause: the
+     Proxmox host is unreachable (non-admins never see this option at all). */
+  'alerts.nodesUnavailableTitle': 'Host list unavailable',
+  'alerts.nodesUnavailable': 'The Proxmox host is temporarily unreachable, so the host list could not be loaded and no specific host can be selected right now. Refresh the page and try again later.',
   'alerts.stateAlarm': 'Alerts whenever the state is abnormal',
   'alerts.deleteRuleReadonly': 'Another user’s rule; cannot be deleted',
   'alerts.deleteRule': 'Delete rule',

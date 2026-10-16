@@ -24,6 +24,7 @@ import { usePveReady } from '../hooks/usePveStatus';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { Breadcrumb } from '../components/Topbar';
 import { NicSpecTags } from '../components/NicSpecTags';
+import { PoolIpSelect } from '../components/PoolIpSelect';
 import { PageShell } from '../components/Layout';
 import { Card, CardHeader, InfoGrid, InfoRow, KpiCard } from '../components/ui/Card';
 import { Badge, TagList } from '../components/ui/Badge';
@@ -1363,6 +1364,20 @@ export function LxcDetail() {
             value={netForm.bridge}
             onChange={(e) => setNetForm({ ...netForm, bridge: e.target.value })}
             hint={t('lxcDetail.bridgeHint')}
+          />
+          {/* 从地址池挑一个空闲地址，省得去「网络」页抄一遍（抄错一位就不通）。
+              网关留空时保持用户已经填的值 —— 池没配网关时不该把人家填的清掉 */}
+          <PoolIpSelect
+            enabled={netOpen}
+            scope={{
+              node,
+              connection: pageConnection,
+              bridge: netForm.bridge,
+              vlan: netForm.vlanTag ? Number(netForm.vlanTag) : null,
+            }}
+            onPick={(ip, gw) =>
+              setNetForm((form) => ({ ...form, ip, gateway: gw || form.gateway }))
+            }
           />
           <Input
             label="IPv4"

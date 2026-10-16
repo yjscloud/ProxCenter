@@ -745,6 +745,10 @@ export interface AlertEmailConfig {
   enabled: boolean;
   /** 英文逗号分隔；留空 = 用账号邮箱 */
   recipients: string;
+  /** 重复提醒间隔（秒）；0 = 同一告警只提醒首次 */
+  interval: number;
+  /** 同一告警最多提醒几次（含首次）；0 = 不限，直到恢复为止 */
+  max_repeats: number;
 }
 
 /**
@@ -1076,6 +1080,12 @@ export interface IpPool {
    * 同一个网桥上可以挂多个 VLAN 网段，只记网桥分辨不出池属于哪一个。
    */
   vlan: number | null;
+  /**
+   * 归属用户（用户名）；**空串 = 公共池**，只有管理员看得到、也只有管理员能用。
+   * 普通用户只会拿到归属是自己的池（后端 `GET /ip-pools` 按它过滤），
+   * 于是在创建虚拟机 / 加网卡时选不出别人的网段。
+   */
+  owner: string;
 }
 
 /** 带空闲地址信息的地址池（GET 返回） */

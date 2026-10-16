@@ -3490,7 +3490,15 @@ export const zhCN = {
   'ippool.apiMid2': '后再刷新页面 —— 新增的',
   'ippool.apiPost': ' 接口需要先重启才能生效。',
   'ippool.colName': '名称',
+  /* 归属：池是「给谁取地址」的资源，绑到用户后只有他自己看得到 */
+  'ippool.colOwner': '归属用户',
+  'ippool.ownerPublic': '公共（仅管理员）',
   'ippool.colBridge': '网桥',
+  /* 「从地址池取一个地址」下拉（改网卡 IP / 新增网卡时用），与创建向导里的挑选同源 */
+  'poolIpSelect.label': '从地址池选择',
+  'poolIpSelect.placeholder': '选择空闲地址…',
+  'poolIpSelect.hint': '选中后自动填入地址与网关',
+  'poolIpSelect.empty': '没有可用的地址池（或池里已无空闲地址）',
   /* 池记着它属于哪个二层网络：光有网桥不够 —— 同一个 vmbr0 上可能挂着多个 VLAN
      网段。留空 = 不限，靠这一项才能把池对应到正确的 VLAN 网卡上。 */
   'ippool.colVlan': 'VLAN',
@@ -6269,6 +6277,11 @@ export const zhCN = {
   'alerts.recipientsHintAccount': '留空则发到你的账号邮箱：{email}',
   'alerts.recipientsHintNoAccount': '留空且账号未填邮箱时不会投递，建议直接填写收件地址',
   'alerts.recipientsPlaceholder': '多个地址用英文逗号分隔',
+  /* 邮件通道自己的重复提醒节奏（原先只能蹭飞书的冷却，改飞书会连带改邮件） */
+  'alerts.mailIntervalLabel': '重复提醒间隔（秒）',
+  'alerts.mailIntervalHint': '同一告警在这个时间内不重复发邮件；填 0 表示只提醒一次',
+  'alerts.mailMaxRepeatsLabel': '最多提醒次数',
+  'alerts.mailMaxRepeatsHint': '含第一次；填 0 表示不限次，直到该对象恢复正常',
   'alerts.rulesTitle': '告警规则',
   'alerts.rulesSubtitleAdmin': '规则按用户隔离，管理员可见全部；他人的规则只读，保存只会更新自己的',
   'alerts.rulesSubtitleUser': '规则归属你自己，告警只推送到你配置的飞书机器人；目标选「全部」表示监控所有对象',
@@ -6284,6 +6297,10 @@ export const zhCN = {
   'alerts.colEnabled': '启用',
   'alerts.targetNode': '宿主机',
   'alerts.targetVm': '虚拟机',
+  /* 「宿主机」这一档只给管理员，所以读不到列表只剩一种成因：PVE 连不上
+     （普通用户根本不会看到这一档，不存在「没权限所以选不出」的情形）。 */
+  'alerts.nodesUnavailableTitle': '读不到宿主机列表',
+  'alerts.nodesUnavailable': 'Proxmox 主机暂时连不上，宿主机名单读不出来，因此暂时选不了具体宿主机；稍后刷新页面再试。',
   'alerts.stateAlarm': '状态异常即告警',
   'alerts.deleteRuleReadonly': '他人的规则，不能删除',
   'alerts.deleteRule': '删除规则',

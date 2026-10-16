@@ -181,8 +181,16 @@ def _pool_free(pool: Dict[str, Any], used: Dict[str, str]) -> List[str]:
 async def get_ip_pools(
     user: Dict[str, Any] = Depends(security.require_permission("network.view")),
 ) -> Dict[str, Any]:
-    """返回所有池，附带各自的空闲地址列表与全量已占用地址。"""
+    """返回可见的池，附带各自的空闲地址列表与全量已占用地址。
+
+    普通用户只拿得到**分给自己**的池（``owner`` 是本人，见 :func:`visible_owner`）：
+    池是「给谁取地址」的资源，把别人的池列进候选，选中就是往不属于自己的网段里
+    塞地址。管理员不受限，公共池（owner 为空）也只有管理员看得到。
+    """
     pools = await _load()
+    scope = security.visible_owner(user)
+    if scope is not None:
+        pools = [p for p in pools if str(p.get("owner") or "") == scope]
     used = await _collect_used()
     out: List[Dict[str, Any]] = []
     for pool in pools:
@@ -197,7 +205,13 @@ async def save_ip_pools(
     request: Request,
     user: Dict[str, Any] = Depends(security.require_permission("network.manage")),
 ) -> Dict[str, Any]:
-    data = [p.model_dump() for p in payload]
+    data = []
+    for pool in payload:
+        item = pool.model_dump()
+        # 归属用户按用户名存，顺手去掉界面可能带进来的空白，免得出现「test01 」
+        # 这种看不见的差异把匹配搞丢
+        item["owner"] = str(item.get("owner") or "").strip()
+        data.append(item)
     await store.set_setting(POOLS_KEY, json.dumps(data, ensure_ascii=False))
     await security.audit(
         request, user, "ip_pools.save", target="ip_pools",

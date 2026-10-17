@@ -85,3 +85,36 @@ export function poolScopeLabel(
     nodes.length ? nodes.join(', ') : labels.anyNode,
   ].join(' · ');
 }
+
+/* ---------------------------------------------------------------------------
+   归属用户
+   ---------------------------------------------------------------------------
+   池可以「给一个人、给几个人、给所有人、或只留给管理员」。存储上是一份用户名
+   名单，四种状态靠两个约定表达：
+
+   * **空名单 = 公共池（仅管理员）**：只有管理员看得到、也只有管理员能用 ——
+     老数据里的空 ``owner`` 就是它；
+   * ``POOL_OWNER_ALL`` = **全部用户**：任何登录用户都能看到并使用它。
+
+   「全部」为什么不写成空名单：空名单那一档已经被「仅管理员」占了，两者合并会让
+   老数据（一堆管理员自用的池）在升级后对所有用户可见。后端 routers/ip_pools 用
+   同一个约定判定（``ALL_USERS``），改动时要一起改。
+   --------------------------------------------------------------------------- */
+
+/** 归属名单里的这一项表示「全部用户」（与后端 `ALL_USERS` 一致） */
+export const POOL_OWNER_ALL = '*';
+
+/** 归属名单里真正的用户名（去掉「全部用户」那一项）。 */
+export function poolOwnersOf(pool: { owners?: string[] }): string[] {
+  return (pool.owners ?? []).filter((name) => name !== POOL_OWNER_ALL);
+}
+
+/** 这个池是不是「全部用户」都能用。 */
+export function poolOwnerIsAll(pool: { owners?: string[] }): boolean {
+  return (pool.owners ?? []).includes(POOL_OWNER_ALL);
+}
+
+/** 这个池是不是「公共池（仅管理员）」。 */
+export function poolOwnerIsPublic(pool: { owners?: string[] }): boolean {
+  return (pool.owners ?? []).length === 0;
+}

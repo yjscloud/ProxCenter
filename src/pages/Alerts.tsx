@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { alertsApi, exportUrl, nodesApi, vmsApi } from "../api/endpoints";
 import { PageShell } from "../components/Layout";
@@ -31,10 +31,8 @@ import {
   IconBackup,
   IconDownload,
   IconChat,
-  IconFilter,
   IconMail,
 } from "../components/Icons";
-import { useSectionSpy } from "../hooks/useSectionSpy";
 import { useToast } from "../hooks/useToast";
 import { useRefreshInterval } from "../hooks/useRefreshInterval";
 import { useSiteInfo } from "../hooks/useSiteInfo";
@@ -106,12 +104,12 @@ function deliveryMeta(r: AlertRecord, t: TFunc) {
 }
 
 /* ---------------------------------------------------------------------------
-   页内区块导航
+   区块锚点
    ---------------------------------------------------------------------------
-   这一页也是「分区多、每个都不短」的长页面，因此用与「系统设置」同一套写法：
-   顶部一条吸顶的区块条（layout.css 的 .page-index），正文按分组铺开往下排。
+   本页不挂顶部吸顶的区块条（layout.css 的 .page-index），正文按分组
+   （「推送与通道」「规则与记录」）铺开往下排即可。
 
-   id 与下面 .page-block 的 id 一一对应；前缀见 SECTION_PREFIX。
+   各 .page-block 仍保留 id（前缀见 SECTION_PREFIX），外部链接可以直接跳到某一段。
    --------------------------------------------------------------------------- */
 
 const SECTION_PREFIX = "alert-";
@@ -137,42 +135,7 @@ export function Alerts() {
   const toast = useToast();
   const qc = useQueryClient();
 
-  /* 区块导航、分组说明与指标定义：文案随语言走，所以在组件内构造 */
-  const sections = useMemo(
-    () => [
-      {
-        id: "notify",
-        group: "channels" as SectionGroup,
-        label: t("alerts.secNotify"),
-        icon: <IconBell size={15} />,
-      },
-      {
-        id: "channels",
-        group: "channels" as SectionGroup,
-        label: t("alerts.secChannels"),
-        icon: <IconChat size={15} />,
-      },
-      {
-        id: "email",
-        group: "channels" as SectionGroup,
-        label: t("alerts.secEmail"),
-        icon: <IconMail size={15} />,
-      },
-      {
-        id: "rules",
-        group: "records" as SectionGroup,
-        label: t("alerts.secRules"),
-        icon: <IconFilter size={15} />,
-      },
-      {
-        id: "history",
-        group: "records" as SectionGroup,
-        label: t("alerts.secHistory"),
-        icon: <IconClock size={15} />,
-      },
-    ],
-    [t],
-  );
+  /* 分组说明与指标定义：文案随语言走，所以在组件内构造 */
   const groupDesc = useMemo<Record<SectionGroup, string>>(
     () => ({
       channels: t("alerts.groupChannelsDesc"),
@@ -234,16 +197,6 @@ export function Alerts() {
   const site = useSiteInfo();
   /* 标题预览：与后端同一口径 —— 填了用填的，留空用面板名称 */
   const titleBrand = String(feishu?.title || "").trim() || site.name;
-  const [activeSection, setActiveSection] = useSectionSpy(
-    sections.map((item) => item.id),
-    { prefix: SECTION_PREFIX },
-  );
-  function goSection(id: string) {
-    setActiveSection(id);
-    document
-      .getElementById(`${SECTION_PREFIX}${id}`)
-      ?.scrollIntoView({ block: "start" });
-  }
 
   // 目标下拉选项：宿主机取节点名；虚拟机只列运行中的（取值用 VMID，
   // 集群内唯一，避免同名虚拟机造成歧义），「全部」表示监控所有对象。
@@ -756,34 +709,6 @@ export function Alerts() {
         </Notice>
       ) : null}
 
-      {/* 区块导航：点一下跳到对应分区，滚动时高亮当前所在分区（见 useSectionSpy） */}
-      <nav className="page-index" aria-label={t("alerts.pageAria")}>
-        {sections.map((item, index) => (
-          <Fragment key={item.id}>
-            {/* 分组之间一道竖线：吸顶条只有一行高，再挂分组标题会把它撑成两行 */}
-            {index > 0 && sections[index - 1].group !== item.group ? (
-              <span className="page-index-sep" aria-hidden="true" />
-            ) : null}
-            <a
-              href={`#${SECTION_PREFIX}${item.id}`}
-              className={`page-index-item${
-                item.id === activeSection ? " is-active" : ""
-              }`}
-              aria-current={item.id === activeSection ? "true" : undefined}
-              title={groupDesc[item.group]}
-              onClick={(event) => {
-                /* 当页跳转：别让浏览器把它当成换页 */
-                event.preventDefault();
-                goSection(item.id);
-              }}
-            >
-              {item.icon}
-              {item.label}
-            </a>
-          </Fragment>
-        ))}
-      </nav>
-
       <header className="page-section-head">
         <h2 className="page-section-title">{t("alerts.groupChannels")}</h2>
         <p className="page-section-desc">{groupDesc.channels}</p>
@@ -823,13 +748,14 @@ export function Alerts() {
       </Card>
 
       {/* ---- 通知渠道 ----
-          飞书机器人与通用 Webhook 是同一件事（把告警推到某个地方）的两种投递
-          方式，所以配置放在一张卡片里。
+          飞书机器人、通用 Webhook 与邮件是同一件事（把告警推到某个地方）的三种
+          投递方式，所以配置放在一张卡片里，各占一行标题行。
 
-          但它们在**机制上仍是两条独立通道**：飞书发的是官方交互式卡片、签名放在
+          但它们在**机制上仍是三条独立通道**：飞书发的是官方交互式卡片、签名放在
           请求体里，走飞书自己的算法；通用 Webhook 发的是用户自定义模板、签名走
-          X-Panel-Signature 头。合成「类型二选一」的单一渠道会丢掉「两处同时推送」
-          的能力 —— 所以合并的是配置界面，不是投递链路。两个都开就都发。 */}
+          X-Panel-Signature 头；邮件则走管理员在「设置 → 邮件通知」里配的 SMTP。
+          合成「类型二选一」的单一渠道会丢掉「多处同时推送」的能力 —— 所以合并的
+          是配置界面，不是投递链路。三个都开就都发。 */}
       {/* alc-channels 是这一卡的样式作用域：渠道内的字段间距、说明行高
           都比全局松一档，见 components.css 的「告警通知渠道」一节 */}
       <Card className="page-block alc-channels" id={`${SECTION_PREFIX}channels`}>
@@ -1251,39 +1177,52 @@ export function Alerts() {
         ) : (
           <div className="skeleton skeleton-text" />
         )}
-      </Card>
-
-      {/* ---- 邮件通道：与飞书并列的第二条通知路径，收件人按用户各自配置 ---- */}
-      <Card className="page-block" id={`${SECTION_PREFIX}email`}>
-        <CardHeader
-          title={t("alerts.emailTitle")}
-          subtitle={t("alerts.emailSubtitle")}
-          icon={<IconBell size={16} />}
-          actions={
-            <>
-              <Badge
-                variant={mailReady ? "success" : "warning"}
-                dot
-                size="sm"
-              >
-                {mailReady ? t("alerts.smtpReady") : t("alerts.smtpUnset")}
+        {/* ---- 邮件：第三条投递路径。收件人按用户各自配置（留空 = 用账号邮箱），
+               重复提醒的节奏也各配一份 ---- */}
+        <div className="alc-ch">
+          <div className="alc-ch-id">
+            <span className="alc-ch-name">
+              <IconMail size={15} />
+              {t("alerts.emailTitle")}
+            </span>
+            <Badge variant={mailReady ? "success" : "warning"} size="sm" dot>
+              {mailReady ? t("alerts.smtpReady") : t("alerts.smtpUnset")}
+            </Badge>
+            {/* 通道被关掉时在这一行就说清楚：开关在下面几行，而「这条通道现在
+                是开是关」属于行本身的信息（飞书 / 通用 Webhook 的行也是这个写法，
+                只是它们的状态来自各自的 enabled 字段） */}
+            {emailCfg && !emailCfg.enabled ? (
+              <Badge variant="warning" size="sm" dot>
+                {t("alerts.disabled")}
               </Badge>
-              <Button
-                variant="primary"
-                size="sm"
-                icon={<IconSave size={14} />}
-                loading={busy === "mail"}
-                disabled={!emailCfg}
-                onClick={() => void saveEmail()}
-              >
-                {t("common.save")}
-              </Button>
-            </>
-          }
-        />
+            ) : null}
+          </div>
+          <div className="alc-ch-actions">
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<IconSave size={14} />}
+              loading={busy === "mail"}
+              disabled={!emailCfg}
+              onClick={() => void saveEmail()}
+            >
+              {t("common.save")}
+            </Button>
+          </div>
+        </div>
 
+        {/* 原来「邮件通道」那张卡片标题栏里的副标题搬到这里。合并之后整块只剩
+            标题行，但「这个邮箱会收到什么」仍然得讲清楚 —— 除了告警与恢复，下发
+            机器（配置、IP、口令）与重装结果这些非告警邮件也走它。 */}
+        <div className="field-message alc-mail-desc mt-16">
+          {t("alerts.emailSubtitle")}
+        </div>
+
+        {/* mt-16：邮件这一段的每一块都紧跟在渠道行（或说明）后面，.alc-ch 系列
+            样式只给随后的 .form-grid 留了间距，这里自己补上，否则 Notice 会贴在
+            渠道行上 */}
         {!mailReady ? (
-          <div className="mb-16">
+          <div className="mb-16 mt-16">
             <Notice tone="warning" title={t("alerts.smtpMissingTitle")}>
               {t("alerts.smtpMissingBody")}
             </Notice>
@@ -1291,33 +1230,40 @@ export function Alerts() {
         ) : null}
 
         {emailCfg ? (
-          <div className="flex flex-col gap-16">
+          <div className="mt-16 flex flex-col gap-16">
             <Switch
               checked={emailCfg.enabled}
               onChange={(v) => setEmailCfg({ ...emailCfg, enabled: v })}
               label={t("alerts.enableEmail")}
               hint={t("alerts.enableEmailHint")}
             />
-            <Field
-              label={t("alerts.recipientsLabel")}
-              hint={
-                accountEmail
-                  ? t("alerts.recipientsHintAccount", { email: accountEmail })
-                  : t("alerts.recipientsHintNoAccount")
-              }
-            >
-              <Input
-                value={emailCfg.recipients}
-                onChange={(e) =>
-                  setEmailCfg({ ...emailCfg, recipients: e.target.value })
+            {/* 地址、间隔、次数放在同一行：这三项合起来才是「这封邮件发给谁、
+                隔多久再发、最多发几次」的一份完整设定，分成三行既占高度，又让
+                它们看着像互不相干的三个设置。
+                宽度见 components.css 的 .alc-mail-fields：地址那格吃掉剩余宽度
+                （要装下若干个邮箱），两个数字格封顶 200px。整行铺满卡片、不留
+                宽度上限 —— 上限会把卡片右半边空出来，比数字框略宽更难看。
+
+                注：重复提醒的节奏是邮件独有的 —— 以前只能蹭飞书的冷却，
+                同一台机器持续高负载会一直重发。 */}
+            <div className="alc-mail-fields">
+              <Field
+                label={t("alerts.recipientsLabel")}
+                hint={
+                  accountEmail
+                    ? t("alerts.recipientsHintAccount", { email: accountEmail })
+                    : t("alerts.recipientsHintNoAccount")
                 }
-                placeholder={t("alerts.recipientsPlaceholder")}
-                mono
-              />
-            </Field>
-            {/* 重复提醒的节奏：以前邮件没有自己的节奏，只能蹭飞书的冷却，
-                同一台机器持续高负载会一直重发 */}
-            <div className="field-row">
+              >
+                <Input
+                  value={emailCfg.recipients}
+                  onChange={(e) =>
+                    setEmailCfg({ ...emailCfg, recipients: e.target.value })
+                  }
+                  placeholder={t("alerts.recipientsPlaceholder")}
+                  mono
+                />
+              </Field>
               <Field
                 label={t("alerts.mailIntervalLabel")}
                 hint={t("alerts.mailIntervalHint")}

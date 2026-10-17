@@ -329,6 +329,12 @@
     margin-top: 0;
   }
 
+  /* 邮件那一行的三格（收件地址 / 间隔 / 次数）在手机上改成上下排列：
+     两个数字格固定 200px，一行的宽度不够时它们会把地址格挤没 */
+  .alc-mail-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   /* 适用范围弹窗里的复选框栅格：手机上退回单列，否则节点名被挤成两三个字 */
   .chk-grid {
     grid-template-columns: minmax(0, 1fr);

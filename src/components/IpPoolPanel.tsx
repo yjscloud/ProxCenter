@@ -11,7 +11,7 @@ import { connectionsApi, ipPoolsApi, nodesApi, usersApi } from '../api/endpoints
 import { errorMessage } from '../api/client';
 import { Card, CardHeader } from './ui/Card';
 import { Button, IconButton } from './ui/Button';
-import { Checkbox, Input } from './ui/Input';
+import { Checkbox, Input, RadioGroup } from './ui/Input';
 import { Modal } from './ui/Modal';
 import { Notice } from './ui/EmptyState';
 import { Badge } from './ui/Badge';
@@ -24,9 +24,16 @@ import {
   IconChevronDown,
 } from './Icons';
 import { useToast } from '../hooks/useToast';
+import { PagerBar, usePaged } from '../hooks/usePaged';
 import { useAuth } from '../hooks/useAuth';
 import { useT } from '../i18n';
-import { poolScopeLabel } from '../utils/ippool';
+import {
+  POOL_OWNER_ALL,
+  poolOwnerIsAll,
+  poolOwnerIsPublic,
+  poolOwnersOf,
+  poolScopeLabel,
+} from '../utils/ippool';
 import type { IpPool } from '../api/types';
 
 function newPool(): IpPool {
@@ -44,9 +51,9 @@ function newPool(): IpPool {
     nodes: [],
     connections: [],
     vlan: null,
-    /* 新池默认是「公共池」：只有管理员看得到、也只有管理员能用。要分给某个用户，
-       得显式选一个归属 */
-    owner: '',
+    /* 新池默认是「公共池」：只有管理员看得到、也只有管理员能用。要分给谁得显式
+       勾选（可以勾多个用户，也可以勾「全部用户」） */
+    owners: [],
   };
 }
 
@@ -336,6 +343,196 @@ function ScopeTree({ groups, connections, nodes, onChange }: ScopeTreeProps) {
   );
 }
 
+/* ---------------------------------------------------------------------------
+   归属用户：先选「方式」，再在「指定用户」里勾人
+   ---------------------------------------------------------------------------
+   一个池可以只给管理员（公共池）、给全部用户，或者只给指定的几个用户 —— 这三种
+   情况都落在同一份名单上，但**不能靠名单的形状去猜**：「空名单」既可能被读成
+   「谁都别用」，也可能被读成「谁都能用」。所以这里先让用户显式选方式，再在
+   「指定用户」那一档里勾人（与「适用范围」同一套骨架：标题行 + 全选 / 清空 +
+   搜索 + 勾选栅格 + 已选计数，同一张表格里两列的操作习惯不该有两种）。
+
+   改归属是**破坏性**的：把池从某人名下拿掉，他下次创建虚拟机就再也选不到这个
+   网段。所以候选里始终带着当前名单里的名字（哪怕账号已被删除），不会因为打开
+   一次弹窗、顺手一存就把一个归属弄丢。
+   --------------------------------------------------------------------------- */
+interface OwnerPickerProps {
+  /** 候选用户名（不含 admin，已排序） */
+  users: string[];
+  /** 当前归属名单（见 utils/ippool 的约定） */
+  value: string[];
+  onChange: (next: string[]) => void;
+}
+
+/** 归属方式：三种取值与 utils/ippool 的存储约定一一对应 */
+type OwnerMode = 'public' | 'all' | 'some';
+
+/** 超过这么多用户才给搜索框：三五个时它比直接勾还慢 */
+const OWNER_FILTER_THRESHOLD = 8;
+
+/** 从名单反推归属方式（弹层刚打开时用） */
+function deriveOwnerMode(value: string[]): OwnerMode {
+  if (poolOwnerIsAll({ owners: value })) return 'all';
+  return poolOwnerIsPublic({ owners: value }) ? 'public' : 'some';
+}
+
+function OwnerPicker({ users, value, onChange }: OwnerPickerProps) {
+  const t = useT();
+  const [keyword, setKeyword] = useState('');
+  /* 方式存本地状态，而不是每次按名单反推：名单为空时「指定用户」与「公共池」在
+     存储里是**同一个值**（空名单），只按存储反推的话，一点「指定用户」就会立刻
+     跳回「公共」—— 勾上第一个人时存储才真的变 */
+  const [mode, setModeState] = useState<OwnerMode>(() => deriveOwnerMode(value));
+
+  /* 「指定用户」这一档实际勾了谁 */
+  const picked = poolOwnersOf({ owners: value });
+  /* 账号已被删除的名字也要留在候选里：列不出来就等于「顺手一存把他抹掉」 */
+  const names = [...new Set([...picked, ...users])].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  const q = keyword.trim().toLowerCase();
+  const visible = q
+    ? names.filter((name) => name.toLowerCase().includes(q))
+    : names;
+  /* 只有「指定用户」这一档能勾人 */
+  const assignable = mode === 'some';
+
+  const setMode = (next: OwnerMode) => {
+    setModeState(next);
+    if (next === 'public') {
+      onChange([]);
+      return;
+    }
+    if (next === 'all') {
+      onChange([POOL_OWNER_ALL]);
+      return;
+    }
+    /* 切到「指定用户」时把「全部用户」那一项丢掉：留着它等于还是全部用户，勾谁
+       都没有意义。之前勾过的人原样保留 */
+    onChange(picked);
+  };
+
+  const toggleUser = (name: string, checked: boolean) => {
+    onChange(
+      checked ? [...picked, name] : picked.filter((item) => item !== name),
+    );
+  };
+
+  /* 全选 / 清空只作用于**搜出来的这些**：几十个账号时不先搜索收敛，一键全选
+     容易把不想给的人也勾上 */
+  const toggleVisible = (checked: boolean) => {
+    if (checked) {
+      onChange([...new Set([...picked, ...visible])]);
+      return;
+    }
+    const drop = new Set(visible);
+    onChange(picked.filter((name) => !drop.has(name)));
+  };
+
+  return (
+    <>
+      <div className="scope-box">
+        <RadioGroup
+          name="ippool-owner-mode"
+          value={mode}
+          onChange={(next) => setMode(next as OwnerMode)}
+          vertical
+          label={t('ippool.ownerModeLabel')}
+          options={[
+            {
+              value: 'public',
+              label: t('ippool.ownerPublic'),
+              hint: t('ippool.ownerPublicHint'),
+            },
+            {
+              value: 'all',
+              label: t('ippool.ownerAll'),
+              hint: t('ippool.ownerAllHint'),
+            },
+            {
+              value: 'some',
+              label: t('ippool.ownerSome'),
+              hint: t('ippool.ownerSomeHint'),
+            },
+          ]}
+        />
+      </div>
+
+      <div className="scope-box">
+        <div className="scope-box-head">
+          <div className="scope-box-title">
+            {t('ippool.ownerListTitle')}
+            {/* 徽标跟着当前方式走：只勾了「全部用户」时写「已选 0 个」会被读成
+                「一个都没给」，而那恰恰是"谁都能用" */}
+            <Badge
+              variant={assignable && picked.length === 0 ? 'neutral' : 'accent'}
+              size="sm"
+            >
+              {assignable
+                ? t('ippool.ownerSelected', { n: picked.length })
+                : mode === 'all'
+                  ? t('ippool.ownerAll')
+                  : t('ippool.ownerPublic')}
+            </Badge>
+          </div>
+          <div className="scope-box-actions">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!assignable || visible.length === 0}
+              onClick={() => toggleVisible(true)}
+            >
+              {t('ippool.scopeSelectAll')}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!assignable || picked.length === 0}
+              onClick={() => toggleVisible(false)}
+            >
+              {t('ippool.scopeClear')}
+            </Button>
+          </div>
+        </div>
+
+        {names.length === 0 ? (
+          <div className="fs-sm text-muted">{t('ippool.ownerNoUsers')}</div>
+        ) : (
+          <>
+            {names.length > OWNER_FILTER_THRESHOLD ? (
+              <Input
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder={t('ippool.ownerSearch', { n: names.length })}
+                prefix={<IconSearch size={14} />}
+                aria-label={t('ippool.ownerSearch', { n: names.length })}
+                block={false}
+              />
+            ) : null}
+            <div className="scope-scroll">
+              {visible.length === 0 ? (
+                <div className="fs-sm text-muted">{t('ippool.scopeNoMatch')}</div>
+              ) : (
+                <div className="chk-grid">
+                  {visible.map((name) => (
+                    <Checkbox
+                      key={name}
+                      checked={picked.includes(name)}
+                      disabled={!assignable}
+                      label={name}
+                      onChange={(e) => toggleUser(name, e.target.checked)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
 export function IpPoolPanel() {
   const t = useT();
   const toast = useToast();
@@ -346,8 +543,11 @@ export function IpPoolPanel() {
   // 直接用数组而不是 null，避免接口暂时不可用时连「添加池」都点不了。
   const [pools, setPools] = useState<IpPool[]>([]);
   const [busy, setBusy] = useState(false);
-  /* 正在编辑「适用节点」的池下标（null = 没打开选择弹层） */
-  const [nodeEdit, setNodeEdit] = useState<number | null>(null);
+  /* 正在编辑「适用节点」的池 id（null = 没打开选择弹层）。
+     存 id 而不是下标：表格分页后下标只在「当前这一页」里成立，拿它回查会改错行 */
+  const [nodeEdit, setNodeEdit] = useState<string | null>(null);
+  /* 正在编辑「归属用户」的池 id（同样存 id 不存下标，理由同上） */
+  const [ownerEdit, setOwnerEdit] = useState<string | null>(null);
   const loadedRef = useRef(false);
 
   const query = useQuery({
@@ -443,9 +643,9 @@ export function IpPoolPanel() {
         nodes: p.nodes ?? [],
         connections: p.connections ?? [],
         vlan: p.vlan ?? null,
-        /* 同样必须一起映射：保存发的是整份池，漏了 owner 就等于把池改回公共池，
+        /* 同样必须一起映射：保存发的是整份池，漏了 owners 就等于把池改回公共池，
            已经分给客户的地址会被收回去 */
-        owner: p.owner ?? '',
+        owners: p.owners ?? [],
       })),
     );
   }, [query.data]);
@@ -453,13 +653,74 @@ export function IpPoolPanel() {
   const freeOf = (id: string): number =>
     (query.data?.pools ?? []).find((p) => p.id === id)?.free_count ?? 0;
 
-  function patch(index: number, next: Partial<IpPool>) {
-    setPools((list) =>
-      list ? list.map((p, i) => (i === index ? { ...p, ...next } : p)) : list,
-    );
+  /* 后端还是升级前的版本：它返回的是单值 owner，不认识 owners。
+     这种「前端换了、服务没重启」的错位必须自己认出来 —— 旧模型把 owners 当未知
+     字段吞掉、owner 落成空串，**一次保存就把所有池收成公共池**，而界面上毫无提示
+     （现象是「指定了归属、保存了，但没生效」，能查很久）。判据用响应的形状而不是
+     版本号：新后端出的每个池一定带 owners，旧后端一定带 owner。 */
+  const legacyBackend = useMemo(
+    () =>
+      (query.data?.pools ?? []).some((pool) => {
+        const row = pool as unknown as { owners?: string[]; owner?: string };
+        return row.owners === undefined && row.owner !== undefined;
+      }),
+    [query.data],
+  );
+
+  /* 定位用 id 而不是下标：表格分页后渲染的只是当前这一页，下标是**页内**的，
+     用它去改 state 会改到别的行上（改第 2 页的第一行，动的却是第 1 页的第一条） */
+  function patch(id: string, next: Partial<IpPool>) {
+    setPools((list) => list.map((p) => (p.id === id ? { ...p, ...next } : p)));
+  }
+
+  /* 池没有数量上限，而每行都带一排输入框（一屏放不下几行），所以和别的列表一样
+     分页：页码越界由 hook 夹住，每页条数走分页条上的下拉。
+     resetKey 给个固定值即可 —— 这一栏没有搜索 / 筛选，换个页码不改变数据的含义 */
+  const poolPage = usePaged(pools, 'ip-pools');
+
+  /* 正在编辑适用范围的那条池：弹层要按 id 现查，而不是把池对象存进 state
+     （存对象的话，弹层开着时在表格里改别的字段，弹层里那份就是旧值） */
+  const editing = nodeEdit
+    ? pools.find((p) => p.id === nodeEdit) ?? null
+    : null;
+
+  /* 正在编辑归属的那条池（同样按 id 现查） */
+  const editingOwner = ownerEdit
+    ? pools.find((p) => p.id === ownerEdit) ?? null
+    : null;
+
+  /* 归属列的摘要：管理员扫一眼要能看出「这条池谁能用」。多个用户时只给个数，
+     完整名单挂在按钮的 title 上 —— 表格里铺不下三五个用户名 */
+  function ownerSummary(pool: IpPool): string {
+    if (poolOwnerIsAll(pool)) return t('ippool.ownerAll');
+    if (poolOwnerIsPublic(pool)) return t('ippool.ownerPublic');
+    const names = poolOwnersOf(pool);
+    return names.length === 1
+      ? names[0]
+      : t('ippool.ownerCount', { n: names.length });
+  }
+
+  function ownerTooltip(pool: IpPool): string {
+    return poolOwnersOf(pool).join('、');
+  }
+
+  function addPool() {
+    const next = [...pools, newPool()];
+    setPools(next);
+    /* 新池追加在末尾：不分页时它就在眼前，分页后却可能落在最后一页 —— 不跳过去
+       的话，点了「添加池」屏幕上看不到任何变化，像是按钮坏了 */
+    poolPage.setPage(Math.max(1, Math.ceil(next.length / poolPage.pageSize)));
   }
 
   async function save() {
+    if (legacyBackend) {
+      /* 按钮本身是禁用的，这里再挡一次：回车 / 脚本触发也得挡 */
+      toast.error(
+        t('ippool.legacyBackendTitle'),
+        t('ippool.legacyBackendBody'),
+      );
+      return;
+    }
     setBusy(true);
     try {
       await ipPoolsApi.save(pools);
@@ -488,7 +749,7 @@ export function IpPoolPanel() {
               size="sm"
               icon={<IconPlus size={14} />}
               disabled={!canManageNet}
-              onClick={() => setPools([...pools, newPool()])}
+              onClick={addPool}
             >
               {t('ippool.addPool')}
             </Button>
@@ -497,7 +758,7 @@ export function IpPoolPanel() {
               size="sm"
               icon={<IconSave size={14} />}
               loading={busy}
-              disabled={!canManageNet}
+              disabled={!canManageNet || legacyBackend}
               onClick={() => void save()}
             >
               {t('common.save')}
@@ -519,6 +780,12 @@ export function IpPoolPanel() {
         <b>{t('ippool.howBold2')}</b>
         {t('ippool.howPost')}
       </Notice>
+
+      {legacyBackend ? (
+        <Notice tone="warning" title={t('ippool.legacyBackendTitle')}>
+          {t('ippool.legacyBackendBody')}
+        </Notice>
+      ) : null}
 
       {query.isError ? (
         <Notice tone="warning" title={t('ippool.apiTitle')}>
@@ -553,7 +820,9 @@ export function IpPoolPanel() {
               </tr>
             </thead>
             <tbody>
-              {pools.map((p, i) => (
+              {/* 渲染的是当前这一页。行内的改动一律按 p.id 写回整份 pools，
+                  所以翻页 / 改每页条数都不会把编辑落到别的行上 */}
+              {poolPage.rows.map((p) => (
                 <tr key={p.id}>
                   <td>
                     <div className="input-wrap">
@@ -561,32 +830,27 @@ export function IpPoolPanel() {
                         className="input"
                         value={p.name}
                         placeholder={t('ippool.namePlaceholder')}
-                        onChange={(e) => patch(i, { name: e.target.value })}
+                        onChange={(e) => patch(p.id, { name: e.target.value })}
                       />
                     </div>
                   </td>
                   {canManageNet ? (
                     <td>
-                      {/* 把这套地址分给谁：普通用户登录后只列得出归属是自己的池，
-                          在创建虚拟机 / 加网卡时也就只能从自己的池里取地址 */}
-                      <select
-                        className="select"
-                        value={p.owner ?? ''}
-                        onChange={(e) => patch(i, { owner: e.target.value })}
+                      {/* 这套地址分给谁用：普通用户登录后只列得出可用的池（名单里有
+                          他，或是「全部用户」），在创建虚拟机 / 加网卡时也就只能从
+                          自己那几个池里取地址。
+                          一个池常常要分给好几个人（同一段地址给几个客户是常态），
+                          原生下拉只能单选，所以改成点开弹层勾选 —— 与「适用范围」
+                          同一套交互 */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={!canManageNet}
+                        onClick={() => setOwnerEdit(p.id)}
+                        title={ownerTooltip(p) || t('ippool.ownerPickHint')}
                       >
-                        <option value="">{t('ippool.ownerPublic')}</option>
-                        {/* 当前归属的用户可能已被删除（或列表还没拉回来）：把他并进
-                            选项里，否则下拉会显示成「公共」，一保存就把池收走了 */}
-                        {[p.owner, ...ownerOptions]
-                          .filter(
-                            (name, idx, arr) => name && arr.indexOf(name) === idx,
-                          )
-                          .map((name) => (
-                            <option key={name} value={name}>
-                              {name}
-                            </option>
-                          ))}
-                      </select>
+                        {ownerSummary(p)}
+                      </Button>
                     </td>
                   ) : null}
                   <td>
@@ -595,7 +859,7 @@ export function IpPoolPanel() {
                         className="input"
                         value={p.bridge}
                         placeholder="vmbr0"
-                        onChange={(e) => patch(i, { bridge: e.target.value })}
+                        onChange={(e) => patch(p.id, { bridge: e.target.value })}
                       />
                     </div>
                   </td>
@@ -615,12 +879,12 @@ export function IpPoolPanel() {
                         onChange={(e) => {
                           const raw = e.target.value.trim();
                           if (!raw) {
-                            patch(i, { vlan: null });
+                            patch(p.id, { vlan: null });
                             return;
                           }
                           const tag = Number(raw);
                           if (Number.isInteger(tag) && tag >= 1 && tag <= 4094) {
-                            patch(i, { vlan: tag });
+                            patch(p.id, { vlan: tag });
                           }
                         }}
                       />
@@ -633,7 +897,7 @@ export function IpPoolPanel() {
                       variant="ghost"
                       size="sm"
                       disabled={!canManageNet}
-                      onClick={() => setNodeEdit(i)}
+                      onClick={() => setNodeEdit(p.id)}
                       title={t('ippool.nodesEditTitle')}
                     >
                       {poolScopeLabel(p, {
@@ -649,7 +913,7 @@ export function IpPoolPanel() {
                         className="input"
                         value={p.subnet}
                         placeholder="192.168.1.0/24"
-                        onChange={(e) => patch(i, { subnet: e.target.value })}
+                        onChange={(e) => patch(p.id, { subnet: e.target.value })}
                       />
                     </div>
                   </td>
@@ -659,7 +923,7 @@ export function IpPoolPanel() {
                         className="input"
                         value={p.gateway}
                         placeholder="192.168.1.1"
-                        onChange={(e) => patch(i, { gateway: e.target.value })}
+                        onChange={(e) => patch(p.id, { gateway: e.target.value })}
                       />
                     </div>
                   </td>
@@ -669,7 +933,7 @@ export function IpPoolPanel() {
                         className="input"
                         value={p.start}
                         placeholder="192.168.1.100"
-                        onChange={(e) => patch(i, { start: e.target.value })}
+                        onChange={(e) => patch(p.id, { start: e.target.value })}
                       />
                     </div>
                   </td>
@@ -679,7 +943,7 @@ export function IpPoolPanel() {
                         className="input"
                         value={p.end}
                         placeholder="192.168.1.200"
-                        onChange={(e) => patch(i, { end: e.target.value })}
+                        onChange={(e) => patch(p.id, { end: e.target.value })}
                       />
                     </div>
                   </td>
@@ -689,7 +953,7 @@ export function IpPoolPanel() {
                         className="input"
                         value={p.dns}
                         placeholder={t('ippool.dnsPlaceholder')}
-                        onChange={(e) => patch(i, { dns: e.target.value })}
+                        onChange={(e) => patch(p.id, { dns: e.target.value })}
                       />
                     </div>
                   </td>
@@ -703,7 +967,9 @@ export function IpPoolPanel() {
                       label={t('ippool.deleteAria')}
                       variant="danger"
                       disabled={!canManageNet}
-                      onClick={() => setPools(pools.filter((_, k) => k !== i))}
+                      onClick={() =>
+                        setPools(pools.filter((row) => row.id !== p.id))
+                      }
                     >
                       <IconTrash size={15} />
                     </IconButton>
@@ -717,6 +983,10 @@ export function IpPoolPanel() {
         <div className="text-secondary fs-sm">{t('ippool.empty')}</div>
       )}
 
+      {/* 分页条只在真有池时出现：空列表上挂一个「每页 20 条 · 第 0-0 条，共 0 条」
+          是纯噪音。保存发的是**整份** pools（不止当前这一页），不因翻页而漏 */}
+      {pools.length > 0 ? <PagerBar pager={poolPage} /> : null}
+
       {/* 适用范围：一个池可以给多个节点用（业务网段往往在所有节点上都通），
           所以是多选而不是单选 —— 否则同网段得按节点重复建好几条。
 
@@ -726,10 +996,7 @@ export function IpPoolPanel() {
         open={nodeEdit !== null}
         onClose={() => setNodeEdit(null)}
         title={t('ippool.scopeTitle', {
-          name:
-            nodeEdit !== null
-              ? pools[nodeEdit]?.name || pools[nodeEdit]?.subnet || ''
-              : '',
+          name: editing?.name || editing?.subnet || '',
         })}
         size="md"
         footer={
@@ -740,14 +1007,40 @@ export function IpPoolPanel() {
       >
         <ScopeTree
           groups={scopeGroups}
-          connections={nodeEdit !== null ? pools[nodeEdit]?.connections ?? [] : []}
-          nodes={nodeEdit !== null ? pools[nodeEdit]?.nodes ?? [] : []}
+          connections={editing?.connections ?? []}
+          nodes={editing?.nodes ?? []}
           onChange={({ connections: conns, nodes: names }) => {
             if (nodeEdit === null) return;
             /* 两个维度必须一起写：树里的勾选是「连接 + 节点」的组合，分两次
                patch 中间会出现一个语义不同的瞬时状态（例如 connections 先写成
                空数组，那一瞬就成了「所有 PVE 都不限」） */
             patch(nodeEdit, { connections: conns, nodes: names });
+          }}
+        />
+      </Modal>
+
+      {/* 归属用户：与「适用范围」一样点开弹层选 —— 一个池要分给几个人时，单元格里
+          那个原生下拉只能单选，而「指定了哪几个」在表格里又铺不开。
+          改动即时写回池（与适用范围一致），底部按钮只是关闭弹层，不是提交 */}
+      <Modal
+        open={ownerEdit !== null}
+        onClose={() => setOwnerEdit(null)}
+        title={t('ippool.ownerEditTitle', {
+          name: editingOwner?.name || editingOwner?.subnet || '',
+        })}
+        size="md"
+        footer={
+          <Button variant="primary" onClick={() => setOwnerEdit(null)}>
+            {t('common.confirm')}
+          </Button>
+        }
+      >
+        <OwnerPicker
+          users={ownerOptions}
+          value={editingOwner?.owners ?? []}
+          onChange={(next) => {
+            if (ownerEdit === null) return;
+            patch(ownerEdit, { owners: next });
           }}
         />
       </Modal>

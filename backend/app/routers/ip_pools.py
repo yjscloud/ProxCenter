@@ -22,6 +22,60 @@ POOLS_KEY = "ip_pools"
 # 单个池最多返回的空闲地址数，避免超大网段拖垮前端。
 MAX_FREE = 512
 
+#: 归属用户名单里的这一项表示「全部用户」：任何登录用户都能看到并使用这个池。
+#:
+#: 用显式的 ``"*"`` 而不是「名单为空」—— 空名单那一档是**公共池（仅管理员）**，
+#: 两者必须能区分开，否则升级之后老数据里那些管理员自用的池会对所有用户可见。
+ALL_USERS = "*"
+
+
+def _clean_owners(raw: Any) -> List[str]:
+    """规范化归属用户名单：去空白、去空项、去重，并把 ``"*"`` 收敛成它自己。
+
+    容错比"严格"重要：这一串是用户手选出来的名字，且保存走的是「整份池覆盖写」，
+    读的时候一旦因为一个多余空格匹配不上，用户侧看到的就是"池不见了"。
+    """
+    if isinstance(raw, str):
+        # 单个用户名（或空串）也当作名单：旧数据就是这种形状
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for name in raw:
+        text = str(name or "").strip()
+        if text and text not in out:
+            out.append(text)
+    # 勾了「全部用户」就不再需要具体名单：名单在这里没有额外信息，留着反而让人
+    # 以为以后还要逐个维护
+    return [ALL_USERS] if ALL_USERS in out else out
+
+
+def _owners_of(pool: Dict[str, Any]) -> List[str]:
+    """读出池的归属用户名单。
+
+    老数据只有单值 ``owner``（用户名或空串），在这里包成名单 —— 全链路上只有这
+    一处需要认识旧字段，其余代码一律只看 ``owners``。
+
+    ``owners`` 为空名单时同样回落到 ``owner``：保存路径是 ``owners or owner``
+    （见 :func:`save_ip_pools`），读的时候也照这个优先级来，否则一行同时带着
+    ``owners: []`` 和 ``owner: "alice"`` 的数据会被读成公共池 —— 归属在管理员
+    毫不知情的情况下被撤销。新代码写下的行不会出现这种组合（保存时会把 ``owner``
+    丢掉），所以这条回落只会帮到迁移到一半 / 手工改过的数据。
+    """
+    owners = pool.get("owners")
+    if isinstance(owners, list) and owners:
+        return _clean_owners(owners)
+    return _clean_owners(pool.get("owner"))
+
+
+def _visible_to(pool: Dict[str, Any], username: str) -> bool:
+    """普通用户能不能看到这个池：名单里有他本人，或者名单是「全部用户」。
+
+    空名单（公共池）对普通用户不可见 —— 与单归属时代一致。
+    """
+    owners = _owners_of(pool)
+    return ALL_USERS in owners or username in owners
+
 
 async def _load() -> List[Dict[str, Any]]:
     raw = await store.get_setting(POOLS_KEY)
@@ -183,19 +237,28 @@ async def get_ip_pools(
 ) -> Dict[str, Any]:
     """返回可见的池，附带各自的空闲地址列表与全量已占用地址。
 
-    普通用户只拿得到**分给自己**的池（``owner`` 是本人，见 :func:`visible_owner`）：
+    普通用户只拿得到**分给自己**的池（名单里有他本人，或名单是「全部用户」）：
     池是「给谁取地址」的资源，把别人的池列进候选，选中就是往不属于自己的网段里
-    塞地址。管理员不受限，公共池（owner 为空）也只有管理员看得到。
+    塞地址。管理员不受限，公共池（名单为空）也只有管理员看得到。
     """
     pools = await _load()
     scope = security.visible_owner(user)
     if scope is not None:
-        pools = [p for p in pools if str(p.get("owner") or "") == scope]
+        pools = [p for p in pools if _visible_to(p, scope)]
     used = await _collect_used()
     out: List[Dict[str, Any]] = []
     for pool in pools:
         free = _pool_free(pool, used)
-        out.append({**pool, "free": free, "free_count": len(free)})
+        # 统一按 owners 出参：单值时代的 owner 只在这里兼容读取，不再往外发 ——
+        # 两套字段并存的话，迟早有人读到过时的那一份
+        item = {
+            **pool,
+            "owners": _owners_of(pool),
+            "free": free,
+            "free_count": len(free),
+        }
+        item.pop("owner", None)
+        out.append(item)
     return {"pools": out, "used": sorted(used.keys())}
 
 
@@ -208,9 +271,12 @@ async def save_ip_pools(
     data = []
     for pool in payload:
         item = pool.model_dump()
-        # 归属用户按用户名存，顺手去掉界面可能带进来的空白，免得出现「test01 」
-        # 这种看不见的差异把匹配搞丢
-        item["owner"] = str(item.get("owner") or "").strip()
+        # 归属用户按用户名存，顺手去掉界面可能带进来的空白与重复项，免得出现
+        # 「test01 」这种看不见的差异把匹配搞丢。
+        # ``or item.get("owner")`` 是给还没刷新的旧页面兜底：旧页面只发单值 owner，
+        # 忽略它就等于把池改回公共池（普通用户那边这些池会直接消失）。
+        item["owners"] = _clean_owners(item.get("owners") or item.get("owner"))
+        item.pop("owner", None)
         data.append(item)
     await store.set_setting(POOLS_KEY, json.dumps(data, ensure_ascii=False))
     await security.audit(

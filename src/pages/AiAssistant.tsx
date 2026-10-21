@@ -3238,7 +3238,7 @@ function SettingsModal({
                 <Input
                   value={draft.base_url}
                   onChange={(e) => patch(index, { base_url: e.target.value })}
-                  placeholder="https://api.deepseek.com"
+                  placeholder="https://api.example.com/v1"
                   disabled={Boolean(draft.readonly)}
                 />
               </Field>

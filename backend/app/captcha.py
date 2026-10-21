@@ -154,16 +154,33 @@ def issue() -> Dict[str, str]:
     return {"id": cid, "image": f"data:image/png;base64,{image}"}
 
 
-def verify(captcha_id: Optional[str], captcha_code: Optional[str]) -> bool:
-    """一次性校验：取出即作废，答错/过期/不存在都返回 False。"""
+# 校验结果。不只用 True/False：调用方需要区分「答错」与「这张题已经没了」，
+# 否则同一个 captcha_id 被反复提交时用户一直看到「验证失败」，看起来像没作废
+# （审计项 PT-09）。三态还能让审计日志记清到底是猜错还是重放。
+RESULT_OK = "ok"
+RESULT_WRONG = "wrong"
+RESULT_GONE = "gone"
+
+
+def check(captcha_id: Optional[str], captcha_code: Optional[str]) -> str:
+    """一次性校验：**取出即作废**（无论对错），返回三态结果。
+
+    作废发生在比较之前 —— 一次失败之后同一个 id 只会得到 ``RESULT_GONE``，
+    不能拿它继续试探坐标/字符。
+    """
     entry = _pending.pop((captcha_id or "").strip(), None)
     if not entry:
-        return False
+        return RESULT_GONE
     expected, deadline = entry
     if time.time() > deadline:
-        return False
+        return RESULT_GONE
     got = (captcha_code or "").strip().lower()
-    return hmac.compare_digest(expected.lower(), got)
+    return RESULT_OK if hmac.compare_digest(expected.lower(), got) else RESULT_WRONG
+
+
+def verify(captcha_id: Optional[str], captcha_code: Optional[str]) -> bool:
+    """``check`` 的布尔包装（老调用方 / 测试用）。"""
+    return check(captcha_id, captcha_code) == RESULT_OK
 
 
 # ===========================================================================
@@ -267,16 +284,21 @@ def issue_slider() -> Dict[str, Any]:
     }
 
 
-def verify_slider(captcha_id: Optional[str], x: Optional[float]) -> bool:
-    """一次性校验：取出即作废；没拖到底 / 过期 / 不存在都返回 False。"""
+def check_slider(captcha_id: Optional[str], x: Optional[float]) -> str:
+    """滑块的一次性校验，语义同 :func:`check`：先作废再比较。"""
     entry = _sliders.pop((captcha_id or "").strip(), None)
     if not entry:
-        return False
+        return RESULT_GONE
     target, deadline = entry
     if time.time() > deadline:
-        return False
+        return RESULT_GONE
     try:
         got = float(x)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return False
-    return got >= target - SLIDER_TOLERANCE
+        return RESULT_WRONG
+    return RESULT_OK if got >= target - SLIDER_TOLERANCE else RESULT_WRONG
+
+
+def verify_slider(captcha_id: Optional[str], x: Optional[float]) -> bool:
+    """``check_slider`` 的布尔包装（老调用方 / 测试用）。"""
+    return check_slider(captcha_id, x) == RESULT_OK

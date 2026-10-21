@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from .. import (
     # 面板版本：唯一来源在 app/__init__.py（package.json 与 CHANGELOG 跟着它走）
     __version__,
+    accesscontrol,
     captcha,
     defaults,
     faq,
@@ -50,12 +51,25 @@ router = APIRouter(prefix="/api", tags=["config"])
 
 
 @router.get("/health")
-async def health() -> Dict[str, Any]:
-    """Unauthenticated liveness probe. Reports PVE reachability.
+async def health(
+    user: Optional[Dict[str, Any]] = Depends(security.get_current_user_optional),
+) -> Dict[str, Any]:
+    """健康检查：匿名只答「活着」，登录后才给诊断明细。
 
-    Used by the login screen to show whether the backend can reach Proxmox,
-    so it must never require a panel session.
+    此前这个匿名端点会把 PVE 版本、节点数、连接状态一起吐出去（审计项
+    FD-04）—— 版本号可以直接拿去对公开漏洞库做匹配，节点数说明集群规模，
+    ``pve_connected`` 的翻转还能被用来探测面板配置变化。而未登录访客拿这些
+    信息没有任何用处。
+
+    所以现在分两档：
+      * 匿名：只回 ``{"status": "ok"}``，且**不探测 PVE** —— 顺带堵掉「匿名
+        请求即可让面板反复向上游发请求」这条放大路径；
+      * 已登录（前端登录后的各处都在轮询它）：字段与以前完全一致。
+    需要深度诊断用的是 ``/api/config/diagnostics``（要求 settings.manage）。
     """
+    if user is None:
+        return {"status": "ok"}
+
     result: Dict[str, Any] = {
         "status": "ok",
         "pve_connected": False,
@@ -590,6 +604,7 @@ async def test_connection(
         token_id=payload.token_id,
         token_secret=secret,
         verify_ssl=payload.verify_ssl,
+        ca_cert=payload.ca_cert,
     )
     client = ProxmoxClient(conn)
 
@@ -1040,6 +1055,45 @@ async def put_panel_url(
         detail={"url": saved or "(未配置，回落请求 Host)"},
     )
     return {"url": saved}
+
+
+@router.get("/config/security-posture")
+async def get_security_posture(
+    user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
+) -> Dict[str, Any]:
+    """公网暴露加固的当前状态（只读）。
+
+    这些开关都来自环境变量：安全边界不适合做成「点一下就能关掉」的界面开关，
+    而且白名单一旦在界面里填错，保存的那一刻就会把人锁在门外。这里只把
+    「现在到底生效了什么」摊开给管理员看，改配置仍然走 `.env` + 重启。
+
+    ``admins_without_totp`` 让管理员一眼看到还有谁没绑 2FA —— 公网面板上
+    这等同于一个只靠口令守着的 root 入口。
+    """
+    admins: List[Dict[str, Any]] = []
+    for row in await store.list_users():
+        if str(row.get("role") or "") == "admin" or "*" in security.effective_permissions(row):
+            if row.get("enabled", True) and str(
+                row.get("status") or store.STATUS_ACTIVE
+            ) == store.STATUS_ACTIVE:
+                admins.append(row)
+
+    return {
+        "allow_configured": accesscontrol.configured(),
+        "allow_cidrs": accesscontrol.allowed_networks(),
+        "allow_invalid": accesscontrol.has_invalid_entries(),
+        "forwarded_allow_ips": settings.forwarded_allow_ips,
+        "trusts_any_proxy": (settings.forwarded_allow_ips or "").strip() == "*",
+        "force_https": settings.force_https,
+        "totp_required_roles": list(settings.totp_required_role_list),
+        "admins_without_totp": [
+            str(row.get("username") or "")
+            for row in admins
+            if not row.get("totp_enabled")
+        ],
+        "login_ip_alert": settings.login_ip_alert,
+        "panel_url": await panel_url.get_base_url(),
+    }
 
 
 @router.get("/config/vm-quota")

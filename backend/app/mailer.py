@@ -534,6 +534,44 @@ def rejection_mail(username: str, reason: str, panel_url: str) -> Tuple[str, str
     )
 
 
+def account_expiry_mail(
+    username: str, days_left: int, expires_text: str, panel_url: str = ""
+) -> Tuple[str, str, str]:
+    """账号有效期提醒（7 / 3 / 1 天前各一次）。
+
+    语言：由调用方用 ``i18n.use_language(收件人语言)`` 设定 —— 定时任务没有
+    请求上下文，不能用管理员当前界面语言。
+
+    正文必须把「到期后会关机」写清楚：这不是一句泛泛的续费提醒，用户名下
+    正在跑的虚拟机 / 容器会真的被关掉。
+    """
+    subject = i18n.pick(
+        f"[即将到期] 账号 {username} 还有 {days_left} 天到期",
+        f"[Expiring soon] Account {username} expires in {days_left} day(s)",
+    )
+    title = i18n.pick("账号即将到期", "Your account is about to expire")
+    lines = [
+        i18n.pick(
+            f"账号 {username} 的有效期到 {expires_text}，还有约 {days_left} 天。",
+            f"Account {username} is valid until {expires_text}; about {days_left} day(s) left.",
+        ),
+        "",
+        i18n.pick(
+            "到期后该账号会被冻结、无法登录面板，名下正在运行的虚拟机与容器也会被自动关闭。",
+            "When it expires the account is frozen and can no longer sign in, and the "
+            "virtual machines and containers it owns are shut down automatically.",
+        ),
+        i18n.pick(
+            "如需继续使用，请联系管理员延长有效期。",
+            "Contact an administrator if you need the account extended.",
+        ),
+    ]
+    body_lines = list(lines)
+    if panel_url:
+        lines.append(panel_url)
+    return subject, "\n".join(lines), wrap_html(title, body_lines, panel_url)
+
+
 def password_reset_mail(username: str, reset_url: str) -> Tuple[str, str, str]:
     """自助重置密码：把一次性链接发到账号邮箱。
 

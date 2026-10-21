@@ -2058,6 +2058,55 @@ class TestRegistrationApproval:
         assert login.status_code == 403
         assert "审批" in login.json()["detail"]
 
+    def test_register_requires_captcha_when_enabled(self, api) -> None:
+        """注册与登录同级的人机校验（审计项 FD-06）：没有验证码不许建号。"""
+        from app import captcha as captcha_mod
+        from app.config import settings
+
+        admin = auth_headers(api)
+        set_captcha_mode(api, "image")
+        settings.login_captcha = True
+        try:
+            body = {
+                "username": "captchareg",
+                "password": "Unit-Test-Pa55word",
+                "email": "captchareg@example.com",
+            }
+
+            # 没带验证码：拦在建号之前，用户表里不该多出这条 pending
+            assert api.post("/api/auth/register", json=body).status_code == 400
+
+            # 填错
+            ch = api.get("/api/auth/captcha").json()
+            wrong = api.post(
+                "/api/auth/register",
+                json={**body, "captcha_id": ch["id"], "captcha_code": "!!!!"},
+            )
+            assert wrong.status_code == 400
+
+            # 填对 → 201 且状态 pending（白盒读内存答案，不依赖 OCR）
+            fresh = api.get("/api/auth/captcha").json()
+            answer = captcha_mod._pending[fresh["id"]][0]
+            ok = api.post(
+                "/api/auth/register",
+                json={
+                    **body,
+                    "captcha_id": fresh["id"],
+                    "captcha_code": answer,
+                },
+            )
+            assert ok.status_code == 201, ok.text
+            assert ok.json()["status"] == "pending"
+
+            # 验证码失败要留痕
+            rows = api.get(
+                "/api/audit?action=auth.register&result=failed",
+                headers=admin,
+            ).json()
+            assert any("验证码" in str(r["detail"]) for r in rows["items"])
+        finally:
+            settings.login_captcha = False
+
         # 账号确实进了审批队列
         admin = auth_headers(api)
         pending = api.get("/api/users?status=pending", headers=admin)

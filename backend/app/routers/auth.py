@@ -10,6 +10,7 @@ from .. import (
     captcha,
     crypto,
     i18n,
+    loginalert,
     mailer,
     panel_url,
     password_reset,
@@ -140,6 +141,7 @@ def _user_out(user: Dict[str, Any]) -> UserOut:
         status=user.get("status", store.STATUS_ACTIVE),
         permissions=security.effective_permissions(user),
         totp_enabled=bool(user.get("totp_enabled")),
+        expires_at=security.account_expires_at(user),
     )
 
 
@@ -214,19 +216,29 @@ async def login(
     mode = await captcha.get_mode()
     if mode != captcha.MODE_OFF:
         if mode == captcha.MODE_SLIDER:
-            passed = captcha.verify_slider(payload.captcha_id, payload.captcha_x)
-            detail = "验证失败，请重新拖动滑块"
+            state = captcha.check_slider(payload.captcha_id, payload.captcha_x)
         else:
-            passed = captcha.verify(payload.captcha_id, payload.captcha_code)
-            detail = "验证码错误或已过期，请点击图片更换"
-        if not passed:
+            state = captcha.check(payload.captcha_id, payload.captcha_code)
+        if state != captcha.RESULT_OK:
+            # 两种失败分开说：答错 → 换一张重试；已失效（过期 / 同一 id 二次提交）
+            # → 明确告知「请重新获取」。这样既不作废前又不含糊其辞
+            # （审计项 PT-09 就是把后者误判成「id 未作废」）。
+            if state == captcha.RESULT_GONE:
+                detail = "验证码已失效，请重新获取"
+                audit_note = f"{captcha.MODE_LABEL.get(mode, mode)}已失效（过期或重放）"
+            elif mode == captcha.MODE_SLIDER:
+                detail = "验证失败，请重新拖动滑块"
+                audit_note = f"{captcha.MODE_LABEL.get(mode, mode)}未通过"
+            else:
+                detail = "验证码错误，请点击图片更换"
+                audit_note = f"{captcha.MODE_LABEL.get(mode, mode)}未通过"
             await store.add_audit(
                 username=payload.username,
                 action="auth.login",
                 result="failed",
                 # 写成人话（「图形验证码未通过」/「拖动滑块未通过」）：
                 # 审计日志是给人看的，写 image/slider 还得回头翻代码。
-                detail=f"{captcha.MODE_LABEL.get(mode, mode)}未通过",
+                detail=audit_note,
                 ip=ip,
             )
             raise HTTPException(status_code=400, detail=detail)
@@ -274,6 +286,20 @@ async def login(
         )
         raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员")
 
+    # 有效期：口令校验之后再判，否则「已冻结」会成为一枚账号是否存在的探测口。
+    # 到期后账号保持原样（不 disable），管理员延长有效期即可恢复 —— 冻结只是
+    # 一道按时间生效的开关，不需要人来改 enabled。
+    if security.is_account_expired(user):
+        detail = i18n.t("error.account_frozen")
+        await store.add_audit(
+            username=payload.username,
+            action="auth.login",
+            result="failed",
+            detail=detail,
+            ip=security.client_ip(request),
+        )
+        raise HTTPException(status_code=403, detail=detail)
+
     # 两步验证：口令对了，但还不算登录成功 —— 先发一枚只能走完这次验证的
     # 临时凭据，避免把 access token 直接交给只掌握了密码的一方。
     #
@@ -315,6 +341,11 @@ async def login(
         detail="两步验证已跳过（信任设备，未过期）" if trusted_device else "",
         ip=ip,
     )
+    # 首次从某 IP 登录 → 异步告警管理员（站内消息 + 邮件）。内部吞掉所有异常，
+    # 不会影响这次登录；HTTP 响应也不等 SMTP。
+    await loginalert.note_login(
+        user, request, ip, "trusted_device" if trusted_device else "password"
+    )
 
     return LoginResponse(
         access_token=access,
@@ -352,6 +383,10 @@ async def login_mfa(
         raise HTTPException(status_code=403, detail="账号未通过管理员审批")
     if not user.get("enabled", True):
         raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员")
+    if security.is_account_expired(user):
+        raise HTTPException(
+            status_code=403, detail=i18n.t("error.account_frozen")
+        )
 
     ok, used_recovery = await totp.verify_login_code(user, payload.code)
     if not ok:
@@ -390,6 +425,9 @@ async def login_mfa(
         detail="两步验证通过" + ("（使用了恢复码）" if used_recovery else ""),
         ip=ip,
     )
+    await loginalert.note_login(
+        user, request, ip, "recovery_code" if used_recovery else "2fa"
+    )
     return LoginResponse(access_token=access, token_type="bearer", user=_user_out(user))
 
 
@@ -421,6 +459,13 @@ async def refresh_session(request: Request, response: Response) -> LoginResponse
         await store.revoke_refresh_token(jti)
         security.clear_session_cookies(response)
         raise HTTPException(status_code=403, detail="账号未通过管理员审批")
+    # 有效期已过：刷新令牌一并作废，别让浏览器靠 refresh 无限续命。
+    if security.is_account_expired(user):
+        await store.revoke_refresh_token(jti)
+        security.clear_session_cookies(response)
+        raise HTTPException(
+            status_code=403, detail=i18n.t("error.account_frozen")
+        )
     if int(payload.get("ver", 0)) != int(user.get("token_version", 0) or 0):
         await store.revoke_refresh_token(jti)
         security.clear_session_cookies(response)
@@ -443,6 +488,11 @@ async def register(payload: RegisterRequest, request: Request) -> Dict[str, Any]
     建出来的账号状态恒为 ``pending``：能登录的前提是管理员审批通过。
     角色先给 viewer，真正的角色与权限由管理员在审批时决定。
 
+    校验顺序是「限流 → 人机校验 → 口令强度 → 邮箱 → 用户名唯一 → 建号」，
+    任何一步失败都**不写用户表**，也不给管理员发信：这样「先插入待审批记录、
+    再校验重复」那类问题不会出现（首投成功 = 201 且队列里一条pending；同名重投
+    = 409 且队列不受影响）。
+
     注意这里**不返回任何账号信息**，也不在响应里区分「已存在」的具体状态，
     只说用户名被占用 —— 与登录接口的防枚举口径保持一致。
     """
@@ -459,6 +509,38 @@ async def register(payload: RegisterRequest, request: Request) -> Dict[str, Any]
         raise HTTPException(
             status_code=429, detail="提交过于频繁，请稍后再试"
         )
+
+    # 人机校验与登录同级（审计项 FD-06）：注册成功会往审批队列里塞一条记录，
+    # 也会给管理员发一封信 —— 没有验证码，匿名脚本可以用随机用户名把队列刷满，
+    # 顺带把管理员邮箱打爆。放在建号之前：未通过就什么都不写。
+    #
+    # 验证码没过**不**计入任何失败计数，理由同登录：否则拿错图反复提交就能把
+    # 正常用户挡在门外（限流仍按来源 IP 独立生效）。
+    mode = await captcha.get_mode()
+    if mode != captcha.MODE_OFF:
+        if mode == captcha.MODE_SLIDER:
+            state = captcha.check_slider(payload.captcha_id, payload.captcha_x)
+        else:
+            state = captcha.check(payload.captcha_id, payload.captcha_code)
+        if state != captcha.RESULT_OK:
+            if state == captcha.RESULT_GONE:
+                detail = "验证码已失效，请重新获取"
+                audit_note = f"{captcha.MODE_LABEL.get(mode, mode)}已失效（过期或重放）"
+            elif mode == captcha.MODE_SLIDER:
+                detail = "验证失败，请重新拖动滑块"
+                audit_note = f"{captcha.MODE_LABEL.get(mode, mode)}未通过"
+            else:
+                detail = "验证码错误，请点击图片更换"
+                audit_note = f"{captcha.MODE_LABEL.get(mode, mode)}未通过"
+            await store.add_audit(
+                username=payload.username,
+                action="auth.register",
+                target=payload.username,
+                result="failed",
+                detail=audit_note,
+                ip=ip,
+            )
+            raise HTTPException(status_code=400, detail=detail)
 
     username = payload.username.strip()
     email = (payload.email or "").strip()
@@ -953,6 +1035,7 @@ async def me(user: Dict[str, Any] = Depends(security.get_current_user)) -> UserO
         enabled=user.get("enabled", True),
         permissions=user.get("permissions", []),
         totp_enabled=bool(user.get("totp_enabled")),
+        expires_at=security.account_expires_at(user),
     )
 
 
@@ -1100,8 +1183,15 @@ async def my_permissions(
 
 
 @router.get("/permissions")
-async def permissions() -> Dict[str, Any]:
-    """Expose the role model so the UI can render the permission matrix."""
+async def permissions(
+    _user: Dict[str, Any] = Depends(security.get_current_user),
+) -> Dict[str, Any]:
+    """角色/权限清单（需登录）。
+
+    原来匿名可读：三种角色的完整权限边界一览无余，等于替攻击者标好了
+    「拿到 operator 能做什么」——例如 vm.console / firewall.manage 这些
+    横向操作的入口。登录后前端照常可用（本面板前端不依赖它，留给 API 客户端）。
+    """
     return {
         "roles": [
             {

@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import re
+import ssl as ssl_module
 import time
 from contextvars import ContextVar, Token
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -133,6 +134,28 @@ def vm_id_from_upid(upid: str) -> Optional[int]:
     return int(raw_id)
 
 
+def build_ssl_context(verify_ssl: bool, ca_cert: str = "") -> Any:
+    """把「连接的 TLS 策略」翻译成 httpx 的 ``verify`` 参数。
+
+    三种情况，优先级从上到下：
+
+    * ``ca_cert`` 非空 —— 用这段 PEM 当**信任锚**（证书钉扎）。PVE 默认自签
+      （cluster CA 签发，CN=pve.local，证书里没有 IP SAN），拿公网信任库校验
+      必然失败，而「关掉校验」又等于把 8006 通道交给内网 MITM；钉住签发它的
+      证书，比两者都更接近「确认对面就是那台 PVE」。此时主机名不参与校验 ——
+      钉扎的对象是证书本身（PVE 常见用 IP 访问，SAN 对不上）。
+    * ``verify_ssl=True`` —— 交给 httpx 用默认信任库（正规 CA 签发的证书）。
+    * 都为否 —— 不校验（旧行为，启动时会告警，见 main.lifespan）。
+    """
+    pem = (ca_cert or "").strip()
+    if pem:
+        context = ssl_module.create_default_context(cadata=pem)
+        # 钉扎即身份：PVE 证书的 CN 是 pve.local，用 IP / 短名访问都会对不上
+        context.check_hostname = False
+        return context
+    return bool(verify_ssl)
+
+
 class PveConnection:
     """Resolved connection settings (mutable at runtime from the UI)."""
 
@@ -142,7 +165,8 @@ class PveConnection:
         port: int = 8006,
         token_id: str = "",
         token_secret: str = "",
-        verify_ssl: bool = False,
+        verify_ssl: Optional[bool] = None,
+        ca_cert: str = "",
         default_node: str = "",
         console_user: str = "",
         console_password: str = "",
@@ -151,7 +175,13 @@ class PveConnection:
         self.port = port
         self.token_id = token_id
         self.token_secret = token_secret
-        self.verify_ssl = verify_ssl
+        # 默认跟随环境配置（PVE_VERIFY_SSL，生产默认开启）。写死 False 曾让
+        # 「忘传这个参数」的调用方静默关掉证书校验（审计项 FD-07）。
+        self.verify_ssl = (
+            settings.pve_verify_ssl if verify_ssl is None else bool(verify_ssl)
+        )
+        # 钉扎用的 CA / 证书 PEM（按连接存，多集群各自的 CA 不会互相打架）
+        self.ca_cert = ca_cert or ""
         self.default_node = default_node
         self.console_user = console_user
         self.console_password = console_password
@@ -202,7 +232,7 @@ class ProxmoxClient:
     async def _http(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                verify=self.conn.verify_ssl,
+                verify=build_ssl_context(self.conn.verify_ssl, self.conn.ca_cert),
                 timeout=httpx.Timeout(settings.http_timeout, connect=10.0),
                 follow_redirects=False,
                 # Do not pick up HTTP_PROXY / HTTPS_PROXY: a hypervisor API is
@@ -1298,6 +1328,7 @@ def connection_from_profile(profile: Dict[str, Any]) -> PveConnection:
         token_secret=str(profile.get("token_secret") or ""),
         # 未存过 verify_ssl 的旧连接：按环境默认（生产默认校验证书）
         verify_ssl=bool(profile.get("verify_ssl", settings.pve_verify_ssl)),
+        ca_cert=str(profile.get("ca_cert") or ""),
         default_node=str(profile.get("node_default") or ""),
         console_user=str(profile.get("console_user") or ""),
         console_password=str(profile.get("console_password") or ""),
@@ -1529,6 +1560,7 @@ def _load_connection() -> PveConnection:
         token_id=cfg.get("token_id") or settings.pve_token_id,
         token_secret=cfg.get("token_secret") or settings.pve_token_secret,
         verify_ssl=bool(cfg.get("verify_ssl", settings.pve_verify_ssl)),
+        ca_cert=str(cfg.get("ca_cert") or ""),
         default_node=cfg.get("node_default") or settings.pve_default_node,
         console_user=cfg.get("console_user") or settings.pve_console_user,
         console_password=cfg.get("console_password") or settings.pve_console_password,

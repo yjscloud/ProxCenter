@@ -21,15 +21,29 @@ import asyncio
 import inspect
 import logging
 import ssl as ssl_module
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 import websockets
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import FileResponse
 
-from .. import i18n, security, store
+from .. import console_files, i18n, panel_url, security, store
 from ..pve import (
     ProxmoxError,
     ProxmoxClient,
+    build_ssl_context,
     error_code_headers,
     get_client,
     set_request_connection,
@@ -80,14 +94,17 @@ def _ws_headers_kw(headers: Dict[str, str]) -> Dict[str, Any]:
     return {key: headers}
 
 
-def _ssl_context(url: str, verify: bool) -> Any:
+def _ssl_context(url: str, verify: bool, ca_cert: str = "") -> Any:
     """为上游 wss 构造 SSLContext。
 
     直接传 True/False 会让 asyncio 在 wss 上「启用验证」或「完全不加密」，
-    而 PVE 普遍使用自签证书，需要的是「加密但不校验证书」。
+    而 PVE 普遍使用自签证书。这里与 :mod:`app.pve` 用同一套策略：配了
+    证书（``ca_cert``）就钉扎它，否则按 ``verify`` 走默认信任库 / 不校验。
     """
     if not url.startswith("wss"):
         return None
+    if (ca_cert or "").strip():
+        return build_ssl_context(True, ca_cert)
     ctx = ssl_module.create_default_context()
     if not verify:
         ctx.check_hostname = False
@@ -271,6 +288,126 @@ async def create_lxc_xterm_session(
     }
 
 
+# ------------------------------------------------------------ 控制台文件中转
+# 为什么是「中转」而不是「直接写进客户机」：见 app/console_files.py 顶部说明。
+# 下载接口刻意**不要求登录** —— 去拉文件的是客户机，它没有面板凭据；
+# token（128 bit 随机）本身就是能力凭据，且有有效期。
+
+
+def _limit_label() -> str:
+    mib = console_files.MAX_BYTES / (1024 * 1024)
+    if mib < 1024:
+        return f"{mib:.0f} MiB"
+    return f"{mib / 1024:.0f} GiB"
+
+
+@router.post("/console/files")
+async def upload_console_file(
+    request: Request,
+    file: UploadFile = File(...),
+    guest_type: str = Form("qemu"),
+    node: str = Form(""),
+    vmid: Optional[int] = Form(None),
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.console", "ct.console")
+    ),
+) -> Dict[str, Any]:
+    """接收浏览器上传的文件，返回一枚限时下载地址与可直接粘贴的命令素材。"""
+    kind = "lxc" if guest_type == "lxc" else "qemu"
+    needed = "ct.console" if kind == "lxc" else "vm.console"
+    if not security.has_user_permission(user, needed):
+        raise HTTPException(
+            status_code=403,
+            detail=i18n.t("error.permission_denied", permission=needed),
+        )
+
+    target = f"{node}/{vmid}" if node and vmid else str(file.filename or "")
+    try:
+        meta = await console_files.save(file, str(user.get("username") or ""))
+    except console_files.FileTooLarge:
+        detail = i18n.t("console.fileTooLarge", limit=_limit_label())
+        await security.audit(
+            request, user, "console.file_upload", target=target,
+            result="failed", detail=detail,
+        )
+        raise HTTPException(status_code=413, detail=detail) from None
+    except OSError as exc:
+        detail = i18n.t("console.fileUploadFailed", error=str(exc))
+        await security.audit(
+            request, user, "console.file_upload", target=target,
+            result="failed", detail=detail,
+        )
+        raise HTTPException(status_code=500, detail=detail) from exc
+
+    base = (await panel_url.resolve(request)).rstrip("/")
+    if not base:
+        base = str(request.base_url).rstrip("/")
+    path = f"/api/console/files/{meta['token']}/{quote(str(meta['name']))}"
+
+    await security.audit(
+        request, user, "console.file_upload", target=target,
+        detail={"name": meta["name"], "size": meta["size"]},
+    )
+
+    return {
+        "token": meta["token"],
+        "name": meta["name"],
+        "size": meta["size"],
+        "expires_at": meta["expires_at"],
+        "path": path,
+        "url": f"{base}{path}",
+        "max_bytes": console_files.MAX_BYTES,
+    }
+
+
+async def _console_file_response(token: str) -> FileResponse:
+    found = await console_files.load(token)
+    if found is None:
+        raise HTTPException(status_code=404, detail=i18n.t("console.fileMissing"))
+    path, meta = found
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=str(meta.get("name") or "download.bin"),
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/console/files/{token}")
+async def download_console_file(token: str) -> FileResponse:
+    """客户机拉取中转文件（凭 token，不需要登录）。"""
+    return await _console_file_response(token)
+
+
+@router.get("/console/files/{token}/{filename:path}")
+async def download_console_file_named(token: str, filename: str = "") -> FileResponse:
+    """同一条下载，多带一段文件名。
+
+    文件名只是让 URL 与命令行看起来更像回事（``curl -O`` 也能直接用），
+    真正的裁决者仍是 token；路径段不参与拼盘上路径。
+    """
+    return await _console_file_response(token)
+
+
+@router.delete("/console/files/{token}")
+async def revoke_console_file(
+    token: str,
+    request: Request,
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.console", "ct.console")
+    ),
+) -> Dict[str, Any]:
+    """作废下载链接（上传者发现地址贴错地方时用）。"""
+    ok = await console_files.revoke(token)
+    if not ok:
+        raise HTTPException(status_code=404, detail=i18n.t("console.fileMissing"))
+    await security.audit(request, user, "console.file_revoke", target=token)
+    return {"ok": True}
+
+
 # --------------------------------------------------------------- websockets
 async def _authenticate_ws(token: str) -> Dict[str, Any]:
     """Validate the panel JWT supplied as a query parameter.
@@ -424,7 +561,11 @@ async def _proxy_console(
             open_timeout=15,
             close_timeout=5,
             max_size=None,
-            ssl=_ssl_context(upstream_url, bool(client.conn.verify_ssl)),
+            ssl=_ssl_context(
+                upstream_url,
+                bool(client.conn.verify_ssl),
+                getattr(client.conn, "ca_cert", ""),
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(

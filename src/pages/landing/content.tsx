@@ -65,9 +65,12 @@ export const SITE = {
   consolePath: '/login',
   /** 已登录时的控制台入口 */
   consolePathAuthed: '/dashboard',
-  /** 后端自动生成的接口文档 */
-  docsPath: '/api/docs',
 };
+
+/* 这里曾经有一个 docsPath: '/api/docs' 的入口，现已移除：
+   接口文档默认关闭（见 backend/app/config.py 的 api_docs_enabled），公开页面
+   指向它只会得到 404；万一管理员打开了文档，那也是需要登录的管理员工具，
+   不该出现在未登录访客能点的位置。 */
 
 /* ---------------------------------------------------------------------------
    能力域

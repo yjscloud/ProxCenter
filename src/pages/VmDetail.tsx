@@ -80,6 +80,7 @@ import {
   IconPause,
   IconPlus,
   IconAlert,
+  IconTerminal,
 } from '../components/Icons';
 /* 详情页的「更多操作」：克隆 / 转模板 / 迁移 / 指派归属 / 重置口令 / 导出镜像 / 删除 */
 import { VmMoreMenu } from '../components/VmMoreMenu';
@@ -126,6 +127,15 @@ interface HardwareRemoveTarget {
   title: string;
   detail?: string;
 }
+
+/**
+ * PVE 的串口槽位。
+ *
+ * 只有 serial0 会被「终端控制台」用到（termproxy 固定走 serial0），
+ * 其余三槽是给客户机自己接串口设备用的。值通常是 ``socket``（QEMU 内部的
+ * 虚拟串口插座），也可以是宿主机上的 ``/dev/ttyS*``。
+ */
+const SERIAL_KEYS = ['serial0', 'serial1', 'serial2', 'serial3'] as const;
 
 type TabKey =
   | 'overview'
@@ -739,6 +749,8 @@ export function VmDetail() {
             vmid={vmid}
             vmName={vm.name}
             running={running}
+            hasSerial={Boolean(vm.config.serial0)}
+            onOpenHardware={() => setTab('hardware')}
           />
         ) : null}
 
@@ -1430,6 +1442,44 @@ function HardwareTab({
     }
   };
 
+  /* ---- 串口：终端控制台的前提条件 ----
+     用户点「终端」却看不到东西，最常见的原因就是这台机器没有 serial0。
+     这里直接把「加串口」做成卡片上的一个按钮，而不是让人去 PVE 后台加。 */
+  const serialPorts = useMemo(
+    () =>
+      SERIAL_KEYS.filter((key) => {
+        const raw = vm.config[key];
+        return raw !== undefined && raw !== null && String(raw) !== '';
+      }),
+    [vm.config],
+  );
+
+  const addSerialPort = async () => {
+    const free = SERIAL_KEYS.find((key) => {
+      const raw = vm.config[key];
+      return raw === undefined || raw === null || String(raw) === '';
+    });
+    if (!free) {
+      toast.warning(t('vmDetail.serialFull'), t('vmDetail.serialFullHint'));
+      return;
+    }
+    setBusy(true);
+    try {
+      /* 值固定 socket：termproxy 需要的是 QEMU 内部的串口插座，而不是宿主机的
+         物理串口（/dev/ttyS* 在容器化 / 远程部署时基本拿不到） */
+      await runner.run(vmsApi.updateConfig(node, vmid, { [free]: 'socket' }), {
+        title: t('vmDetail.addSerialTask', { key: free }),
+        node,
+        invalidate: [['vm', node, vmid], ['vms']],
+      });
+      onChanged();
+    } catch {
+      /* toast 已处理 */
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /* ---- 卸掉一件硬件 ---- */
   const doRemoveHardware = async () => {
     if (!removeTarget) return;
@@ -1831,6 +1881,68 @@ function HardwareTab({
               <EmptyState title={t('vmDetail.noCdrom')} compact />
             ) : null}
           </div>
+        </Card>
+
+        {/* 串口：终端控制台（termproxy）认的是 serial0，没有它「终端」必然空白 */}
+        <Card>
+          <CardHeader
+            title={t('vmDetail.serialCard')}
+            subtitle={t('vmDetail.serialSubtitle')}
+            icon={<IconTerminal size={16} />}
+            actions={
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<IconPlus size={14} />}
+                onClick={() => void addSerialPort()}
+                disabled={!canEdit || serialPorts.length >= SERIAL_KEYS.length}
+                title={
+                  serialPorts.length >= SERIAL_KEYS.length
+                    ? t('vmDetail.serialFull')
+                    : t('vmDetail.addSerialHint')
+                }
+              >
+                {t('vmDetail.addSerial')}
+              </Button>
+            }
+          />
+          {serialPorts.length === 0 ? (
+            <EmptyState title={t('vmDetail.noSerial')} compact />
+          ) : (
+            <div className="flex flex-col">
+              {serialPorts.map((key) => {
+                const value = configValue(key);
+                const isSocket = value.trim() === 'socket';
+                return (
+                  <HwRow
+                    key={key}
+                    label={key}
+                    title={t('vmDetail.serialLabel', { key })}
+                    value={value}
+                    hint={
+                      key === 'serial0' && isSocket
+                        ? t('vmDetail.serialTerminalHint')
+                        : isSocket
+                          ? t('vmDetail.serialSocketHint')
+                          : undefined
+                    }
+                    editable={canEdit}
+                    onEdit={() => {
+                      setEditKey(key);
+                      setEditValue(configValue(key));
+                    }}
+                    onRemove={() =>
+                      setRemoveTarget({
+                        key,
+                        title: `${key}（${value}）`,
+                        detail: t('vmDetail.removeSerialDetail'),
+                      })
+                    }
+                  />
+                );
+              })}
+            </div>
+          )}
         </Card>
       </div>
 

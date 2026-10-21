@@ -59,6 +59,7 @@ import type {
   DiagnosticsResult,
   LoginCaptchaMode,
   VmDefaults,
+  SecurityPosture,
   VmQuotaInfo,
   ResourceSpec,
   VmMetaEntry,
@@ -204,6 +205,7 @@ import type {
   VmResizeRequest,
   VmSummary,
   VncProxyResponse,
+  ConsoleFileUpload,
   CloudInitConfig,
   TemplateItem,
   CtSystemTemplate,
@@ -422,6 +424,11 @@ export const configApi = {
    */
   getPanelUrl: () => get<{ url: string }>('/config/panel-url'),
   savePanelUrl: (url: string) => put<{ url: string }>('/config/panel-url', { url }),
+  /**
+   * 公网暴露加固现状（只读）：白名单 / 代理信任边界 / 管理员 2FA / 新 IP 告警。
+   * 需要 settings.manage；配置本身来自环境变量，不能在界面上改。
+   */
+  getSecurityPosture: () => get<SecurityPosture>('/config/security-posture'),
 };
 
 /* ---------------------------------------------------------------------------
@@ -826,9 +833,30 @@ export const vmsApi = {
   agentNetwork: (node: string, vmid: number) =>
     get<unknown>(`/vms/${node}/${vmid}/agent/network`),
 
-  /* 控制台代理（只保留 VNC） */
+  /* 控制台代理：VNC（图形）与 termproxy（串口终端）各一条 */
   vncProxy: (node: string, vmid: number) =>
     post<VncProxyResponse>(`/vms/${node}/${vmid}/console/vncproxy`),
+
+  /**
+   * 串口终端票据（xterm.js 用）。
+   *
+   * 后端固定请求 ``serial=serial0``：虚拟机的 serial0 才是 termproxy 认的那个
+   * 设备，没加串口的机器这里会拿到 PVE 的 400/500，前端据此提示「先加串口」。
+   */
+  xtermProxy: (node: string, vmid: number) =>
+    post<VncProxyResponse>(`/vms/${node}/${vmid}/console/xtermproxy`),
+
+  /**
+   * 在客户机内把 serial0 交给 getty，让终端出现登录提示。
+   *
+   * 终端的画面来自客户机的串口输出：客户机里没有进程在 ttyS0 上等待输入时，
+   * 面板只能显示 PVE 那句 starting serial terminal。这条路走 Guest Agent，
+   * 因此要求客户机已安装并运行 qemu-guest-agent（非 systemd / Windows 会报错）。
+   */
+  enableSerialLogin: (node: string, vmid: number) =>
+    post<{ ok: boolean; output: string }>(
+      `/vms/${node}/${vmid}/console/serial-login`,
+    ),
 
   /* 待生效配置 */
   pending: (node: string, vmid: number) =>
@@ -976,9 +1004,13 @@ export const lxcApi = {
       `/lxc/${node}/${vmid}/pending`,
     ),
 
-  /* 控制台代理（只保留 VNC） */
+  /* 控制台代理：VNC（图形）与 termproxy（容器 tty，xterm.js） */
   vncProxy: (node: string, vmid: number) =>
     post<VncProxyResponse>(`/lxc/${node}/${vmid}/console/vncproxy`),
+
+  /** 容器的终端票据（容器本身就是 tty，不需要额外串口） */
+  xtermProxy: (node: string, vmid: number) =>
+    post<VncProxyResponse>(`/lxc/${node}/${vmid}/console/xtermproxy`),
 
   /* 归属指派（管理员） */
   getOwner: (node: string, vmid: number, connectionId?: string) =>
@@ -996,6 +1028,31 @@ export const lxcApi = {
       `/lxc/${node}/${vmid}/owner`,
       { username, connection_id: connectionId || null },
     ),
+};
+
+/* ---------------------------------------------------------------------------
+   控制台辅助：文件中转
+
+   文件先传到面板，再让客户机用命令拉回去（原因见后端 app/console_files.py）。
+   --------------------------------------------------------------------------- */
+
+export const consoleFilesApi = {
+  upload: (
+    guestType: 'qemu' | 'lxc',
+    file: File,
+    target: { node?: string; vmid?: number },
+    onProgress?: (percent: number) => void,
+  ) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('guest_type', guestType);
+    if (target.node) form.append('node', target.node);
+    if (target.vmid !== undefined) form.append('vmid', String(target.vmid));
+    return upload<ConsoleFileUpload>('/console/files', form, onProgress);
+  },
+
+  /** 作废下载链接（地址贴错地方时用） */
+  revoke: (token: string) => del<{ ok: boolean }>(`/console/files/${token}`),
 };
 
 /** 容器 VNC WebSocket 地址 */
@@ -1220,6 +1277,8 @@ export const usersApi = {
     comment?: string;
     /** 用户级权限覆盖：不传 = 继承角色；传数组（含空数组）= 以它为准 */
     permissions?: string[] | null;
+    /** 账号有效期（Unix 秒）；0 / 不传 = 永不过期 */
+    expires_at?: number;
   }) => post<UserOut>('/users', body),
   update: (
     username: string,
@@ -1233,6 +1292,8 @@ export const usersApi = {
       set_permissions?: boolean;
       /** 审批状态；管理员可借此恢复被拒绝的注册 */
       status?: UserAccountStatus;
+      /** 账号有效期（Unix 秒）；不传 = 不改，0 = 永不过期 */
+      expires_at?: number;
     },
   ) => put<UserOut>(`/users/${username}`, body),
   remove: (username: string) => del<{ deleted?: boolean; username?: string }>(`/users/${username}`),
@@ -1434,6 +1495,32 @@ export function taskWsUrl(): string {
 /** 实时节点指标 WebSocket 地址 */
 export function metricsWsUrl(): string {
   return wsUrl('/ws/metrics');
+}
+
+/** 虚拟机串口终端的 WebSocket 地址（xterm.js 用） */
+export function xtermWsUrl(
+  node: string,
+  vmid: number,
+  port: number,
+  ticket: string,
+): string {
+  return wsUrl(`/vms/${node}/${vmid}/console/xtermws`, {
+    port: String(port),
+    vncticket: ticket,
+  });
+}
+
+/** 容器终端的 WebSocket 地址（xterm.js 用） */
+export function lxcXtermWsUrl(
+  node: string,
+  vmid: number,
+  port: number,
+  ticket: string,
+): string {
+  return wsUrl(`/lxc/${node}/${vmid}/console/xtermws`, {
+    port: String(port),
+    vncticket: ticket,
+  });
 }
 
 /** VNC WebSocket 地址（ticket 仍是查询参数，那是 PVE 的一次性凭据） */

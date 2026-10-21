@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS users (
     created       DOUBLE       NOT NULL,
     -- 注册审批状态，见 USER_STATUSES；存量账号一律 active
     status        VARCHAR(16)  NOT NULL DEFAULT 'active',
+    -- 账号有效期（Unix 秒）。0 = 永不过期。
+    expires_at    DOUBLE       NOT NULL DEFAULT 0,
+    -- 已发送到的提醒档位（7 / 3 / 1 天，0 = 还没发过），见 app.userexpiry
+    expiry_notice INT          NOT NULL DEFAULT 0,
+    -- 到期冻结时间（Unix 秒）。非 0 = 已经关过机并踢下线，不再重复处理
+    expiry_frozen DOUBLE       NOT NULL DEFAULT 0,
     PRIMARY KEY (id),
     UNIQUE KEY uk_users_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -125,6 +131,19 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 -- 服务端会话：每次登录取一个 refresh token，一行 = 一台设备。
 -- access token 里带的是这里的 jti（sid），所以撤销一行 = 这台设备立刻下线：
 -- 它同时充当了「会话列表」和「令牌黑名单」，不必再维护第二张表。
+-- 成功登录过的来源 IP：用于「新 IP 登录」告警去重（见 app/loginalert.py）。
+-- IPv6 按 /64 归一后再入库，避免隐私地址轮换导致每次登录都报警。
+-- 主键用 (username, ip)，登录时 INSERT IGNORE 的 rowcount 就是「是否首次」。
+CREATE TABLE IF NOT EXISTS login_ips (
+    username   VARCHAR(64) NOT NULL,
+    ip         VARCHAR(64) NOT NULL,
+    first_seen DOUBLE      NOT NULL,
+    last_seen  DOUBLE      NOT NULL,
+    hits       INT         NOT NULL DEFAULT 1,
+    PRIMARY KEY (username, ip),
+    KEY idx_login_ips_seen (last_seen)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     jti            VARCHAR(64)  NOT NULL,
     username       VARCHAR(64)  NOT NULL,
@@ -173,6 +192,20 @@ async def init_db() -> None:
                 "ALTER TABLE users ADD COLUMN totp_enabled TINYINT NOT NULL DEFAULT 0",
             ),
             ("totp_recovery", "ALTER TABLE users ADD COLUMN totp_recovery TEXT"),
+            # 账号有效期：expires_at 到期后由后台作业关机并冻结（见 app.userexpiry）；
+            # 后两列是作业的幂等标记，避免重复发信 / 重复关机。
+            (
+                "expires_at",
+                "ALTER TABLE users ADD COLUMN expires_at DOUBLE NOT NULL DEFAULT 0",
+            ),
+            (
+                "expiry_notice",
+                "ALTER TABLE users ADD COLUMN expiry_notice INT NOT NULL DEFAULT 0",
+            ),
+            (
+                "expiry_frozen",
+                "ALTER TABLE users ADD COLUMN expiry_frozen DOUBLE NOT NULL DEFAULT 0",
+            ),
         ):
             if column not in columns:
                 await db.execute(ddl)
@@ -324,6 +357,20 @@ def _row_to_user(row: database.Row) -> Dict[str, Any]:
     except (KeyError, IndexError):
         totp_enabled = False
 
+    # 有效期三列同样是后补的：缺失时按「永不过期 / 没提醒过 / 没冻结」兜底。
+    try:
+        expires_at = float(row["expires_at"] or 0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        expires_at = 0.0
+    try:
+        expiry_notice = int(row["expiry_notice"] or 0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        expiry_notice = 0
+    try:
+        expiry_frozen = float(row["expiry_frozen"] or 0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        expiry_frozen = 0.0
+
     return {
         "id": row["id"],
         "username": row["username"],
@@ -335,6 +382,9 @@ def _row_to_user(row: database.Row) -> Dict[str, Any]:
         "permissions_override": override,
         "token_version": token_version,
         "totp_enabled": totp_enabled,
+        "expires_at": expires_at,
+        "expiry_notice": expiry_notice,
+        "expiry_frozen": expiry_frozen,
     }
 
 
@@ -446,6 +496,7 @@ async def create_user(
     email: str = "",
     permissions: Optional[List[str]] = None,
     status: str = STATUS_ACTIVE,
+    expires_at: float = 0.0,
 ) -> Dict[str, Any]:
     """新建用户。
 
@@ -453,13 +504,16 @@ async def create_user(
     该用户的权限以这份列表为准，不再跟随角色变化。
     ``status`` 默认 active（管理员直接建号）；自助注册传 pending，
     等管理员审批后才允许登录。
+    ``expires_at`` 是账号有效期（Unix 秒，0 = 永不过期），见 app.userexpiry。
     """
     if status not in USER_STATUSES:
         status = STATUS_ACTIVE
+    expires = max(float(expires_at or 0), 0.0)
     async with database.connect() as db:
         cursor = await db.execute(
             "INSERT INTO users (username, password_hash, role, email, enabled,"
-            " created, permissions, status) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            " created, permissions, status, expires_at)"
+            " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
             (
                 username,
                 pwd_context.hash(password),
@@ -468,6 +522,7 @@ async def create_user(
                 time.time(),
                 json.dumps(sorted(set(permissions))) if permissions is not None else None,
                 status,
+                expires,
             ),
         )
         await db.commit()
@@ -481,6 +536,9 @@ async def create_user(
         "created": time.time(),
         "status": status,
         "permissions_override": permissions,
+        "expires_at": expires,
+        "expiry_notice": 0,
+        "expiry_frozen": 0.0,
     }
 
 
@@ -494,9 +552,21 @@ async def update_user(
     permissions: Optional[List[str]] = None,
     permissions_provided: bool = False,
     status: Optional[str] = None,
+    expires_at: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     fields: List[str] = []
     values: List[Any] = []
+
+    if expires_at is not None:
+        # 有效期变了就把两个作业标记一起归零：新期限该重新走「提醒 / 冻结」，
+        # 否则延长有效期后用户会一直停在已冻结状态、也收不到新一轮提醒。
+        # 值没变时一个字都不写 —— 管理员只是改了个邮箱，不该重置提醒档位。
+        current = await get_user(username)
+        previous = float((current or {}).get("expires_at") or 0)
+        expires = max(float(expires_at), 0.0)
+        if current is not None and expires != previous:
+            fields.extend(["expires_at = ?", "expiry_notice = 0", "expiry_frozen = 0"])
+            values.append(expires)
 
     if status is not None:
         if status not in USER_STATUSES:
@@ -530,6 +600,53 @@ async def update_user(
         await db.execute(f"UPDATE users SET {', '.join(fields)} WHERE username = ?", values)
         await db.commit()
     return await get_user(username)
+
+
+async def remember_login_ip(username: str, ip: str) -> bool:
+    """记录一次成功登录的来源 IP，返回**是否首次**出现。
+
+    去重靠主键 + ``INSERT IGNORE``：并发登录时只有一行能插入成功，也就只有
+    一个请求会触发告警；其余请求走 UPDATE 刷新 last_seen。不用先 SELECT 再
+    INSERT，省一次往返，也没有「查完再插」的竞态。
+    """
+    if not username or not ip:
+        return False
+    now = time.time()
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "INSERT IGNORE INTO login_ips (username, ip, first_seen, last_seen, hits)"
+            " VALUES (?, ?, ?, ?, 1)",
+            (username, ip, now, now),
+        )
+        first = cursor.rowcount > 0
+        if not first:
+            await db.execute(
+                "UPDATE login_ips SET last_seen = ?, hits = hits + 1"
+                " WHERE username = ? AND ip = ?",
+                (now, username, ip),
+            )
+        await db.commit()
+    return first
+
+
+async def set_expiry_notice(username: str, stage: int) -> None:
+    """记下「已经提醒到哪一档」（7 / 3 / 1 天），避免同一档重复发信。"""
+    async with database.connect() as db:
+        await db.execute(
+            "UPDATE users SET expiry_notice = ? WHERE username = ?",
+            (int(stage), username),
+        )
+        await db.commit()
+
+
+async def set_expiry_frozen(username: str, when: float) -> None:
+    """标记账号已到期冻结（关机 + 踢下线只做一次）。"""
+    async with database.connect() as db:
+        await db.execute(
+            "UPDATE users SET expiry_frozen = ? WHERE username = ?",
+            (float(when), username),
+        )
+        await db.commit()
 
 
 async def delete_user(username: str) -> bool:
@@ -1164,6 +1281,8 @@ def public_connection_config(config: Optional[Dict[str, Any]] = None) -> Dict[st
         "console_password_set": bool(cfg.get("console_password")),
         # 老连接没存过这个字段时，按环境配置的默认策略走（生产默认校验证书）
         "verify_ssl": bool(cfg.get("verify_ssl", settings.pve_verify_ssl)),
+        # 钉扎用的证书 PEM（公开材料，不需要加密）
+        "ca_cert": str(cfg.get("ca_cert") or ""),
         "node_default": cfg.get("node_default", ""),
         "configured": bool(
             cfg.get("host") and cfg.get("token_id") and cfg.get("token_secret")

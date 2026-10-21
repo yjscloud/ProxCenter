@@ -223,11 +223,7 @@ export function Login() {
   };
 
   const backendUp = !health.isError;
-  const pveConnected = health.data?.pve_connected ?? false;
-  /* 「没配连接」和「配了连不上」是两件事：登录前就能分开，省得管理员对着
-     「未连接」去查网络，其实只是从没填过连接。老后端不返回该字段时按已配置
-     处理 —— 只会少提示一次，不会误报。 */
-  const pveConfigured = health.data?.pve_configured ?? true;
+
 
   return (
     <AuthShell>
@@ -454,7 +450,10 @@ export function Login() {
         )}
       </form>
 
-      {/* ---- 后端状态 ---- */}
+      {/* ---- 后端状态 ----
+          匿名访问时 /api/health 只回 {"status":"ok"}：PVE 连接状态、版本、
+          节点数属于内网指纹，未登录不该看到（见后端 routers/config.py）。
+          所以这里只保留「面板服务是否可达」这一条。 */}
       <div className="login-health">
         <div className="login-health-row">
           <span className="login-health-label">{t('auth.health.backend')}</span>
@@ -467,35 +466,8 @@ export function Login() {
             {backendUp ? t('auth.health.up') : t('auth.health.down')}
           </Badge>
         </div>
-        <div className="login-health-row">
-          <span className="login-health-label">{t('auth.health.pve')}</span>
-          <Badge
-            variant={pveConnected ? 'success' : 'warning'}
-            dot
-            pulse={pveConnected}
-            size="sm"
-          >
-            {health.isLoading
-              ? t('auth.health.checking')
-              : !pveConfigured
-                ? t('auth.health.notConfigured')
-                : pveConnected
-                  ? t('auth.health.connected')
-                  : t('auth.health.disconnected')}
-          </Badge>
-        </div>
-        {health.data?.version ? (
-          <div className="login-health-row">
-            <span className="login-health-label">{t('auth.health.version')}</span>
-            <span className="mono fs-sm text-secondary">
-              {health.data.version}
-            </span>
-          </div>
-        ) : null}
         {!backendUp ? (
           <div className="fs-xs text-muted mt-8">{t('auth.health.hint')}</div>
-        ) : !pveConfigured ? (
-          <div className="fs-xs text-muted mt-8">{t('auth.health.setupHint')}</div>
         ) : null}
       </div>
     </AuthShell>

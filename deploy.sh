@@ -358,7 +358,7 @@ declare -A MSG_EN=(
   ['    持续跟踪： journalctl -u %s -f']='    Follow along: journalctl -u %s -f'
   ['   面板地址 : http://%s:%s']='   Panel      : http://%s:%s'
   ['   登录账号 : %s']='   Sign in as : %s'
-  ['   API 文档 : http://%s:%s/api/docs']='   API docs  : http://%s:%s/api/docs'
+  ['   API 文档 : 默认关闭（需要时在 .env 设 API_DOCS_ENABLED=true，且须管理员登录）']='   API docs  : off by default (set API_DOCS_ENABLED=true in .env; admin sign-in required)'
   ['   数据库   : %s @ %s:%s（账号 %s）']='   Database  : %s @ %s:%s (account %s)'
   ['   配置文件 : %s  ← 数据库口令在里面（自动生成，不回显）']='   Config    : %s  ← the database password lives here (generated, never echoed)'
   ['   服务管理 : systemctl {status|restart|stop} %s']='   Service   : systemctl {status|restart|stop} %s'
@@ -1445,7 +1445,7 @@ echo "============================================================"
 echo " $(t '部署完成')"
 echo "$(tf '   面板地址 : http://%s:%s' "$LAN_IP" "$PORT_NOW")"
 echo "$(tf '   登录账号 : %s' "$ADMIN_USERNAME_NOW")"
-echo "$(tf '   API 文档 : http://%s:%s/api/docs' "$LAN_IP" "$PORT_NOW")"
+echo "$(t '   API 文档 : 默认关闭（需要时在 .env 设 API_DOCS_ENABLED=true，且须管理员登录）')"
 echo "$(tf '   数据库   : %s @ %s:%s（账号 %s）' \
   "${DB_NAME_NOW:-?}" "${DBH:-?}" "${DBP:-?}" "${DB_USER_NOW:-?}")"
 echo "$(tf '   配置文件 : %s  ← 数据库口令在里面（自动生成，不回显）' "$ENV_FILE")"

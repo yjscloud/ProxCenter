@@ -72,6 +72,29 @@ class Settings(BaseSettings):
     # 0.0.0.0，公网请求就能自称「我是 https」从而绕过 force_https。
     forwarded_allow_ips: str = "127.0.0.1"
 
+    # --- 公网暴露加固 ------------------------------------------------------
+    # 面板准入白名单（逗号分隔的 IP / CIDR，例如
+    # "203.0.113.0/24,10.8.0.0/24,192.168.1.10"）。留空 = 不限制来源。
+    #
+    # 配置后，来源不在名单内的 HTTP / WebSocket 请求在最外层被拒（403 /
+    # websocket 1008），面板与 /api/openapi.json 对外都不可见。两个例外：
+    #   * 本机回环（127.0.0.0/8、::1）始终放行 —— 否则反代与健康检查会一起失效；
+    #   * /api/health 始终放行，留给负载均衡 / 监控探活。
+    # 放在 VPN / 零信任网关之后仍建议配置，作为第二道闸；直接暴露公网时
+    # 至少要配合 TOTP_REQUIRED_ROLES=admin（见 .env.example）。
+    panel_allow_cidrs: str = ""
+    # 新来源 IP 登录告警：某个账号第一次从某 IP 成功登录时，给管理员发
+    # 站内消息 + 邮件（邮件未配置时只发站内消息）。用于尽早发现凭据泄露。
+    login_ip_alert: bool = True
+    # 接口文档（/api/docs、/api/redoc、/api/openapi.json）**默认关闭**。
+    #
+    # 完整的 OpenAPI 定义等于一份全量攻击地图：315 个路径、每个字段的约束、
+    # 连「隐藏端点」（导出下载、AI 审批等）都在里面，匿名可读等于把侦察成本
+    # 降到零，而面板本身拥有 PVE 全权管理能力。默认关掉，需要时把
+    # API_DOCS_ENABLED 打开；打开后这三个地址仍要求「已登录且具备
+    # settings.manage 权限」（即管理员），不会是匿名可读。
+    api_docs_enabled: bool = False
+
     # --- Security ----------------------------------------------------------
     # 签发登录 JWT、并作为 crypto.py 密文存储的加密根。留占位值或太短直接
     # 拒绝启动：见文件顶部 WEAK_SECRET_KEYS。随机值可用
@@ -237,6 +260,29 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"SECRET_KEY 只有 {len(key)} 位，短于 {MIN_SECRET_KEY_LEN} 位下限，拒绝启动。"
                 "随机串可用：python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_allowlist_with_wildcard_proxy(self) -> "Settings":
+        """白名单 + ``FORWARDED_ALLOW_IPS=*`` 是自欺欺人，直接拒绝启动。
+
+        ``*`` 意味着任何客户端都能自己填 X-Forwarded-For；uvicorn 会据此改写
+        ``scope["client"]``，白名单拿到的「来源 IP」完全由攻击者决定。与其让
+        运维以为配了白名单，不如把矛盾在启动时摆出来。
+        """
+        allow = (self.panel_allow_cidrs or "").strip()
+        proxies = {
+            item.strip()
+            for item in (self.forwarded_allow_ips or "").split(",")
+            if item.strip()
+        }
+        if allow and "*" in proxies:
+            raise ValueError(
+                "PANEL_ALLOW_CIDRS 已启用，但 FORWARDED_ALLOW_IPS 含 '*'："
+                "任何客户端都能伪造 X-Forwarded-For，白名单会被绕过。"
+                "请把 FORWARDED_ALLOW_IPS 改成反向代理的实际地址（如 127.0.0.1 "
+                "或 Docker 网关 172.18.0.1），再重启面板。"
             )
         return self
 

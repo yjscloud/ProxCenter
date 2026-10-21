@@ -818,6 +818,26 @@ def is_api_token_request(request: Request) -> bool:
     return auth_kind(request) == AUTH_API_TOKEN
 
 
+def account_expires_at(user: Dict[str, Any]) -> float:
+    """账号有效期的 Unix 时间戳；0 表示永不过期。
+
+    这一列是后补的，缺失 / 脏值都按「永不过期」处理 —— 一个坏字段不该让
+    所有账号一起登不进来。
+    """
+    try:
+        return max(float(user.get("expires_at") or 0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_account_expired(
+    user: Dict[str, Any], now: Optional[float] = None
+) -> bool:
+    """账号是否已过有效期（过期 = 冻结：登录与所有接口都拒绝）。"""
+    expires = account_expires_at(user)
+    return bool(expires) and expires <= (time.time() if now is None else now)
+
+
 def _user_view(user: Dict[str, Any], path: str) -> Dict[str, Any]:
     """把库里的用户行收成「面板用户」视图，并做统一的可用性判定。
 
@@ -841,6 +861,13 @@ def _user_view(user: Dict[str, Any], path: str) -> Dict[str, Any]:
         )
     if not user.get("enabled", True):
         raise HTTPException(status_code=403, detail="账号已被禁用")
+
+    # 有效期：与登录接口同一句提示。放在审批 / 启用之后、2FA 之前 ——
+    # 账号已经冻结时，再要求他先绑动态码只会让人以为还有救。
+    if is_account_expired(user):
+        raise HTTPException(
+            status_code=403, detail=i18n.t("error.account_frozen")
+        )
 
     # 强制两步验证：TOTP_REQUIRED_ROLES 里的角色在绑定完成前只能碰 2FA 相关
     # 接口，否则「强制」就是一句空话（不绑也能正常用面板）。这条对 API Token
@@ -866,6 +893,7 @@ def _user_view(user: Dict[str, Any], path: str) -> Dict[str, Any]:
         "permissions_override": user.get("permissions_override"),
         "permissions": effective_permissions(user),
         "totp_enabled": bool(user.get("totp_enabled")),
+        "expires_at": account_expires_at(user),
     }
 
 
@@ -902,21 +930,16 @@ async def _api_token_user(request: Request, token: str) -> Dict[str, Any]:
     return _user_view(user, request.url.path)
 
 
-async def get_current_user(
-    request: Request,
-    token: Optional[str] = Depends(oauth2_scheme),
-) -> Dict[str, Any]:
-    # 浏览器走 HttpOnly cookie（JS 读不到，XSS 偷不走）；脚本 / API 客户端仍可
-    # 用 Authorization 头。头优先，方便同一浏览器里用不同凭据调接口做排查。
-    if not token:
-        token = request.cookies.get(ACCESS_COOKIE, "")
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=i18n.t("error.no_credentials"),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+def _bearer_token(request: Request, token: Optional[str]) -> str:
+    """取调用方凭据：Authorization 头优先，其次 HttpOnly cookie。
 
+    浏览器走 HttpOnly cookie（JS 读不到，XSS 偷不走）；脚本 / API 客户端仍可
+    用 Authorization 头。头优先，方便同一浏览器里用不同凭据调接口做排查。
+    """
+    return token or request.cookies.get(ACCESS_COOKIE, "") or ""
+
+
+async def _authenticate(request: Request, token: str) -> Dict[str, Any]:
     # 两条凭据链在这里分流：``zp_`` 开头的长期令牌（脚本 / 外部系统）与 JWT
     # （浏览器登录会话）。分流必须发生在**解码 JWT 之前** —— 否则每枚 API
     # Token 都会被当成坏 JWT 抛一次异常。
@@ -966,6 +989,40 @@ async def get_current_user(
     return _user_view(user, request.url.path)
 
 
+async def get_current_user(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> Dict[str, Any]:
+    """强制登录：没有凭据 / 凭据失效一律 401。"""
+    raw = _bearer_token(request, token)
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=i18n.t("error.no_credentials"),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await _authenticate(request, raw)
+
+
+async def get_current_user_optional(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> Optional[Dict[str, Any]]:
+    """可选登录：有有效凭据就返回用户，否则返回 ``None``（绝不抛 401）。
+
+    给「匿名也能访问、但要按登录与否给不同信息量」的端点用 —— 目前只有
+    ``/api/health``：未登录只答「活着」，已登录才回 PVE 版本 / 节点数这类
+    内网拓扑（见 routers/config.py）。
+    """
+    raw = _bearer_token(request, token)
+    if not raw:
+        return None
+    try:
+        return await _authenticate(request, raw)
+    except HTTPException:
+        return None
+
+
 async def ensure_session_active(payload: Dict[str, Any]) -> None:
     """校验令牌对应的会话仍然有效（会话版本一致、sid 未被撤销）。
 
@@ -979,6 +1036,10 @@ async def ensure_session_active(payload: Dict[str, Any]) -> None:
         raise HTTPException(status_code=401, detail="用户不存在")
     if int(payload.get("ver", 0)) != int(user.get("token_version", 0)):
         raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
+    # WebSocket 握手也要挡住已过期的账号：HTTP 侧由 _user_view 负责，
+    # 这条路径不经过它（否则过期账号还能继续看控制台）。
+    if is_account_expired(user):
+        raise HTTPException(status_code=403, detail=i18n.t("error.account_frozen"))
     session_id = str(payload.get("sid") or "")
     if session_id and not await store.is_session_active(session_id):
         raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")

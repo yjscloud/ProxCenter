@@ -62,7 +62,9 @@ from ..schemas import (
 # 硬件页允许增删的配置键前缀。**刻意用白名单**：删除接口直接删 PVE 配置项，
 # 放开成「任意键」的话，一个误传的 key（memory / boot / agent …）就能把机器改坏。
 DISK_KEY_PREFIXES = ("scsi", "virtio", "sata")
-HARDWARE_KEY_PREFIXES = DISK_KEY_PREFIXES + ("ide", "net")
+# serial0..serial3 同样是「带编号的设备键」：终端控制台（termproxy）就挂在
+# serial0 上，加错了要能删掉，否则只能去 PVE 里手改配置。
+HARDWARE_KEY_PREFIXES = DISK_KEY_PREFIXES + ("ide", "net", "serial")
 
 
 def _has_digit_suffix(key: str, prefix: str) -> bool:
@@ -712,6 +714,72 @@ async def get_vm_disk_usage(
         # 解析不出内容时把原始输出带回去，方便排查少见的 df 实现
         "raw": "" if filesystems else output.strip()[:500],
     }
+
+
+@router.post("/vms/{node}/{vmid}/console/serial-login")
+async def enable_serial_login(
+    node: str,
+    vmid: int,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("vm.console")),
+) -> Dict[str, Any]:
+    """让客户机在 serial0 上跑一个 getty —— 这是「终端」能看到登录提示的前提。
+
+    面板的终端只是把 PVE 的 serial0 pty 接到浏览器上：客户机里没有进程在这个
+    tty 上等待输入时，画面就永远停在 ``starting serial terminal on interface
+    serial0`` 这一行（PVE 自带的 xterm 也一样）。Linux 客户机只要
+    ``systemctl enable --now serial-getty@ttyS0`` 就会立刻出现 login 提示，
+    不需要重启 —— 但绝大多数发行版默认没启这个单元。
+
+    这属于**改客户机**，不是改 PVE 配置，所以走 Guest Agent，并要求客户机里
+    已经装了 qemu-guest-agent；非 systemd（Alpine 的 inittab / OpenWrt）与
+    Windows（EMS 重定向）都做不了，直接给出明确说明而不是抛一句 systemctl 的
+    原始报错。
+    """
+    client = get_client()
+    try:
+        config = await client.qemu_config(node, vmid) or {}
+    except ProxmoxError as exc:
+        _raise(exc)
+
+    if not any(str(key).startswith("serial") for key in config):
+        raise HTTPException(
+            status_code=400,
+            detail="该虚拟机还没有串口：请先在「硬件」里添加 serial0，再回到终端",
+        )
+
+    if str(config.get("ostype") or "").startswith("win"):
+        raise HTTPException(
+            status_code=400,
+            detail="Windows 需要在客户机里开启 EMS 串口重定向（bcdedit /emssettings），"
+            "面板无法代劳",
+        )
+
+    if pve_flag(config.get("agent", 0)) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="该虚拟机未启用 QEMU Guest Agent，无法在客户机内启用串口登录",
+        )
+
+    command = "systemctl enable --now serial-getty@ttyS0"
+    try:
+        output = await _agent_run(client, node, vmid, ["/bin/sh", "-c", command])
+    except HTTPException as exc:
+        await security.audit(
+            request, user, "vm.console.serial_login", target=f"{node}/{vmid}",
+            result="failed", detail=str(exc.detail)[:300],
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="启用串口登录失败：" + str(exc.detail)
+            + "（非 systemd 的客户机需要手工把 getty 接到 ttyS0）",
+        ) from exc
+
+    await security.audit(
+        request, user, "vm.console.serial_login", target=f"{node}/{vmid}",
+        detail={"command": command},
+    )
+    return {"ok": True, "output": output}
 
 
 # ============================================================== create path

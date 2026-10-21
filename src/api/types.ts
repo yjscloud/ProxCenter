@@ -56,6 +56,10 @@ export interface UserOut {
   comment?: string;
   /** 用户级覆盖：null/undefined = 继承角色；有值 = 以它为准 */
   permissions_override?: string[] | null;
+  /** 账号有效期（Unix 秒）；0 / undefined = 永不过期 */
+  expires_at?: number;
+  /** 已到期冻结的时间（Unix 秒）；非 0 = 名下机器已关机、账号已锁定 */
+  expiry_frozen?: number;
 }
 
 export interface UserInfo {
@@ -73,6 +77,8 @@ export interface UserInfo {
   created?: string;
   /** 是否已绑定两步验证（TOTP） */
   totp_enabled?: boolean;
+  /** 账号有效期（Unix 秒）；0 = 永不过期 */
+  expires_at?: number;
 }
 
 /** 自助注册：提交后进入待审批队列 */
@@ -80,6 +86,14 @@ export interface RegisterInput {
   username: string;
   password: string;
   email?: string;
+  /**
+   * 人机校验：与登录同级（注册成功会往审批队列塞记录并给管理员发信）。
+   * 验证方式为「关闭」时后端不校验，字段可省略。
+   */
+  captcha_id?: string;
+  captcha_code?: string;
+  /** 滑块验证码：拖动结束时拼图块的水平位置（展示坐标 px） */
+  captcha_x?: number;
 }
 
 /** 自助重置第 1 步：提交用户名，面板给账号邮箱发一次性链接 */
@@ -374,6 +388,11 @@ export interface ConnectionConfig {
   console_password_set: boolean;
   verify_ssl: boolean;
   /**
+   * 证书钉扎用的 PEM（可空）。填了就只认这张证书 —— PVE 自签证书（cluster CA、
+   * CN=pve.local、无 IP SAN）靠它来「校验」而不是关掉校验。
+   */
+  ca_cert?: string;
+  /**
    * 新建连接时的默认校验策略（跟随后端 PVE_VERIFY_SSL，生产默认开启）。
    * 仅 GET /config/connection 返回，已保存连接的值以 verify_ssl 为准。
    */
@@ -415,6 +434,8 @@ export interface ConnectionConfigInput {
   /** 留空 = 保持后端已存的密码不变 */
   console_password?: string;
   verify_ssl: boolean;
+  /** 证书钉扎用的 PEM；留空 = 不钉扎（按 verify_ssl 走） */
+  ca_cert?: string;
   node_default: string;
 }
 
@@ -552,6 +573,31 @@ export interface VmDefaults {
    * 用户在各自页面上仍可单独改 —— 这是一份默认值，不是开关锁。
    */
   full_clone: boolean;
+}
+
+/**
+ * 公网暴露加固现状（只读）。
+ *
+ * 这些开关来自环境变量而不是数据库：白名单填错的一瞬间就会把人锁在门外，
+ * 不宜做成「点一下即时生效」的界面开关。设置页只展示「现在生效的是什么」。
+ */
+export interface SecurityPosture {
+  /** 是否配置了面板准入白名单 */
+  allow_configured: boolean;
+  /** 已解析的合法网段 */
+  allow_cidrs: string[];
+  /** 配置里是否有写错被忽略的条目 */
+  allow_invalid: boolean;
+  forwarded_allow_ips: string;
+  /** 是否信任任意代理（= `*`，来源 IP 可被伪造） */
+  trusts_any_proxy: boolean;
+  force_https: boolean;
+  /** 被强制要求绑定 TOTP 的角色 */
+  totp_required_roles: string[];
+  /** 还没绑定 TOTP 的管理员用户名 */
+  admins_without_totp: string[];
+  login_ip_alert: boolean;
+  panel_url: string;
 }
 
 /**
@@ -839,18 +885,26 @@ export interface SearchResult {
 
 export interface HealthStatus {
   status: string;
-  pve_connected: boolean;
+  /**
+   * 只有**已登录**才返回下面这些诊断字段。
+   *
+   * 匿名访问 `/api/health` 只得到 `{"status": "ok"}`：PVE 版本、节点数与
+   * 连接状态属于内网指纹（版本可对公开漏洞库做匹配），不该给未登录访客
+   * （审计项 FD-04）。所以凡是从 health 读这些字段的界面，都必须按「可能
+   * 不存在」处理，别用 `?? false` 之外的假值去渲染告警。
+   */
+  pve_connected?: boolean;
   /**
    * 面板是否已保存可用的 Proxmox 连接。
    *
    * 与 `pve_connected` 是两件事：`pve_configured=false` 表示「还没填过连接」，
    * 该做的是去添加；`configured=true` 但 `connected=false` 才是「配了连不上」，
-   * 该做的是排查。老后端不返回该字段，因此是可选的。
+   * 该做的是排查。
    */
   pve_configured?: boolean;
-  /** 面板自身版本 */
-  version: string;
-  /** 当前连接到的 Proxmox VE 版本 */
+  /** 面板自身版本（仅登录后返回） */
+  version?: string;
+  /** 当前连接到的 Proxmox VE 版本（仅登录后返回） */
   pve_version?: string | null;
   node_count?: number;
 }
@@ -2527,9 +2581,36 @@ export interface VncProxyResponse {
   ticket: string;
   port: number;
   cert?: string;
-  password: string;
+  /** VNC 口令（vncproxy 才有） */
+  password?: string;
+  /**
+   * termproxy（终端）回传的 PVE 账号，例如 root@pam。
+   *
+   * WebSocket 建连后必须先用 ``<user>:<ticket>`` 做一行鉴权，
+   * 这个字段就是那一行里的 user —— 不能拿面板用户名顶替。
+   */
+  user?: string;
   node: string;
   vmid: number;
+}
+
+/**
+ * 控制台文件中转的上传结果。
+ *
+ * 文件暂存在面板上（不是直接塞进客户机），`url` 是给**客户机**用的限时下载
+ * 地址：用户把生成的 curl / PowerShell 命令粘进控制台，由客户机自己拉取。
+ */
+export interface ConsoleFileUpload {
+  token: string;
+  name: string;
+  size: number;
+  /** Unix 时间戳（秒） */
+  expires_at: number;
+  /** 相对路径，形如 /api/console/files/<token>/<name> */
+  path: string;
+  /** 绝对地址（优先取面板配置的对外域名） */
+  url: string;
+  max_bytes: number;
 }
 
 

@@ -6,11 +6,12 @@ import json
 import logging
 import secrets
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import BASE_DIR, settings
@@ -84,6 +85,7 @@ from . import aiaudit
 from . import aiterm
 from . import alert_rootcause
 from . import alerting
+from . import accesscontrol
 from . import apitokens
 from . import certs as cert_manager
 from . import frp
@@ -100,6 +102,8 @@ from . import sshremote
 from . import throttle
 from . import trusteddevices
 from . import update
+# 账号有效期：到期前邮件提醒、到期关机并冻结（见 app/userexpiry.py）
+from . import userexpiry
 # 面板版本的唯一来源（package.json 与 CHANGELOG 跟着它走）
 from . import __version__
 # 与 routers.hostaudit 同名，取个别名避免混淆
@@ -121,7 +125,7 @@ from . import inspection
 from . import guestip
 # 巡检类阻塞调用的专用线程池，避免占满事件循环的默认 executor
 from . import taskpool
-from .store import init_db, purge_expired_tokens
+from .store import get_connections, init_db, purge_expired_tokens
 
 logging.basicConfig(
     level=logging.INFO,
@@ -185,6 +189,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 在界面上毫无迹象（代码已是新版、服务照跑、页面照开）。见 app.buildinfo。
     buildinfo.log_at_startup()
     logger.info("Panel listening on %s:%s", settings.host, settings.port)
+    # 公网暴露是这套面板最需要被看见的前提：白名单没配就把这件事写进日志，
+    # 配了就打印生效网段，避免「以为配了、其实拼错被忽略」。
+    if accesscontrol.has_invalid_entries():
+        logger.warning("PANEL_ALLOW_CIDRS 含非法条目，见上一条解析告警")
+    if accesscontrol.configured():
+        logger.info(accesscontrol.startup_hint())
+    else:
+        logger.warning(accesscontrol.startup_hint())
+    # FORWARDED_ALLOW_IPS=* 下，任何客户端都能自称任意来源 IP：白名单会被
+    # 绕过，限流与审计里的 IP 也不可信。这不是「可选优化」，是信任边界。
+    if (settings.forwarded_allow_ips or "").strip() == "*":
+        logger.warning(
+            "FORWARDED_ALLOW_IPS=*：面板信任任意对端传来的 X-Forwarded-For，"
+            "来源 IP 可被伪造（白名单 / 登录锁定 / 审计 IP 都会失真）。"
+            "请改成反向代理的实际地址。"
+        )
+    # 关掉证书校验的连接 = 面板到 PVE 的通道可被内网中间人劫持（审计项 FD-07）。
+    # 自签证书请改用「证书钉扎」（连接配置里的 ca_cert），而不是整条链路不校验。
+    try:
+        insecure = [
+            str(c.get("name") or c.get("id") or c.get("host") or "?")
+            for c in get_connections()
+            if not bool(c.get("verify_ssl", settings.pve_verify_ssl))
+        ]
+    except Exception:  # noqa: BLE001 - 读不到配置不该拦住启动
+        insecure = []
+    if insecure:
+        logger.warning(
+            "以下 PVE 连接未校验证书（通道可被中间人劫持，API Token 可能被截获）：%s"
+            "。自签证书请填「证书 PEM」做钉扎，或把 PVE 证书换成受信任 CA 签发。",
+            "、".join(insecure),
+        )
+
+    # 文档端点：默认不挂载；打开时也要让人知道「它不是匿名的」
+    if settings.api_docs_enabled:
+        logger.warning(
+            "API_DOCS_ENABLED=true：/api/docs、/api/redoc、/api/openapi.json 已挂载，"
+            "访问需管理员登录。仅建议在内网/调试环境打开。"
+        )
+    else:
+        logger.info("接口文档端点已关闭（/api/docs、/api/redoc、/api/openapi.json 均 404）")
 
     client = get_client()
     if client.conn.configured:
@@ -249,9 +294,12 @@ app = FastAPI(
     ),
     version=__version__,
     lifespan=lifespan,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    # 三个文档端点一律不交给 FastAPI 自动挂载：它的内置路由没有鉴权，匿名
+    # 就能拿到完整 OpenAPI（= 全量攻击地图）。需要时由下面的 _mount_api_docs
+    # 注册**加过管理员鉴权**的等价路由（见 API_DOCS_ENABLED）。
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # ------------------------------------------------------------------- 限流
@@ -598,6 +646,191 @@ class HttpsEnforcementMiddleware:
 app.add_middleware(HttpsEnforcementMiddleware)
 
 
+class SecurityHeadersMiddleware:
+    """给所有 HTTP 响应补齐浏览器安全头（CSP / nosniff / Referrer / Permissions）。
+
+    为什么写在应用里而不是只交给 nginx：反代配置属于部署方，漏了就整站裸奔；
+    面板自己下发，裸 8080、Docker、反代三种部署口径一致。反代那边只需**不要
+    重复添加同名头**（尤其是 HSTS —— 两份会让响应里出现两条同名头）。
+
+    CSP 分两档，别为了文档把全站放宽：
+
+    * 普通页面 / 接口：``script-src 'self'``（Vite 产物没有内联脚本，实测可跑）；
+    * ``/api/docs``、``/api/redoc``：Swagger UI / ReDoc 从 cdn.jsdelivr.net 取
+      资源、且页面里有内联启动脚本，只对这两条路径放宽（它们默认还不存在）。
+
+    ``connect-src`` 收在同源 + ws/wss：控制台、实时指标、VNC 都是同源
+    WebSocket；写显式 scheme 是为了兼容只认 scheme 的旧浏览器。
+    """
+
+    CSP = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+    DOCS_PATHS = frozenset({"/api/docs", "/api/redoc"})
+    DOCS_CSP = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https://fastapi.tiangolo.com; "
+        "font-src 'self' data: https://cdn.jsdelivr.net; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'"
+    )
+    STATIC_HEADERS = (
+        # 禁掉 MIME 嗅探：上传的 json / svg / 控制台下载文件不会被当成脚本执行
+        (b"x-content-type-options", b"nosniff"),
+        # 跨站跳转只带 origin：完整 URL 里可能有查询参数（例如控制台 token）
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (
+            b"permissions-policy",
+            b"camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        ),
+        # frame-ancestors 已能挡点击劫持，这条覆盖不支持 CSP 的老浏览器
+        (b"x-frame-options", b"DENY"),
+    )
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path") or ""
+        csp = self.DOCS_CSP if path in self.DOCS_PATHS else self.CSP
+        extra = [(b"content-security-policy", csp.encode("latin-1"))]
+        extra.extend(self.STATIC_HEADERS)
+
+        async def send_with_headers(message: Dict[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                # 顺手摘掉服务器商标头（审计项 FD-14）。uvicorn 自己的
+                # "server: uvicorn" 是协议层加的，已在 run.py 用 server_header=False
+                # 关掉；这里兜住应用/中间件可能加上的同名头，避免漏一处在响应里
+                # 出现两条 server。
+                current = [
+                    (name, value)
+                    for name, value in (message.get("headers") or [])
+                    if name.lower() not in (b"server", b"x-powered-by")
+                ]
+                present = {name.lower() for name, _ in current}
+                current.extend(
+                    (name, value) for name, value in extra if name not in present
+                )
+                message = {**message, "headers": current}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+# 加在 Https 之后 = 最外层：308 跳转、403 拒绝、静态资源也都带上安全头。
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+class PanelAccessControlMiddleware:
+    """按来源 IP / CIDR 拒绝面板访问（``PANEL_ALLOW_CIDRS``）。
+
+    这是应对「面板直接暴露公网」最有效的一道闸：来源不在白名单内时，
+    连登录页、``/api/openapi.json``、VNC WebSocket 都看不到 / 连不上。
+
+    细节：
+      * 未配置白名单时完全放行（存量部署行为不变）；
+      * 本机回环始终放行（反代 / 健康检查 / 容器 sidecar）；
+      * ``/api/health`` 始终放行，探活不因白名单失败；
+      * **WebSocket 也要拦**：只挡 HTTP 的话，VNC 控制台仍能握手；
+      * 来源取 :func:`security.client_ip_from_scope`，只信可信反代的 XFF，
+        客户端自己伪造的头不会换来放行。
+
+    写成原生 ASGI：拒绝路径极短，且 WebSocket 握手也能直接 close。
+    """
+
+    EXEMPT_PATHS = frozenset({"/api/health"})
+    # 被拒日志按 IP 做 60 秒去重：爆破时的日志洪水本身也是一种资源消耗
+    _last_log: Dict[str, float] = {}
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        scope_type = scope.get("type")
+        if scope_type not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        if not accesscontrol.configured():
+            await self.app(scope, receive, send)
+            return
+
+        path = str(scope.get("path") or "")
+        if scope_type == "http" and path in self.EXEMPT_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        ip = security.client_ip_from_scope(scope)
+        if accesscontrol.is_allowed(ip):
+            await self.app(scope, receive, send)
+            return
+
+        self._log_blocked(ip, path, scope_type)
+        if scope_type == "websocket":
+            await send(
+                {
+                    "type": "websocket.close",
+                    "code": 1008,
+                    "reason": "Source address not allowed",
+                }
+            )
+            return
+
+        body = json.dumps(
+            {"detail": "Access denied: source address is not allowed"},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 403,
+                "headers": [
+                    (b"content-type", b"application/json; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"cache-control", b"no-store"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+    @classmethod
+    def _log_blocked(cls, ip: str, path: str, scope_type: str) -> None:
+        now = time.monotonic()
+        last = cls._last_log.get(ip)
+        if last is not None and now - last < 60:
+            return
+        if len(cls._last_log) > 2048:
+            cls._last_log.clear()
+        cls._last_log[ip] = now
+        logger.warning(
+            "已拒绝非白名单来源访问面板：ip=%s type=%s path=%s"
+            "（如属误拦，请检查 PANEL_ALLOW_CIDRS 与 FORWARDED_ALLOW_IPS）",
+            ip or "-",
+            scope_type,
+            path or "-",
+        )
+
+
+# 再包一层 = 最外层：白名单先于 HTTPS 跳转 / CORS / 限流生效。
+app.add_middleware(PanelAccessControlMiddleware)
+
+
 @app.exception_handler(ProxmoxError)
 async def proxmox_error_handler(request: Request, exc: ProxmoxError) -> JSONResponse:
     """Translate Proxmox failures into a consistent JSON shape."""
@@ -677,8 +910,64 @@ app.include_router(notifications_router.router)
 app.include_router(search.router)
 
 
+# ---------------------------------------------------------------- 接口文档
+# 默认**不提供**任何文档端点：匿名可读的 /api/openapi.json 会把 300+ 个接口、
+# 每个字段的约束、连「隐藏端点」一起交出去，等于把侦察成本降到零，而面板
+# 握着 PVE 的全权管理能力（审计项 FD-03）。
+#
+# 需要时打开 API_DOCS_ENABLED，这里注册的替代路由仍要求「已登录 + 具备
+# settings.manage（管理员）」——Swagger UI 与 openapi.json 同源，浏览器会
+# 自动带上登录 cookie，管理员照样能在页面上试调；匿名访问则拿不到 spec。
+#
+# 注册位置必须在 /api/{rest:path}（404 兜底）与 SPA 兜底**之前**，否则会被
+# 它们吃掉（FastAPI 按注册顺序匹配，先注册的赢）。
+def _mount_api_docs(target: Optional[FastAPI] = None) -> None:
+    """挂载需要管理员鉴权的 Swagger UI / ReDoc / OpenAPI JSON。
+
+    ``target`` 只为测试留口：用例拿一个空 app 验证「没有凭据 = 401」，
+    不去碰真实路由表。
+    """
+    api = target or app
+    admin_only = Depends(security.require_permission("settings.manage"))
+
+    @api.get("/api/openapi.json", include_in_schema=False, dependencies=[admin_only])
+    async def openapi_spec() -> JSONResponse:
+        return JSONResponse(
+            api.openapi(),
+            # spec 里有全部接口形状，中间层/浏览器都不该留副本
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @api.get("/api/docs", include_in_schema=False, dependencies=[admin_only])
+    async def swagger_docs() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url="/api/openapi.json",
+            title=f"{api.title} — Swagger UI",
+            swagger_ui_parameters={"persistAuthorization": True},
+        )
+
+    @api.get("/api/redoc", include_in_schema=False, dependencies=[admin_only])
+    async def redoc_docs() -> HTMLResponse:
+        return get_redoc_html(
+            openapi_url="/api/openapi.json",
+            title=f"{api.title} — ReDoc",
+        )
+
+
+if settings.api_docs_enabled:
+    _mount_api_docs()
+
+
 @app.get("/api/version", tags=["meta"])
-async def version() -> Dict[str, Any]:
+async def version(
+    _user: Dict[str, Any] = Depends(security.get_current_user),
+) -> Dict[str, Any]:
+    """面板版本（需登录）。
+
+    原来匿名可读：面板版本 + 前端构建时间等于给扫描器一个「该打哪个已知漏洞」
+    的索引，也让「产物是否陈旧」变成可探测状态（审计：未鉴权接口泄露版本）。
+    站名/Logo 这类品牌信息仍在公开的 ``/api/config/site`` 里，登录页照常渲染。
+    """
     info = await site.get_site_info()
     return {
         "name": info["name"],
@@ -749,12 +1038,15 @@ else:
 
     @app.get("/", include_in_schema=False)
     async def root() -> Dict[str, str]:
-        return {
+        info = {
             "name": "ProxCenter API",
-            "docs": "/api/docs",
             "health": "/api/health",
             "hint": "未找到 dist/，执行 npm run build 后本服务将直接托管前端界面。",
         }
+        # 文档默认关闭，这里也别把地址写死成「有」—— 那是给匿名探测指路
+        if settings.api_docs_enabled:
+            info["docs"] = "/api/docs"
+        return info
 
 # ============================================================== 后台作业注册
 # 改造前这里是四个各自独立的 `while True` 循环 + 一堆「每 N 个 tick 跑一次」
@@ -783,6 +1075,10 @@ QUORUM_INTERVAL = 5 * ALERT_INTERVAL
 QUOTA_ALERT_INTERVAL = 5 * ALERT_INTERVAL
 # 首次给足延迟：启动时连接可能还没配好，白跳一轮没有代价
 QUOTA_ALERT_FIRST_DELAY = 180
+# 账号有效期：提醒按天算，冻结却要尽量准时 —— 5 分钟一轮，代价只是读一遍
+# users 表；到期后最多晚 5 分钟关机。首次延迟 30 秒，启动迁移跑完就查一遍。
+USER_EXPIRY_INTERVAL = 300
+USER_EXPIRY_FIRST_DELAY = 30
 # 主机登录审计：登录历史变化慢，5 分钟汇入一次足够
 HOST_AUDIT_INTERVAL = 300
 # 受管主机核对：虚拟机可能在 PVE 上被直接删掉（不走面板的删除接口），
@@ -889,6 +1185,26 @@ def _warm_summary(result: Any) -> str:
         return ""
     count = int(result.get("stored") or 0) or int(result.get("resolved") or 0)
     return f"落库 {count} 项" if count else "无变化"
+
+
+def _expiry_summary(result: Any) -> str:
+    """账号有效期作业的摘要：提醒了几人、冻结了几人（附带失败数）。"""
+    if not isinstance(result, dict):
+        return ""
+    notified = int(result.get("notified") or 0)
+    frozen = int(result.get("frozen") or 0)
+    skipped = int(result.get("skipped") or 0)
+    failed = len(result.get("errors") or [])
+    parts: List[str] = []
+    if notified:
+        parts.append(f"提醒 {notified} 人")
+    if frozen:
+        parts.append(f"冻结 {frozen} 人")
+    if skipped:
+        parts.append(f"跳过 {skipped} 人")
+    if failed:
+        parts.append(f"{failed} 项失败")
+    return "、".join(parts) if parts else "无变化"
 
 
 def _quota_summary(result: Any) -> str:
@@ -1020,6 +1336,19 @@ scheduler.register(
         QUOTA_ALERT_INTERVAL,
         summarize=_count("命中"),
         first_delay=QUOTA_ALERT_FIRST_DELAY,
+    )
+)
+# 账号有效期：与额度预警同属「跟人有关」的巡检，放在它后面。
+scheduler.register(
+    _job(
+        "user_expiry",
+        "账号有效期巡检",
+        "安全巡检",
+        "到期前 7 / 3 / 1 天邮件提醒；到期后关闭该账号名下的虚拟机与容器并冻结账号",
+        userexpiry.evaluate,
+        USER_EXPIRY_INTERVAL,
+        summarize=_expiry_summary,
+        first_delay=USER_EXPIRY_FIRST_DELAY,
     )
 )
 scheduler.register(

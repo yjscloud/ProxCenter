@@ -175,7 +175,10 @@ server {
     server_name panel.example.com;
     ssl_certificate     /etc/letsencrypt/live/panel.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/panel.example.com/privkey.pem;
-    add_header Strict-Transport-Security "max-age=31536000" always;
+    # Security headers (HSTS / CSP / nosniff / Referrer-Policy / Permissions-Policy)
+    # are emitted by the panel itself — do **not** add them again here, duplicate
+    # headers are simply invalid.
+    server_tokens off;          # answer "Server: nginx" without the version
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -200,8 +203,87 @@ FORWARDED_ALLOW_IPS=127.0.0.1
 ```
 
 Keep `FORWARDED_ALLOW_IPS` at your proxy's address. Widening it lets anyone claim
-`X-Forwarded-Proto: https` and bypass the redirect. With Docker, put both into `.env` or the compose
-file.
+`X-Forwarded-Proto: https` and bypass the redirect. With Docker, put both into the `.env` next to
+`docker-compose.yml` (or straight into its `environment:` block).
+
+### Public exposure hardening (strongly recommended)
+
+The panel is a full-control entry point to PVE: one compromised panel account means the whole
+virtualization platform is compromised. Exposing it to the internet is a supported deployment, but
+it must be defended like any other internet-facing admin asset.
+
+**None of the switches below are in the UI** — they live in a config file; which file depends on how
+you deployed:
+
+| Deployment | File to edit | Notes |
+|---|---|---|
+| Source / bare metal (`deploy.sh`, systemd) | `<install dir>/backend/.env` | Created by `deploy.sh` (template `backend/.env.example`). On this host that is `/data/proxcenter/backend/.env`; `deploy.sh --reconfigure` writes back to the same file |
+| Docker Compose | the `.env` next to `docker-compose.yml` | Compose reads it via `${VAR:-default}`; editing the compose `environment:` block works too |
+| Backend only (`start-prod.sh` / your own unit) | whatever `backend/.env` the process loads | `systemctl cat proxcenter` shows `EnvironmentFile=` / `WorkingDirectory=` |
+
+Restart to apply: `systemctl restart proxcenter`, or `docker compose up -d` for Docker. The same
+paths are stated in the “Security posture” notes on the Settings page.
+
+1. **Prefer a private entrance**: put the panel behind a VPN / zero-trust gateway, or allow only
+   fixed office / jump-host networks. For frp, restrict sources on the frp server or enable mTLS at
+   the reverse proxy.
+2. **Source allowlist**: `PANEL_ALLOW_CIDRS` makes the panel reject non-listed sources at the
+   outermost layer (HTTP and VNC WebSockets), so even the login page and
+   `/api/openapi.json` are invisible. When behind a proxy, set `FORWARDED_ALLOW_IPS` to the
+   proxy's real address, otherwise the allowlist sees the proxy IP. Nginx can enforce the same:
+   `allow 203.0.113.0/24; deny all;` (restore real client IPs with `set_real_ip_from` if a CDN
+   sits in front).
+3. **Require 2FA for admins**: `TOTP_REQUIRED_ROLES=admin`. Keep the built-in login lockout and
+   captcha enabled — the same human check also guards **self-service registration**, otherwise
+   scripts can flood the approval queue.
+4. **New-IP sign-in alerts**: enabled by default (`LOGIN_IP_ALERT=true`). The first successful
+   sign-in of an account from a new IP notifies all admins in-app, plus email when SMTP is set up.
+   The event is recorded as `auth.new_ip` in the audit log.
+5. **Do not expose port 8080 directly**: with Docker, set `PANEL_BIND=127.0.0.1`; never use
+   `FORWARDED_ALLOW_IPS=*` (clients can forge their source IP, breaking the allowlist, login
+   lockout and audit IPs).
+6. **Review the logs**: `/api/audit` and `/api/host-audit` are admin-only by default.
+7. **API docs are off by default**: `/api/docs`, `/api/redoc` and `/api/openapi.json` all return
+   404. The full OpenAPI spec enumerates every endpoint, field constraint and hidden route — a
+   complete attack map. For troubleshooting, set `API_DOCS_ENABLED=true` temporarily; even then
+   those routes require a signed-in user with `settings.manage`, and anonymous callers get 401.
+8. **`/api/health` only says "alive" to anonymous callers**: signed-out requests get
+   `{"status":"ok"}` — no Proxmox version, node count or connection state (a version string is
+   directly matchable against public CVE lists). Signed-in callers still get the full reading;
+   deep diagnostics live at `/api/config/diagnostics` (admin).
+9. **Security headers come from the panel**: CSP (`script-src 'self'` for normal pages),
+   `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+   `Permissions-Policy`, `frame-ancestors 'none'`, `X-Frame-Options: DENY` and HSTS are all
+   emitted by the app (`SecurityHeadersMiddleware` in `backend/app/main.py`). The reverse proxy
+   should only terminate TLS — **do not add the same headers again**; two HSTS lines are invalid.
+10. **TLS verification to Proxmox is on by default**: new connections start with `verify_ssl: true`
+    (`PVE_VERIFY_SSL=true`). PVE ships a self-signed certificate (cluster CA, `CN=pve.local`, no IP
+    SAN) — do not "fix" that by disabling verification. Paste the PVE certificate PEM into the
+    connection's **Certificate PEM** field instead (pinning via `ca_cert`: only that certificate is
+    trusted, refresh it after rotation). Fetch it with
+    `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509` or read
+    `/etc/pve/pve-root-ca.pem` on any node. A connection running unverified is reported in the log.
+11. **The backend listens on loopback only**: `HOST=127.0.0.1`, so 8080 is not exposed to the LAN and
+    every request goes through nginx. Set `client_header_timeout` / `client_body_timeout` /
+    `send_timeout` and `limit_conn` on the proxy (the nginx example above carries the first three)
+    so slow connections cannot exhaust workers.
+12. **API tokens are capped at 365 days** and can no longer be created without an expiry: tokens run
+    unattended, so expiry is the backstop after a leak. Re-issue before it lapses — the list shows
+    the remaining days.
+13. **Do not advertise component versions**: the app sends neither `Server` nor `X-Powered-By`
+    (`server_header=False` in `run.py`, plus the security-header middleware), and nginx should run
+    `server_tokens off;` so it answers `Server: nginx`. FAQ text and UI examples no longer mention
+    internal sample addresses, ports or renewal mechanics.
+14. **No sourcemaps in production**: `build.sourcemap=false` in `vite.config.ts` — a `.map` carries
+    `sourcesContent`, i.e. the complete TypeScript source (API wrappers, request fields, error
+    branches). nginx also answers 404 for `*.map` as a second line of defence; use `npm run dev`
+    when you need debugging symbols.
+15. **Version and RBAC listings require a session**: `/api/version` and
+    `/api/auth/permissions` now depend on `get_current_user`; only `/api/config/site`
+    (site name, logo, ICP) stays anonymous so the login page and landing page can render.
+
+For mTLS, add `ssl_client_certificate /etc/nginx/client-ca.crt;` and `ssl_verify_client on;`
+to the Nginx server block.
 
 ### 6. Service management
 
@@ -312,17 +394,21 @@ that matter:
 |---|---|---|
 | `SECRET_KEY` | placeholder | Required. Signs login JWTs and encrypts stored secrets. A placeholder or fewer than 32 characters refuses to start |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / empty | First account. A password under 12 characters, empty or a common one refuses to start |
+| `HOST` / `PORT` | `127.0.0.1` / `8080` | Bind address. Loopback only by default — the reverse proxy on the same host forwards to it, so 8080 is not reachable from the LAN; use `0.0.0.0` only if you intentionally expose it directly |
 | `FORCE_HTTPS` | `false` | Plain HTTP is answered with `308` and HSTS |
-| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Which proxies may set `X-Forwarded-Proto`. Keep it at your proxy |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Which proxies may set `X-Forwarded-Proto` / `X-Forwarded-For`. Keep it at your proxy; **never `*`** |
+| `PANEL_ALLOW_CIDRS` | empty | Panel access allowlist (IP / CIDR, comma separated). Non-listed sources cannot even see the login page or open WebSockets; empty means no restriction |
+| `LOGIN_IP_ALERT` | `true` | Notify admins in-app and by email on the first sign-in from a new IP |
+| `API_DOCS_ENABLED` | `false` | Mount `/api/docs`, `/api/redoc`, `/api/openapi.json` (admin sign-in required); keep off in production |
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | Lockout, counted per account and per source IP |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | `720` / `14` | Token lifetimes; the latter is how long one login can last |
-| `TOTP_REQUIRED_ROLES` | empty | Roles forced to set up two-factor authentication, for example `admin` |
+| `TOTP_REQUIRED_ROLES` | empty (`.env.example` sets `admin`) | Roles forced to set up two-factor authentication, for example `admin` |
 | `TOTP_TRUST_ENABLED` | `true` | Whether the login page may offer "trust this device" (skip the code on the same browser for 7 days). Set to `false` to require the second factor on every login |
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | Per-IP limits for `/api/*` and for the sensitive endpoints |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions ask for your password again |
 | `PVE_HOST` / `PVE_PORT` | empty / `8006` | Proxmox address (no protocol) and API port |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | empty | The token from step 1 |
-| `PVE_VERIFY_SSL` | `true` | Keep it on. Turning it off exposes the API token to a man in the middle |
+| `PVE_VERIFY_SSL` | `true` | Keep it on. Turning it off exposes the API token to a man in the middle; for a self-signed PVE pin its certificate via the connection's `ca_cert` field instead |
 | `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | empty | Needed for the VNC console; an API token cannot open one |
 | `CORS_ORIGINS` | `http://localhost:5173` | Allowed frontend origins, comma separated |
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | — | MySQL connection. Only MySQL is supported |

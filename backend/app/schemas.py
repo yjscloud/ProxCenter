@@ -32,6 +32,8 @@ class UserOut(BaseModel):
     permissions: List[str] = Field(default_factory=list)
     # 是否已绑定两步验证（密钥本身永不返回）
     totp_enabled: bool = False
+    # 账号有效期（Unix 秒）；0 = 永不过期
+    expires_at: float = 0
 
 
 class LoginResponse(BaseModel):
@@ -96,6 +98,9 @@ class ConnectionConfigIn(BaseModel):
     token_secret: Optional[str] = None
     # 默认取 PVE_VERIFY_SSL（生产默认校验证书）；前端表单始终显式传值
     verify_ssl: bool = settings.pve_verify_ssl
+    # 证书钉扎：PVE 自签（cluster CA、CN=pve.local、无 IP SAN）时，把签发它的
+    # 证书 PEM 填在这里，等于「只认这张证书」—— 比关掉校验安全得多。
+    ca_cert: str = ""
     node_default: str = ""
     console_user: str = ""
     console_password: Optional[str] = None
@@ -107,6 +112,8 @@ class ConnectionTestIn(BaseModel):
     token_id: str = ""
     token_secret: Optional[str] = None
     verify_ssl: bool = settings.pve_verify_ssl
+    # 与 ConnectionConfigIn 同义：填写后按这张证书钉扎（忽略主机名）
+    ca_cert: str = ""
 
 
 class VmDefaultsIn(BaseModel):
@@ -1233,6 +1240,8 @@ class UserCreate(BaseModel):
     email: str = ""
     # 用户级权限覆盖：不传 = 继承角色；传列表（含空列表）= 以它为准
     permissions: Optional[List[str]] = None
+    # 账号有效期（Unix 秒）；0 / 不传 = 永不过期
+    expires_at: float = 0
 
 
 class UserUpdate(BaseModel):
@@ -1247,6 +1256,8 @@ class UserUpdate(BaseModel):
     set_permissions: bool = False
     # 审批状态：active / pending / rejected。管理员可用它恢复已被拒绝的注册。
     status: Optional[str] = None
+    # 账号有效期（Unix 秒）。不传 = 不改；0 = 取消有效期（永不过期）
+    expires_at: Optional[float] = Field(default=None, ge=0)
 
 
 class RegisterRequest(BaseModel):
@@ -1257,6 +1268,13 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     # 必填：审批结果（通过 / 拒绝）会发到这个邮箱
     email: str
+    # 人机校验：与登录**同级**。注册是匿名写接口，没有它，脚本就能把审批队列
+    # 刷满（管理员得逐条辨认），这是典型的「审批钓鱼」入口。具体用图形验证码
+    # 还是滑块由「设置 → 登录验证」决定；该设置关闭时不校验，字段可缺省。
+    captcha_id: str = ""
+    captcha_code: str = ""
+    # 滑块验证码：拖动结束时拼图块的水平位置（展示坐标 px）
+    captcha_x: Optional[float] = None
 
 
 class ApprovalRequest(BaseModel):

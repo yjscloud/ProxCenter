@@ -251,6 +251,15 @@ export function Settings() {
       render: () => <LoginCaptchaSection />,
     },
     {
+      id: 'hardening',
+      group: 'server',
+      label: t('settings.secHardening'),
+      desc: t('settings.secHardeningDesc'),
+      icon: <IconShield size={16} />,
+      adminOnly: true,
+      render: () => <SecurityPostureSection />,
+    },
+    {
       id: 'panel-url',
       group: 'server',
       label: t('settings.secPanelUrl'),
@@ -1450,6 +1459,145 @@ function SidebarNavSection() {
             {t('settings.readonlyBody')}
           </Notice>
         </div>
+      ) : null}
+    </Card>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   区块 4.4：公网暴露加固现状（只读）
+
+   面板是 PVE 的全权管理入口，公网暴露时必须能一眼确认「现在到底设防了没有」：
+   来源白名单、代理信任边界、管理员 2FA、新 IP 登录告警。这些开关来自环境变量，
+   不做成可编辑控件 —— 白名单填错的一瞬间就会把管理员自己锁在门外。
+   --------------------------------------------------------------------------- */
+
+function SecurityPostureSection() {
+  const t = useT();
+  const query = useQuery({
+    queryKey: ['config', 'security-posture'],
+    queryFn: configApi.getSecurityPosture,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const data = query.data;
+
+  return (
+    <Card>
+      <CardHeader
+        title={t('settings.postureTitle')}
+        subtitle={t('settings.postureSubtitle')}
+        icon={<IconShield size={17} />}
+      />
+
+      {query.isLoading ? (
+        <div className="fs-sm text-muted">{t('common.loading')}</div>
+      ) : query.isError ? (
+        <Notice tone="danger" title={t('settings.postureLoadFailed')}>
+          {errorMessage(query.error)}
+        </Notice>
+      ) : data ? (
+        <>
+          <div className="desc-list">
+            <div className="desc-item">
+              <div className="desc-label">{t('settings.postureAllow')}</div>
+              <div className="desc-value">
+                <Badge
+                  variant={
+                    data.allow_configured
+                      ? data.allow_invalid
+                        ? 'warning'
+                        : 'success'
+                      : 'danger'
+                  }
+                  size="sm"
+                >
+                  {data.allow_configured
+                    ? t('settings.postureAllowOn')
+                    : t('settings.postureAllowOff')}
+                </Badge>
+                {data.allow_configured && data.allow_cidrs.length > 0 ? (
+                  <div className="mono fs-sm mt-6">{data.allow_cidrs.join(', ')}</div>
+                ) : null}
+                {data.allow_invalid ? (
+                  <div className="fs-xs text-muted mt-6">
+                    {t('settings.postureAllowInvalid')}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="desc-item">
+              <div className="desc-label">{t('settings.postureProxy')}</div>
+              <div className="desc-value">
+                <span className="mono fs-sm">{data.forwarded_allow_ips || '—'}</span>
+                <Badge
+                  variant={data.trusts_any_proxy ? 'danger' : 'success'}
+                  size="sm"
+                >
+                  {data.trusts_any_proxy
+                    ? t('settings.postureProxyAny')
+                    : t('settings.postureProxyTrusted')}
+                </Badge>
+                {data.trusts_any_proxy ? (
+                  <div className="fs-xs text-muted mt-6">
+                    {t('settings.postureProxyAnyHint')}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="desc-item">
+              <div className="desc-label">{t('settings.postureHttps')}</div>
+              <div className="desc-value">
+                <Badge variant={data.force_https ? 'success' : 'warning'} size="sm">
+                  {data.force_https
+                    ? t('settings.postureHttpsOn')
+                    : t('settings.postureHttpsOff')}
+                </Badge>
+              </div>
+            </div>
+
+            <div className="desc-item">
+              <div className="desc-label">{t('settings.postureTotp')}</div>
+              <div className="desc-value">
+                <Badge
+                  variant={data.totp_required_roles.length > 0 ? 'success' : 'warning'}
+                  size="sm"
+                >
+                  {data.totp_required_roles.length > 0
+                    ? data.totp_required_roles.join(', ')
+                    : t('settings.postureTotpOptional')}
+                </Badge>
+                {data.admins_without_totp.length > 0 ? (
+                  <div className="fs-xs text-muted mt-6">
+                    {t('settings.postureTotpMissing', {
+                      names: data.admins_without_totp.join(', '),
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="desc-item">
+              <div className="desc-label">{t('settings.postureLoginAlert')}</div>
+              <div className="desc-value">
+                <Badge
+                  variant={data.login_ip_alert ? 'success' : 'warning'}
+                  size="sm"
+                >
+                  {data.login_ip_alert
+                    ? t('settings.postureOn')
+                    : t('settings.postureOff')}
+                </Badge>
+              </div>
+            </div>
+          </div>
+
+          <Notice tone="info" title={t('settings.postureEnvTitle')}>
+            {t('settings.postureEnvBody')}
+          </Notice>
+        </>
       ) : null}
     </Card>
   );

@@ -162,7 +162,10 @@ server {
     server_name panel.example.com;
     ssl_certificate     /etc/letsencrypt/live/panel.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/panel.example.com/privkey.pem;
-    add_header Strict-Transport-Security "max-age=31536000" always;
+    # 安全响应头（HSTS / CSP / nosniff / Referrer-Policy / Permissions-Policy）
+    # 由面板自己下发，这里**不要再加一遍**：重复的同名头属于无效响应。
+    # 反代所在层若还有别的站点，按需在此统一加，但别和面板重复。
+    server_tokens off;          # 响应头只留 “Server: nginx”，不带版本号
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -187,7 +190,93 @@ FORWARDED_ALLOW_IPS=127.0.0.1
 ```
 
 `FORWARDED_ALLOW_IPS` 只填反代地址，别放宽。放宽之后谁都能伪造
-`X-Forwarded-Proto: https` 绕过跳转。Docker 部署时把这两项写进 `.env` 或 compose。
+`X-Forwarded-Proto: https` 绕过跳转。Docker 部署时把这两项写进 `docker-compose.yml`
+同目录的 `.env`（或直接写进 compose 的 `environment:`）。
+
+### 公网暴露加固（强烈建议）
+
+面板是 PVE 的全权管理入口：一个面板账号失守，等于整个虚拟化平台失守（开关机、
+删机、改密码、VNC 控制台、宿主机网络与防火墙都在里面）。FAQ 里「只有面板自身
+需要对外提供访问入口」是功能设计，不是安全边界——公网暴露时必须额外设防。
+
+**下面这些开关都不在界面里**，改的是配置文件，路径按部署方式区分：
+
+| 部署方式 | 要改的文件 | 说明 |
+|---|---|---|
+| 源码 / 裸机（`deploy.sh`、systemd） | `<安装目录>/backend/.env` | 由 `deploy.sh` 生成（模板 `backend/.env.example`）。本机部署即 `/data/proxcenter/backend/.env`；命令行 `--reconfigure` 会逐项提问并写回这个文件 |
+| Docker Compose | 与 `docker-compose.yml` 同目录的 `.env` | compose 用 `${变量:-默认值}` 读取，也可以直接改 `docker-compose.yml` 的 `environment:` |
+| 只装了后端（`start-prod.sh` / 自行 systemd） | 启动进程读取的同一份 `backend/.env` | 用 `systemctl cat proxcenter` 看 `EnvironmentFile=` / `WorkingDirectory=` 即可定位 |
+
+改完必须重启才生效：`systemctl restart proxcenter`，Docker 用 `docker compose up -d`。
+界面「设置 → 安全姿态」里同名条目的说明也是这个路径。
+
+1. **首选收敛入口**：把面板放到 VPN / 零信任网关之后，或只允许固定办公网 /
+   跳板机访问。frp 场景请在 frp 服务端做来源限制，或在反代上启用 mTLS。
+2. **来源白名单（面板自身也会拦）**：配置 `PANEL_ALLOW_CIDRS`，非名单来源连
+   登录页与 `/api/openapi.json` 都看不到（HTTP 与 VNC WebSocket 一起拦）。
+   ```
+   PANEL_ALLOW_CIDRS=203.0.113.0/24,10.8.0.0/24,192.168.1.10
+   ```
+   反代部署时 `FORWARDED_ALLOW_IPS` 必须填反代的**实际地址**，否则白名单看到的
+   是反代 IP。也可以直接在 Nginx 上做同一件事（二选一或叠加）：
+   ```nginx
+   allow 203.0.113.0/24;
+   allow 10.8.0.0/24;
+   deny  all;
+   ```
+   若前面还有 CDN / 云 WAF，记得用 `set_real_ip_from` + `real_ip_header` 还原
+   真实来源，否则 `$remote_addr` 全是 CDN 地址。
+3. **管理员强制 2FA**：`TOTP_REQUIRED_ROLES=admin`。管理员未绑定 TOTP 前除
+   2FA 接口外一律 403（可在「个人中心」完成绑定）。面板同时有登录失败锁定
+   （账号 + IP 双维度）与人机验证，公网环境不要关闭；人机验证对**登录与自助
+   注册同时生效**（滑块 / 图形码），否则注册接口会被脚本用来刷审批队列。
+4. **新 IP 登录告警**：默认开启（`LOGIN_IP_ALERT=true`）。某账号第一次从新
+   IP 成功登录时，所有管理员会收到站内消息；配置 SMTP 后同时发邮件。审计里
+   对应 `auth.new_ip`，可在「审计日志」按账号回查。
+5. **别把 8080 裸奔到公网**：Docker 部署建议 `PANEL_BIND=127.0.0.1`，只让
+   同机反代连接；`FORWARDED_ALLOW_IPS` 绝不要填 `*`（客户端可伪造来源 IP，
+   白名单 / 登录锁定 / 审计 IP 会一起失真）。
+6. **定期审计**：`/api/audit`、`/api/host-audit` 默认只有管理员可读；建议定期
+   检查登录失败、`auth.new_ip`、用户 / 权限变更与敏感操作（删机、改凭据）。
+7. **接口文档默认关闭**：`/api/docs`、`/api/redoc`、`/api/openapi.json` 一律
+   404。完整的 OpenAPI 定义会暴露全部接口、字段约束与隐藏端点，等于一份全量
+   攻击地图。排障确需查看时用 `API_DOCS_ENABLED=true` 临时打开——打开后这三个
+   地址仍要求「已登录且具备 `settings.manage`」，匿名访问只会拿到 401。
+8. **`/api/health` 对匿名只答「活着」**：未登录仅返回 `{"status":"ok"}`，不再
+   给出 PVE 版本、节点数与连接状态（版本号可直接对公开漏洞库做匹配）；登录后
+   仍是完整读数。深度诊断走 `/api/config/diagnostics`（管理员）。
+9. **安全响应头由面板统一下发**：CSP（普通页面 `script-src 'self'`）、
+   `X-Content-Type-Options: nosniff`、`Referrer-Policy: strict-origin-when-cross-origin`、
+   `Permissions-Policy`、`frame-ancestors 'none'`、`X-Frame-Options: DENY` 与 HSTS
+   都在应用层加（见 `backend/app/main.py` 的 `SecurityHeadersMiddleware`）。
+   反代只做 TLS 终结，**不要重复添加同名头** —— 两份 HSTS 属于无效响应。
+10. **面板→PVE 默认校验证书**：新建连接 `verify_ssl` 默认 `true`（`PVE_VERIFY_SSL` 也是
+    `true`）。PVE 出厂是自签证书（cluster CA 签发、`CN=pve.local`、无 IP SAN），别用
+    “关掉校验”解决：在连接配置里把 PVE 的证书 PEM 填进「证书 PEM」，即按该证书钉扎
+    （`ca_cert`，只认这一张，证书轮换后需更新）。取证书：
+    `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509`，
+    或从任意节点 `cat /etc/pve/pve-root-ca.pem`。连接未校验时启动日志会告警。
+11. **后端只监听回环**：`HOST=127.0.0.1`，8080 不对内网开放，全部入口经 nginx；
+   反代侧再配 `client_header_timeout` / `client_body_timeout` / `send_timeout`
+   与 `limit_conn`（README 的 nginx 示例已带前三项），抵御慢速连接耗尽 worker。
+12. **API Token 有效期上限 365 天**，且不再支持“永不过期”：令牌是无人值守凭据，
+    泄漏后靠到期兜底。需要长期自动化就在到期前重新签发（列表里能看到剩余天数）。
+13. **不回显组件版本**：应用不再发 `Server` / `X-Powered-By`（`run.py` 的
+    `server_header=False` + 安全头中间件兜底）；nginx 侧用 `server_tokens off;`
+    只留 `Server: nginx`。FAQ / 界面示例里也不再写内网示例地址、端口与续期机制细节。
+14. **生产不发布 sourcemap**：`vite.config.ts` 里 `build.sourcemap=false`，`.map` 里的
+    `sourcesContent` 就是完整 TS 源码（接口封装、请求字段、错误分支一目了然）。nginx 再
+    对 `*.map` 返回 404 兜底，防止误传旧产物。需要排障时用 `npm run dev`。
+15. **版本与 RBAC 清单需登录**：`/api/version`、`/api/auth/permissions` 已加登录依赖；
+    只有 `/api/config/site`（站点名、Logo、备案号）保持匿名，供登录页与官网渲染。
+
+需要客户端证书（mTLS）时，在 Nginx 的 server 块里加：
+
+```nginx
+ssl_client_certificate /etc/nginx/client-ca.crt;
+ssl_verify_client on;   # 或 optional + 下面的 if 判断
+# if ($ssl_client_verify != SUCCESS) { return 403; }
+```
 
 ### 服务管理
 
@@ -372,17 +461,21 @@ CSV（一行 = 一次工具调用）。另有 Token 消耗入口，按 1 / 7 / 3
 |---|---|---|
 | `SECRET_KEY` | 占位值 | 必填。签发登录 JWT，同时是库里密文的加密根，至少 32 位随机。留占位值或太短会拒绝启动 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 空 | 首次启动创建的管理员。口令至少 12 位，空或弱口令会拒绝启动 |
+| `HOST` / `PORT` | `127.0.0.1` / `8080` | 监听地址。默认只听回环，由同机反代转发（8080 不对内网开放）；没有反代、要直连 `IP:8080` 时才改 `0.0.0.0` |
 | `FORCE_HTTPS` | `false` | 明文 HTTP 一律 308 跳 https，HTTPS 响应带 HSTS，仅本机回环豁免 |
-| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | 信任哪些来源的 `X-Forwarded-Proto`，只填反代地址 |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | 信任哪些来源的 `X-Forwarded-Proto` / `X-Forwarded-For`，只填反代地址；**不要填 `*`** |
+| `PANEL_ALLOW_CIDRS` | 空 | 面板准入白名单（IP / CIDR，逗号分隔）。配置后非名单来源连登录页和 WebSocket 都访问不到；留空 = 不限制 |
+| `LOGIN_IP_ALERT` | `true` | 首次从新 IP 登录时给管理员发站内消息 + 邮件 |
+| `API_DOCS_ENABLED` | `false` | 是否挂载 `/api/docs`、`/api/redoc`、`/api/openapi.json`（需管理员登录）；生产保持关闭 |
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | 登录失败几次就锁定，账号和来源 IP 双计数 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | `720` / `14` | 令牌有效期，后者等于一次登录最多能用多久 |
-| `TOTP_REQUIRED_ROLES` | 空 | 强制开两步验证的角色，填 `admin` 表示管理员必须先绑定 TOTP |
+| `TOTP_REQUIRED_ROLES` | 空（`.env.example` 示例为 `admin`） | 强制开两步验证的角色，填 `admin` 表示管理员必须先绑定 TOTP |
 | `TOTP_TRUST_ENABLED` | `true` | 登录时是否允许勾选「信任设备」（同一台浏览器 7 天内免输动态码）。设 `false` 则每次登录都必须过第二因子 |
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | 限流开关、每 IP 每分钟的普通请求与敏感入口（登录 / 注册 / 找回密码 / 刷新 / 2FA）上限 |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | 危险操作是否要二次确认，以及确认的有效窗口 |
 | `PVE_HOST` / `PVE_PORT` | 空 / `8006` | Proxmox 地址（不带协议）与 API 端口 |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | 空 | 形如 `panel@pve!panel` 与 Token 的 UUID |
-| `PVE_VERIFY_SSL` | `true` | 出站是否校验 PVE 证书。关掉等于把 Token 暴露给中间人 |
+| `PVE_VERIFY_SSL` | `true` | 出站是否校验 PVE 证书。关掉等于把 Token 暴露给中间人；PVE 自签时用连接配置里的「证书 PEM」（`ca_cert`）钉扎，而不是关掉校验 |
 | `PVE_TRUST_ENV` | `false` | 是否让请求走环境变量里的 `HTTP_PROXY` / `HTTPS_PROXY` |
 | `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | 空 | 控制台用的 PVE 账号密码，留空则控制台不可用 |
 | `CORS_ORIGINS` | `http://localhost:5173` | 允许的前端来源，逗号分隔 |

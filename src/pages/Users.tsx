@@ -35,6 +35,7 @@ import {
   IconEyeOff,
   IconUser,
   IconClock,
+  IconCopy,
 } from '../components/Icons';
 import { formatDateTime } from '../utils/format';
 import {
@@ -58,6 +59,83 @@ import type {
 } from '../api/types';
 
 const ROLE_ORDER: PanelRole[] = ['admin', 'operator', 'viewer'];
+
+/* ---------------------------------------------------------------------------
+   账号有效期：库里的 expires_at 是 Unix 秒，<input type="datetime-local">
+   用的是「本地时区的墙上时间」。两边必须显式换算，不能把时间串直接当 UTC。
+   --------------------------------------------------------------------------- */
+
+function toLocalInput(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+function fromLocalInput(value: string): number {
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? Math.floor(ts / 1000) : 0;
+}
+
+/* ---------------------------------------------------------------------------
+   重置密码：自动生成
+   口令要一次性满足后端的强度校验（长度 + 同时含字母和数字），所以先各取一个
+   大写 / 小写 / 数字，再补满、打乱 —— 纯随机 16 位有小概率全是字母。
+   去掉了 0/O/1/l/I 这类容易抄错的字符：这个密码要靠人念、靠人抄。
+   --------------------------------------------------------------------------- */
+
+const PW_UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const PW_LOWER = 'abcdefghijkmnopqrstuvwxyz';
+const PW_DIGIT = '23456789';
+const PW_ALPHABET = `${PW_UPPER}${PW_LOWER}${PW_DIGIT}`;
+
+function randomIndex(max: number): number {
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  return buf[0] % max;
+}
+
+function generatePassword(length = 16): string {
+  const chars = [
+    PW_UPPER[randomIndex(PW_UPPER.length)],
+    PW_LOWER[randomIndex(PW_LOWER.length)],
+    PW_DIGIT[randomIndex(PW_DIGIT.length)],
+  ];
+  while (chars.length < length) {
+    chars.push(PW_ALPHABET[randomIndex(PW_ALPHABET.length)]);
+  }
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = randomIndex(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* 非安全上下文 / 未授权：走下面的兜底 */
+  }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
 
 /* ---------------------------------------------------------------------------
    页面
@@ -373,6 +451,14 @@ export function Users() {
           </Badge>
         );
       },
+    },
+    {
+      key: 'expires',
+      header: t('users.colExpires'),
+      width: 168,
+      sortable: true,
+      sortValue: (u) => u.expires_at ?? 0,
+      render: (u) => <UserExpiryCell user={u} />,
     },
     {
       key: 'comment',
@@ -1183,6 +1269,38 @@ function PermissionDiff({ rolePerms, perms }: { rolePerms: string[]; perms: stri
 }
 
 /* ---------------------------------------------------------------------------
+   有效期单元格：日期 + 剩余天数；已过期时直接标红，别让人以为还能登录
+   --------------------------------------------------------------------------- */
+
+function UserExpiryCell({ user }: { user: UserOut }) {
+  const t = useT();
+  const expires = user.expires_at ?? 0;
+  if (!expires) {
+    return <span className="fs-sm text-muted">{t('users.expiryNever')}</span>;
+  }
+  const now = Date.now() / 1000;
+  if (expires <= now) {
+    return (
+      <div className="flex flex-col gap-4">
+        <Badge variant="danger" size="sm">
+          {t('users.expiryExpired')}
+        </Badge>
+        <span className="mono fs-xs text-muted">{formatDateTime(expires)}</span>
+      </div>
+    );
+  }
+  const days = Math.max(1, Math.ceil((expires - now) / 86_400));
+  return (
+    <div className="flex flex-col gap-4">
+      <span className="mono fs-sm">{formatDateTime(expires)}</span>
+      <Badge variant={days <= 7 ? 'warning' : 'neutral'} size="sm">
+        {t('users.expiryDaysLeft', { days })}
+      </Badge>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
    用户编辑器
    --------------------------------------------------------------------------- */
 
@@ -1213,6 +1331,8 @@ function UserEditor({
   const [enabled, setEnabled] = useState(true);
   /* 审批状态：编辑已有用户时允许改，用来恢复被拒绝的注册 */
   const [status, setStatus] = useState<string>('active');
+  /* 账号有效期：datetime-local 的本地时间串，空 = 永不过期 */
+  const [expires, setExpires] = useState('');
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   /* 权限：useOverride=false 表示「跟随角色」，true 表示手动勾选一组权限 */
@@ -1281,6 +1401,7 @@ function UserEditor({
       setComment(user.comment ?? '');
       setEnabled(user.enabled ?? true);
       setStatus(user.status ?? 'active');
+      setExpires(user.expires_at ? toLocalInput(user.expires_at) : '');
       setPassword('');
       setConfirm('');
       // 该用户若有自己的权限覆盖，界面按它预填并切到「自定义」模式
@@ -1294,6 +1415,7 @@ function UserEditor({
       setComment('');
       setEnabled(true);
       setStatus('active');
+      setExpires('');
       setPassword('');
       setConfirm('');
       setUseOverride(false);
@@ -1342,6 +1464,12 @@ function UserEditor({
       next.email = t('users.validation.emailFormat');
     }
 
+    /* datetime-local 正常不会给出非法值，但清空 / 手输异常时别把 0 当成
+       「永不过期」悄悄提交 —— 那是与管理员意图相反的结果 */
+    if (expires && fromLocalInput(expires) <= 0) {
+      next.expires = t('users.validation.expiryInvalid');
+    }
+
     setErrors(next);
     return Object.keys(next).length === 0;
   };
@@ -1359,6 +1487,8 @@ function UserEditor({
           permissions: useOverride ? perms : null,
           set_permissions: true,
           status: status as UserAccountStatus,
+          /* 0 是有意义的：清空 = 永不过期 */
+          expires_at: expires ? fromLocalInput(expires) : 0,
         });
         toast.success(t('users.updatedToast', { name: user.username }));
       } else {
@@ -1369,6 +1499,7 @@ function UserEditor({
           email: email.trim() || undefined,
           comment: comment.trim() || undefined,
           permissions: useOverride ? perms : null,
+          expires_at: expires ? fromLocalInput(expires) : 0,
         });
         toast.success(
           t('users.createdToast', { name: username.trim() }),
@@ -1515,6 +1646,44 @@ function UserEditor({
               />
             </Field>
           </>
+        ) : null}
+
+        {/* ---- 账号有效期 ---------------------------------------------------
+            到期前 7 / 3 / 1 天自动发提醒（有邮箱才发），到期后自动关闭该账号
+            名下的虚拟机与容器并冻结账号。时间用本地时区输入，提交时换成 Unix 秒。 */}
+        <Field
+          label={t('users.fieldExpiry')}
+          hint={t('users.fieldExpiryHint')}
+          error={errors.expires}
+        >
+          <div className="flex items-center gap-8">
+            <div style={{ flex: 1 }}>
+              <Input
+                type="datetime-local"
+                value={expires}
+                onChange={(e) => setExpires(e.target.value)}
+              />
+            </div>
+            {expires ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setExpires('')}
+                disabled={busy}
+              >
+                {t('users.expiryClear')}
+              </Button>
+            ) : null}
+          </div>
+        </Field>
+        {expires && fromLocalInput(expires) > 0 &&
+        fromLocalInput(expires) <= Date.now() / 1000 ? (
+          <Notice tone="warning">{t('users.expiryPastWarning')}</Notice>
+        ) : null}
+        {isEdit && user?.expiry_frozen ? (
+          <Notice tone="warning" title={t('users.expiryFrozenTitle')}>
+            {t('users.expiryFrozenBody')}
+          </Notice>
         ) : null}
 
         {/* ---- 资源额度 -----------------------------------------------------
@@ -1796,43 +1965,72 @@ function ResetPasswordDialog({
 }) {
   const t = useT();
   const toast = useToast();
+  /* auto = 面板生成一串强口令；manual = 管理员自己指定 */
+  const [mode, setMode] = useState<'auto' | 'manual'>('auto');
+  const [generated, setGenerated] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  /* 提交成功后的「结果页」：留在这里让管理员把密码抄走 */
+  const [done, setDone] = useState(false);
 
   useEffect(() => {
     if (!user) return;
+    setMode('auto');
+    setGenerated(generatePassword());
     setPassword('');
     setConfirm('');
     setShow(false);
     setError('');
+    setDone(false);
   }, [user]);
 
+  const effective = mode === 'auto' ? generated : password;
+
+  /* 成功之后关闭对话框要作废列表缓存；没提交过则只关窗，不必刷新 */
+  const finish = () => {
+    if (done) onDone();
+    else onClose();
+  };
+
+  const regenerate = () => {
+    setGenerated(generatePassword());
+    setError('');
+  };
+
+  const copyGenerated = async () => {
+    const ok = await copyToClipboard(effective);
+    if (ok) toast.success(t('users.passwordCopied'));
+    else toast.warning(t('users.copyFailed'), t('users.copyManualHint'));
+  };
+
   const submit = async () => {
-    if (!user) return;
-    if (password.length < 8) {
-      setError(t('users.validation.passwordMin'));
-      return;
-    }
-    if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-      setError(t('users.validation.passwordAlnum'));
-      return;
-    }
-    if (password !== confirm) {
-      setError(t('users.validation.passwordMismatch'));
-      return;
+    if (!user || done) return;
+    if (mode === 'manual') {
+      if (password.length < 8) {
+        setError(t('users.validation.passwordMin'));
+        return;
+      }
+      if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
+        setError(t('users.validation.passwordAlnum'));
+        return;
+      }
+      if (password !== confirm) {
+        setError(t('users.validation.passwordMismatch'));
+        return;
+      }
     }
     setError('');
     setBusy(true);
     try {
-      await usersApi.update(user.username, { password });
+      await usersApi.update(user.username, { password: effective });
+      setDone(true);
       toast.success(
         t('users.resetSuccessToast', { name: user.username }),
         t('users.resetSuccessDetail'),
       );
-      onDone();
     } catch (err) {
       toast.error(t('users.resetFailed'), errorMessage(err));
     } finally {
@@ -1843,63 +2041,155 @@ function ResetPasswordDialog({
   return (
     <Modal
       open={Boolean(user)}
-      onClose={onClose}
+      onClose={finish}
       title={t('users.resetTitle', { name: user?.username ?? '' })}
       description={t('users.resetDesc')}
       size="sm"
       footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            {t('common.cancel')}
+        done ? (
+          <Button variant="primary" onClick={finish}>
+            {t('common.done')}
           </Button>
-          <Button
-            variant="primary"
-            icon={<IconKey size={15} />}
-            onClick={() => void submit()}
-            loading={busy}
-            disabled={!password || !confirm}
-          >
-            {t('users.resetAction')}
-          </Button>
-        </>
+        ) : (
+          <>
+            <Button variant="secondary" onClick={onClose} disabled={busy}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="primary"
+              icon={<IconKey size={15} />}
+              onClick={() => void submit()}
+              loading={busy}
+              disabled={mode === 'auto' ? !generated : !password || !confirm}
+            >
+              {t('users.resetAction')}
+            </Button>
+          </>
+        )
       }
     >
-      <div className="dyn-list">
-        <Field label={t('users.fieldNewPassword')} required error={error || undefined}>
-          <Input
-            type={show ? 'text' : 'password'}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="new-password"
-            autoFocus
-            placeholder={t('users.passwordPlaceholder')}
-            suffix={
-              <IconButton
-                label={show ? t('users.hidePassword') : t('users.showPassword')}
-                onClick={() => setShow((v) => !v)}
+      {done ? (
+        <div className="dyn-list">
+          <Notice tone="success" title={t('users.resetDoneTitle')}>
+            {t('users.resetDoneBody', { name: user?.username ?? '' })}
+          </Notice>
+          <Field label={t('users.fieldNewPassword')}>
+            <Input
+              value={effective}
+              readOnly
+              onFocus={(e) => e.currentTarget.select()}
+              suffix={
+                <IconButton label={t('users.copyPassword')} onClick={() => void copyGenerated()}>
+                  <IconCopy size={15} />
+                </IconButton>
+              }
+            />
+          </Field>
+          <p className="fs-xs text-muted">{t('users.resetDoneHint')}</p>
+        </div>
+      ) : (
+        <>
+          {/* 两种模式：默认自动生成（省事且不容易撞上弱口令），需要时再自己填 */}
+          <div className="flex items-center gap-8 mb-12">
+            <Button
+              size="sm"
+              variant={mode === 'auto' ? 'primary' : 'secondary'}
+              onClick={() => {
+                setMode('auto');
+                setError('');
+              }}
+            >
+              {t('users.resetModeAuto')}
+            </Button>
+            <Button
+              size="sm"
+              variant={mode === 'manual' ? 'primary' : 'secondary'}
+              onClick={() => {
+                setMode('manual');
+                setError('');
+              }}
+            >
+              {t('users.resetModeManual')}
+            </Button>
+          </div>
+
+          {mode === 'auto' ? (
+            <div className="dyn-list">
+              <Field
+                label={t('users.fieldGeneratedPassword')}
+                hint={t('users.generatedPasswordHint')}
               >
-                {show ? <IconEyeOff size={15} /> : <IconEye size={15} />}
-              </IconButton>
-            }
-          />
-        </Field>
+                <Input
+                  value={generated}
+                  readOnly
+                  mono
+                  onFocus={(e) => e.currentTarget.select()}
+                  suffix={
+                    <>
+                      <IconButton
+                        label={t('users.regeneratePassword')}
+                        onClick={regenerate}
+                      >
+                        <IconRefresh size={15} />
+                      </IconButton>
+                      <IconButton
+                        label={t('users.copyPassword')}
+                        onClick={() => void copyGenerated()}
+                      >
+                        <IconCopy size={15} />
+                      </IconButton>
+                    </>
+                  }
+                />
+              </Field>
+              <p className="fs-xs text-muted">{t('users.generatedPasswordWarn')}</p>
+            </div>
+          ) : (
+            <div className="dyn-list">
+              <Field
+                label={t('users.fieldNewPassword')}
+                required
+                error={error || undefined}
+              >
+                <Input
+                  type={show ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                  autoFocus
+                  placeholder={t('users.passwordPlaceholder')}
+                  suffix={
+                    <IconButton
+                      label={show ? t('users.hidePassword') : t('users.showPassword')}
+                      onClick={() => setShow((v) => !v)}
+                    >
+                      {show ? <IconEyeOff size={15} /> : <IconEye size={15} />}
+                    </IconButton>
+                  }
+                />
+              </Field>
 
-        <Field label={t('users.fieldConfirmNewPassword')} required>
-          <Input
-            type={show ? 'text' : 'password'}
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            autoComplete="new-password"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void submit();
-            }}
-          />
-        </Field>
-      </div>
+              <Field label={t('users.fieldConfirmNewPassword')} required>
+                <Input
+                  type={show ? 'text' : 'password'}
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  autoComplete="new-password"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void submit();
+                  }}
+                />
+              </Field>
+            </div>
+          )}
+        </>
+      )}
 
-      <Notice tone="warning" title={t('users.resetNotifyTitle')}>
-        {t('users.resetNotifyBody')}
-      </Notice>
+      {!done ? (
+        <Notice tone="warning" title={t('users.resetNotifyTitle')}>
+          {t('users.resetNotifyBody')}
+        </Notice>
+      ) : null}
     </Modal>
   );
 }

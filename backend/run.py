@@ -26,4 +26,8 @@ if __name__ == "__main__":
         # 都能自称「我是 https」绕过强制跳转。
         proxy_headers=True,
         forwarded_allow_ips=settings.forwarded_allow_ips,
+        # 不要把 "server: uvicorn" 发给客户端：这一行是 uvicorn 在协议层写的，
+        # 应用中间件拦不到，只能在启动参数里关（审计项 FD-14）。
+        server_header=False,
+        # 日期头保留（缓存语义要用），但 server 头与版本无关的信息一律不发
     )

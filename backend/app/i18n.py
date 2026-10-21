@@ -191,6 +191,10 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "zh-CN": "未登录或登录已失效",
         "en": "Not signed in, or the session has expired",
     },
+    "error.account_frozen": {
+        "zh-CN": "账号已冻结，请联系管理员",
+        "en": "This account is frozen. Please contact an administrator.",
+    },
     "error.job_not_found": {
         "zh-CN": "作业 {job_id} 不存在",
         "en": "Job {job_id} does not exist",
@@ -337,6 +341,22 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "The host fingerprint does not match the recorded one "
         "(recorded {expected}, actual {actual}). A man-in-the-middle attack is possible; "
         "re-trust it only after confirming the SSH host key really was rotated.",
+    },
+    # ------------------------------------------------------------ 控制台文件中转
+    "console.fileTooLarge": {
+        "zh-CN": "文件超过 {limit}，无法通过控制台中转。请先在客户机里下载，"
+        "或改用 PVE 的存储上传。",
+        "en": "The file exceeds {limit} and cannot be relayed through the console. "
+        "Download it inside the guest, or upload it to a PVE storage instead.",
+    },
+    "console.fileMissing": {
+        "zh-CN": "文件不存在或下载链接已过期（默认 24 小时有效），请回到面板重新上传。",
+        "en": "The file does not exist or the download link has expired "
+        "(valid for 24 hours by default). Upload it again from the panel.",
+    },
+    "console.fileUploadFailed": {
+        "zh-CN": "保存上传文件失败：{error}",
+        "en": "Failed to store the uploaded file: {error}",
     },
 }
 
@@ -509,28 +529,28 @@ ZH_EN: Dict[str, str] = {
         "perform any operation that changes state.",
     # ---- 内置 FAQ ----
     "需要把 Proxmox 暴露到公网吗？": "Does Proxmox need to be exposed to the internet?",
-    "不需要。面板在内网通过 Proxmox API（默认 8006）访问集群，只有面板自身需要对外提供访问入口。":
-        "No. The panel reaches the cluster over the internal network through the Proxmox API "
-        "(port 8006 by default); only the panel itself needs to accept inbound connections.",
+    "不需要。面板在受控的内网环境中与虚拟化平台通信，只有面板自身需要对外提供访问入口。":
+        "No. The panel talks to the virtualisation platform from a controlled internal network; only the "
+        "panel itself needs to accept inbound connections.",
     "为什么浏览器控制台还需要额外填一个 Proxmox 账号？":
         "Why does the in-browser console need another Proxmox account?",
-    "Proxmox 不允许 API Token 调用 vncproxy，控制台只认用户名密码换取的 ticket。该功能可选，不填不影响其它功能。":
-        "Proxmox does not allow an API token to call vncproxy — the console only accepts a ticket "
-        "derived from a username and password. The feature is optional; leaving it empty affects nothing else.",
+    "控制台需要虚拟化平台本身认可的登录凭据，与面板使用的 API 凭据是两套机制。该功能可选，不填不影响其它功能。":
+        "The console needs sign-in credentials accepted by the virtualisation platform itself, which is a "
+        "different mechanism from the API credentials the panel uses. The feature is optional; leaving it "
+        "empty affects nothing else.",
     "SSL 证书「自动续期」是怎么工作的？": "How does automatic SSL certificate renewal work?",
-    "以腾讯云免费 DV 证书为例：证书有效期 90 天，面板会按你设定的天数（默认到期前 15 天）自动提交续期申请，等 CA 签发成功后自动下载并重新部署到目标机器，最后执行你配置的重载命令（如 nginx -s reload）。":
-        "Taking a free Tencent Cloud DV certificate as an example: certificates are valid for 90 days. "
-        "The panel submits the renewal automatically N days before expiry (15 by default), downloads the "
-        "new certificate once the CA issues it, redeploys it to the target host, and finally runs the reload "
-        "command you configured (for example nginx -s reload).",
+    "面板会按你设定的提前天数（默认到期前 15 天）自动发起续期，签发成功后自动部署并执行你配置的重载命令，全过程写入审计日志。":
+        "The panel starts the renewal the configured number of days before expiry (15 by default), deploys "
+        "the newly issued certificate automatically, runs the reload command you configured, and writes the "
+        "whole process to the audit log.",
     "飞书机器人需要公网回调吗？会不会被人乱操作？":
         "Does the Feishu bot need a public callback? Can anyone misuse it?",
-    "需要：机器人通过飞书开放平台的事件回调访问面板，回调地址必须能被飞书访问到（内网部署可用反向代理或内网穿透）。安全上做了两层限制：一是必须配置群会话或用户白名单，名单外的消息一律拒绝；二是关机、重启、回滚这类危险操作会先弹确认卡片，点确认才执行，全过程写入审计日志。":
+    "需要：机器人通过飞书开放平台的事件回调访问面板，回调地址必须能被飞书访问到（内网部署可用反向代理）。安全上做了两层限制：一是必须配置群会话或用户白名单，名单外的消息一律拒绝；二是危险操作会先弹确认卡片，点确认才执行，全过程写入审计日志。":
         "Yes. The bot reaches the panel through the Feishu open platform's event callback, so the callback "
-        "URL must be reachable from Feishu (use a reverse proxy or a tunnel for internal deployments). Two "
-        "layers of protection are in place: a chat or user allowlist that rejects everyone else, and a "
-        "confirmation card for destructive actions such as shutdown, reboot and rollback — nothing runs "
-        "until it is confirmed, and everything is written to the audit log.",
+        "URL must be reachable from Feishu (use a reverse proxy for internal deployments). Two layers of "
+        "protection are in place: a chat or user allowlist that rejects everyone else, and a confirmation "
+        "card for destructive actions — nothing runs until it is confirmed, and everything is written to "
+        "the audit log.",
     # ---- 飞书机器人：可用指令（配置页表格） ----
     "列表": "List",
     "查看虚拟机总览": "Show the virtual machine overview",

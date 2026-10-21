@@ -27,11 +27,19 @@ router = APIRouter(prefix="/api/tokens", tags=["tokens"])
 
 
 class TokenCreateIn(BaseModel):
-    """创建参数。``ttl_days`` 为 0 表示永不过期（界面会明确提示）。"""
+    """创建参数。
+
+    有效期上限收到 **365 天**、且不接受 0（审计项 FD-11）：API Token 是无人值守
+    凭据，泄漏后靠的就是到期自动失效；原先 3650 天 + 「永不过期」把影响窗口拉到
+    十年乃至无限。已签发的旧令牌不受影响（各自按原到期时间走），需要长期自动化
+    的请到期前重新签发 —— 列表页能直接看出还有几天。
+
+    ``ge=1`` 让 ``0`` 变成 422 而不是「悄悄签成永久令牌」：那是最危险的默认。
+    """
 
     name: str = Field(default="", max_length=apitokens.NAME_MAX)
     ttl_days: Optional[int] = Field(
-        default=apitokens.DEFAULT_TTL_DAYS, ge=0, le=3650
+        default=apitokens.DEFAULT_TTL_DAYS, ge=1, le=365
     )
 
 

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { guestsApi } from '../api/guests';
+import { vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import type { GuestType } from '../api/types';
 import { Button, IconButton } from './ui/Button';
@@ -20,7 +21,17 @@ import {
   IconShrink,
   IconPower,
   IconAlert,
+  IconCopy,
+  IconUpload,
+  IconMonitor,
+  IconTerminal,
 } from './Icons';
+import {
+  ConsoleAssist,
+  TYPE_TEXT_LIMIT,
+  type ConsoleAssistMode,
+} from './ConsoleAssist';
+import { ConsoleXterm, type ConsoleTermHandle } from './ConsoleXterm';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useT } from '../i18n';
@@ -29,8 +40,34 @@ import { useT } from '../i18n';
 
 type ConnState = 'idle' | 'connecting' | 'connected' | 'error' | 'disconnected';
 
+/**
+ * VNC 会话对外暴露的最小能力集。
+ *
+ * 面板（剪贴板 / 文件上传）需要往客户机送文本，但它不应该知道 noVNC 的存在；
+ * 由 VncConsole 在连接建立后把这两个方法注册上来，断开时清空。
+ */
+export interface VncHandle {
+  /** 走 RFB 剪贴板通道（依赖客户机的 VNC 服务端实现 CutText） */
+  pasteText: (text: string) => void;
+  /** 逐字符键入（不依赖客户机剪贴板；只支持 ASCII） */
+  typeText: (text: string) => Promise<{ typed: number; skipped: number }>;
+}
+
 /* 控制台高度档位（标准 / 紧凑）的本地记忆键 */
 const CONSOLE_COMPACT_KEY = 'pve_console_compact';
+
+/* 图形 / 终端的选择也记住：同一个管理员对同一类机器的偏好基本固定 */
+const CONSOLE_MODE_KEY = 'pve_console_mode';
+
+type ConsoleMode = 'vnc' | 'term';
+
+/**
+ * 控制台会话句柄。
+ *
+ * VNC（位图）与终端（字符流）都实现同样两个方法，外层只管「把文本送进客户机」，
+ * 不需要知道底下是哪一种。
+ */
+type ConsoleHandle = VncHandle | ConsoleTermHandle;
 
 export interface ConsoleTabProps {
   node: string;
@@ -43,6 +80,15 @@ export interface ConsoleTabProps {
    * VNC 对两者都成立 —— 容器的 VNC 画面就是它的控制台（tty）本身。
    */
   guestType?: GuestType;
+  /**
+   * 虚拟机是否已配置串口（终端控制台只认 serial0）。
+   *
+   * 未配置时给一条能直接跳去「硬件」页的提示 —— 光说「请先在硬件里添加」
+   * 没有路径可走，用户会以为功能坏了。容器不需要这个（tty 天然存在）。
+   */
+  hasSerial?: boolean;
+  /** 跳去硬件 Tab，让用户直接加串口 */
+  onOpenHardware?: () => void;
 }
 
 export function ConsoleTab({
@@ -51,6 +97,8 @@ export function ConsoleTab({
   vmName,
   running,
   guestType = 'qemu',
+  hasSerial = true,
+  onOpenHardware,
 }: ConsoleTabProps) {
   const t = useT();
   const navigate = useNavigate();
@@ -67,6 +115,33 @@ export function ConsoleTab({
       return false;
     }
   });
+  /**
+   * 是否提供「终端」模式 —— 只有虚拟机有。
+   *
+   * 容器的控制台**就是它自己的 tty**，PVE 用 vncterm 把这块 tty 渲染成 VNC 画面；
+   * 再开一条 termproxy 等于给同一块 tty 接第二个入口，两边会互相抢输入，
+   * 光标位置也对不上。所以容器只保留图形模式，不做二选一。
+   */
+  const termAvailable = guestType !== 'lxc';
+
+  /* 图形（VNC）/ 终端（xterm）二选一。虚拟机默认图形界面（多数人是去看安装界面 /
+     桌面），上次的选择记在 localStorage 里。 */
+  const [mode, setMode] = useState<ConsoleMode>(() => {
+    if (guestType === 'lxc') return 'vnc';
+    try {
+      const saved = localStorage.getItem(CONSOLE_MODE_KEY);
+      if (saved === 'vnc' || saved === 'term') return saved;
+    } catch {
+      /* 忽略：隐私模式下 localStorage 不可用 */
+    }
+    return 'vnc';
+  });
+
+  /* 同一个 ConsoleTab 实例换了机器类型（或从虚拟机切到容器）时兜底：
+     终端模式对容器不成立，必须回到图形 */
+  useEffect(() => {
+    if (!termAvailable) setMode('vnc');
+  }, [termAvailable]);
 
   const stageRef = useRef<HTMLDivElement>(null);
   /* 控制台外壳元素（同时是全屏元素）。用 state 而不是 ref 存：它有两个用途 ——
@@ -77,10 +152,25 @@ export function ConsoleTab({
   const attachShell = useCallback((el: HTMLDivElement | null) => setShellEl(el), []);
   const [cadConfirmEl, confirmCad] = useConfirm();
 
-  /* 切换机器时重置连接状态 */
+  const toast = useToast();
+  /* 辅助面板（剪贴板 / 文件上传）。null = 收起 */
+  const [assistMode, setAssistMode] = useState<ConsoleAssistMode | null>(null);
+  /* 客户机剪贴板：由 VncConsole 的 noVNC clipboard 事件填入 */
+  const [guestClipboard, setGuestClipboard] = useState('');
+  const consoleHandle = useRef<ConsoleHandle | null>(null);
+  /* 键入是逐字符排队发的：连点两次会让两段文本交错打进终端 */
+  const typingRef = useRef(false);
+  /* 「启用串口登录」进行中：按钮期间不可重复点（会重复起 getty） */
+  const [serialBusy, setSerialBusy] = useState(false);
+
+  /* 切换机器时重置连接状态与面板状态：
+     上一台机器的剪贴板残留会让人误以为是当前这台的内容。 */
   useEffect(() => {
     setState('idle');
     setError(null);
+    setAssistMode(null);
+    setGuestClipboard('');
+    consoleHandle.current = null;
   }, [node, vmid]);
 
   /* 全屏状态跟踪 */
@@ -101,6 +191,32 @@ export function ConsoleTab({
     }
   }, [compact]);
 
+  /* 记住图形 / 终端的选择。容器的 mode 恒为 vnc，不该覆盖掉虚拟机的偏好 */
+  useEffect(() => {
+    if (!termAvailable) return;
+    try {
+      localStorage.setItem(CONSOLE_MODE_KEY, mode);
+    } catch {
+      /* 忽略 */
+    }
+  }, [mode, termAvailable]);
+
+  /* 切换模式 = 换一条完全不同的通道：旧会话的句柄、状态与错误都要清掉，
+     否则徽章还停在「已连接」、错误提示却说的是上一条通道的事。 */
+  const switchMode = useCallback(
+    (next: ConsoleMode) => {
+      setMode((prev) => {
+        if (prev === next) return prev;
+        setState('idle');
+        setError(null);
+        setGuestClipboard('');
+        consoleHandle.current = null;
+        return next;
+      });
+    },
+    [],
+  );
+
   const toggleFullscreen = useCallback(async () => {
     const el = shellEl;
     if (!el) return;
@@ -118,6 +234,129 @@ export function ConsoleTab({
 
   const reconnect = () => setReconnectKey((k) => k + 1);
 
+  /**
+   * 客户机的串口上没人监听时，画面就只有 PVE 的 starting serial terminal 一行。
+   * 这一步通过 Guest Agent 在客户机里启一个 serial-getty，让终端真正可用。
+   */
+  const enableSerialLogin = async () => {
+    setSerialBusy(true);
+    try {
+      await vmsApi.enableSerialLogin(node, vmid);
+      toast.success(t('console.serialLoginOk'), t('console.serialLoginOkHint'));
+      /* getty 起来后会在 ttyS0 上打登录提示；重连一次把旧 pty 换掉，
+         免得两路输入叠在一起 */
+      window.setTimeout(reconnect, 800);
+    } catch (err) {
+      toast.error(t('console.serialLoginFailed'), errorMessage(err));
+    } finally {
+      setSerialBusy(false);
+    }
+  };
+
+  /* ---- 剪贴板 / 键入 ---- */
+
+  const openAssist = useCallback((mode: ConsoleAssistMode) => {
+    setAssistMode((prev) => (prev === mode ? null : mode));
+  }, []);
+
+  const sendPaste = useCallback(
+    (text: string) => {
+      const handle = consoleHandle.current;
+      if (!handle || state !== 'connected') {
+        toast.warning(t('console.assistNotReady'));
+        return;
+      }
+      handle.pasteText(text);
+      toast.success(t('console.pasteSent'));
+    },
+    [state, t, toast],
+  );
+
+  const sendType = useCallback(
+    (text: string) => {
+      const handle = consoleHandle.current;
+      if (!handle || state !== 'connected') {
+        toast.warning(t('console.assistNotReady'));
+        return;
+      }
+      if (!text) return;
+      if (typingRef.current) {
+        toast.warning(t('console.typingBusy'));
+        return;
+      }
+      if (text.length > TYPE_TEXT_LIMIT) {
+        /* 逐字符键入是「一个键一个键」发，长文本要几十秒，用户会以为卡死 */
+        toast.warning(
+          t('console.typeTooLong', { limit: TYPE_TEXT_LIMIT }),
+          t('console.typeTooLongHint'),
+        );
+        return;
+      }
+      const id = toast.loading(t('console.typingStarted', { count: text.length }));
+      typingRef.current = true;
+      void handle
+        .typeText(text)
+        .then(({ typed, skipped }) => {
+          if (skipped > 0) {
+            toast.update(id, {
+              type: 'warning',
+              title: t('console.typedSkipped', { typed, skipped }),
+            });
+          } else {
+            toast.update(id, {
+              type: 'success',
+              title: t('console.typedDone', { count: typed }),
+            });
+          }
+        })
+        .catch(() => {
+          toast.update(id, { type: 'error', title: t('console.typeFailed') });
+        })
+        .finally(() => {
+          typingRef.current = false;
+        });
+    },
+    [state, t, toast],
+  );
+
+  /* Ctrl+Shift+V：把本机剪贴板直接送到客户机。
+     必须用**捕获阶段**并 stopPropagation —— noVNC 在 canvas 上绑了 keydown，
+     冒泡阶段拦已经晚了，Ctrl+Shift+V 会被当成普通按键发给客户机。
+     面板里的输入框不拦：那里的 Ctrl+Shift+V 是浏览器自己的「粘贴为纯文本」。 */
+  useEffect(() => {
+    const el = shellEl;
+    if (!el) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || !event.shiftKey || event.altKey) return;
+      if ((event.key || '').toLowerCase() !== 'v') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void (async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text) {
+            toast.info(t('console.clipboardEmpty'));
+            return;
+          }
+          sendPaste(text);
+        } catch {
+          /* 非 HTTPS / 未授权：让用户到面板里手动粘贴 */
+          setAssistMode('clipboard');
+          toast.warning(
+            t('console.readClipboardFailed'),
+            t('console.readClipboardHint'),
+          );
+        }
+      })();
+    };
+    el.addEventListener('keydown', onKey, true);
+    return () => el.removeEventListener('keydown', onKey, true);
+  }, [shellEl, sendPaste, t, toast]);
+
   /* 控制台凭据缺失 / 无效时（后端会返回专门的提示），给出去设置页的引导 */
   const needsConsoleAccount =
     !!error &&
@@ -130,11 +369,40 @@ export function ConsoleTab({
       {/* ---- 工具栏 ---- */}
       <div className="console-toolbar">
         <div className="console-toolbar-left">
-          {/* 仅提供 VNC 控制台，容器与虚拟机统一走 VNC */}
-          <span className="console-mode-label">
-            <IconConsole size={14} />
-            {t('console.mode')}
-          </span>
+          {/* 图形（VNC）与终端（xterm）是两条通道，只有虚拟机有得选：容器不提供
+              终端。两个选项做成一个分段控件（而不是两个各自带边框的按钮）——
+              它们本就是同一个「控制台类型」的两种取值，视觉上应该像一个整体。 */}
+          {termAvailable ? (
+            <>
+              <span className="console-mode-label">
+                <IconConsole size={14} />
+                {t('console.mode')}
+              </span>
+
+              <span className="console-modes" role="group" aria-label={t('console.mode')}>
+                <button
+                  type="button"
+                  className={`console-mode-opt${mode === 'vnc' ? ' is-active' : ''}`}
+                  onClick={() => switchMode('vnc')}
+                  title={t('console.modeVncHint')}
+                  aria-pressed={mode === 'vnc'}
+                >
+                  <IconMonitor size={14} />
+                  {t('console.modeVnc')}
+                </button>
+                <button
+                  type="button"
+                  className={`console-mode-opt${mode === 'term' ? ' is-active' : ''}`}
+                  onClick={() => switchMode('term')}
+                  title={t('console.modeTermHint')}
+                  aria-pressed={mode === 'term'}
+                >
+                  <IconTerminal size={14} />
+                  {t('console.modeTerm')}
+                </button>
+              </span>
+            </>
+          ) : null}
 
           <span className="console-status">
             <StatusBadge state={state} />
@@ -142,7 +410,8 @@ export function ConsoleTab({
         </div>
 
         <div className="console-toolbar-right">
-          {state === 'connected' ? (
+          {/* Ctrl+Alt+Del 是 RFB 键盘消息，终端模式没有这个概念，不显示 */}
+          {state === 'connected' && mode === 'vnc' ? (
             <Button
               variant="secondary"
               size="sm"
@@ -168,6 +437,29 @@ export function ConsoleTab({
             </Button>
           ) : null}
 
+          {/* 剪贴板 / 文件：VNC 画面里点不动的东西，从这里送进去 */}
+          <IconButton
+            label={t('console.assistClipboard')}
+            className={`console-assist-toggle${assistMode === 'clipboard' ? ' is-active' : ''}`}
+            aria-pressed={assistMode === 'clipboard'}
+            disabled={!running}
+            onClick={() => openAssist('clipboard')}
+          >
+            <IconCopy size={16} />
+            {guestClipboard && assistMode !== 'clipboard' ? (
+              <span className="console-assist-dot" aria-hidden="true" />
+            ) : null}
+          </IconButton>
+          <IconButton
+            label={t('console.assistFiles')}
+            className={`console-assist-toggle${assistMode === 'files' ? ' is-active' : ''}`}
+            aria-pressed={assistMode === 'files'}
+            disabled={!running}
+            onClick={() => openAssist('files')}
+          >
+            <IconUpload size={16} />
+          </IconButton>
+
           <IconButton
             label={
               compact ? t('console.restoreHeight') : t('console.compactHeight')
@@ -189,6 +481,36 @@ export function ConsoleTab({
           </IconButton>
         </div>
       </div>
+
+      {/* 虚拟机的终端模式走 serial0：没加串口的机器只会拿到一句 PVE 的原始报错，
+          这里先把前提说清楚；加了串口但客户机没人监听 ttyS0 时，再给一个
+          「启用串口登录」的入口（终端的画面来自客户机，面板只能把它送到对面） */}
+      {running && mode === 'term' && termAvailable ? (
+        <div className="console-term-hint">
+          <span>
+            {hasSerial
+              ? t('console.termSerialGuestHint')
+              : t('console.termSerialHint')}
+          </span>
+          {!hasSerial && onOpenHardware ? (
+            <button type="button" className="console-term-hint-action" onClick={onOpenHardware}>
+              {t('console.termAddSerial')}
+            </button>
+          ) : null}
+          {hasSerial ? (
+            <button
+              type="button"
+              className="console-term-hint-action"
+              onClick={() => void enableSerialLogin()}
+              disabled={serialBusy}
+            >
+              {serialBusy
+                ? t('console.serialLoginBusy')
+                : t('console.termEnableSerialLogin')}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* ---- 未运行提示 ---- */}
       {!running ? (
@@ -212,6 +534,18 @@ export function ConsoleTab({
             </div>
           </div>
         </div>
+      ) : mode === 'term' && termAvailable ? (
+        <ConsoleXterm
+          key={`term-${reconnectKey}`}
+          node={node}
+          vmid={vmid}
+          guestType={guestType}
+          onStateChange={setState}
+          onError={setError}
+          onReady={(handle) => {
+            consoleHandle.current = handle;
+          }}
+        />
       ) : (
         <VncConsole
           key={`vnc-${reconnectKey}`}
@@ -221,8 +555,31 @@ export function ConsoleTab({
           containerRef={stageRef}
           onStateChange={setState}
           onError={setError}
+          onReady={(handle) => {
+            consoleHandle.current = handle;
+          }}
+          onClipboard={setGuestClipboard}
         />
       )}
+
+      {/* ---- 剪贴板 / 文件上传面板（挂在控制台外壳里，全屏时也在） ---- */}
+      {running ? (
+        <ConsoleAssist
+          key={`assist-${node}-${vmid}`}
+          open={assistMode !== null}
+          mode={assistMode ?? 'clipboard'}
+          onModeChange={setAssistMode}
+          onClose={() => setAssistMode(null)}
+          container={shellEl}
+          connected={state === 'connected'}
+          guestClipboard={guestClipboard}
+          onPasteToGuest={sendPaste}
+          onTypeToGuest={sendType}
+          guestType={guestType}
+          node={node}
+          vmid={vmid}
+        />
+      ) : null}
 
       {/* ---- 错误提示 ---- */}
       {error ? (
@@ -272,7 +629,7 @@ function StatusBadge({ state }: { state: ConnState }) {
   };
   const meta = map[state];
   return (
-    <Badge variant={meta.variant} dot pulse={meta.pulse} size="sm">
+    <Badge variant={meta.variant} dot pulse={meta.pulse} size="md">
       {meta.label}
     </Badge>
   );
@@ -282,6 +639,21 @@ function StatusBadge({ state }: { state: ConnState }) {
    VNC 控制台（noVNC）
    --------------------------------------------------------------------------- */
 
+/** noVNC RFB 实例里我们用到的那部分（noVNC 没有类型声明，只能自己收口） */
+interface RfbApi {
+  disconnect: () => void;
+  sendCtrlAltDel?: () => void;
+  clipboardPasteFrom?: (text: string) => void;
+  sendKey?: (keysym: number, code?: string, down?: boolean) => void;
+  focus?: () => void;
+  scaleViewport?: boolean;
+  resizeSession?: boolean;
+  addEventListener: (
+    type: string,
+    cb: (e: { detail?: { clean?: boolean; text?: string } }) => void,
+  ) => void;
+}
+
 interface VncProps {
   node: string;
   vmid: number;
@@ -290,6 +662,10 @@ interface VncProps {
   containerRef: React.RefObject<HTMLDivElement>;
   onStateChange: (s: ConnState) => void;
   onError: (msg: string | null) => void;
+  /** 连接建立后把剪贴板 / 键入能力交给外层（断开时传 null） */
+  onReady?: (handle: VncHandle | null) => void;
+  /** 客户机剪贴板更新（noVNC 的 clipboard 事件） */
+  onClipboard?: (text: string) => void;
 }
 
 function VncConsole({
@@ -299,29 +675,20 @@ function VncConsole({
   containerRef,
   onStateChange,
   onError,
+  onReady,
+  onClipboard,
 }: VncProps) {
   const t = useT();
-  const toast = useToast();
   const guest = useMemo(() => ({ node, vmid, type: guestType }), [
     node,
     vmid,
     guestType,
   ]);
-  const rfbRef = useRef<{
-    disconnect: () => void;
-    sendCtrlAltDel?: () => void;
-    scaleViewport?: boolean;
-    resizeSession?: boolean;
-  } | null>(null);
+  const rfbRef = useRef<RfbApi | null>(null);
 
   useEffect(() => {
     let disposed = false;
-    let rfb: {
-      disconnect: () => void;
-      sendCtrlAltDel?: () => void;
-      scaleViewport?: boolean;
-      resizeSession?: boolean;
-    } | null = null;
+    let rfb: RfbApi | null = null;
     let handshakeTimer: number | undefined;
     /* 握手超时时置位：这样 disconnect 处理器（timeout 里已主动 disconnect）
        触发的「意外中断」就不会把那段更具体的归因文案覆盖掉。 */
@@ -362,23 +729,32 @@ function VncConsole({
           target: HTMLElement,
           url: string,
           options?: { credentials?: { password?: string }; shared?: boolean },
-        ) => {
-          disconnect: () => void;
-          sendCtrlAltDel: () => void;
-          scaleViewport: boolean;
-          resizeSession: boolean;
-        };
+        ) => RfbApi;
 
         /* 只在后端确实给了口令时才带 credentials。
            PVE 的 VNC 代理是**凭 URL 里的 vncticket 认证**的，不需要 VNC 口令；
            把 password: null 塞进去会让 noVNC 走一遍口令握手，等一个永远不会来的
            回应 —— 表现就是卡在「连接中…」。 */
-        rfb = new RfbCtor(container, url, {
+        const session = new RfbCtor(container, url, {
           ...(proxy.password ? { credentials: { password: proxy.password } } : {}),
           shared: true,
         });
+        rfb = session;
+        rfbRef.current = session;
 
-        rfbRef.current = rfb;
+        /* 把「往客户机送文本」的两条通道交给外层面板：
+           * clipboardPasteFrom 走 RFB CutText，能不能生效取决于客户机；
+           * sendKey 逐字符键入，不依赖客户机，但只支持 ASCII。 */
+        onReady?.({
+          pasteText: (text) => {
+            try {
+              session.clipboardPasteFrom?.(text);
+            } catch {
+              /* 连接已断：面板会拿 disconnected 提示，这里不必再吵 */
+            }
+          },
+          typeText: (text) => typeViaKeys(session, text),
+        });
 
         /* 握手超时兜底。
            noVNC 在握手卡住时既可能不触发 connect 也不触发 disconnect —— 界面就
@@ -398,23 +774,21 @@ function VncConsole({
 
         /* 优先请求远端把桌面分辨率改成容器大小 —— 这样画面是 1:1 像素，字最清晰。
            客户机没装 vdagent 时远端不会响应，再退回本地等比缩放（至少能看到全貌）。 */
-        rfb.resizeSession = true;
-        rfb.scaleViewport = true;
+        session.resizeSession = true;
+        session.scaleViewport = true;
 
         /* 5. 绑定事件 */
-        const conn = rfb as unknown as {
-          addEventListener: (type: string, cb: (e: { detail?: { clean?: boolean } }) => void) => void;
-        };
-
-        conn.addEventListener('connect', () => {
+        session.addEventListener('connect', () => {
           if (disposed) return;
           window.clearTimeout(handshakeTimer);
           onStateChange('connected');
         });
 
-        conn.addEventListener('disconnect', (e) => {
+        session.addEventListener('disconnect', (e) => {
           if (disposed) return;
           window.clearTimeout(handshakeTimer);
+          /* 断线后旧句柄不能再用：面板按钮会据此禁用 */
+          onReady?.(null);
           /* 超时兜底已经写过更具体的归因，这里就不让它被「意外中断」覆盖 */
           if (timedOut) return;
           onStateChange('disconnected');
@@ -425,9 +799,10 @@ function VncConsole({
           }
         });
 
-        conn.addEventListener('securityfailure', () => {
+        session.addEventListener('securityfailure', () => {
           if (disposed) return;
           window.clearTimeout(handshakeTimer);
+          onReady?.(null);
           onStateChange('error');
           onError(t('console.authFailed'));
         });
@@ -435,11 +810,20 @@ function VncConsole({
         /* 上游要求凭据但前端没拿到（极少见：PVE 开了 VNC 口令而我们没取到）。
            noVNC 会一直等一个永远不会来的输入框，表现就是卡在「连接中…」——
            这里主动报错，避免无限转圈。 */
-        conn.addEventListener('credentialsrequired', () => {
+        session.addEventListener('credentialsrequired', () => {
           if (disposed) return;
           window.clearTimeout(handshakeTimer);
+          onReady?.(null);
           onStateChange('error');
           onError(t('console.credentialsMissing'));
+        });
+
+        /* 客户机剪贴板：面板里展示，并提供「复制到本机」。
+           注意这只是**客户机主动推送**时才有的内容；多数 Linux 控制台没有
+           剪贴板代理，收不到是正常的。 */
+        session.addEventListener('clipboard', (e) => {
+          if (disposed) return;
+          onClipboard?.(String(e?.detail?.text ?? ''));
         });
       } catch (err) {
         if (disposed) return;
@@ -464,6 +848,7 @@ function VncConsole({
         /* 忽略 */
       }
       rfbRef.current = null;
+      onReady?.(null);
       const container = containerRef.current;
       if (container) container.innerHTML = '';
     };
@@ -487,9 +872,6 @@ function VncConsole({
       window.removeEventListener('ProxCenter:vnc-cad', cadHandler);
   }, []);
 
-  /* 保留 toast 引用避免未使用告警（noVNC 剪贴板可扩展） */
-  void toast;
-
   return (
     <div className="console-stage" ref={containerRef}>
       <div className="console-overlay vnc-connecting">
@@ -501,6 +883,90 @@ function VncConsole({
       </div>
     </div>
   );
+}
+
+/* ---------------------------------------------------------------------------
+   把文本当成真实按键敲进客户机
+   --------------------------------------------------------------------------- */
+
+/** 每个字符之间的间隔。太快时容器的 vncterm / 老式终端会丢键。 */
+const KEY_DELAY_MS = 6;
+
+const XK_SHIFT_L = 0xffe1;
+const XK_RETURN = 0xff0d;
+const XK_TAB = 0xff09;
+
+/** 「需要按住 Shift 才打出来的字符」→ 基础键（keysym 取基础字符的码点） */
+const SHIFTED_TO_BASE: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  const pairs: Array<[string, string]> = [
+    ['1', '!'], ['2', '@'], ['3', '#'], ['4', '$'], ['5', '%'],
+    ['6', '^'], ['7', '&'], ['8', '*'], ['9', '('], ['0', ')'],
+    ['-', '_'], ['=', '+'], ['[', '{'], [']', '}'], ['\\', '|'],
+    [';', ':'], ["'", '"'], [',', '<'], ['.', '>'], ['/', '?'], ['`', '~'],
+  ];
+  for (const [base, shifted] of pairs) map[shifted] = base;
+  for (const ch of 'abcdefghijklmnopqrstuvwxyz') map[ch.toUpperCase()] = ch;
+  return map;
+})();
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 用 sendKey 逐字符键入。
+ *
+ * 为什么不是直接 clipboardPasteFrom：CutText 只是把文本交给客户机的剪贴板
+ * 代理，没有代理（绝大多数 Linux 控制台、容器的 vncterm）时等于什么也没发生。
+ * 按键是 VNC 协议最基本的通道，任何服务端都实现。
+ *
+ * 局限：只处理可打印 ASCII。keysym 与字符码点一致（X11 的规定），所以
+ * ``sendKey(ch.charCodeAt(0))`` 就是打这个字符；需要 Shift 的字符则按住
+ * Shift 再送「基础键」，避免依赖客户机键盘布局把 '!' 解释成别的键。
+ * 中文等非 ASCII 字符只能走剪贴板通道。
+ */
+async function typeViaKeys(
+  session: RfbApi,
+  text: string,
+): Promise<{ typed: number; skipped: number }> {
+  let typed = 0;
+  let skipped = 0;
+  try {
+    session.focus?.();
+  } catch {
+    /* 忽略 */
+  }
+  for (const ch of text) {
+    if (ch === '\r') continue;
+    if (ch === '\n') {
+      session.sendKey?.(XK_RETURN, 'Enter');
+      typed += 1;
+      await sleep(KEY_DELAY_MS);
+      continue;
+    }
+    if (ch === '\t') {
+      session.sendKey?.(XK_TAB, 'Tab');
+      typed += 1;
+      await sleep(KEY_DELAY_MS);
+      continue;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code > 0x7e) {
+      skipped += 1;
+      continue;
+    }
+    const base = SHIFTED_TO_BASE[ch];
+    if (base) {
+      session.sendKey?.(XK_SHIFT_L, 'ShiftLeft', true);
+      session.sendKey?.(base.charCodeAt(0));
+      session.sendKey?.(XK_SHIFT_L, 'ShiftLeft', false);
+    } else {
+      session.sendKey?.(code);
+    }
+    typed += 1;
+    await sleep(KEY_DELAY_MS);
+  }
+  return { typed, skipped };
 }
 
 /* ---------------------------------------------------------------------------

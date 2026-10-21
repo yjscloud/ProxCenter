@@ -3,19 +3,22 @@
    自助注册出来的账号状态是「待审批」，管理员放行后才能登录。
    ========================================================================== */
 
-import { useState, type FormEvent } from 'react';
+import { useCallback, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { authApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Notice } from '../components/ui/EmptyState';
+import { SliderCaptcha } from '../components/SliderCaptcha';
 import {
   IconAlert,
   IconCheck,
   IconEye,
   IconEyeOff,
   IconKey,
+  IconShield,
   IconUser,
 } from '../components/Icons';
 import { AuthShell } from '../components/AuthShell';
@@ -31,13 +34,39 @@ export function Register() {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [captchaCode, setCaptchaCode] = useState('');
+  /* 字段级错误：置空用 undefined（清掉某一个字段的提示，而不是整表重建） */
+  const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
 
+  /*
+    人机校验：与登录共用同一套「设置 → 登录验证」配置（关闭 / 图形码 / 滑块）。
+    单独一个 queryKey —— 挑战是一次性的，和登录页共用缓存会互相把对方的题作废。
+  */
+  const captchaQ = useQuery({
+    queryKey: ['register-captcha'],
+    queryFn: authApi.captcha,
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+    retry: 1,
+  });
+  const captchaMode =
+    captchaQ.data?.mode ?? (captchaQ.data?.required ? 'image' : 'off');
+  const captchaRequired = captchaMode !== 'off';
+
+  /* 滑块位置只在提交时读一次，拖动过程中不触发整表单重渲染（同登录页） */
+  const sliderXRef = useRef(0);
+  const handleSliderPosition = useCallback((x: number) => {
+    sliderXRef.current = x;
+    if (x > 0) {
+      setErrors((prev) => (prev.captcha ? { ...prev, captcha: undefined } : prev));
+    }
+  }, []);
+
   const validate = (): boolean => {
-    const next: Record<string, string> = {};
+    const next: Record<string, string | undefined> = {};
     const name = username.trim();
 
     if (!name) {
@@ -67,6 +96,17 @@ export function Register() {
       next.confirm = t('register.err.confirmMismatch');
     }
 
+    if (captchaMode === 'image' && !captchaCode.trim()) {
+      next.captcha = t('auth.err.captchaRequired');
+    } else if (captchaMode === 'slider') {
+      /* 与后端同一阈值：没拖到底就本地拦下，省一次必然失败的往返 */
+      const max =
+        (captchaQ.data?.width ?? 320) - (captchaQ.data?.handle_size ?? 56);
+      if (sliderXRef.current < max - (captchaQ.data?.tolerance ?? 6)) {
+        next.captcha = t('auth.err.sliderRequired');
+      }
+    }
+
     setErrors(next);
     return Object.keys(next).length === 0;
   };
@@ -83,10 +123,26 @@ export function Register() {
         username: username.trim(),
         password,
         email: email.trim(),
+        captcha_id: captchaRequired ? (captchaQ.data?.id ?? '') : undefined,
+        captcha_code:
+          captchaMode === 'image' ? captchaCode.trim() : undefined,
+        captcha_x: captchaMode === 'slider' ? sliderXRef.current : undefined,
       });
       setDone(true);
     } catch (err) {
-      setError(errorMessage(err));
+      const msg = errorMessage(err);
+      /* 验证码类失败归位到验证码字段，其余走顶部横幅（同登录页） */
+      if (captchaRequired && /验证码|滑块/.test(msg)) {
+        setErrors({ captcha: msg });
+      } else {
+        setError(msg);
+      }
+      /* 挑战一次性：失败后换一张，顺带清掉上次作答 */
+      if (captchaRequired) {
+        setCaptchaCode('');
+        sliderXRef.current = 0;
+        void captchaQ.refetch();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -202,6 +258,61 @@ export function Register() {
             error={errors.confirm}
             required
           />
+
+          {/* 人机校验：文案复用登录页那几条（同为「验证码 / 拖动滑块」） */}
+          {captchaMode === 'image' ? (
+            <div className="login-captcha">
+              <div className="login-captcha-input">
+                <Input
+                  label={t('auth.login.captcha')}
+                  value={captchaCode}
+                  onChange={(e) => setCaptchaCode(e.target.value)}
+                  placeholder={t('auth.login.captchaPlaceholder')}
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  disabled={submitting}
+                  maxLength={8}
+                  prefix={<IconShield size={15} />}
+                  error={errors.captcha}
+                  required
+                />
+              </div>
+              <button
+                type="button"
+                className="login-captcha-img"
+                onClick={() => {
+                  setCaptchaCode('');
+                  setErrors((prev) => ({ ...prev, captcha: undefined }));
+                  void captchaQ.refetch();
+                }}
+                title={t('auth.login.captchaRefresh')}
+                aria-label={t('auth.login.captchaRefreshAria')}
+              >
+                {captchaQ.data?.image ? (
+                  <img src={captchaQ.data.image} alt={t('auth.login.captchaAlt')} />
+                ) : (
+                  <span>
+                    {captchaQ.isFetching
+                      ? t('auth.login.captchaLoading')
+                      : t('auth.login.captchaFailed')}
+                  </span>
+                )}
+              </button>
+            </div>
+          ) : captchaMode === 'slider' ? (
+            <SliderCaptcha
+              challenge={captchaQ.data ?? { required: true, mode: 'slider' }}
+              onPosition={handleSliderPosition}
+              onRefresh={() => {
+                sliderXRef.current = 0;
+                setErrors((prev) => ({ ...prev, captcha: undefined }));
+                void captchaQ.refetch();
+              }}
+              loading={captchaQ.isFetching}
+              disabled={submitting}
+              error={errors.captcha}
+            />
+          ) : null}
 
           <Button
             type="submit"

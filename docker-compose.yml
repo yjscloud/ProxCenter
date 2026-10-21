@@ -162,9 +162,20 @@ services:
       PORT: "8080"
       # 由 Nginx/Caddy 终结 TLS 时置 true：明文一律 308 跳 https，并加 HSTS
       FORCE_HTTPS: ${FORCE_HTTPS:-false}
-      # uvicorn 信任哪些来源的 X-Forwarded-Proto。反代若跑在宿主机 / 另一容器，
-      # 来源不是 127.0.0.1 —— 需按实际网关地址填写；* 表示信任全部（仅内网反代时用）。
-      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-*}
+      # uvicorn 信任哪些来源的 X-Forwarded-Proto / X-Forwarded-For。
+      # 反代跑在宿主机或另一个容器时，来源**不是** 127.0.0.1，需要填实际网关
+      # 地址（常见 172.18.0.1，可用 `docker network inspect` 确认）。否则客户端
+      # IP 会显示成网关，按 IP 的登录锁定会变成所有人共用一个桶。
+      # 绝不要填 *：那等于允许任何客户端伪造来源 IP，白名单 / 限流 / 审计全失真。
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      # 面板准入白名单（逗号分隔 IP / CIDR）。留空 = 不限制；公网部署强烈建议
+      # 收敛到办公网 / 跳板机 / 反代所在网段（配合 VPN 或零信任网关更佳）。
+      PANEL_ALLOW_CIDRS: ${PANEL_ALLOW_CIDRS:-}
+      # 首次从新 IP 登录时给管理员发站内消息 + 邮件
+      LOGIN_IP_ALERT: ${LOGIN_IP_ALERT:-true}
+      # 接口文档（/api/docs、/api/redoc、/api/openapi.json）：默认关闭；
+      # 打开后仍要求管理员登录。仅调试/内网排障时临时设为 true。
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-false}
 
       # --- 可选：Proxmox 连接初始值（登录后也能在「设置」页在线修改）---------
       PVE_HOST: ${PVE_HOST:-}
@@ -174,8 +185,10 @@ services:
       PVE_VERIFY_SSL: ${PVE_VERIFY_SSL:-true}
       TZ: ${TZ:-Asia/Shanghai}
     ports:
-      # 面板对外的端口。宿主机 8080 被占用时只改这个默认值，例如 18080。
-      - "${PANEL_PORT:-8080}:8080"
+      # 面板对外的端口。宿主机 8080 被占用时只改 PANEL_PORT，例如 18080。
+      # 反代与面板同机时建议把 PANEL_BIND 改成 127.0.0.1，只让反代能连；
+      # 直接把 8080 暴露到公网等于绕过反代上的 TLS / 访问控制。
+      - "${PANEL_BIND:-0.0.0.0}:${PANEL_PORT:-8080}:8080"
     volumes:
       # 面板运行期数据 + 自动生成的 SECRET_KEY：必须持久化，别删
       - panel_data:/app/backend/data

@@ -59,7 +59,10 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    /* 生产构建**不产出** sourcemap：.map 里的 sourcesContent 是完整 TS 源码，
+       凭一个 URL 就能还原全部接口封装、请求字段与错误分支。本地调试用
+       `npm run dev`（Vite 自带 sourcemap），或临时 `--sourcemap` 构建但不发布。 */
+    sourcemap: false,
     // noVNC 使用了顶层 await，ES2020 目标会编译失败；
     // esnext 保留该语法（现代浏览器均支持）。
     target: 'esnext',

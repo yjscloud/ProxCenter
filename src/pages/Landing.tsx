@@ -155,12 +155,7 @@ export function Landing() {
         {hasFaq ? <Faq faqs={faqs} /> : null}
       </main>
 
-      <Closing
-        site={site}
-        consoleHref={consoleHref}
-        consoleLabel={consoleLabel}
-        docsPath={SITE.docsPath}
-      />
+      <Closing site={site} consoleHref={consoleHref} consoleLabel={consoleLabel} />
     </div>
   );
 }

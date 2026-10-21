@@ -351,7 +351,7 @@ export function Profile() {
     try {
       const created = await tokensApi.create({
         name,
-        ttl_days: Number(tokenTtl) || 0,
+        ttl_days: Number(tokenTtl) || 90,
       });
       setTokenOpen(false);
       // 明文只在这一刻存在：切到「已签发」视图让用户当场复制走
@@ -1051,12 +1051,12 @@ export function Profile() {
           <Select
             value={tokenTtl}
             onChange={(e) => setTokenTtl(e.target.value)}
+            /* 上限 365 天、且不再提供「永不过期」：令牌泄漏后靠到期兜底 */
             options={[
               { label: t('profile.ttl30'), value: '30' },
               { label: t('profile.ttl90'), value: '90' },
               { label: t('profile.ttl180'), value: '180' },
               { label: t('profile.ttl365'), value: '365' },
-              { label: t('profile.tokenNeverExpires'), value: '0' },
             ]}
           />
         </Field>

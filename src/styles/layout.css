@@ -1187,6 +1187,8 @@
 .console-shell {
   display: flex;
   flex-direction: column;
+  /* 剪贴板 / 文件面板用绝对定位挂在它上面（全屏时随外壳一起走） */
+  position: relative;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-surface);
@@ -1255,6 +1257,23 @@
   display: block;
 }
 
+/* 终端舞台：xterm 要按「父容器的像素尺寸」算行列数，所以这里不能用 .console-stage
+   那套 flex 居中 —— 居中会让它按内容撑开，FitAddon 量出来的尺寸一直抖。
+   改成块级铺满，留一点内边距免得字贴着边框。 */
+.console-term-stage {
+  display: block;
+  padding: 8px 10px;
+  background: #0f1419; /* 与 ConsoleXterm 的 TERMINAL_THEME.background 保持一致 */
+}
+
+.console-term-stage .xterm {
+  height: 100%;
+}
+
+.console-term-stage .xterm-viewport {
+  background: transparent !important;
+}
+
 .console-overlay {
   position: absolute;
   inset: 0;
@@ -1270,22 +1289,82 @@
   z-index: 5;
 }
 
-/* 只有一种控制台时，工具栏左边这一行就是个标签，不是可切换的控件 */
+/* 「控制台类型」是这组控件的说明文字，不该自己再占一个胶囊：
+   它没有交互，画上边框只会跟右边的分段控件抢注意力 */
 .console-mode-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-elevated);
   font-size: var(--font-size-sm);
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
 
 .console-mode-label svg {
+  color: var(--text-muted);
+}
+
+/* ---- 图形 / 终端：分段控件 ----
+   两个取值共用一个外框、中间只有 2px 间隙，跟面板里其它分段控件（.segmented）
+   同一套尺寸与配色；选中项用品牌色淡底，而不是把整个按钮涂成实心蓝。 */
+.console-modes {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+}
+
+.console-mode-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.console-mode-opt svg {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.console-mode-opt:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.console-mode-opt.is-active {
+  background: var(--accent-dim);
   color: var(--accent);
+}
+
+.console-mode-opt.is-active svg {
+  opacity: 1;
+}
+
+.console-mode-opt:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* 状态徽章与分段控件同高，右移一点跟左侧标签拉开层次 */
+.console-toolbar .console-status {
+  margin-left: 2px;
 }
 
 .console-hint {
@@ -1293,9 +1372,229 @@
   color: var(--text-muted);
 }
 
+/* 终端模式的前提提示：一行说明；缺串口时后面跟一个直接去添加的入口 */
+.console-term-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 12px 8px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.console-term-hint-action {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.console-term-hint-action:hover {
+  color: var(--accent-hover);
+}
+
+.console-term-hint-action:disabled {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: default;
+}
+
+.console-term-hint-action:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
 /* VNC 连接中遮罩：连上后由 noVNC 接管画布，用 :has 隐藏 */
 .console-stage:has(canvas) .vnc-connecting {
   display: none;
+}
+
+/* ---- 剪贴板 / 文件上传面板 ---- */
+
+/* 面板挂在 .console-shell 上（而不是 body）：全屏时浏览器只渲染外壳及其后代，
+   挂到 body 的面板会「点了按钮没反应」。关闭时只 display:none，保留状态。 */
+.console-assist {
+  display: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(380px, 100%);
+  z-index: 30;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.console-assist.is-open {
+  display: flex;
+}
+
+.console-assist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.console-assist-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.console-assist-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.console-assist-tab:hover {
+  background: var(--bg-hover);
+}
+
+.console-assist-tab.is-active {
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.console-assist-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.console-assist-hint {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.console-assist-textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.console-assist-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.console-assist-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.console-assist-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.console-command-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.console-command {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 170px;
+  overflow: auto;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  /* 命令要能被选中 / 复制，别被控制台的 user-select:none 带过去 */
+  user-select: text;
+}
+
+.console-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 18px 12px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.console-drop:hover,
+.console-drop.is-drag {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.console-drop-name {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+/* 工具栏上的两个开关：打开时高亮；客户机有新剪贴板时点一颗提示点 */
+.console-assist-toggle {
+  position: relative;
+}
+
+.console-assist-toggle.is-active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.console-assist-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-elevated);
 }
 
 /* ---------------------------------------------------------------------------

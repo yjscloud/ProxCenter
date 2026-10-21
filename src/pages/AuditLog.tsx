@@ -746,6 +746,8 @@ const ACTION_LABELS: Record<string, MessageKey> = {
   user_update: 'audit.act.user_update',
   user_delete: 'audit.act.user_delete',
   user_password: 'audit.act.user_password',
+  user_expire: 'audit.act.user_expire',
+  auth_new_ip: 'audit.act.auth_new_ip',
   config_update: 'audit.act.config_update',
   task_stop: 'audit.act.task_stop',
   task_remove: 'audit.act.task_remove',

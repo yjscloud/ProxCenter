@@ -82,7 +82,10 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
     token_secret: '',
     console_user: '',
     console_password: '',
-    verify_ssl: false,
+    /* 新建连接默认**校验证书**：默认关闭等于把 8006 通道交给内网 MITM。
+       PVE 自签时改用下面的「证书 PEM」做钉扎（见 ca_cert），不要关校验。 */
+    verify_ssl: true,
+    ca_cert: '',
     node_default: '',
   });
   /* 多连接：当前正在编辑哪一条（null 表示「新建」） */
@@ -182,7 +185,8 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       console_user: active.console_user ?? '',
       console_password: '',
       verify_ssl:
-        active.verify_ssl ?? configQuery.data?.verify_ssl_default ?? false,
+        active.verify_ssl ?? configQuery.data?.verify_ssl_default ?? true,
+      ca_cert: active.ca_cert ?? '',
       node_default: active.node_default ?? '',
     });
     setSecretAlreadySet(Boolean(active.token_secret_set));
@@ -230,6 +234,12 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       next.token_secret = t('conn.errTokenSecretLength');
     }
 
+    // 证书钉扎：留空 = 用系统信任库（verify_ssl 打开时）或完全不校验（关闭时）
+    const caCert = (form.ca_cert ?? '').trim();
+    if (caCert && !caCert.includes('-----BEGIN CERTIFICATE-----')) {
+      next.ca_cert = t('conn.errCaCertFormat');
+    }
+
     // 默认节点可由后端自动推断，不再是必填项
     void 0;
 
@@ -253,6 +263,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
         // 留空时后端会复用已保存的 secret
         token_secret: (form.token_secret ?? '').trim(),
         verify_ssl: form.verify_ssl,
+        ca_cert: (form.ca_cert ?? '').trim(),
       });
       setTestResult(result);
       if (result.ok) {
@@ -325,7 +336,8 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       token_secret: '',
       console_user: p.console_user ?? '',
       console_password: '',
-      verify_ssl: p.verify_ssl ?? false,
+      verify_ssl: p.verify_ssl ?? true,
+      ca_cert: p.ca_cert ?? '',
       node_default: p.node_default ?? '',
     });
     setSecretAlreadySet(Boolean(p.token_secret_set));
@@ -347,10 +359,12 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       token_secret: '',
       console_user: '',
       console_password: '',
-      /* 新建连接默认**不**校验证书：PVE 出厂用的是自签名证书，校验一开这台
-         主机当场连不上，而报错只说「证书校验失败」，第一次接入的人很难定位。
-         需要校验证书的（生产、已导入 CA）在表单里自己打开即可。 */
-      verify_ssl: false,
+      /* 新建连接默认**校验证书**。PVE 出厂是自签证书（cluster CA 签发、
+         CN=pve.local、没有 IP SAN），直接开校验会连不上 —— 但正确的解法是
+         把 PVE 证书填进下面「证书 PEM」做钉扎，而不是整条链路不校验：
+         后者等于允许内网任何人冒充 PVE 收走 API Token。 */
+      verify_ssl: true,
+      ca_cert: '',
       node_default: '',
     });
     setSecretAlreadySet(false);
@@ -431,6 +445,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
         port: Number(form.port),
         token_id: form.token_id.trim(),
         verify_ssl: form.verify_ssl,
+        ca_cert: (form.ca_cert ?? '').trim(),
         node_default: form.node_default.trim(),
       };
       const secret = (form.token_secret ?? '').trim();
@@ -858,6 +873,23 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
                 disabled={!isAdmin}
               />
             </div>
+
+            {/* PVE 自签时用「证书钉扎」替代关校验：填了 PEM 就只认这张证书 */}
+            <Field
+              label={t('conn.fieldCaCert')}
+              hint={t('conn.fieldCaCertHint')}
+              error={errors.ca_cert}
+            >
+              <textarea
+                className="textarea mono"
+                rows={4}
+                value={form.ca_cert ?? ''}
+                onChange={(e) => patch('ca_cert', e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----"
+                disabled={!isAdmin}
+                spellCheck={false}
+              />
+            </Field>
 
             <div className="set-form-block-head">
               <span className="set-form-block-icon">

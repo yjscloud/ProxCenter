@@ -21,8 +21,10 @@
 import {
   lxcApi,
   lxcVncWsUrl,
+  lxcXtermWsUrl,
   vmsApi,
   vncWsUrl,
+  xtermWsUrl,
 } from './endpoints';
 import { guestTypeOf } from './types';
 import type {
@@ -32,6 +34,7 @@ import type {
   Snapshot,
   SnapshotCreateRequest,
   TaskInfo,
+  VncProxyResponse,
 } from './types';
 
 /** 足以定位一个 guest 的最小信息；`type` 缺失时按虚拟机处理。 */
@@ -213,6 +216,19 @@ export const guestsApi = {
     isLxc(g)
       ? lxcVncWsUrl(g.node, g.vmid, port, ticket)
       : vncWsUrl(g.node, g.vmid, port, ticket),
+
+  /**
+   * 终端（xterm.js）票据：容器走 tty，虚拟机走 serial0。
+   *
+   * 与 VNC 是两套 PVE 端点（termproxy 而不是 vncproxy），所以不能复用 vncProxy。
+   */
+  xtermProxy: (g: GuestRef): Promise<VncProxyResponse> =>
+    isLxc(g) ? lxcApi.xtermProxy(g.node, g.vmid) : vmsApi.xtermProxy(g.node, g.vmid),
+
+  xtermWsUrl: (g: GuestRef, port: number, ticket: string): string =>
+    isLxc(g)
+      ? lxcXtermWsUrl(g.node, g.vmid, port, ticket)
+      : xtermWsUrl(g.node, g.vmid, port, ticket),
 };
 
 /* TaskInfo 仅用于类型导出，避免调用方再从 types 里单独引一次 */

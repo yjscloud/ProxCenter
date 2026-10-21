@@ -54,7 +54,6 @@ export interface ClosingProps {
   site: SiteInfo;
   consoleHref: string;
   consoleLabel: string;
-  docsPath: string;
 }
 
 /** 收尾区右侧的三条要点：与首屏的信任条目呼应，但只留最硬的三条 */
@@ -64,7 +63,7 @@ const FINALE_POINT_KEYS: MessageKey[] = [
   'landing.finale.pointOrigin',
 ];
 
-export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingProps) {
+export function Closing({ site, consoleHref, consoleLabel }: ClosingProps) {
   const t = useT();
   const { domains } = useLandingContent();
 
@@ -82,9 +81,6 @@ export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingPr
                   <IconKey size={15} />
                   {consoleLabel}
                 </Link>
-                <a className="lp-btn lp-btn-outline" href={docsPath}>
-                  {t('landing.docs')}
-                </a>
               </div>
             </div>
 
@@ -147,9 +143,6 @@ export function Closing({ site, consoleHref, consoleLabel, docsPath }: ClosingPr
                 <Link className="lp-footer-link" to={consoleHref}>
                   {consoleLabel}
                 </Link>
-                <a className="lp-footer-link" href={docsPath}>
-                  {t('landing.docs')}
-                </a>
                 <button
                   type="button"
                   className="lp-footer-link lp-footer-link-btn"

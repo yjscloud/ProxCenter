@@ -1,6 +1,7 @@
 """Panel user management."""
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -103,6 +104,9 @@ async def get_user(
         # None = 继承角色权限；有值 = 用户级覆盖（界面据此预填勾选）
         "permissions_override": found.get("permissions_override"),
         "permissions": security.effective_permissions(found),
+        # 账号有效期：0 = 永不过期；expiry_frozen 非 0 = 已到期冻结（已关机）
+        "expires_at": found.get("expires_at", 0),
+        "expiry_frozen": found.get("expiry_frozen", 0),
     }
 
 
@@ -135,6 +139,7 @@ async def create_user(
         role_id,
         payload.email,
         permissions=permissions,
+        expires_at=payload.expires_at,
     )
 
     await security.audit(
@@ -142,6 +147,7 @@ async def create_user(
         detail={
             "role": role_id,
             "permissions": permissions,
+            "expires_at": payload.expires_at or 0,
         },
     )
     return created
@@ -174,6 +180,19 @@ async def update_user(
                 detail="不能降级或禁用最后一个管理员账号",
             )
 
+    # 给最后一个管理员设有效期，等价于「到点自动把唯一的超管锁在门外」——
+    # 与上面那条防呆同源，直接拒绝。
+    if (
+        payload.expires_at
+        and payload.expires_at > 0
+        and existing["role"] == "admin"
+        and await store.count_admins() <= 1
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="不能给最后一个管理员账号设置有效期",
+        )
+
     if payload.role is not None and not await store.get_role(payload.role):
         raise HTTPException(status_code=400, detail=f"角色 {payload.role} 不存在")
 
@@ -200,6 +219,7 @@ async def update_user(
         permissions=permissions,
         permissions_provided=payload.set_permissions,
         status=payload.status,
+        expires_at=payload.expires_at,
     )
 
     detail: Dict[str, Any] = {
@@ -208,6 +228,7 @@ async def update_user(
         "status": payload.status,
         "password_changed": bool(payload.password),
         "permissions": permissions,
+        "expires_at": payload.expires_at,
     }
 
     # 动到「还能不能继续用这个凭据」的字段时，把对方的所有凭据一并作废：
@@ -218,6 +239,11 @@ async def update_user(
         or payload.enabled is False
         or payload.role is not None
         or payload.status is not None
+        # 把有效期设成已经过去的时间 = 立即冻结：旧 token 不能再用满 12 小时
+        or (
+            payload.expires_at is not None
+            and 0 < payload.expires_at <= time.time()
+        )
     ):
         revoked = await security.revoke_user_credentials(username)
         detail["sessions_revoked"] = revoked["sessions"]

@@ -13,7 +13,7 @@
    ========================================================================== */
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
 import { useApplyUpdate, useSaveUpdateSettings, useUpdateStatus } from '../hooks/useUpdate';
 import { useT } from '../i18n';

@@ -7,7 +7,7 @@
    ========================================================================== */
 
 import { useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { authApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { Button } from '../components/ui/Button';

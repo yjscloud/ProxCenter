@@ -41,6 +41,7 @@ from ..schemas import (
     MailConfigIn,
     MailTestIn,
     PanelUrlIn,
+    SessionPolicyIn,
     SiteInfoIn,
     UiPrefsIn,
     VmDefaultsIn,
@@ -748,6 +749,66 @@ async def put_login_captcha(
         detail={"mode": mode, "label": captcha.MODE_LABEL.get(mode, mode)},
     )
     return {"mode": mode}
+
+
+# ============================================================ 会话有效期
+# 管理员可调：访问令牌多久过期、会话（refresh token）保留几天。
+#
+# 存 settings KV，改完**立即生效**、不用重启 —— security.py 里有一份进程内
+# 缓存（签发令牌是同步函数，不能在那里查库），写入路径负责刷新它。
+#
+# 读取只要求登录：设置页要回显当前值，且它不含凭据类信息。
+# 写入要求 settings.manage + 二次确认：把有效期调成 30 天等于放松整个面板的
+# 会话保障，和「关掉验证码」属于同一类操作。
+
+
+@router.get("/config/session")
+async def get_session_policy(
+    user: Dict[str, Any] = Depends(security.get_current_user),
+) -> Dict[str, Any]:
+    return {
+        "access_minutes": security.session_access_minutes(),
+        "refresh_days": security.session_refresh_days(),
+        "limits": {
+            "access_min": security.SESSION_ACCESS_MIN,
+            "access_max": security.SESSION_ACCESS_MAX,
+            "refresh_min": security.SESSION_REFRESH_MIN,
+            "refresh_max": security.SESSION_REFRESH_MAX,
+        },
+        # 环境变量里的出厂默认值：界面上标一句「默认 720 分钟」，
+        # 让管理员知道自己是改过还是没改过
+        "defaults": {
+            "access_minutes": int(settings.access_token_expire_minutes),
+            "refresh_days": int(settings.refresh_token_expire_days),
+        },
+    }
+
+
+@router.put("/config/session")
+async def put_session_policy(
+    payload: SessionPolicyIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
+    _step_up: Dict[str, Any] = Depends(security.require_step_up()),
+) -> Dict[str, int]:
+    await store.set_setting("session_access_minutes", str(payload.access_minutes))
+    await store.set_setting("session_refresh_days", str(payload.refresh_days))
+    await security.refresh_session_policy()
+
+    await security.audit(
+        request,
+        user,
+        "config.session",
+        target="session-policy",
+        detail={
+            "access_minutes": payload.access_minutes,
+            "refresh_days": payload.refresh_days,
+        },
+    )
+    return {
+        "access_minutes": security.session_access_minutes(),
+        "refresh_days": security.session_refresh_days(),
+    }
 
 
 # ============================================================ 面板界面开关

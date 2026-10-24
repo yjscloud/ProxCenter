@@ -94,6 +94,8 @@ export interface RegisterInput {
   captcha_code?: string;
   /** 滑块验证码：拖动结束时拼图块的水平位置（展示坐标 px） */
   captcha_x?: number;
+  /** 拖动轨迹采样点，语义同 LoginRequest.captcha_path */
+  captcha_path?: SliderTracePoint[];
 }
 
 /** 自助重置第 1 步：提交用户名，面板给账号邮箱发一次性链接 */
@@ -124,8 +126,10 @@ export interface LoginRequest {
   /** 图形验证码：验证方式为「关闭」时不校验，可不传 */
   captcha_id?: string;
   captcha_code?: string;
-  /** 滑块验证码：拖动结束时拼图块的水平位置（展示坐标 px） */
+  /** 滑块验证码：拖动结束时手柄的水平位置（展示坐标 px） */
   captcha_x?: number;
+  /** 拖动轨迹采样点：服务端据此判断是不是人拖的（缺了直接判失败） */
+  captcha_path?: SliderTracePoint[];
 }
 
 /**
@@ -143,13 +147,19 @@ export interface CaptchaChallenge {
   id?: string;
   /** 图形验证码：data:image/png;base64,... */
   image?: string;
-  /* ---- 滑动验证（拖动滑块到最右端即通过，没有图片素材） ---- */
+  /* ---- 滑动验证（把滑块推到最右端） ---- */
   /** 轨道的设计宽度（展示坐标）：手柄宽度与可拖动范围都按它换算百分比 */
   width?: number;
-  /** 手柄宽度（展示坐标）；拖到最右时手柄右缘贴住轨道右缘 */
+  /** 手柄宽度（展示坐标） */
   handle_size?: number;
-  /** 距末端多少 px 以内也算拖到底：前端据此提前给「已达标」的反馈 */
+  /** 到末端还差这么多 px 也算拖到底，前端据此提前给出「已达标」的反馈 */
   tolerance?: number;
+}
+
+/** 滑动验证的轨迹采样点：x 为展示坐标，t 为毫秒时间戳 */
+export interface SliderTracePoint {
+  x: number;
+  t: number;
 }
 
 /** 自助修改个人信息（当前仅邮箱可改） */

@@ -14,7 +14,7 @@
    4. 连接管理页自己就是添加连接的地方，在那儿不再重复提醒。
    ========================================================================== */
 
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
 import { usePveStatus } from '../hooks/usePveStatus';
 import { useT } from '../i18n';

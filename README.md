@@ -104,6 +104,15 @@ sudo ./deploy.sh --port 9000 --mysql-root-password '<root 口令>' \
 `root`），`--skip-frontend` 复用现有 `dist/`（机器上没 Node 时用），`--no-systemd` 只准备
 环境不装服务（无需 root），`--reconfigure` 逐项确认，`--help` 看全部参数。
 
+> 本机构建前端要 Node.js **22.22+**（`react-router 8` 的下限，vite 8 自己也要求 22.12+）。
+> 本机版本不够时 `deploy.sh` 会自己补：先用发行版仓库装（RHEL 9 会切 `nodejs:22` 模块流），
+> 还不行就从 npmmirror / nodejs.org 下载官方二进制，解压到仓库下的 `.node/` 再构建 ——
+> 不改系统源、不动系统里已有的 node，删目录即卸载，重复执行会直接复用。想钉住版本可以
+> `NODE_BOOTSTRAP_VERSION=22.22.1 sudo ./deploy.sh`。
+> 三条都走不通（非 glibc 的 Alpine、完全离线、架构不在支持列表）脚本才会停下给出手工方案：
+> NodeSource / nvm、在别的机器上 `npm run build` 后把 `dist/` 拷过来加 `--skip-frontend`、
+> 或者直接改用 Docker 镜像。宿主机一个 Node 都不装也能跑，只要 `dist/` 是新的。
+
 > `SECRET_KEY` 生成之后别再改，换了它库里已存的 PVE Token、SMTP 口令全都解不开。`.env`
 > 已存在时，脚本只覆盖命令行上显式给出的键。
 

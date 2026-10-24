@@ -190,7 +190,7 @@ export function useReveal(): void {
 
 export function useInView<T extends HTMLElement>(
   threshold = 0.35,
-): [React.RefObject<T>, boolean] {
+): [React.RefObject<T | null>, boolean] {
   const ref = useRef<T>(null);
   const [inView, setInView] = useState(false);
 
@@ -333,7 +333,7 @@ export function useScrollSpy(ids: string[]): string {
 export function useClickOutside<T extends HTMLElement>(
   active: boolean,
   onOutside: () => void,
-): React.RefObject<T> {
+): React.RefObject<T | null> {
   const ref = useRef<T>(null);
 
   useEffect(() => {

@@ -14,7 +14,7 @@
 */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { lxcApi, storagesApi } from '../api/endpoints';
 import { setPageConnection } from '../api/client';
@@ -85,7 +85,7 @@ import { useSnapshotQuota } from '../hooks/useSnapshotQuota';
 import type { RrdPoint, RrdTimeframe } from '../api/types';
 import type { LxcMountConfig, LxcNetworkConfig } from '../api/types';
 
-type TabKey = 'overview' | 'network' | 'storage' | 'snapshot' | 'console';
+type TabKey = 'overview' | 'monitor' | 'network' | 'storage' | 'snapshot' | 'console';
 
 /* 分区页签在组件内构造（文案随语言走），见 LxcDetail 里的 tabs */
 
@@ -108,6 +108,10 @@ const LXC_NIC_SPEC = ['vlan', 'firewall', 'mtu', 'rate'] as const;
    切换手感不一致会让人以为点进了别的页面。 */
 const TABS: Array<{ key: TabKey; labelKey: MessageKey; icon: ReactNode }> = [
   { key: 'overview', labelKey: 'lxcDetail.tabOverview', icon: <IconInfo size={15} /> },
+  /* 监控从概览里独立出来：四条曲线占满整页高度才读得清刻度，挤在概览底部
+     既拉长了概览、又让人以为「概览」就是全部信息。位置与虚拟机详情的
+     「监控」页签一致（VmDetail 的 TABS），两页切过去的肌肉记忆不会打架。 */
+  { key: 'monitor', labelKey: 'lxcDetail.tabMonitor', icon: <IconMonitor size={15} /> },
   { key: 'network', labelKey: 'lxcDetail.tabNetwork', icon: <IconNetwork size={15} /> },
   { key: 'storage', labelKey: 'lxcDetail.tabStorage', icon: <IconStorage size={15} /> },
   { key: 'snapshot', labelKey: 'lxcDetail.tabSnapshot', icon: <IconSnapshot size={15} /> },
@@ -152,7 +156,6 @@ export function LxcDetail() {
     params.set('tab', next);
     setSearchParams(params, { replace: true });
   };
-  const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
   const [pending, setPending] = useState(false);
 
   /* 容器是独立的一套权限（ct.*），与虚拟机的 vm.* 不通用 */
@@ -174,13 +177,8 @@ export function LxcDetail() {
     refetchInterval: pveReady ? refresh : false,
   });
 
-  const rrdQuery = useQuery<RrdPoint[]>({
-    queryKey: ['lxc', node, ctId, 'rrd', timeframe],
-    queryFn: () => lxcApi.rrddata(node, ctId, timeframe),
-    enabled: tab === 'overview' && Boolean(node) && Number.isFinite(ctId),
-    staleTime: 30_000,
-    retry: false,
-  });
+  /* 曲线数据由「监控」页签自己查（见文件末尾的 LxcMonitorTab）：概览不再画图，
+     停留在概览时也就不必每小时桶地拉一次 rrddata。 */
 
   const snapshotsQuery = useQuery({
     queryKey: ['lxc', node, ctId, 'snapshots'],
@@ -866,7 +864,7 @@ export function LxcDetail() {
 
       {/* ==================== 概览 ====================
            骨架与虚拟机详情页的 OverviewTab 逐块对齐：KPI 行跨满 → 左「基本信息」
-           / 右「存储 + 网卡」两列等高 → 四张曲线卡铺在下方的 monitor-grid 里。
+           / 右「存储 + 网卡」两列等高。曲线不在这里 —— 已独立成「监控」页签。
 
            原来这里写的是 `.kpi-grid` 与 `.chart-stack` —— **这两个类全仓库都没有
            CSS 定义**。没有网格容器，4 张 KPI 卡就是 4 个整宽块级元素竖着堆，
@@ -1106,63 +1104,14 @@ export function LxcDetail() {
             </Card>
           </div>
 
-          {/* ---- 曲线：跨两列铺开，四张卡 2×2 ----
-              与虚拟机「监控」Tab 同一套 .monitor-grid（charts.css）：两列网格 +
-              卡片专属内边距 + 悬停描边。四张图各占一张卡，而不是挤在右栏同一张
-              卡里竖着排 —— 半宽栏里 2×2 会把每张图压到 ~240px，坐标轴都读不出
-              刻度。 */}
-          <div className="detail-full">
-            <div className="flex items-center justify-between gap-12 flex-wrap mb-16">
-              {/* 这里用 .card-title 而不是 CardHeader：CardHeader 自带下边框与
-                  14px 外边距，脱离卡片单独摆在工具行里会画出一条悬空的横线 */}
-              <span className="card-title">
-                <IconMonitor size={16} />
-                {t('lxcDetail.monitor')}
-              </span>
-              <SegmentedControl<RrdTimeframe>
-                value={timeframe}
-                onChange={setTimeframe}
-                ariaLabel={t('lxcDetail.monRangeAria')}
-                options={[
-                  { label: t('lxcDetail.tfHour'), value: 'hour' },
-                  { label: t('lxcDetail.tfDay'), value: 'day' },
-                  { label: t('lxcDetail.tfWeek'), value: 'week' },
-                  { label: t('lxcDetail.tfMonth'), value: 'month' },
-                ]}
-              />
-            </div>
-            <div className="monitor-grid">
-              <Card>
-                <CpuChart
-                  points={rrdQuery.data ?? []}
-                  loading={rrdQuery.isLoading}
-                  error={rrdQuery.error}
-                />
-              </Card>
-              <Card>
-                <MemoryChart
-                  points={rrdQuery.data ?? []}
-                  loading={rrdQuery.isLoading}
-                  error={rrdQuery.error}
-                />
-              </Card>
-              <Card>
-                <NetworkChart
-                  points={rrdQuery.data ?? []}
-                  loading={rrdQuery.isLoading}
-                  error={rrdQuery.error}
-                />
-              </Card>
-              <Card>
-                <DiskIoChart
-                  points={rrdQuery.data ?? []}
-                  loading={rrdQuery.isLoading}
-                  error={rrdQuery.error}
-                />
-              </Card>
-            </div>
-          </div>
+          {/* 曲线不在这里了：四条 RRD 曲线已独立成「监控」页签（见 LxcMonitorTab），
+              概览只放读数与配置，切过去看趋势。 */}
         </div>
+      ) : null}
+
+      {/* ==================== 监控 ==================== */}
+      {tab === 'monitor' ? (
+        <LxcMonitorTab node={node} ctId={ctId} enabled={Boolean(node) && Number.isFinite(ctId)} />
       ) : null}
 
       {/* ==================== 网络 ==================== */}
@@ -1586,5 +1535,96 @@ export function LxcDetail() {
         }
       />
     </PageShell>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   监控页签
+
+   四条 RRD 曲线（CPU / 内存 / 网络 / 磁盘 IO）原来压在概览底部：要滚过整块
+   配置信息才看得到曲线，而概览也因此显得没有重点。独立成页后，两条路径各自
+   只说自己那件事。
+
+   数据由本组件自己查：停在概览时不再顺带拉一次 rrddata（原来 enabled 绑的是
+   tab === 'overview'，等于每次进概览都为图形付一次请求）。
+
+   时间范围只影响本页、不写进 URL —— 与虚拟机详情的 MonitorTab 口径一致：
+   页签本身已经进了 URL（?tab=monitor），范围属于浏览时的一次性选择。
+   --------------------------------------------------------------------------- */
+function LxcMonitorTab({
+  node,
+  ctId,
+  enabled,
+}: {
+  node: string;
+  ctId: number;
+  enabled: boolean;
+}) {
+  const t = useT();
+  const [timeframe, setTimeframe] = useState<RrdTimeframe>('hour');
+
+  const rrdQuery = useQuery<RrdPoint[]>({
+    queryKey: ['lxc', node, ctId, 'rrd', timeframe],
+    queryFn: () => lxcApi.rrddata(node, ctId, timeframe),
+    enabled,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  return (
+    <div className="flex flex-col gap-20">
+      <div className="flex items-center justify-between gap-12 flex-wrap">
+        {/* .card-title 而不是 CardHeader：CardHeader 自带下边框与 14px 外边距，
+            脱离卡片单独摆在工具行里会画出一条悬空的横线 */}
+        <span className="card-title">
+          <IconMonitor size={16} />
+          {t('lxcDetail.monitor')}
+        </span>
+        <SegmentedControl<RrdTimeframe>
+          value={timeframe}
+          onChange={setTimeframe}
+          ariaLabel={t('lxcDetail.monRangeAria')}
+          options={[
+            { label: t('lxcDetail.tfHour'), value: 'hour' },
+            { label: t('lxcDetail.tfDay'), value: 'day' },
+            { label: t('lxcDetail.tfWeek'), value: 'week' },
+            { label: t('lxcDetail.tfMonth'), value: 'month' },
+          ]}
+        />
+      </div>
+
+      {/* 与虚拟机「监控」页签同一套 .monitor-grid（charts.css）：两列网格 +
+          卡片专属内边距 + 悬停描边，四张图正好 2×2 */}
+      <div className="monitor-grid">
+        <Card>
+          <CpuChart
+            points={rrdQuery.data ?? []}
+            loading={rrdQuery.isLoading}
+            error={rrdQuery.error}
+          />
+        </Card>
+        <Card>
+          <MemoryChart
+            points={rrdQuery.data ?? []}
+            loading={rrdQuery.isLoading}
+            error={rrdQuery.error}
+          />
+        </Card>
+        <Card>
+          <NetworkChart
+            points={rrdQuery.data ?? []}
+            loading={rrdQuery.isLoading}
+            error={rrdQuery.error}
+          />
+        </Card>
+        <Card>
+          <DiskIoChart
+            points={rrdQuery.data ?? []}
+            loading={rrdQuery.isLoading}
+            error={rrdQuery.error}
+          />
+        </Card>
+      </div>
+    </div>
   );
 }

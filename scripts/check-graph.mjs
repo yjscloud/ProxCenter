@@ -129,13 +129,16 @@ for (const file of scanned) {
 }
 
 const viteConfig = readFileSync('vite.config.ts', 'utf8');
-const chunkBlock = viteConfig.match(/manualChunks:\s*\{([\s\S]*?)\n\s*\}/);
+/* 分包清单已从 `manualChunks: {...}` 改成顶部的 MANUAL_CHUNKS 数据表
+   （Vite 8 / rolldown 不再支持对象形式，见 vite.config.ts 的注释）。
+   表里键是 chunk 名（无引号），值是包名数组 —— 这里只抓引号字符串，即包名。 */
+const chunkBlock = viteConfig.match(/MANUAL_CHUNKS[^=]*=\s*\{([\s\S]*?)\n\};/);
 const chunkNames = chunkBlock
   ? [...chunkBlock[1].matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1])
   : [];
 for (const name of chunkNames) {
   if (!declared.has(rootPkg(name))) {
-    undeclared.add(`vite.config.ts manualChunks -> ${name}`);
+    undeclared.add(`vite.config.ts MANUAL_CHUNKS -> ${name}`);
   }
 }
 
@@ -145,7 +148,7 @@ if (undeclared.size) {
   process.exit(1);
 }
 console.log(
-  `✓ 全部第三方依赖均已声明（${scanned.length} 个文件 + manualChunks ${chunkNames.length} 项）`,
+  `✓ 全部第三方依赖均已声明（${scanned.length} 个文件 + 分包清单 ${chunkNames.length} 项）`,
 );
 
 /* ---------------------------------------------------------------------------

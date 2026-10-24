@@ -13,7 +13,7 @@
    ========================================================================== */
 
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { lxcApi, sshApi, sshFleetApi, vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';

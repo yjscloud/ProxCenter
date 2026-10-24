@@ -9,7 +9,7 @@
    路由 state 一刷新就没了，用户会面对一个空白的输入框发呆。
    ========================================================================== */
 
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { IconSparkle } from './Icons';
 import { Button } from './ui/Button';
 import { useT } from '../i18n';

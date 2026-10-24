@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   clusterApi,

@@ -402,9 +402,9 @@ def manual_commands(
             "--exclude 'backend/data' --exclude 'logs' --exclude 'node_modules' "
             f"--exclude 'dist' --exclude '.venv' /tmp/{name}/ {dep.get('root')}/",
         ]
-        lines.append(
-            "sudo ./deploy.sh" if dep.get("node") else "sudo ./deploy.sh --skip-frontend"
-        )
+        # deploy.sh 会自己处理 Node（不够就下载官方二进制到 .node/），
+        # 所以这里不再按「本机有没有 Node」分叉
+        lines.append("sudo ./deploy.sh")
         return lines
     if git.get("is_git"):
         spec = target or "<新版本 tag>"
@@ -413,15 +413,8 @@ def manual_commands(
             lines.append("# 工作区有未提交改动，先备份/提交：git stash")
         lines.append("sudo git fetch --tags --prune origin")
         lines.append(f"sudo git checkout {spec}")
-        if dep.get("node"):
-            # deploy.sh 是幂等的：装依赖 + 构建前端 + 重启服务，官方升级路径就是它
-            lines.append("sudo ./deploy.sh")
-        else:
-            # 没有 Node 就构建不了前端：只换后端会让界面与后端版本不一致，
-            # 所以要么装 Node，要么在别处构建 dist/ 后带 --skip-frontend 跑
-            lines.append("# 本机没有 Node.js：先在装有 Node 18+ 的机器上构建前端，")
-            lines.append("# 把 dist/ 拷回本目录，再执行：")
-            lines.append("sudo ./deploy.sh --skip-frontend")
+        # deploy.sh 是幂等的：装依赖 + 构建前端 + 重启服务，官方升级路径就是它
+        lines.append("sudo ./deploy.sh")
         return lines
     return [
         "# 源码安装：按 README 的升级步骤重新获取新版本并重跑安装脚本",
@@ -437,6 +430,39 @@ def _which_any(names: Tuple[str, ...]) -> str:
         if found:
             return found
     return ""
+
+
+# 构建前端所需的最低 Node.js 版本（主, 次）：react-router 8 要求 22.22，
+# vite 8 自己要求 22.12 —— 取更严的那个，与 deploy.sh 的 node_ok 是同一根线。
+# 这个值只用于**展示与诊断**（deployment() 告诉界面本机的 Node 够不够），
+# 不再作为「不能更新」的理由：deploy.sh 会自己把版本补齐。
+NODE_MIN = (22, 22)
+
+
+def _node_version() -> str:
+    """主机上 node 的版本串（形如 ``v22.22.1``）；没装或调不通时返回空串。"""
+    exe = shutil.which("node")
+    if not exe:
+        return ""
+    try:
+        out = subprocess.run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (out.stdout or "").strip()
+
+
+def _node_ok(version: str) -> bool:
+    """版本号够不够（按主次版本比，22.9 不算通过）。"""
+    m = re.match(r"v?(\d+)\.(\d+)", version or "")
+    if not m:
+        return False
+    return (int(m.group(1)), int(m.group(2))) >= NODE_MIN
 
 
 def deployment() -> Dict[str, Any]:
@@ -459,6 +485,7 @@ def deployment() -> Dict[str, Any]:
     else:
         form = "other"
     tools = {key: _which_any(names) for key, names in ARCHIVE_TOOLS.items()}
+    node_version = _node_version()
     return {
         "form": form,
         "root": str(ROOT),
@@ -469,7 +496,10 @@ def deployment() -> Dict[str, Any]:
         "managed": bool(service) and git.get("root") == str(ROOT),
         "is_root": is_root,
         "writable": writable,
-        "node": shutil.which("node") is not None,
+        # node 的含义是「可以用来构建前端」：装了但版本太低的，在这里就算不可用，
+        # 否则更新会在 git checkout 之后才失败（见 NODE_MIN 的注释）
+        "node": _node_ok(node_version),
+        "node_version": node_version,
         "systemd_run": shutil.which("systemd-run") is not None,
         "tools": tools,
         "git": git,
@@ -738,16 +768,11 @@ def _apply_ready(
             f"安装目录 {dep.get('root')} 不可写，请用下面的命令手工升级。",
             f"The install directory {dep.get('root')} is not writable; use the commands below.",
         )
-    if not dep.get("node"):
-        # 没有 Node 就构建不了前端。放它过去只会得到「后端换了、界面还是旧的」，
-        # 而新版前端里那些新接口调用会对着一份老 dist 报错 —— 半更新比不更新更难查。
-        return False, i18n.pick(
-            "面板所在主机上没有 Node.js，更新时无法重新构建前端（只换后端会让界面与后端"
-            "版本不一致）。请先装 Node.js 18+，或按下面的命令在别处构建 dist/ 后手工升级。",
-            "No Node.js on the panel host, so the frontend cannot be rebuilt during the update "
-            "(replacing only the backend would leave UI and API out of sync). Install Node.js "
-            "18+ first, or build dist/ elsewhere and upgrade with the commands below.",
-        )
+    # Node.js **不再**是拒绝条件：deploy.sh 发现本机没有、或版本低于 22.22 时，
+    # 会自己下载官方二进制到 .node/ 再构建（见 deploy.sh 的 node_bootstrap）。
+    # 早先这里硬拦，是为了避免「git checkout 之后 deploy.sh 才失败，工作区停在
+    # 新代码 + 旧 dist」；既然脚本能自愈，拦下来只会让本该成功的更新做不了。
+    # deployment() 里的 node / node_version 仍保留，用于界面展示与排查。
     if dep.get("form") == "archive":
         # 源码包安装：没有 git，靠「下载 tar.gz → rsync 覆盖」更新，缺工具就没法做。
         missing = [key for key, path in (dep.get("tools") or {}).items() if not path]

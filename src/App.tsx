@@ -9,7 +9,7 @@
    兜底，专程再发一个网络请求去取它只是让错误页也变慢。
    ========================================================================== */
 
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router';
 import { Suspense, lazy, type ComponentType, type ReactNode } from 'react';
 import { Layout } from './components/Layout';
 import { Spinner } from './components/ui/Spinner';

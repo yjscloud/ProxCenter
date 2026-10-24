@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { Suspense, useEffect, useState, type ReactNode } from 'react';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Sidebar,

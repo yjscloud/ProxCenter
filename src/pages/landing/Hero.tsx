@@ -17,7 +17,7 @@
       用户登录后会找不到。
    ========================================================================== */
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   IconCheck,
   IconChevronRight,

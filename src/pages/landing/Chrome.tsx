@@ -12,7 +12,7 @@
    ========================================================================== */
 
 import { useCallback, useId, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { BrandLogo } from '../../components/BrandLogo';
 import { IconChevronRight, IconClose, IconMenu } from '../../components/Icons';
 import { useClickOutside, useLandingContent } from './hooks';

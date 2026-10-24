@@ -11,7 +11,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   configApi,
@@ -78,6 +78,7 @@ import {
   IconMonitor,
   IconMenu,
   IconPlug,
+  IconKey,
 } from '../components/Icons';
 import { formatDateTime } from '../utils/format';
 import { useToast } from '../hooks/useToast';
@@ -249,6 +250,15 @@ export function Settings() {
       icon: <IconShield size={16} />,
       adminOnly: true,
       render: () => <LoginCaptchaSection />,
+    },
+    {
+      id: 'session',
+      group: 'server',
+      label: t('settings.secSession'),
+      desc: t('settings.secSessionDesc'),
+      icon: <IconKey size={16} />,
+      adminOnly: true,
+      render: () => <SessionPolicySection />,
     },
     {
       id: 'hardening',
@@ -1774,6 +1784,176 @@ function LoginCaptchaSection() {
 /* ---------------------------------------------------------------------------
    区块 4.3：面板全局地址（邮件 / 飞书回调里拼链接用的外部域名）
    --------------------------------------------------------------------------- */
+
+/* ==========================================================================
+   会话有效期（管理员可调）
+
+   两个数字：访问令牌多少分钟过期、会话（refresh token）保留几天。存 settings
+   KV，写入时后端刷新进程内缓存 —— 改完立即生效，不用重启面板。
+
+   这里用「输入 + 保存」而不是像验证码那样即时生效：数字不像三选一，敲到一半
+   的半截值（想把 7 改成 70，中途会经过 70 之外的 7、0）不该被当成新配置。
+
+   范围校验放在两端：前端只拦明显的非整数（提示更友好），真正的边界由后端
+   pydantic 的 ge/le 兜底 —— 前端能改，不能信。
+   ========================================================================== */
+
+interface SessionPolicyData {
+  access_minutes: number;
+  refresh_days: number;
+  limits: {
+    access_min: number;
+    access_max: number;
+    refresh_min: number;
+    refresh_max: number;
+  };
+  defaults: { access_minutes: number; refresh_days: number };
+}
+
+function SessionPolicySection() {
+  const t = useT();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission('settings.manage');
+
+  const query = useQuery<SessionPolicyData>({
+    queryKey: ['config', 'session'],
+    queryFn: configApi.getSessionPolicy,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const [access, setAccess] = useState('');
+  const [refresh, setRefresh] = useState('');
+  const [busy, setBusy] = useState(false);
+  /* 只在首次拿到服务端值时回填，之后重渲染不能覆盖用户正在输入的内容 */
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (!query.data || loadedRef.current) return;
+    loadedRef.current = true;
+    setAccess(String(query.data.access_minutes));
+    setRefresh(String(query.data.refresh_days));
+  }, [query.data]);
+
+  const save = async () => {
+    if (!canManage || busy) return;
+    const accessMinutes = Number(access);
+    const refreshDays = Number(refresh);
+    if (!Number.isInteger(accessMinutes) || !Number.isInteger(refreshDays)) {
+      toast.error(t('settings.sessionInvalid'));
+      return;
+    }
+    setBusy(true);
+    try {
+      const saved = await configApi.saveSessionPolicy({
+        access_minutes: accessMinutes,
+        refresh_days: refreshDays,
+      });
+      setAccess(String(saved.access_minutes));
+      setRefresh(String(saved.refresh_days));
+      void queryClient.invalidateQueries({ queryKey: ['config', 'session'] });
+      toast.success(t('settings.sessionUpdated'));
+    } catch (err) {
+      toast.error(t('common.opFailed'), errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const limits = query.data?.limits;
+  const defaults = query.data?.defaults;
+
+  return (
+    <Card>
+      <CardHeader
+        title={t('settings.sessionTitle')}
+        subtitle={t('settings.sessionSubtitle')}
+        icon={<IconKey size={17} />}
+        actions={
+          busy ? (
+            <Badge variant="info" size="sm">
+              {t('settings.navSaving')}
+            </Badge>
+          ) : undefined
+        }
+      />
+
+      <div className="set-cols mt-16">
+        <div className="set-col">
+          <Field
+            label={t('settings.sessionAccessLabel')}
+            hint={
+              limits
+                ? t('settings.sessionAccessHint', {
+                    min: limits.access_min,
+                    max: limits.access_max,
+                  })
+                : t('settings.sessionAccessLabel')
+            }
+          >
+            <Input
+              type="number"
+              inputMode="numeric"
+              value={access}
+              min={limits?.access_min}
+              max={limits?.access_max}
+              disabled={!canManage || busy}
+              onChange={(event) => setAccess(event.target.value)}
+            />
+          </Field>
+        </div>
+
+        <div className="set-col">
+          <Field
+            label={t('settings.sessionRefreshLabel')}
+            hint={
+              limits
+                ? t('settings.sessionRefreshHint', {
+                    min: limits.refresh_min,
+                    max: limits.refresh_max,
+                  })
+                : t('settings.sessionRefreshLabel')
+            }
+          >
+            <Input
+              type="number"
+              inputMode="numeric"
+              value={refresh}
+              min={limits?.refresh_min}
+              max={limits?.refresh_max}
+              disabled={!canManage || busy}
+              onChange={(event) => setRefresh(event.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-12 mt-16 flex-wrap">
+        <Button
+          onClick={() => void save()}
+          disabled={!canManage || busy || !query.data}
+          icon={<IconSave size={15} />}
+        >
+          {t('settings.sessionSave')}
+        </Button>
+        {defaults ? (
+          <span className="text-muted text-sm">
+            {t('settings.sessionDefaultHint', {
+              n: defaults.access_minutes,
+              d: defaults.refresh_days,
+            })}
+          </span>
+        ) : null}
+      </div>
+
+      <Notice tone="info" title={t('settings.sessionNoticeTitle')}>
+        {t('settings.sessionNoticeBody')}
+      </Notice>
+    </Card>
+  );
+}
 
 function PanelUrlSection() {
   const t = useT();

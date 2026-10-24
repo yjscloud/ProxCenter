@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useIsFetching, useQuery } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { healthApi } from '../api/endpoints';
 import { useAuth } from '../hooks/useAuth';
 import { useUiPrefs } from '../hooks/useUiPrefs';

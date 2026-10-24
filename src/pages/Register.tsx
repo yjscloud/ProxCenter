@@ -4,7 +4,7 @@
    ========================================================================== */
 
 import { useCallback, useRef, useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { authApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
@@ -12,6 +12,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Notice } from '../components/ui/EmptyState';
 import { SliderCaptcha } from '../components/SliderCaptcha';
+import type { SliderTracePoint } from '../api/types';
 import {
   IconAlert,
   IconCheck,
@@ -58,8 +59,11 @@ export function Register() {
 
   /* 滑块位置只在提交时读一次，拖动过程中不触发整表单重渲染（同登录页） */
   const sliderXRef = useRef(0);
-  const handleSliderPosition = useCallback((x: number) => {
+  /* 拖动轨迹：只交坐标不交轨迹会被服务端判失败（安全审计 H-1） */
+  const sliderPathRef = useRef<SliderTracePoint[]>([]);
+  const handleSliderPosition = useCallback((x: number, path: SliderTracePoint[]) => {
     sliderXRef.current = x;
+    sliderPathRef.current = path;
     if (x > 0) {
       setErrors((prev) => (prev.captcha ? { ...prev, captcha: undefined } : prev));
     }
@@ -99,10 +103,8 @@ export function Register() {
     if (captchaMode === 'image' && !captchaCode.trim()) {
       next.captcha = t('auth.err.captchaRequired');
     } else if (captchaMode === 'slider') {
-      /* 与后端同一阈值：没拖到底就本地拦下，省一次必然失败的往返 */
-      const max =
-        (captchaQ.data?.width ?? 320) - (captchaQ.data?.handle_size ?? 56);
-      if (sliderXRef.current < max - (captchaQ.data?.tolerance ?? 6)) {
+      /* 目标位置只在轨道图里，本地只能拦「压根没拖」，对齐与否交给服务端 */
+      if (sliderXRef.current <= 0) {
         next.captcha = t('auth.err.sliderRequired');
       }
     }
@@ -127,6 +129,7 @@ export function Register() {
         captcha_code:
           captchaMode === 'image' ? captchaCode.trim() : undefined,
         captcha_x: captchaMode === 'slider' ? sliderXRef.current : undefined,
+        captcha_path: captchaMode === 'slider' ? sliderPathRef.current : undefined,
       });
       setDone(true);
     } catch (err) {

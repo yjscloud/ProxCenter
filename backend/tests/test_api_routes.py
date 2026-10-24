@@ -262,6 +262,18 @@ def set_captcha_mode(api, mode: str) -> None:
     assert resp.json()["mode"] == mode
 
 
+def drag_trace(target: int, points: int = 8, duration_ms: int = 400) -> list:
+    """构造一条「像人拖出来的」轨迹：单调递增的采样点 + 合理耗时。
+
+    末点必须等于提交的 captcha_x（服务端会核对），首点是 0（起手位置）。
+    """
+    out = []
+    for i in range(points):
+        ratio = i / (points - 1)
+        out.append({"x": round(target * ratio), "t": round(duration_ms * ratio)})
+    return out
+
+
 class TestLoginCaptchaMode:
     """三档验证方式与滑块拼图。
 
@@ -326,13 +338,15 @@ class TestLoginCaptchaMode:
         assert resp.status_code == 400
         assert "验证码" in resp.json()["detail"]
 
-    def test_slider_mode_requires_dragging_to_end(self, api) -> None:
-        """滑块判的是「有没有拖到底」，不是「有没有对上某个位置」。
+    def test_slider_requires_position_and_human_trace(self, api) -> None:
+        """滑块的判据（外观回到「拖到底」之后的形态）。
 
-        这条用例曾经按旧语义（拖到目标附近才算过）写成 `captcha_x = target + 40`
-        并断言 400 —— 但改版后判据是 `x >= target - tolerance`，那个值反而**超过**
-        阈值被判成「已拖到底」，于是登录成功、断言炸成 `assert 200 == 400`。
-        这里按现在的语义重写，并把容差边界一起钉住。
+        · 判定是 `x >= 右端点 - tolerance`，答案前端自己就能算，**不下发**；
+        · 必须交拖动轨迹 —— 只交一个坐标的脚本直接判负（H-1 的复现路径）；
+        · 没拖到末端（差得比容差还多）→ 拒。
+
+        「拖到底」本身是 v2 的老判据，弱点是没有过程；这条用例守住的是
+        「光有坐标、没有轨迹」和「没拖到头」两条路都走不通。
         """
         from app import captcha as captcha_mod
 
@@ -340,74 +354,82 @@ class TestLoginCaptchaMode:
         ch = api.get("/api/auth/captcha").json()
         assert ch["required"] is True
         assert ch["mode"] == "slider"
-        # 滑块没有拼图也没有图片素材：只给几何量与 id，前端据此算可拖动范围。
-        # （早先这里是 background / piece / piece_size 那套拼图字段，改版后没有了）
         assert ch["width"] > 0
         assert 0 < ch["handle_size"] < ch["width"]
         assert ch["tolerance"] >= 0
-        assert not any(
-            isinstance(v, str) and v.startswith("data:image") for v in ch.values()
-        )
-        # 目标位置不返回给前端 —— 它只留在服务端内存里
-        assert "x" not in ch and "target" not in ch
+        # 答案（右端点）由前端本地算，服务端不告诉它 —— 响应里不该有坐标
+        assert "target" not in ch and "x" not in ch
 
         target = captcha_mod._sliders[ch["id"]][0]
+        assert target == captcha_mod.slider_pass_x()
 
-        # 压根没拖（x=0）→ 400，且提示与图形码区分开，前端才知道该标红滑块
-        bad = api.post(
+        # 1) 复现 H-1 的脚本：位置完全正确，但没有轨迹 → 必须被拒
+        scripted = api.post(
             "/api/auth/login",
-            json={**ADMIN, "captcha_id": ch["id"], "captcha_x": 0},
+            json={**ADMIN, "captcha_id": ch["id"], "captcha_x": target},
             headers=csrf_headers(api),
         )
-        assert bad.status_code == 400
-        assert "滑块" in bad.json()["detail"]
+        assert scripted.status_code == 400, scripted.text
+        assert "滑块" in scripted.json()["detail"]
 
-        # 差一点点也算没到底：target - tolerance - 1 必须被拒。这条是边界——
-        # 把「差这么多 px 以内也算拖到底」的余量钉死，避免判定被悄悄放宽。
-        short_of_end = captcha_mod.SLIDER_TOLERANCE + 1
-        near = api.get("/api/auth/captcha").json()
-        near_target = captcha_mod._sliders[near["id"]][0]
-        short = api.post(
+        # 2) 有轨迹但没拖到末端（差得比容差还多）→ 拒
+        off = api.get("/api/auth/captcha").json()
+        off_target = captcha_mod._sliders[off["id"]][0]
+        miss = off_target - captcha_mod.SLIDER_TOLERANCE - 5
+        wrong = api.post(
             "/api/auth/login",
             json={
                 **ADMIN,
-                "captcha_id": near["id"],
-                "captcha_x": near_target - short_of_end,
+                "captcha_id": off["id"],
+                "captcha_x": miss,
+                "captcha_path": drag_trace(miss),
             },
             headers=csrf_headers(api),
         )
-        assert short.status_code == 400
+        assert wrong.status_code == 400
 
-        # 换一道题、拖到位 → 正常登录
+        # 3) 位置对 + 轨迹像人拖的 → 正常登录
         fresh = api.get("/api/auth/captcha").json()
         answer = captcha_mod._sliders[fresh["id"]][0]
         ok = api.post(
             "/api/auth/login",
-            json={**ADMIN, "captcha_id": fresh["id"], "captcha_x": answer},
+            json={
+                **ADMIN,
+                "captcha_id": fresh["id"],
+                "captcha_x": answer,
+                "captcha_path": drag_trace(answer),
+            },
             headers=csrf_headers(api),
         )
         assert ok.status_code == 200, ok.text
         assert ok.json()["user"]["username"] == "admin"
 
-        # 一次性：同一个 id 再提交必然失败
+        # 4) 一次性：同一个 id 再提交必然失败
         reused = api.post(
             "/api/auth/login",
-            json={**ADMIN, "captcha_id": fresh["id"], "captcha_x": answer},
+            json={
+                **ADMIN,
+                "captcha_id": fresh["id"],
+                "captcha_x": answer,
+                "captcha_path": drag_trace(answer),
+            },
             headers=csrf_headers(api),
         )
         assert reused.status_code == 400
 
-    def test_slider_target_never_sits_at_origin(self) -> None:
-        """目标位置恒大于 0。
+    def test_slider_does_not_leak_pass_x(self) -> None:
+        """签发的题目不带答案：通过位置固定为右端点，留给前端本地算。
 
-        前端把 ``x = 0`` 当作「还没拖过」用来做本地校验，两者不能撞上 ——
-        撞上就会出现「什么都没做却被判定已验证」。
+        这一条钉住「响应里没有坐标」—— 一旦有人把 target 塞回 JSON，
+        脚本读一下就知道该拖到哪，轨迹校验就成了唯一的门槛。
         """
         from app import captcha as captcha_mod
 
-        for _ in range(20):
+        for _ in range(5):
             ch = captcha_mod.issue_slider()
-            assert captcha_mod._sliders[ch["id"]][0] > 0
+            assert "target" not in ch
+            assert ch["handle_size"] < ch["width"]
+            assert captcha_mod._sliders[ch["id"]][0] == captcha_mod.SLIDER_W - captcha_mod.SLIDER_HANDLE
 
 
 # -------------------------------------------------------------- read routes
@@ -1648,8 +1670,25 @@ class TestRbac:
             api.post("/api/vms/pve1/100/status/start", headers=ops).status_code
             == 200
         )
-        # 名下之外的虚拟机（无归属的模板 9000）被归属守卫拦下
-        assert api.delete("/api/vms/pve1/9000", headers=ops).status_code == 403
+        # 名下之外的虚拟机（无归属的模板 9000）被归属守卫拦下。
+        # 状态码是 404 而不是 403：403 等于承认「这台机器存在，只是不属于你」，
+        # 拿号段批量打一遍就能枚举全平台的 VMID（安全审计 L-2）。
+        assert api.delete("/api/vms/pve1/9000", headers=ops).status_code == 404
+
+    def test_operator_task_queue_is_scoped_to_own_guests(self, api) -> None:
+        """任务面与客户机同源隔离（安全审计 M-1）。
+
+        改版前 operator 能读到全平台任务：他人 VMID、root@pam!master 身份、
+        开关机时间、PID。现在只保留「自己名下机器的任务」—— 节点级 / 存储级
+        任务（没有归属可判）也一并不对外暴露。
+        """
+        ops = self._make_user(api, "o9", "operator")
+        resp = api.get("/api/tasks", headers=ops)
+        assert resp.status_code == 200
+        for task in resp.json():
+            upid = task.get("upid", "")
+            parts = upid.split(":")
+            assert len(parts) >= 7 and parts[5].startswith(("qm", "vz")), upid
 
     def test_operator_cannot_manage_users(self, api) -> None:
         ops = self._make_user(api, "o2", "operator")
@@ -2106,13 +2145,23 @@ class TestRegistrationApproval:
             assert any("验证码" in str(r["detail"]) for r in rows["items"])
         finally:
             settings.login_captcha = False
+            # 复位验证方式：只关 settings.login_captcha 是不够的，在线配置
+            # （settings 表里的 login_captcha_mode）优先级更高。删掉这一行即
+            # 回落到默认（拖动滑块），否则下面重新登录拿 admin 令牌会被要求
+            # 图形验证码，整条用例红掉。
+            delete_setting_sync("login_captcha_mode")
 
-        # 账号确实进了审批队列
+        # 账号确实进了审批队列。这里只认「本用例建的那个账号」——
+        # 断言整个 pending 列表等于某个固定值会让用例依赖别的用例留下的数据，
+        # 顺序一变（或者只跑部分用例）就红。
         admin = auth_headers(api)
         pending = api.get("/api/users?status=pending", headers=admin)
         assert pending.status_code == 200
-        assert [u["username"] for u in pending.json()] == ["newbie"]
-        assert pending.json()[0]["status"] == "pending"
+        row = next(
+            (u for u in pending.json() if u["username"] == "captchareg"), None
+        )
+        assert row is not None, pending.text
+        assert row["status"] == "pending"
 
     def test_register_rejects_duplicate_and_weak_input(self, api) -> None:
         assert self._register(api, "dup2").status_code == 201

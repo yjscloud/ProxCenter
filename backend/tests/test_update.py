@@ -84,6 +84,7 @@ def _dep(**over: Any) -> Dict[str, Any]:
         "is_root": True,
         "writable": True,
         "node": True,
+        "node_version": "v24.22.1",
         "systemd_run": True,
         "git": {
             "is_git": True,
@@ -96,6 +97,10 @@ def _dep(**over: Any) -> Dict[str, Any]:
         },
     }
     base.update(over)
+    # 「没装 Node」的那些用例不该顺带带上一份版本号：带了就会落进「版本太低」
+    # 那条分支，断言看起来仍然过（提示里都含 Node），实际测的是另一条路径。
+    if not base.get("node") and "node_version" not in over:
+        base["node_version"] = ""
     return base
 
 
@@ -213,10 +218,26 @@ class TestApplyGuards:
         ready, reason = update._apply_ready(_dep(writable=False), {})
         assert not ready and "不可写" in reason
 
-    def test_missing_node_is_refused(self) -> None:
-        """没有 Node 就构建不了前端：放行只会得到「后端换了、界面还是旧的」。"""
-        ready, reason = update._apply_ready(_dep(node=False), {})
-        assert not ready and "Node" in reason
+    def test_missing_node_does_not_block_update(self) -> None:
+        """没有 Node 也放行：deploy.sh 会自己下载官方二进制到 .node/。
+
+        早先这里会硬拦（当时脚本装不上 Node，放行只会得到「后端换了、界面还是旧的」）。
+        现在脚本能自愈，拦下来就是把本该成功的更新挡在门外。
+        """
+        assert update._apply_ready(_dep(node=False), {}) == (True, "")
+
+    def test_old_node_does_not_block_update(self) -> None:
+        """版本太低同理：脚本会补装，不用拦。"""
+        ready, reason = update._apply_ready(_dep(node=False, node_version="v18.19.1"), {})
+        assert ready, reason
+
+    def test_node_version_boundary(self) -> None:
+        """22.21 不行、22.22 才行：vite 8 只要 22.12，但 react-router 8 要 22.22。"""
+        assert update._node_ok("v22.21.1") is False
+        assert update._node_ok("v22.22.0") is True
+        assert update._node_ok("v24.22.1") is True
+        assert update._node_ok("") is False
+        assert update._node_ok("not-a-version") is False
 
     def test_no_remote_is_refused(self) -> None:
         git = dict(_dep()["git"], remote="")
@@ -246,10 +267,10 @@ class TestManualCommands:
         assert lines[-1] == "sudo ./deploy.sh"
         assert any("git checkout v0.1.5" in line for line in lines)
 
-    def test_git_without_node_explains_skip_frontend(self) -> None:
+    def test_git_without_node_still_uses_deploy_sh(self) -> None:
+        """没 Node 也给 `./deploy.sh`：它会自己下载（不再教用户 `--skip-frontend`）。"""
         lines = update.manual_commands(_dep(node=False), "v0.1.5")
-        assert lines[-1] == "sudo ./deploy.sh --skip-frontend"
-        assert any("构建前端" in line for line in lines)
+        assert lines[-1] == "sudo ./deploy.sh"
 
 
 class TestDirtyPaths:

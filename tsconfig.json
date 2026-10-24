@@ -40,9 +40,10 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
 
-    "baseUrl": ".",
+    /* TypeScript 7 已移除 baseUrl：paths 必须写成相对路径（'./src/*'），
+       否则报 TS5102 / TS5090。解析行为与旧的 baseUrl + "src/*" 等价。 */
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     },
     "types": ["vite/client"]
   },

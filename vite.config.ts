@@ -39,6 +39,35 @@ function writeBuildInfo(): Plugin {
   };
 }
 
+/* ---------------------------------------------------------------------------
+   手动分包清单：键 = chunk 名，值 = 归属该 chunk 的包名。
+
+   每一条都必须是**已声明的依赖**：分包清单里写了却装不到的包会直接让构建
+   失败（"Could not resolve entry module"），而且只在全新 npm install 的环境
+   里才暴露 —— 开发机上如果 node_modules 里恰好有那个包，本地照样能构建。
+   scripts/check-graph.mjs 会核对这张表与 package.json。
+
+   写成数据表而不是内联在 output 里，是因为 Vite 8 换用 rolldown 后
+   `output.manualChunks` 的对象形式已不存在（Rollup 专有），改为
+   `output.codeSplitting.groups` + 正则 test；保留一份纯包名清单，
+   既方便脚本核对，也让「哪些包进哪个 chunk」一眼可见。
+   --------------------------------------------------------------------------- */
+const MANUAL_CHUNKS: Record<string, string[]> = {
+  react: ['react', 'react-dom', 'react-router'],
+  query: ['@tanstack/react-query', 'axios'],
+  charts: ['recharts'],
+  // 控制台只用 @novnc/novnc（xterm / xterm-addon-fit 早已不用）。
+  console: ['@novnc/novnc'],
+};
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 包名清单 → rolldown 的分组规则（命中 node_modules 下该包目录的模块）。 */
+const chunkGroup = ([name, pkgs]: [string, string[]]) => ({
+  name,
+  test: new RegExp(`[\\\\/]node_modules[\\\\/](?:${pkgs.map(escapeRegExp).join('|')})[\\\\/]`),
+});
+
 export default defineConfig({
   plugins: [react(), writeBuildInfo()],
   resolve: {
@@ -69,27 +98,23 @@ export default defineConfig({
     rollupOptions: {
       output: {
         // 把体积大且很少变动的依赖拆出来，避免主包过大、
-        // 也让浏览器能长期缓存它们。
-        // 这里的每一个名字都必须是**已声明的依赖**：manualChunks 是给 Rollup 的
-        // 入口清单，写进来却装不到的包会直接让构建失败
-        // （"Could not resolve entry module"），而且只在全新 npm install 的环境里
-        // 才暴露 —— 开发机上如果 node_modules 里恰好有那个包，本地照样能构建。
-        // 控制台只用 @novnc/novnc（xterm / xterm-addon-fit 早已不用）。
-        // scripts/check-graph.mjs 会核对这张表与 package.json。
-        manualChunks: {
-          react: ['react', 'react-dom', 'react-router-dom'],
-          query: ['@tanstack/react-query', 'axios'],
-          charts: ['recharts'],
-          console: ['@novnc/novnc'],
+        // 也让浏览器能长期缓存它们。清单见文件顶部的 MANUAL_CHUNKS。
+        codeSplitting: {
+          groups: [
+            ...Object.entries(MANUAL_CHUNKS).map(chunkGroup),
+            // i18n 字典（en / zh-CN 各 400KB+ 源码）被所有页面共享，体积比任何
+            // 业务页面都大。不显式命名时，rolldown 会把它并进「首个引用它的
+            // 模块」所在的 chunk，产物里出现过 LanguageSelect-*.js 786KB 这种
+            // 完全看不出内容的文件名 —— 排查体积和缓存问题时会被误导。
+            { name: 'i18n', test: /[\\/]src[\\/]i18n[\\/]/ },
+          ],
         },
       },
     },
     chunkSizeWarningLimit: 700,
   },
-  optimizeDeps: {
-    esbuildOptions: {
-      // 开发模式下预构建同样需要允许顶层 await。
-      target: 'esnext',
-    },
-  },
+  /* 这里原本有 optimizeDeps.esbuildOptions.target = 'esnext'（放开顶层 await）。
+     Vite 8 的依赖预构建已从 esbuild 换成 rolldown/oxc，该字段被标记废弃，
+     而 rolldown 默认就按现代语法处理、不再降级顶层 await，所以整块删掉；
+     dev 启动与 build 均已验证可用（见 README 的升级说明）。 */
 });

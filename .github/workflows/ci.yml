@@ -74,8 +74,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # vite 5 要求 Node 18+，本仓用 20 验证
-          node-version: "20"
+          # vite 8 要求 Node 20.19+ / 22.12+，本仓用 24（当前 LTS）验证
+          node-version: "24"
           cache: npm
 
       - name: 安装依赖

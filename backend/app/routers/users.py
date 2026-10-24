@@ -54,11 +54,18 @@ router = APIRouter(prefix="/api", tags=["users"])
 async def list_roles(
     user: Dict[str, Any] = Depends(security.get_current_user),
 ) -> List[Dict[str, Any]]:
-    """角色目录（含 admin 自建的角色），用于用户界面的下拉与权限预勾选。"""
+    """角色目录（含 admin 自建的角色），用于用户界面的下拉与权限预勾选。
+
+    **权限矩阵只给能管用户的人**（``users.view``，即 /api/roles 的门槛）。
+    普通登录用户拿角色名与说明就够了；完整的权限清单是管理面的信息，交出去
+    等于把「这个面板有哪些能力、谁能做什么」整套摊开（V2-04）。
+    """
+    can_see_permissions = security.has_user_permission(user, "users.view")
     roles = await store.list_roles()
-    return [
-        {
-            # 同时给出 id 与 role：前端新的角色模型用 id，旧代码用 role
+    items: List[Dict[str, Any]] = []
+    for item in roles:
+        # 同时给出 id 与 role：前端新的角色模型用 id，旧代码用 role
+        entry: Dict[str, Any] = {
             "id": item["id"],
             "role": item["id"],
             # 内置角色的名称与说明按请求语言返回（与 /api/roles 保持一致，
@@ -66,11 +73,12 @@ async def list_roles(
             # 自定义角色是用户自己起的名字，译表查不到就原样透传（见 i18n.tr）。
             "name": i18n.tr(item.get("name") or item["id"]),
             "description": i18n.tr(item.get("description") or ""),
-            "permissions": item.get("permissions") or [],
             "builtin": bool(item.get("builtin")),
         }
-        for item in roles
-    ]
+        if can_see_permissions:
+            entry["permissions"] = item.get("permissions") or []
+        items.append(entry)
+    return items
 
 
 @router.get("/users")

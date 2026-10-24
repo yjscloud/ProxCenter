@@ -2479,9 +2479,10 @@ function ConversationsPanel({
  * 这是个会**登录到用户服务器上执行命令**的功能。让人在按下按钮之前就知道边界，
  * 比把说明藏起来要好 —— 不清楚它能干什么时，人要么不敢用，要么误以为它什么都能干。
  *
- * 工具清单与命令白名单 / 黑名单都由后端从 aitools 实时生成
- * （/api/ai/capabilities），所以不会出现「文档说能做、代码其实做不了」这种
- * 最伤信任的情况 —— 用户判断「敢不敢把机器交给它」，靠的正是这些具体清单。
+ * 工具清单由后端从 aitools 实时生成、并**按当前用户的权限过滤**
+ * （/api/ai/capabilities）：看不到的工具，模型就算被诱导着点名也跑不起来。
+ * 命令白名单 / 参数黑名单这类判定规则只留在服务端 —— 页面展示它们对用户没有
+ * 帮助，对探测者却是一份现成的绕过指南。
  */
 function CapabilitiesModal({
   open,
@@ -2500,36 +2501,6 @@ function CapabilitiesModal({
   const tools = query.data?.tools ?? [];
   const internal = tools.filter((item) => item.kind === 'internal');
   const host = tools.filter((item) => item.kind === 'host');
-  const policy = query.data?.policy;
-
-  /** 字符黑名单：换行没法直接显示成一个字符，换成词条说清楚，其余原样展示。 */
-  const deniedMetachars = useMemo(() => {
-    const out: string[] = [];
-    for (const item of policy?.denied_metachars ?? []) {
-      const label = item === '\n' || item === '\r' ? t('ai.policyMetacharNewline') : item;
-      if (!out.includes(label)) out.push(label);
-    }
-    return out;
-  }, [policy, t]);
-
-  /**
-   * 逐命令的参数限制：后端把「子命令白名单 / 参数黑名单 / 子串黑名单」分成三张表，
-   * 这里按命令名并成一行一条 —— 按表分开列，用户得自己来回对照哪个限制属于谁。
-   */
-  const commandRules = useMemo(() => {
-    if (!policy) return [];
-    const names = new Set([
-      ...Object.keys(policy.subcommand_allow),
-      ...Object.keys(policy.token_deny),
-      ...Object.keys(policy.substr_deny),
-    ]);
-    return [...names].sort().map((name) => ({
-      name,
-      allow: policy.subcommand_allow[name] ?? [],
-      deny: policy.token_deny[name] ?? [],
-      substr: policy.substr_deny[name] ?? [],
-    }));
-  }, [policy]);
 
   return (
     <Modal
@@ -2580,117 +2551,10 @@ function CapabilitiesModal({
             ))}
           </section>
 
-          {/* 白名单 / 黑名单：上面说的是「能做什么」，这里把「具体允许什么、
-              一律拒绝什么」摊开。清单来自后端与执行时同一份规则，所以不会
-              出现「说明页写得很安全、实际校验是另一套」的情况。 */}
-          {policy ? (
-            <section className="ai-policy">
-              <strong className="fs-sm">{t('ai.policyTitle')}</strong>
-              <span className="fs-xs text-muted">{t('ai.policyHint')}</span>
-
-              <div className="ai-policy-block">
-                <span className="ai-policy-label">
-                  {t('ai.policyReadonlyTitle', { n: policy.readonly_commands.length })}
-                </span>
-                <span className="fs-xs text-muted">{t('ai.policyReadonlyHint')}</span>
-                <div className="ai-chip-row">
-                  {policy.readonly_commands.map((name) => (
-                    <code key={name} className="ai-chip">
-                      {name}
-                    </code>
-                  ))}
-                </div>
-              </div>
-
-              <div className="ai-policy-block">
-                <span className="ai-policy-label">{t('ai.policyMetacharTitle')}</span>
-                <span className="fs-xs text-muted">{t('ai.policyMetacharHint')}</span>
-                <div className="ai-chip-row">
-                  {deniedMetachars.map((item) => (
-                    <code key={item} className="ai-chip ai-chip-deny">
-                      {item}
-                    </code>
-                  ))}
-                </div>
-              </div>
-
-              {commandRules.length > 0 ? (
-                <div className="ai-policy-block">
-                  <span className="ai-policy-label">{t('ai.policyParamTitle')}</span>
-                  {commandRules.map((rule) => (
-                    <div key={rule.name} className="ai-policy-rule">
-                      <code className="ai-chip">{rule.name}</code>
-                      {rule.allow.length > 0 ? (
-                        <span className="fs-xs text-muted">
-                          {t('ai.policyParamSubAllow')}：{rule.allow.join(' / ')}
-                        </span>
-                      ) : null}
-                      {rule.deny.length > 0 ? (
-                        <span className="fs-xs text-danger">
-                          {t('ai.policyParamTokenDeny')}：{rule.deny.join(' / ')}
-                        </span>
-                      ) : null}
-                      {rule.substr.length > 0 ? (
-                        <span className="fs-xs text-danger">
-                          {t('ai.policyParamSubstrDeny')}：{rule.substr.join(' / ')}
-                        </span>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <div className="ai-policy-block">
-                <span className="ai-policy-label">{t('ai.policyPathTitle')}</span>
-                <div className="ai-chip-row">
-                  <span className="fs-xs text-muted">{t('ai.policyPathDirs')}：</span>
-                  {policy.allowed_dirs.map((item) => (
-                    <code key={item} className="ai-chip">
-                      {item}
-                    </code>
-                  ))}
-                </div>
-                <div className="ai-chip-row">
-                  <span className="fs-xs text-muted">{t('ai.policyPathFiles')}：</span>
-                  {policy.allowed_files.map((item) => (
-                    <code key={item} className="ai-chip">
-                      {item}
-                    </code>
-                  ))}
-                </div>
-                <span className="fs-xs text-danger">
-                  {t('ai.policyPathForbidden')}：{policy.forbidden_hints.join(' / ')}
-                </span>
-              </div>
-
-              <div className="ai-policy-block">
-                <span className="ai-policy-label">{t('ai.policyWriteTitle')}</span>
-                <span className="fs-xs text-muted">{t('ai.policyWriteHint')}</span>
-                <div className="flex flex-col gap-4">
-                  {policy.write_forbidden.map((item) => (
-                    <span key={item} className="fs-xs text-danger">
-                      · {item}
-                    </span>
-                  ))}
-                </div>
-                <span className="fs-xs text-muted">
-                  {t('ai.policyWriteLimit', { n: policy.max_write_length })}
-                </span>
-              </div>
-
-              <div className="ai-policy-block">
-                <span className="ai-policy-label">{t('ai.policyImplTitle')}</span>
-                <ol className="ai-policy-steps">
-                  <li>{t('ai.policyImplTemplate')}</li>
-                  <li>{t('ai.policyImplArgs')}</li>
-                  <li>{t('ai.policyImplQuote')}</li>
-                  <li>{t('ai.policyImplSudo')}</li>
-                  <li>{t('ai.policyImplAudit')}</li>
-                </ol>
-                <span className="fs-xs text-muted">{t('ai.policyImplAccount')}</span>
-              </div>
-            </section>
-          ) : null}
+          {/* 命令白名单 / 参数黑名单 / 路径白名单**不再下发前端**：它们是服务端
+              的判定依据，页面只需要「能做什么」。清单留在服务端也少一份可被
+              逐条试探的绕过指南（V2-04）。 */}
+          <p className="fs-xs text-muted">{t('ai.capPolicyServerSide')}</p>
 
           <Notice tone="warning" title={t('ai.capLimitTitle')}>
             {t('ai.capLimitBody', {

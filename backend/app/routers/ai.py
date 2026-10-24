@@ -172,8 +172,13 @@ async def models(user: Dict[str, Any] = Depends(VIEW)) -> Dict[str, Any]:
 
 @router.get("/capabilities")
 async def capabilities(user: Dict[str, Any] = Depends(VIEW)) -> Dict[str, Any]:
-    """这个助手能做什么：工具清单 + 边界。给页面上的「能力说明」用。"""
-    return ai.capabilities()
+    """这个助手能做什么：工具名 + 描述 + 步数上限。
+
+    按当前用户的生效权限过滤（没有 ``ai.exec`` 就没有「改动系统的命令」，
+    没有 ``ssh.view`` 就没有 SSH 登录分析）；命令白名单 / 参数黑名单这类
+    判定规则留在服务端，不下发前端（V2-04）。
+    """
+    return ai.capabilities(security.effective_permissions(user))
 
 
 @router.get("/my-providers")
@@ -508,6 +513,10 @@ async def playbooks(user: Dict[str, Any] = Depends(VIEW)) -> Dict[str, Any]:
 
     只读、不含任何主机信息，因此与「能排查」同权限档即可。前端拿它渲染空会话
     的快捷入口 —— 想加一套新套路，改 ``aiplaybooks.py`` 就行，前端不用动。
+
+    **只下发 key / 标题 / 一句提示**：发给模型的指令（``prompt``）由后端按
+    key 拼接（见 ``aichat``），前端不需要也拿不到。把整段排查指令交给浏览器，
+    等于把「助手会怎么查、查哪些路径 / 命令」提前交底（V2-04）。
     """
     return {"items": aiplaybooks.list_playbooks()}
 

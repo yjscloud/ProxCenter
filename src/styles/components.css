@@ -656,6 +656,172 @@
   opacity: 1;
 }
 
+/* --- 用户授权（内网穿透）：一行式添加区 + 按用户分组的 chip ---
+   原来是一张「一人一条」的表格，同一个用户的多条授权散在各行；现在按人分组，
+   一个目标是一个 chip，撤销就是点 chip 上的 × —— 看得见「谁被放行了什么」。 */
+.grant-compose {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+/* 选人固定宽、目标框吃掉剩余空间、按钮贴右 */
+.grant-compose-user {
+  flex: 0 1 200px;
+  min-width: 160px;
+}
+
+.grant-compose-value {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+/* .field 没有标签时高度就是 34px 的输入框，顶层对齐即可与按钮齐平 */
+.grant-compose-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+}
+
+.grant-compose-hint {
+  margin-top: 6px;
+}
+
+.grant-groups {
+  /* 授权的用户一多，单列会把卡片拉得很长：改成自适应多列网格 + 限高滚动，
+     宽屏一行并排看到更多的人，超出高度在卡片区内滚动 */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+  align-content: start;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 4px; /* 给滚动条留一点空隙，不压住卡片边框 */
+}
+
+.grant-group {
+  padding: 10px 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  background: var(--bg-base);
+  min-width: 0;
+}
+
+.grant-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.grant-group-user {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.grant-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.grant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.grant-chip.is-busy {
+  opacity: 0.5;
+}
+
+.grant-chip-kind {
+  color: var(--text-muted);
+}
+
+/* 撤销按钮落在 chip 内部：不用整行悬停才出现，触屏上也点得到 */
+.grant-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.grant-chip-remove:hover:not(:disabled) {
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+.grant-chip-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.grant-empty {
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-base);
+}
+
+.grant-empty p + p {
+  margin-top: 4px;
+}
+
+/* 面板网段拦截开关的说明文字：小字 + 1.6 行高，两行读起来不粘在一起 */
+.grant-policy-hint {
+  line-height: 1.6;
+}
+
+/* --- 表格里的「只读复制框」（frp 公网访问地址等） ---
+   复用 .input-wrap 的外框，与同行的可编辑输入框保持同一套风格；但内容不可
+   编辑：文字占满剩余宽度、超长省略号，点右侧按钮（或直接拖选文字）复制。
+   user-select:all 让单击就整段选中，手抄也只点一下。 */
+.copy-cell {
+  cursor: default;
+}
+
+.copy-cell .copy-cell-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  user-select: all;
+}
+
+.copy-cell .btn-icon-only {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
+}
+
 /* ---------------------------------------------------------------------------
    Spinner / Skeleton
    --------------------------------------------------------------------------- */

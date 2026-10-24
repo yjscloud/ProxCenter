@@ -491,6 +491,7 @@ CSV（一行 = 一次工具调用）。另有 Token 消耗入口，按 1 / 7 / 3
 | `TOTP_TRUST_ENABLED` | `true` | 登录时是否允许勾选「信任设备」（同一台浏览器 7 天内免输动态码）。设 `false` 则每次登录都必须过第二因子 |
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | 限流开关、每 IP 每分钟的普通请求与敏感入口（登录 / 注册 / 找回密码 / 刷新 / 2FA）上限 |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | 危险操作是否要二次确认，以及确认的有效窗口 |
+| `FRP_ALLOW_LOCAL_CIDRS` / `FRP_BLOCK_PANEL_SUBNET` | 空 / `true` | 内网穿透的目标白名单：普通用户只能指向自己名下的虚机 / 容器 IP，另外可用这里放行网段（也可在穿透页「用户授权」里按人放行具体 IP）；默认还禁止指向面板自身所在网段 |
 | `PVE_HOST` / `PVE_PORT` | 空 / `8006` | Proxmox 地址（不带协议）与 API 端口 |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | 空 | 形如 `panel@pve!panel` 与 Token 的 UUID |
 | `PVE_VERIFY_SSL` | `false` | 出站是否校验 PVE 证书。默认关闭：PVE 出厂自签，开着会握手失败。要安全性就用连接配置里的「证书 PEM」（`ca_cert`）钉扎，或证书由正规 CA 签发时改成 `true` |

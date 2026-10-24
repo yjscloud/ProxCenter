@@ -171,6 +171,19 @@ services:
       # 面板准入白名单（逗号分隔 IP / CIDR）。留空 = 不限制；公网部署强烈建议
       # 收敛到办公网 / 跳板机 / 反代所在网段（配合 VPN 或零信任网关更佳）。
       PANEL_ALLOW_CIDRS: ${PANEL_ALLOW_CIDRS:-}
+      # --- 内网穿透（frp）目标白名单 ---------------------------------------
+      # 普通用户默认只能指向「自己名下」的虚机 / 容器 IP。若还要放行其它内网
+      # 地址（例如这些机器没有装 Guest Agent、也拿不到静态 IP），在这里列出来，
+      # 逗号分隔的 IP / CIDR，例如：
+      #   FRP_ALLOW_LOCAL_CIDRS=10.0.0.0/24,192.168.8.0/24
+      # 留空 = 只允许自己名下的机器。回环、未指定（0.0.0.0 / ::）、链路本地、
+      # 组播、保留地址与面板自身地址始终拒绝，不受这份名单影响。
+      FRP_ALLOW_LOCAL_CIDRS: ${FRP_ALLOW_LOCAL_CIDRS:-}
+      # 是否禁止把「面板自身所在网段」当作目标。默认 true：面板通常与 PVE
+      # 管理网同网段，放开等于允许把面板 / PVE API 暴露到公网。若业务虚机与
+      # 面板同网段、且确实要穿透到该网段的其它服务，可改成 false（面板自身
+      # 地址仍然拒绝）。
+      FRP_BLOCK_PANEL_SUBNET: ${FRP_BLOCK_PANEL_SUBNET:-true}
       # 首次从新 IP 登录时给管理员发站内消息 + 邮件
       LOGIN_IP_ALERT: ${LOGIN_IP_ALERT:-true}
       # 接口文档（/api/docs、/api/redoc、/api/openapi.json）：默认关闭；

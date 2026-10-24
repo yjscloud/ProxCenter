@@ -5728,6 +5728,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'frp.notInstalled': 'Not installed',
   'frp.statServer': 'frps server',
   'frp.notConfigured': 'Not configured',
+  /* The server address is only sent to administrators (V2-04) */
+  'frp.serverManagedByAdmin': 'Managed by an administrator',
   'frp.statRules': 'Active rules',
   'frp.ruleCount': '{n}',
   'frp.serverTitle': 'frps server',
@@ -5737,6 +5739,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'frp.saveChanges': 'Save changes',
   'frp.fieldServerAddr': 'Server address',
   'frp.serverAddrPlaceholder': 'frps.example.com or a public IP',
+  'frp.fieldPublicAddr': 'Public address (optional)',
+  'frp.publicAddrPlaceholder': 'frp.example.com or a public IP',
+  'frp.publicAddrHint':
+    'The address users connect to in order to reach your tunnels. Set it when frps sits behind NAT or is reached by domain; leave it empty to reuse the server address. Domain / IP only — no http:// and no path.',
   'frp.fieldServerPort': 'Server port (frps bindPort)',
   'frp.fieldToken': 'Token (must match the server\u2019s auth.token)',
   'frp.tokenHintSet':
@@ -5755,7 +5761,6 @@ export const en: Partial<Record<MessageKey, string>> = {
   'frp.tokenCleared': 'Token cleared',
   'frp.clearFailed': 'Could not clear',
   'frp.clientTitle': 'frpc client',
-  'frp.installPath': 'Install location',
   'frp.clientVersion': 'Client version',
   'frp.ready': 'Ready',
   'frp.missing': 'Missing',
@@ -5791,6 +5796,14 @@ export const en: Partial<Record<MessageKey, string>> = {
   'frp.colLocalIp': 'Local IP',
   'frp.colLocalPort': 'Local port',
   'frp.colRemotePort': 'Public port',
+  'frp.colPublic': 'Public endpoint',
+  'frp.publicUnknown': 'Not configured',
+  'frp.publicNotConfiguredTitle': 'No public address configured yet',
+  'frp.publicNotConfiguredAdmin':
+    'Rules created now cannot be reached: fill in "Public address" under "frps server" above, or make sure the server address is the public address users can reach.',
+  'frp.publicNotConfiguredUser':
+    'An administrator has not configured a public address yet, so no access link can be generated. Rules still work; once configured, "address:public port" appears here.',
+  'frp.copyPublic': 'Copy public address {addr}',
   'frp.ownerless': 'Unowned',
   'frp.deleted': 'Deleted',
   'frp.deleteFailed': 'Delete failed',
@@ -5801,14 +5814,34 @@ export const en: Partial<Record<MessageKey, string>> = {
   'frp.ruleNameHint':
     'The unique identifier inside frpc; letters / digits / underscores / hyphens only',
   'frp.ruleNameRequired': 'Enter a rule name',
-  'frp.ruleNameInvalid': 'Only letters, digits, underscores and hyphens',
-  'frp.fieldLocalIp': 'Local IP',
-  'frp.localIpHint': 'The internal service address to expose; usually 127.0.0.1',
-  'frp.localIpRequired': 'Enter the local IP',
+  'frp.ruleNameInvalid':
+    'Must start with a letter or digit and contain only letters, digits, underscores or hyphens (max 64)',
+  'frp.fieldLocalIp': 'Target IP',
+  'frp.localIpHint':
+    'The internal service address to expose; administrators are not limited by the target allowlist',
+  /* Target dropdown for ordinary users (options come from ownership + live PVE data) */
+  'frp.kindQemu': 'VM',
+  'frp.kindLxc': 'Container',
+  'frp.targetOption': '{name} ({kind} {vmid}) · {ip}',
+  'frp.targetOptionUnnamed': '{kind} {vmid} · {ip}',
+  'frp.targetSelectPlaceholder': 'Choose a target address',
+  'frp.targetSelectEmpty': 'No virtual machine / container available',
+  'frp.targetSelectHint':
+    'Only IPs of virtual machines / containers you own ({n} available)',
+  'frp.targetSelectHintManual':
+    'Only IPs of virtual machines / containers you own; other addresses must fall inside an administrator-approved network: {cidrs}',
+  'frp.targetManualOption': 'Other address (inside an administrator-approved network)',
+  'frp.targetGrantedOption': 'Granted by admin · {ip}',
+  'frp.fieldLocalIpManual': 'Target IP (must be inside an approved network)',
+  'frp.localIpPlaceholder': 'e.g. 10.0.0.25',
+  'frp.localIpRequired': 'Enter the target IP',
+  'frp.localIpInvalid': 'Enter a valid IPv4 / IPv6 address',
+  'frp.localIpNotAllowed':
+    'This IP is not allowed: use a virtual machine you own, or a network opened by an administrator',
   'frp.fieldLocalPort': 'Local port',
   'frp.fieldRemotePort': 'Public port',
   'frp.portRange': 'Port range 1-65535',
-  'frp.remotePortHint': 'Must be within the port range allowed by the frps server',
+  'frp.remotePortHint': 'Must be between {min} and {max} and unique across rules',
   'frp.ruleCreated': 'Rule created',
   'frp.ruleCreatedDetail': 'frpc is reloading with the new configuration',
   'frp.createFailed': 'Create failed',
@@ -5822,6 +5855,72 @@ export const en: Partial<Record<MessageKey, string>> = {
   'frp.logsTitle': 'frpc log',
   'frp.refreshLogs': 'Refresh log',
   'frp.noLogs': 'No log yet; frpc output appears once the tunnel is started.',
+  /* -------------------------------------------- Rule policy (allowlist / ports) */
+  'frp.policyPortRange': 'Public port {min}–{max}',
+  'frp.policyForbiddenPort':
+    'Port {port} belongs to the panel / PVE / a common service and cannot be used',
+  'frp.policyPortInUse': 'Port {port} is already used by another rule',
+  'frp.policyOwnIps': 'Allowed targets (IPs of virtual machines / containers you own):',
+  'frp.policyMoreIps': '{n} more',
+  'frp.policyAllowCidrs': 'Networks opened by an administrator: {cidrs}',
+  'frp.policyAdminTarget': 'Administrators are not limited by the target allowlist',
+  'frp.policyNoTargetTitle': 'No target is available yet',
+  'frp.policyNoTargetBody':
+    'No target address is available yet: machines without a guest agent, that are powered off, or that have no static address cannot be resolved to an IP. Add IP collection first (install the agent / configure a static address and power the machine on), or ask an administrator to allow the target IP under “User grants”.',
+  'frp.policyNoTargetWithCidrs':
+    'No machine you own resolves to an IP right now; only these administrator-approved networks can be used: {cidrs}',
+  'frp.policyTargetLookupFailed': 'Could not read the machines you own: {error}',
+  'frp.policyGranted': 'Targets an administrator granted you:',
+  /* Always shown above the rule list: explains why a machine is missing */
+  'frp.targetIpHint':
+    'Why is a machine missing from the list? Machines without a guest agent, that are powered off, or that have no static address cannot be resolved to an IP. Add IP collection first, or ask an administrator to allow the target IP under “User grants”.',
+
+  /* --------------------------------------------- Policy setting (panel subnet) */
+  'frp.blockPanelLabel': 'Block the panel’s own subnet',
+  'frp.blockPanelHint':
+    'When on, ordinary users cannot target addresses inside the subnet the panel backend lives in (protects the panel / PVE management network). Turn it off if other services in that subnet must be tunneled; the panel’s own address is always refused.',
+  'frp.blockPanelOn': 'Panel-subnet blocking enabled',
+  'frp.blockPanelOff': 'Panel subnet targeting allowed',
+  'frp.blockPanelOffDetail':
+    'The panel and the PVE management network can now be exposed through tunnels; the panel’s own address is still refused.',
+  'frp.blockPanelToggleFailed': 'Could not update the setting',
+
+  /* ------------------------------------------ Per-user grants (admin only) */
+  'frp.grantsTitle': 'User grants',
+  'frp.grantsSubtitle':
+    'Open extra target IPs / networks to a user — for machines whose IP cannot be resolved',
+  'frp.grantUser': 'User',
+  'frp.grantUserPlaceholder': 'Choose a user',
+  'frp.grantNoUsers': 'No other users yet',
+  'frp.grantValue': 'Target IP / network',
+  'frp.grantValuePlaceholder': '10.0.0.50 or 10.0.0.0/24',
+  'frp.grantValueHint':
+    'A single IP grants exactly that host; a network covers a range. It shows up in that user’s target dropdown once they reload the page',
+  'frp.grantAdd': 'Add grant',
+  'frp.grantAdded': 'Granted',
+  'frp.grantAddedDetail': 'The target is now available to {user}',
+  'frp.grantAddedCount': 'Granted {n} targets to {user}',
+  'frp.grantAddFailed': 'Could not grant',
+  'frp.grantAddPartial': 'Granted {ok}, {failed} failed',
+  'frp.grantUserRequired': 'Choose the user to grant first',
+  'frp.grantValueRequired': 'Enter an IP or network to grant',
+  'frp.grantInvalid': 'Not a valid IP / network: {values}',
+  'frp.grantBatchHint':
+    'Paste several targets at once — separate them with commas, spaces or newlines; press Enter to add.',
+  'frp.grantGroupCount': '{n} targets',
+  'frp.grantRemoved': 'Revoked',
+  'frp.grantRemovedDetail': 'Revoked the grant for {value}',
+  'frp.grantRemoveFailed': 'Could not revoke',
+  'frp.grantRemove': 'Revoke the grant for {value}',
+  'frp.grantActions': 'Actions',
+  'frp.grantKind': 'Type',
+  'frp.grantKindIp': 'IP',
+  'frp.grantKindCidr': 'Network',
+  'frp.grantsEmpty': 'No user grants yet.',
+  'frp.grantsEmptyHint':
+    'Choose a user, enter the IP / network to allow and click “Add grant”; several values can be added at once.',
+  'frp.grantsNote':
+    'A grant only widens the allowed target range: it does not change machine ownership or modify existing rules. Revoking keeps the rules already created, but that address can no longer be used for new ones. Port limits and the panel’s own address are still enforced.',
 
   /* ------------------------------------------------------- Certificates */
   'cert.title': 'Certificates',
@@ -7053,44 +7152,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'ai.capLimitTitle': 'Limits',
   'ai.capLimitBody':
     'One inspection runs at most {steps} rounds within {seconds}s; every call is audited and can be reviewed one by one under “History”.',
-  /* ---- Command allowlist / denylist (the lists themselves come live from
-          the backend security_policy) ---- */
-  'ai.policyTitle': 'Command allowlist and denylist',
-  'ai.policyHint':
-    'These lists are the very rules the executor validates against (generated live from the backend code) — not a second copy written for this page.',
-  'ai.policyReadonlyTitle': 'Read-only command allowlist ({n})',
-  'ai.policyReadonlyHint':
-    'When the model composes a command of its own, the first executable of every pipe segment must be on this list — otherwise the whole command is rejected.',
-  'ai.policyMetacharTitle': 'Rejected on sight',
-  'ai.policyMetacharHint':
-    'Chained commands, substitution and redirection can all write files or slip past checks, so none of these characters is ever allowed.',
-  'ai.policyMetacharNewline': 'newline',
-  'ai.policyParamTitle': 'Per-command argument limits',
-  'ai.policyParamSubAllow': 'Subcommands allowed',
-  'ai.policyParamTokenDeny': 'Arguments denied',
-  'ai.policyParamSubstrDeny': 'Must not contain',
-  'ai.policyPathTitle': 'Path and file allowlist',
-  'ai.policyPathDirs': 'Directories listable',
-  'ai.policyPathFiles': 'Files readable',
-  'ai.policyPathForbidden':
-    'Any request whose file name contains one of these is rejected',
-  'ai.policyWriteTitle': 'System-changing commands (approved one by one)',
-  'ai.policyWriteHint':
-    'Write commands skip the read-only allowlist (restarting a service or editing config has no single shape) and are gated by your per-command approval; these never run even if approved:',
-  'ai.policyWriteLimit': 'Single line only, at most {n} characters.',
-  'ai.policyImplTitle': 'How it is enforced',
-  'ai.policyImplTemplate':
-    'Templates, never a shell: the tools are a fixed set of parameterised command templates — there is no “run any command” entry point.',
-  'ai.policyImplArgs':
-    'Argument allowlist: paths, unit names and line counts are regex-checked, and a path must also sit inside the directories / files listed above.',
-  'ai.policyImplQuote':
-    'argv arrays + quoting: locally the array goes straight to subprocess (no shell); remotely every argument is shlex.quote-d.',
-  'ai.policyImplSudo':
-    'No sudo: even when the managed host has passwordless sudo, the assistant cannot reach root.',
-  'ai.policyImplAudit':
-    'Full audit: every command, its arguments and its output are stored under “History” for line-by-line review.',
-  'ai.policyImplAccount':
-    'For stronger isolation, give the host a dedicated read-only account, or constrain what it may run with a forced command in authorized_keys.',
+  /* ---- Validation rules stay on the server: the page only says they exist ---- */
+  'ai.capPolicyServerSide':
+    'The exact command allowlist and the argument / path checks stay on the server instead of being listed here; every tool call is validated against that same policy and audited.',
   'ai.myModelsOnly':
     'You can only manage your own models here; shared ones are maintained by the admin',
   'ai.selectModel': 'Model',

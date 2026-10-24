@@ -6692,69 +6692,6 @@
   text-align: right;
 }
 
-.ai-policy {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ai-policy-block {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-muted);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-}
-
-.ai-policy-label {
-  font-size: 13px;
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-}
-
-/* 命令与路径：等宽 + 浅底，扫一眼就能挑出自己要找的那个 */
-.ai-chip-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.ai-chip {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  padding: 1px 6px;
-  border: 1px solid var(--border-muted);
-  border-radius: 6px;
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  word-break: break-all;
-}
-
-/* 黑名单用红色描边：同一排里「允许」和「拒绝」必须一眼分得开 */
-.ai-chip.ai-chip-deny {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.ai-policy-rule {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.ai-policy-steps {
-  margin: 0;
-  padding-left: 18px;
-  font-size: 12.5px;
-  line-height: 1.75;
-  color: var(--text-secondary);
-}
-
 /* 终端容器：滚动由 xterm 自己管，这里只负责占满剩余高度 */
 .ai-console-term {
   flex: 1;

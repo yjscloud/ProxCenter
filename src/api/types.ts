@@ -35,7 +35,11 @@ export interface RoleOut {
   id: string;
   name: string;
   description: string;
-  permissions: string[];
+  /**
+   * 权限矩阵。`/api/roles` 一定有；`/api/users/roles` **只对持有 users.view
+   * 的用户**返回（V2-04），其余账号拿到的是 `undefined`。
+   */
+  permissions?: string[];
   builtin: boolean;
   /** 有多少用户在使用该角色 */
   user_count?: number;
@@ -2675,8 +2679,14 @@ export type BadgeVariant =
    frpc 实际渲染时是两者合并后的结果（见 ``FrpEffective``）。 */
 
 export interface FrpServer {
+  /** 普通用户拿到的是空串（地址仅管理员可见，见 /api/frp/server） */
   server_addr: string;
   server_port: number;
+  /**
+   * 用户实际访问穿透服务时该连的地址（域名 / 公网 IP）。
+   * frps 在 NAT 后面或走域名时与 ``server_addr`` 不同；空串 = 未配置。
+   */
+  public_addr: string;
   /** 服务端 token 是否已设置（前端永远拿不到明文） */
   token_set: boolean;
 }
@@ -2693,10 +2703,81 @@ export interface FrpRule {
 
 export interface FrpRuleInput {
   name: string;
-  type?: string;
-  local_ip?: string;
+  type: 'tcp';
+  local_ip: string;
   local_port: number;
   remote_port: number;
+}
+
+/**
+ * 修改规则的请求体。
+ *
+ * **全字段必填**（与后端 ``FrpRuleUpdateIn`` 对齐）：后端不再对没传的字段
+ * 「沿用旧值」，少传一个就 422 —— 隐式沿用正是「只想改个名字，结果把目标
+ * 地址一起提交成旧值」这类问题的温床。
+ */
+export interface FrpRulePatch {
+  name: string;
+  local_ip: string;
+  local_port: number;
+  remote_port: number;
+}
+
+/**
+ * 一个可指向的目标：某台虚机 / 容器的地址。
+ *
+ * 普通用户只能在这些地址里选（`/api/frp/policy` 的 `targets`）。归属与地址
+ * 都由后端从 PVE + 归属表算出来，前端不自行拼装，也不用猜。
+ */
+export interface FrpTarget {
+  ip: string;
+  /** 客户机名（PVE 里的 name），可能为空 */
+  name: string;
+  vmid: number;
+  node: string;
+  /** qemu = 虚拟机，lxc = 容器 */
+  type: string;
+}
+
+/**
+ * 规则策略：端口区间 / 关键端口黑名单 / 目标白名单。
+ *
+ * 普通用户 ``restricted=true``，创建规则时只能指向 ``targets`` 里的地址、
+ * ``granted``（管理员按人放行的 IP / 网段）或 ``allow_cidrs`` 覆盖的网段；
+ * 管理员不受目标白名单限制。
+ */
+export interface FrpPolicy {
+  remote_port_min: number;
+  remote_port_max: number;
+  forbidden_ports: number[];
+  allow_cidrs: string[];
+  block_panel_subnet: boolean;
+  restricted: boolean;
+  /** 管理员在「用户授权」里单独放行给当前用户的 IP / 网段 */
+  granted: string[];
+  /** 规则列表里展示的对外访问地址（public_addr 回落 server_addr，空串 = 未配置） */
+  public_host?: string;
+  /** 可指向的目标（仅普通用户有；管理员为空数组） */
+  targets: FrpTarget[];
+  /** ``targets`` 的 IP 投影，便于成员判断 */
+  own_ips: string[];
+  own_ips_error?: string;
+  used_remote_ports: number[];
+  default_remote_port: number | null;
+}
+
+/** 一条「用户授权」：管理员给某个用户额外放行的目标 */
+export interface FrpGrant {
+  username: string;
+  /** IP 或网段（CIDR） */
+  value: string;
+  kind: 'ip' | 'cidr';
+}
+
+/** 用户授权列表（仅管理员），users 供界面下拉 */
+export interface FrpGrantList {
+  items: FrpGrant[];
+  users: string[];
 }
 
 /** 列出规则接口返回（含可见性信息，让普通用户能区分「自己的」与「别人的」） */
@@ -2706,6 +2787,8 @@ export interface FrpRuleList {
   own_username: string;
   /** 当前用户是否能看/改所有人的规则 */
   is_admin: boolean;
+  /** 对外访问地址（public_addr 回落 server_addr）；空串 = 管理员还没配 */
+  public_host?: string;
 }
 
 export interface FrpEffectiveConfig {
@@ -2725,9 +2808,12 @@ export interface FrpEffective {
 export interface FrpStatus {
   running: boolean;
   available: boolean;
-  binary: string;
-  server_addr: string;
-  server_port: number;
+  /**
+   * 实际连接的服务端 —— **仅管理员可见**。普通用户的响应里没有这两个字段：
+   * frps 地址对他们没有用处，却能用来测绘「面板把哪台机器穿透到了公网」。
+   */
+  server_addr?: string;
+  server_port?: number;
   proxy_count: number;
   /**
    * 「frpc 停了自动拉起」是否开启。开启时面板的看护作业会把它重新拉起来，
@@ -4202,36 +4288,11 @@ export interface AiProvider {
 }
 
 /**
- * 助手的命令白名单 / 黑名单快照。
+ * 助手能力：工具清单 + 边界。由后端按**当前用户的权限**实时生成。
  *
- * 与**执行时真正校验的那份规则**是同一份（见后端 `aitools.security_policy`），
- * 所以「能力说明」里列出来的清单不会和实际行为对不上 —— 这也正是它必须由
- * 后端下发的理由：抄一份到前端，改了代码忘了改文案就开始骗人。
+ * 刻意只有工具名与描述：命令白名单 / 参数黑名单 / 路径白名单是服务端的判定
+ * 依据，不下发前端（V2-04）—— 页面不需要它们，拿到手却等于拿到一份绕过指南。
  */
-export interface AiSecurityPolicy {
-  /** 只读白名单：模型自己拼命令时，管道每一段的首个可执行文件必须命中 */
-  readonly_commands: string[];
-  /** 出现即整条拒绝的字符 / 结构（多命令、命令替换、重定向） */
-  denied_metachars: string[];
-  /** 子命令白名单：第一个非选项参数必须命中 */
-  subcommand_allow: Record<string, string[]>;
-  /** 参数黑名单（以 "-" 开头的项按前缀匹配，覆盖 -AINPUT 这类连写） */
-  token_deny: Record<string, string[]>;
-  /** 子串黑名单：参数本身是脚本 / 表达式，只能按内容匹配 */
-  substr_deny: Record<string, string[]>;
-  /** 允许「列目录」的路径前缀 */
-  allowed_dirs: string[];
-  /** 允许「读内容」的具体文件 */
-  allowed_files: string[];
-  /** 文件名里带这些词的，无论白名单怎么写都不给读 */
-  forbidden_hints: string[];
-  /** 写命令里「即便用户批准也不执行」的那一类（已是人话说明） */
-  write_forbidden: string[];
-  max_readonly_length: number;
-  max_write_length: number;
-}
-
-/** 助手能力：工具清单 + 边界 + 命令白黑名单。由后端实时生成，改规则即改文档 */
 export interface AiCapabilities {
   tools: Array<{
     name: string;
@@ -4239,8 +4300,6 @@ export interface AiCapabilities {
     /** host = 会在目标主机上执行命令；internal = 只读平台已有的巡检数据 */
     kind: 'host' | 'internal';
   }>;
-  /** 具体的白名单 / 黑名单，供「能力说明」逐条展示 */
-  policy: AiSecurityPolicy;
   max_steps: number;
   timeout_seconds: number;
 }

@@ -13,7 +13,8 @@
 * ``key``    —— 稳定标识，前端、审计都用它；
 * ``title``  —— 短标题：既当按钮文案，也当对话里那条用户消息（**可读**，
   不把几十字的指令塞进聊天记录）；
-* ``prompt`` —— 真正发给模型的指令（含步骤建议），只进上下文、不进聊天记录。
+* ``prompt`` —— 真正发给模型的指令（含步骤建议），只进上下文、不进聊天记录，
+  也**不下发前端**（``GET /api/ai/playbooks`` 只给 key / 标题 / 提示）。
 
 ``mode`` 默认 ``chat``（预案只是「问得更专业的问题」）；写 ``inspect`` 的预案会
 触发一次完整体检（采集证据 + 产出报告）—— 留给以后真需要「一键 XX 体检」时用。
@@ -371,8 +372,14 @@ _TITLES: List[tuple] = [
 ]
 
 
-def list_playbooks() -> List[Dict[str, str]]:
-    """预案清单。
+#: 下发给前端的字段。``prompt`` **不在其中**：它是发给模型的指令，只该在
+#: 服务端按 key 取用（见 :func:`get_playbook`），前端拿它没有用途，拿到手却
+#: 等于把「助手会按什么顺序、查哪些命令与路径」提前交底。
+_PUBLIC_FIELDS = ("key", "mode", "title", "hint")
+
+
+def _catalog() -> List[Dict[str, str]]:
+    """完整预案（含 prompt）。**仅供服务端内部使用。**
 
     **每次调用现取**：文案要按当前语言重新求值 —— 在模块级固化成常量的话，
     切换语言后预案还是旧语言（而界面其它部分已经切了）。
@@ -389,12 +396,20 @@ def list_playbooks() -> List[Dict[str, str]]:
     ]
 
 
+def list_playbooks() -> List[Dict[str, str]]:
+    """给前端的预案清单：只有 key / 标题 / 提示，**不含 prompt**。"""
+    return [
+        {field: item[field] for field in _PUBLIC_FIELDS}
+        for item in _catalog()
+    ]
+
+
 def get_playbook(key: Any) -> Optional[Dict[str, str]]:
-    """按 key 取预案；未知 key 返回 None（调用方退化成普通对话）。"""
+    """按 key 取**完整**预案（含 prompt）；未知 key 返回 None（退化成普通对话）。"""
     wanted = str(key or "").strip()
     if not wanted:
         return None
-    for item in list_playbooks():
+    for item in _catalog():
         if item["key"] == wanted:
             return item
     return None

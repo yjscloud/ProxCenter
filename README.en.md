@@ -410,6 +410,7 @@ that matter:
 | `TOTP_TRUST_ENABLED` | `true` | Whether the login page may offer "trust this device" (skip the code on the same browser for 7 days). Set to `false` to require the second factor on every login |
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | Per-IP limits for `/api/*` and for the sensitive endpoints |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions ask for your password again |
+| `FRP_ALLOW_LOCAL_CIDRS` / `FRP_BLOCK_PANEL_SUBNET` | empty / `true` | Tunnel target allowlist: ordinary users may only point at their own VM / container IPs; add networks here to open more (or grant single IPs per user under “User grants” on the frp page). Pointing at the panel's own subnet is blocked by default |
 | `PVE_HOST` / `PVE_PORT` | empty / `8006` | Proxmox address (no protocol) and API port |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | empty | The token from step 1 |
 | `PVE_VERIFY_SSL` | `false` | Off by default: PVE is self-signed and verification fails at the handshake. For real security pin its certificate via the connection's `ca_cert` field, or set this to `true` when the certificate comes from a public CA |

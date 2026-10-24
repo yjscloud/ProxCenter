@@ -74,9 +74,12 @@ import type {
   ImportStorage,
   ImportWarning,
   FrpEffective,
+  FrpGrantList,
+  FrpPolicy,
   FrpRule,
   FrpRuleInput,
   FrpRuleList,
+  FrpRulePatch,
   FrpServer,
   FrpStatus,
   HealthStatus,
@@ -1318,8 +1321,9 @@ export const usersApi = {
   ) => put<UserOut>(`/users/${username}`, body),
   remove: (username: string) => del<{ deleted?: boolean; username?: string }>(`/users/${username}`),
   /**
-   * 角色目录（含管理员自建角色）：只有 id / name / description / permissions，
-   * **没有** user_count。
+   * 角色目录（含管理员自建角色）：id / name / description / builtin，
+   * **没有** user_count；`permissions` 只有持有 ``users.view`` 的账号才拿得到
+   * （普通用户只看到角色名与说明，见 V2-04）。
    *
    * 用户页要显示「N 个用户在用」，所以那边统一用 ``rolesApi.list()``
    * （``/api/roles``，带计数）。这个接口留着是因为它只要求登录、不要求
@@ -1616,6 +1620,7 @@ export const frpApi = {
     save: (payload: {
       server_addr?: string;
       server_port?: number;
+      public_addr?: string;
       token?: string;
       token_clear?: boolean;
     }) =>
@@ -1640,11 +1645,34 @@ export const frpApi = {
     list: () => get<FrpRuleList>("/frp/rules"),
     create: (payload: FrpRuleInput & { username?: string }) =>
       post<FrpRule>("/frp/rules", payload),
-    update: (id: string, payload: Partial<FrpRuleInput>) =>
+    update: (id: string, payload: FrpRulePatch) =>
       put<FrpRule>(`/frp/rules/${id}`, payload),
     remove: (id: string) =>
       del<{ deleted: string }>(`/frp/rules/${id}`),
   },
+  /**
+   * 用户授权（仅管理员）：给某个用户额外放行可穿透的目标 IP / 网段。
+   * 与规则写入一样要二次确认（拦截器自动补一次）。
+   */
+  grants: {
+    list: () => get<FrpGrantList>("/frp/grants"),
+    add: (username: string, value: string) =>
+      post<{ username: string; entries: string[] }>("/frp/grants", {
+        username,
+        value,
+      }),
+    remove: (username: string, value: string) =>
+      del<{ username: string; entries: string[] }>("/frp/grants", {
+        params: { username, value },
+      }),
+  },
+  /** 目标白名单 / 端口区间 / 已占用端口 —— 前端即时校验与提示用 */
+  policy: () => get<FrpPolicy>("/frp/policy"),
+  /** 开关「阻止把穿透目标指向面板所在网段」（admin only，需二次确认） */
+  setBlockPanelSubnet: (enabled: boolean) =>
+    put<{ block_panel_subnet: boolean }>("/frp/policy/panel-subnet", {
+      enabled,
+    }),
   effective: () => get<FrpEffective>("/frp/effective"),
   status: () => get<FrpStatus>("/frp/status"),
   logs: () => get<{ logs: string[] }>("/frp/logs"),

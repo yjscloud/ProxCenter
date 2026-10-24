@@ -5649,6 +5649,8 @@ export const zhCN = {
   'frp.notInstalled': '未安装',
   'frp.statServer': 'frps 服务端',
   'frp.notConfigured': '未配置',
+  /* 服务端地址只下发给管理员（V2-04），普通用户看到这句说明 */
+  'frp.serverManagedByAdmin': '由管理员配置',
   'frp.statRules': '生效规则数',
   'frp.ruleCount': '{n} 条',
   'frp.serverTitle': 'frps 服务端',
@@ -5657,6 +5659,10 @@ export const zhCN = {
   'frp.saveChanges': '保存修改',
   'frp.fieldServerAddr': '服务端地址',
   'frp.serverAddrPlaceholder': 'frps.example.com 或公网 IP',
+  'frp.fieldPublicAddr': '对外访问地址（选填）',
+  'frp.publicAddrPlaceholder': 'frp.example.com 或公网 IP',
+  'frp.publicAddrHint':
+    '用户连穿透服务时用的地址：frps 在 NAT 后面或走域名时填这里，留空则沿用服务端地址。只填域名 / IP，不要带 http:// 与路径。',
   'frp.fieldServerPort': '服务端端口（frps bindPort）',
   'frp.fieldToken': 'Token（与服务端 auth.token 一致）',
   'frp.tokenHintSet': '已加密保存，前端不回显明文；输入新值可替换，留空则保持原值。',
@@ -5672,7 +5678,6 @@ export const zhCN = {
   'frp.tokenCleared': 'Token 已清空',
   'frp.clearFailed': '清空失败',
   'frp.clientTitle': 'frpc 客户端',
-  'frp.installPath': '安装位置',
   'frp.clientVersion': '客户端版本',
   'frp.ready': '已就绪',
   'frp.missing': '缺失',
@@ -5704,6 +5709,14 @@ export const zhCN = {
   'frp.colLocalIp': '本地 IP',
   'frp.colLocalPort': '本地端口',
   'frp.colRemotePort': '公网端口',
+  'frp.colPublic': '公网访问地址',
+  'frp.publicUnknown': '未配置',
+  'frp.publicNotConfiguredTitle': '还没有对外访问地址',
+  'frp.publicNotConfiguredAdmin':
+    '规则建好了也连不上：请在上方「frps 服务端」里填写「对外访问地址」，或确认服务端地址本身就是用户能访问到的公网地址。',
+  'frp.publicNotConfiguredUser':
+    '管理员还没配置对外访问地址，暂时生成不了访问链接。规则仍会正常生效，配好后这里会显示「地址:公网端口」。',
+  'frp.copyPublic': '复制公网地址 {addr}',
   'frp.ownerless': '无主',
   'frp.deleted': '已删除',
   'frp.deleteFailed': '删除失败',
@@ -5712,14 +5725,30 @@ export const zhCN = {
   'frp.fieldRuleName': '规则名称',
   'frp.ruleNameHint': 'frpc 内的唯一标识，只能用字母 / 数字 / 下划线 / 短横线',
   'frp.ruleNameRequired': '请填写规则名称',
-  'frp.ruleNameInvalid': '只能用字母、数字、下划线与短横线',
-  'frp.fieldLocalIp': '本地 IP',
-  'frp.localIpHint': '要暴露的内网服务地址，通常填 127.0.0.1',
-  'frp.localIpRequired': '请填写本地 IP',
+  'frp.ruleNameInvalid': '需以字母或数字开头，只能含字母、数字、下划线与短横线（最多 64 位）',
+  'frp.fieldLocalIp': '目标 IP',
+  'frp.localIpHint': '要暴露的内网服务地址；管理员不受目标白名单限制',
+  /* 普通用户的目标下拉（选项由后端按归属 + PVE 实况算出） */
+  'frp.kindQemu': '虚拟机',
+  'frp.kindLxc': '容器',
+  'frp.targetOption': '{name}（{kind} {vmid}）· {ip}',
+  'frp.targetOptionUnnamed': '{kind} {vmid} · {ip}',
+  'frp.targetSelectPlaceholder': '请选择目标地址',
+  'frp.targetSelectEmpty': '暂无可指向的虚机 / 容器',
+  'frp.targetSelectHint': '只能选择你名下虚机 / 容器的 IP（共 {n} 个）',
+  'frp.targetSelectHintManual':
+    '只能选择你名下虚机 / 容器的 IP；其它地址仅限管理员放行的网段：{cidrs}',
+  'frp.targetManualOption': '其它地址（管理员已放行的网段）',
+  'frp.targetGrantedOption': '管理员授权 · {ip}',
+  'frp.fieldLocalIpManual': '目标 IP（须在放行网段内）',
+  'frp.localIpPlaceholder': '例如 10.0.0.25',
+  'frp.localIpRequired': '请填写目标 IP',
+  'frp.localIpInvalid': '请填写合法的 IPv4 / IPv6 地址',
+  'frp.localIpNotAllowed': '该 IP 不在允许范围内：只能是自己名下的虚机，或管理员放行的网段',
   'frp.fieldLocalPort': '本地端口',
   'frp.fieldRemotePort': '公网端口',
   'frp.portRange': '端口范围 1-65535',
-  'frp.remotePortHint': '需在 frps 服务端允许的端口范围内',
+  'frp.remotePortHint': '只能使用 {min}–{max}，且不能与其它规则重复',
   'frp.ruleCreated': '规则已创建',
   'frp.ruleCreatedDetail': 'frpc 正在按新配置重载',
   'frp.createFailed': '创建失败',
@@ -5733,6 +5762,70 @@ export const zhCN = {
   'frp.logsTitle': 'frpc 运行日志',
   'frp.refreshLogs': '刷新日志',
   'frp.noLogs': '暂无日志，启动穿透后会显示 frpc 输出。',
+  /* ------------------------------------------------- 规则策略（白名单 / 端口） */
+  'frp.policyPortRange': '公网端口 {min}–{max}',
+  'frp.policyForbiddenPort': '端口 {port} 是面板 / PVE / 常见服务的关键端口，不能占用',
+  'frp.policyPortInUse': '端口 {port} 已被其它规则占用',
+  'frp.policyOwnIps': '可填写的目标（你名下的虚机 / 容器 IP）：',
+  'frp.policyMoreIps': '另有 {n} 个',
+  'frp.policyAllowCidrs': '管理员放行的网段：{cidrs}',
+  'frp.policyGranted': '管理员授权给你的目标：',
+  'frp.policyAdminTarget': '管理员不受目标白名单限制',
+  'frp.policyNoTargetTitle': '暂时没有可指向的目标',
+  'frp.policyNoTargetBody':
+    '你名下暂时没有可指向的地址：未装 Guest Agent、未开机、也没配静态地址的机器都解析不出 IP。请先给机器补上 IP 采集（安装 Agent / 配好静态地址并开机），或让管理员在「用户授权」里放行可穿透的目标 IP。',
+  'frp.policyNoTargetWithCidrs':
+    '你名下暂时没有可解析到 IP 的虚机；目前只能使用管理员放行的网段：{cidrs}',
+  'frp.policyTargetLookupFailed': '读取名下虚机失败：{error}',
+  /* 常显在规则列表上方：解释「为什么我的机器不在下拉里」 */
+  'frp.targetIpHint':
+    '为什么有些机器不在列表里？未装 Guest Agent、未开机、也没配静态地址的机器解析不到 IP。可先补上 IP 采集，或请管理员在「用户授权」里为你放行目标 IP。',
+
+  /* ------------------------------------------------- 策略设置（面板网段拦截） */
+  'frp.blockPanelLabel': '阻止指向面板所在网段',
+  'frp.blockPanelHint':
+    '开启后，普通用户不能把穿透目标指到面板后端所在的网段（防探测面板 / PVE 管理网络）；确需穿透该网段的其它服务时可关闭，面板自身地址始终拒绝。',
+  'frp.blockPanelOn': '已开启面板网段拦截',
+  'frp.blockPanelOff': '已允许指向面板所在网段',
+  'frp.blockPanelOffDetail':
+    '面板与 PVE 管理网络可能被穿透暴露，请确认你了解风险；面板自身地址仍然拒绝。',
+  'frp.blockPanelToggleFailed': '设置失败',
+
+  /* ------------------------------------------------- 用户授权（仅管理员） */
+  'frp.grantsTitle': '用户授权',
+  'frp.grantsSubtitle':
+    '给某个用户额外开放可穿透的目标 IP / 网段 —— 适用于拿不到 IP 的机器',
+  'frp.grantUser': '用户',
+  'frp.grantUserPlaceholder': '选择用户',
+  'frp.grantNoUsers': '还没有其它用户',
+  'frp.grantValue': '目标 IP / 网段',
+  'frp.grantValuePlaceholder': '10.0.0.50 或 10.0.0.0/24',
+  'frp.grantValueHint':
+    '单个 IP 精确放行；网段用于整段服务器。对方刷新页面后即可在目标下拉里选到',
+  'frp.grantAdd': '添加授权',
+  'frp.grantAdded': '已授权',
+  'frp.grantAddedDetail': '已为 {user} 放行该目标',
+  'frp.grantAddedCount': '已为 {user} 放行 {n} 个目标',
+  'frp.grantAddFailed': '授权失败',
+  'frp.grantAddPartial': '已放行 {ok} 个，{failed} 个失败',
+  'frp.grantUserRequired': '请先选择要授权的用户',
+  'frp.grantValueRequired': '请填写要授权的 IP 或网段',
+  'frp.grantInvalid': '不是合法的 IP / 网段：{values}',
+  'frp.grantBatchHint': '支持一次粘贴多个目标，用逗号、空格或换行分隔；回车即可添加。',
+  'frp.grantGroupCount': '{n} 个目标',
+  'frp.grantRemoved': '已撤销',
+  'frp.grantRemovedDetail': '已撤销 {value} 的授权',
+  'frp.grantRemoveFailed': '撤销失败',
+  'frp.grantRemove': '撤销授权 {value}',
+  'frp.grantActions': '操作',
+  'frp.grantKind': '类型',
+  'frp.grantKindIp': 'IP',
+  'frp.grantKindCidr': '网段',
+  'frp.grantsEmpty': '还没有任何用户授权。',
+  'frp.grantsEmptyHint':
+    '选择用户、填入要放行的 IP / 网段后点「添加授权」；一次可以填多个。',
+  'frp.grantsNote':
+    '授权只放宽「目标地址」的范围：不改变虚机归属，也不会修改已存在的规则；撤销后已建的规则仍保留，但不能再拿该地址新建。端口区间与面板自身地址的限制仍然生效。',
 
   /* --------------------------------------------------------- 网站证书 */
   'cert.title': '网站证书',
@@ -6918,41 +7011,9 @@ export const zhCN = {
   'ai.capLimitTitle': '边界',
   'ai.capLimitBody':
     '单次排查最多 {steps} 轮、{seconds} 秒；每一次调用都会落审计，可在「排查记录」里逐条回看。',
-  /* ---- 命令白名单 / 黑名单（清单本身由后端 security_policy 实时生成）---- */
-  'ai.policyTitle': '命令白名单与黑名单',
-  'ai.policyHint':
-    '下面这些清单就是执行时校验的那份规则（由后端代码实时生成），不是为这个页面另写的一份说明。',
-  'ai.policyReadonlyTitle': '只读命令白名单（{n}）',
-  'ai.policyReadonlyHint':
-    '模型自己组合命令时，管道每一段的第一个可执行文件必须在这里；否则整条拒绝。',
-  'ai.policyMetacharTitle': '出现即整条拒绝',
-  'ai.policyMetacharHint':
-    '多命令、命令替换和重定向都可能改文件或绕开校验，因此这些字符一个都不允许出现。',
-  'ai.policyMetacharNewline': '换行',
-  'ai.policyParamTitle': '逐命令的参数限制',
-  'ai.policyParamSubAllow': '子命令只允许',
-  'ai.policyParamTokenDeny': '禁止参数',
-  'ai.policyParamSubstrDeny': '禁止出现',
-  'ai.policyPathTitle': '路径与文件白名单',
-  'ai.policyPathDirs': '可列目录',
-  'ai.policyPathFiles': '可读文件',
-  'ai.policyPathForbidden': '文件名含以下词的请求一律拒绝',
-  'ai.policyWriteTitle': '写命令（需你逐条批准）',
-  'ai.policyWriteHint':
-    '写命令不套只读白名单（重启服务、改配置没有统一形状），靠你逐条批准把关；下面这些即使批准也不执行：',
-  'ai.policyWriteLimit': '只接受单行命令，最长 {n} 字符。',
-  'ai.policyImplTitle': '实现方式',
-  'ai.policyImplTemplate':
-    '只给模板、不给 shell：工具是有限的参数化命令模板，不存在「随便执行一条命令」的万能入口。',
-  'ai.policyImplArgs':
-    '参数白名单：路径、单元名、行数都按正则校验；路径还要落在上面的目录 / 文件清单里。',
-  'ai.policyImplQuote':
-    'argv 数组 + 转义：本机把数组直接交给 subprocess（不过 shell），远程对每个参数做 shlex.quote。',
-  'ai.policyImplSudo': '不使用 sudo：即使受管主机配了免密 sudo，助手也拿不到 root。',
-  'ai.policyImplAudit':
-    '全程审计：每条命令、参数与输出都落在「排查记录」里，可以逐条回看。',
-  'ai.policyImplAccount':
-    '要更强的隔离，建议给受管主机单独配一个只读账号，或用 authorized_keys 的 forced command 限定它能执行什么。',
+  /* ---- 校验规则只留在服务端：页面只说「有校验」，不摊开具体清单 ---- */
+  'ai.capPolicyServerSide':
+    '命令白名单、参数与路径校验的具体规则留在服务端，不在页面上展开；每一次工具调用都按同一份规则校验并落审计。',
   'ai.myModelsOnly': '这里只能管理你自己的模型；平台共享的由管理员维护',
   'ai.selectModel': '排查模型',
   'ai.selectModelHint': '只影响这一次排查，不会改动管理员设置的默认模型',

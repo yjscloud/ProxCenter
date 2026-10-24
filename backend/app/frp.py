@@ -118,7 +118,39 @@ SERVER_KEY = "frp_server"
 RULES_KEY = "frp_rules"
 LEGACY_KEY = "frp_config"
 
-DEFAULT_SERVER: Dict[str, Any] = {"server_addr": "", "server_port": 7000, "token": ""}
+DEFAULT_SERVER: Dict[str, Any] = {
+    "server_addr": "",
+    "server_port": 7000,
+    "public_addr": "",
+    "token": "",
+}
+
+
+def normalise_public_addr(raw: Any) -> str:
+    """「对外访问地址」：用户拼 ``地址:公网端口`` 时看到的那一段。
+
+    允许域名 / IP；顺手去掉误粘进来的 ``http(s)://`` 与前后的路径、空白 ——
+    ``https://frp.example.com/`` 与 ``frp.example.com`` 是同一个地址，没必要
+    让管理员为此吃一次报错。IPv6 可以带方括号（拼端口时正是这个形状）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    for prefix in ("https://", "http://"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    text = text.split("/", 1)[0].strip()
+    if any(ch.isspace() for ch in text) or "," in text:
+        return ""
+    # 带端口的写法（frp.example.com:7000）没有意义：用户端口来自 remote_port，
+    # 拼进去只会变成 host:7000:40000。裸 IPv6（多个冒号、无方括号）不动它。
+    if text.count(":") == 1 and not text.startswith("["):
+        host, _, tail = text.rpartition(":")
+        if host and tail.isdigit():
+            text = host
+    return text[:255]
 
 
 def normalise_server(raw: Any) -> Dict[str, Any]:
@@ -127,11 +159,19 @@ def normalise_server(raw: Any) -> Dict[str, Any]:
         return cfg
     cfg["server_addr"] = str(raw.get("server_addr") or "").strip()
     cfg["server_port"] = _port(raw.get("server_port"), 7000)
+    cfg["public_addr"] = normalise_public_addr(raw.get("public_addr"))
     cfg["token"] = str(raw.get("token") or "")
     return cfg
 
 
 def normalise_rule(raw: Any, username: str = "") -> Dict[str, Any]:
+    """把一条规则规整成落库形状（**只用于存储层，不用于校验请求**）。
+
+    这里的默认值是为「读旧数据 / 迁移旧配置」服务的：历史上规则是裸 JSON，
+    字段可能缺失。接口侧必须先用 ``schemas.FrpRuleIn`` / ``FrpRuleUpdateIn``
+    校验（字段全必填），再把明确的值交进来 —— 否则一个 ``{}`` 就会被这里填成
+    ``127.0.0.1:80 -> 10000`` 并直接落库（V2-01 的一半）。
+    """
     item = raw if isinstance(raw, dict) else {}
     return {
         "id": str(item.get("id") or uuid.uuid4().hex[:12]),
@@ -179,6 +219,52 @@ async def load_rules() -> List[Dict[str, Any]]:
 async def save_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     cleaned = normalise_rules(rules)
     await store.set_setting(RULES_KEY, json.dumps(cleaned, ensure_ascii=False))
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
+# 用户授权：管理员额外放行某些目标的 IP / 网段
+#
+# 存储形状 ``{"alice": ["10.0.0.50", "10.0.0.0/24"], ...}``。它只影响
+# 「能不能把某个地址作为 local_ip 建规则」，不改变虚机 / 容器的归属，也不
+# 影响规则列表的可见性（规则仍然按 username 隔离）。
+# ---------------------------------------------------------------------------
+GRANTS_KEY = "frp_grants"
+
+
+def normalise_grants(raw: Any) -> Dict[str, List[str]]:
+    """去空、去重、保序；结构不对就当没配（宁可少放行，不能多放）。"""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, List[str]] = {}
+    for username, entries in raw.items():
+        name = str(username or "").strip()
+        if not name:
+            continue
+        values = entries if isinstance(entries, list) else [entries]
+        cleaned: List[str] = []
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in cleaned:
+                cleaned.append(text)
+        if cleaned:
+            out[name] = cleaned
+    return out
+
+
+async def load_grants() -> Dict[str, List[str]]:
+    raw = await store.get_setting(GRANTS_KEY)
+    if not raw:
+        return {}
+    try:
+        return normalise_grants(json.loads(raw))
+    except ValueError:
+        return {}
+
+
+async def save_grants(grants: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    cleaned = normalise_grants(grants)
+    await store.set_setting(GRANTS_KEY, json.dumps(cleaned, ensure_ascii=False))
     return cleaned
 
 
@@ -431,16 +517,27 @@ def stop() -> None:
     PID_PATH.unlink(missing_ok=True)
 
 
-def status(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    binary = frpc_binary()
-    return {
+def status(
+    cfg: Dict[str, Any], *, include_server: bool = True
+) -> Dict[str, Any]:
+    """进程级状态。
+
+    两个刻意的取舍（外部拿到它们只多一条情报，对使用毫无帮助）：
+
+    * **不下发 ``binary``**：安装路径是面板的实现细节，谁看过一眼就知道
+      这台机器上装了什么、目录怎么摆。前端只需要「装没装」→ ``available``。
+    * ``include_server=False`` 时连 ``server_addr`` / ``server_port`` 也不给：
+      普通用户只需要知道「在不在跑 / 有几条规则」，frps 地址是管理员那边的事。
+    """
+    data: Dict[str, Any] = {
         'running': is_running(),
-        'available': bool(binary),
-        'binary': binary or '',
-        'server_addr': cfg.get('server_addr', ''),
-        'server_port': cfg.get('server_port', 7000),
+        'available': bool(frpc_binary()),
         'proxy_count': len(cfg.get('proxies', [])),
     }
+    if include_server:
+        data['server_addr'] = cfg.get('server_addr', '')
+        data['server_port'] = cfg.get('server_port', 7000)
+    return data
 
 
 async def install() -> str:

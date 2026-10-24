@@ -426,6 +426,42 @@ INTERNAL_TOOLS: List[Dict[str, Any]] = [
 HOST_TOOL_MAP = {item["name"]: item for item in HOST_TOOLS}
 INTERNAL_TOOL_MAP = {item["name"]: item for item in INTERNAL_TOOLS}
 
+#: 工具 → 额外权限门槛。
+#:
+#: **能力说明与实际执行必须共用这一份**（见 :func:`ai.capabilities` 与
+#: ``ai._dispatch_tool``）：只在说明页藏起来、执行时照跑，等于把「看不见的
+#: 能力」留给提示词注入；反过来只在执行时拦、说明页照写，则是拿用户当外人。
+#:
+#: 只登记「确实还有一道门」的工具：其余工具靠 ``hostscope``（能碰哪台机器）与
+#: 归属过滤（能看谁的虚拟机 / 告警）限范围，不再额外设权限位。
+TOOL_PERMISSIONS: Dict[str, str] = {
+    # 改动系统的命令：与「授权 AI 上机执行」同一个权限位
+    "host_run_command": "ai.exec",
+    "host_propose_command": "ai.exec",
+    # 面板本机的 SSH 登录分析（全局数据，不分归属）
+    "get_ssh_failures": "ssh.view",
+}
+
+
+def tool_permission(name: str) -> str:
+    """某个工具需要的额外权限键（没有门槛时返回空串）。"""
+    return TOOL_PERMISSIONS.get(str(name or ""), "")
+
+
+def allowed_by_permissions(perms: Optional[Iterable[str]], name: str) -> bool:
+    """按权限清单判断一个工具能不能给这个用户。
+
+    ``perms=None`` 的语义是「调用方没声明权限」，按**最小权限**处理；``"*"``
+    是内置超管的「全部权限」（见 ``security._has``），必须显式认出来。
+    """
+    key = tool_permission(name)
+    if not key:
+        return True
+    if perms is None:
+        return False
+    granted = set(perms)
+    return "*" in granted or key in granted
+
 
 # 参数类型 → 给模型看的说明。同一份映射既用于主机命令，也用于平台内部工具。
 _PARAM_HINTS: Dict[str, str] = {
@@ -814,44 +850,6 @@ def validate_write_command(command: Any) -> str:
                 )
             )
     return text
-
-
-# ------------------------------------------------- 口径快照：给「能力说明」用
-def security_policy() -> Dict[str, Any]:
-    """本模块的白名单 / 黑名单快照，供界面上的「能力说明」渲染。
-
-    为什么不把这些清单在前端写第二份：它们就是**真正执行时校验的那份规则**
-    （见 :func:`validate_command` / :func:`_check_path` / :func:`validate_write_command`）。
-    抄一份到界面上，改了代码忘了改文案的那一刻，说明页就开始骗人了 —— 而用户
-    正是照着它判断「敢不敢把机器交给这个助手」。这里只做结构转换，不新增判断。
-
-    返回的都是语言无关的原始素材（命令名、路径、字符、正则pattern），
-    标题与解释由前端按当前界面语言套上去。
-    """
-    return {
-        # 只读白名单：模型自己拼命令时，每段管道首个可执行文件必须命中这里
-        "readonly_commands": sorted(READONLY_COMMANDS),
-        # 出现即整条拒绝的字符 / 结构（多命令、命令替换、重定向）
-        "denied_metachars": [item for item in _SHELL_METACHARS],
-        # 子命令白名单：第一个非选项参数必须命中
-        "subcommand_allow": {key: list(value) for key, value in _SUBCOMMAND_ALLOW.items()},
-        # 参数黑名单（"-" 开头按前缀匹配，覆盖 -AINPUT 这类连写）
-        "token_deny": {key: list(value) for key, value in _TOKEN_DENY.items()},
-        # 子串黑名单：参数本身是脚本 / 表达式，只能按内容匹配
-        "substr_deny": {key: list(value) for key, value in _SUBSTR_DENY.items()},
-        # 路径与文件：先过白名单，再被 FORBIDDEN_HINTS 一票否决
-        "allowed_dirs": list(ALLOWED_DIRS),
-        "allowed_files": list(ALLOWED_FILES),
-        "forbidden_hints": list(FORBIDDEN_HINTS),
-        # 写命令（用户逐条批准那条路）的灾难性命令硬拦截；带人话说明，
-        # 因为正则没法直接给人看
-        "write_forbidden": [
-            i18n.pick(label_zh, label_en)
-            for label_zh, label_en, _pattern in _WRITE_FORBIDDEN
-        ],
-        "max_readonly_length": MAX_COMMAND_LENGTH,
-        "max_write_length": MAX_WRITE_COMMAND_LENGTH,
-    }
 
 
 # ------------------------------------------------------------------ 执行

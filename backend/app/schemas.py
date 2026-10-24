@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from . import frpguard
 from .config import settings
 
 
@@ -1647,6 +1648,77 @@ class PortPolicyIn(BaseModel):
     expected_ports: List[str] = Field(default_factory=list)
     # 进程白名单（正则，匹配命令行即忽略）
     process_whitelist: List[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------- frp 穿透规则
+#: 规则名：frpc 用它区分代理，只允许字母 / 数字 / 下划线 / 短横线（与前端一致）。
+_FRP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+class _FrpRuleTarget(BaseModel):
+    """穿透规则里与「暴露什么」有关的字段。
+
+    **全部必填、没有默认值** —— 这正是修复的问题之一：原先接口收的是裸 dict，
+    一个 ``{}`` 会被 :func:`app.frp.normalise_rule` 填成
+    ``127.0.0.1:80 -> 10000`` 并直接落库，等于「什么都不填」也能开一条隧道。
+    现在缺字段直接 422。
+    """
+
+    name: str = Field(..., min_length=1, max_length=64, description="规则名（frpc 内唯一）")
+    local_ip: str = Field(..., description="要暴露的内网服务 IP")
+    local_port: int = Field(..., ge=1, le=65535, description="要暴露的内网服务端口")
+    remote_port: int = Field(
+        ...,
+        ge=frpguard.REMOTE_PORT_MIN,
+        le=frpguard.REMOTE_PORT_MAX,
+        description="公网端口（受统一区间限制）",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        text = (v or "").strip()
+        if not text:
+            raise ValueError("请填写规则名称")
+        if not _FRP_NAME_RE.match(text):
+            raise ValueError("规则名只能以字母或数字开头，且只含字母、数字、下划线、短横线（最多 64 位）")
+        return text
+
+    @field_validator("local_ip")
+    @classmethod
+    def _local_ip(cls, v: str) -> str:
+        # 语法层面的校验放在这里（能否指向取决于归属 / 白名单，由路由层判定）
+        try:
+            addr = frpguard.parse_ip(v)
+        except frpguard.PolicyError as exc:
+            raise ValueError(exc.message) from exc
+        if addr.is_unspecified:
+            raise ValueError("目标 IP 不能是未指定地址（0.0.0.0 / ::）")
+        return str(addr)
+
+
+class FrpRuleIn(_FrpRuleTarget):
+    """新建规则。``type`` 目前只有 tcp；``username`` 仅管理员可用来代建。"""
+
+    type: Literal["tcp"] = "tcp"
+    username: Optional[str] = Field(default=None, max_length=64)
+
+
+class FrpRuleUpdateIn(_FrpRuleTarget):
+    """修改规则：与新建同样「全部必填」，避免「没传的字段沿用旧值」这种隐式行为。"""
+
+
+class FrpGrantIn(BaseModel):
+    """管理员给某个用户单独放行的目标（单个 IP 或网段）。"""
+
+    username: str = Field(..., min_length=1, max_length=64, description="被授权的用户名")
+    value: str = Field(..., min_length=1, max_length=64, description="IP 或网段（CIDR）")
+
+
+class FrpPanelSubnetIn(BaseModel):
+    """开关「阻止把穿透目标指向面板后端所在网段」（见 /api/frp/policy）。"""
+
+    enabled: bool
 
 
 # -------------------------------------------------------------------- tasks

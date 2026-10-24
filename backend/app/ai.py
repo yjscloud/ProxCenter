@@ -373,12 +373,12 @@ def public_models(
     }
 
 
-def capabilities() -> Dict[str, Any]:
+def capabilities(perms: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """这个助手能做什么 —— 给页面上的「能力说明」用。
 
     工具清单**从 :mod:`app.aitools` 实时生成**，而不是手写一份文档：新增一个
     工具、改一条描述，说明页立刻跟着变。手写的说明迟早会和代码对不上，而
-    "AI 到底能在我机器上干什么"这种内容说错了是要出事的 —— 用户正是照着它
+    「AI 到底能在我机器上干什么」这种内容说错了是要出事的 —— 用户正是照着它
     判断要不要开这个功能、敢不敢把主机交给它看。
 
     ``kind`` 区分了两类，这个区分比工具名重要得多：
@@ -386,30 +386,34 @@ def capabilities() -> Dict[str, Any]:
     * ``host``     —— 真的会在目标主机上执行一条命令；
     * ``internal`` —— 只读平台已有的巡检数据，碰都不碰主机。
 
-    ``policy`` 一并带上：命令白名单、参数黑名单、路径白名单这些**与执行时同一份**
-    的校验规则（来自 :func:`aitools.security_policy`）。用户要判断「敢不敢把主机
-    交给它」，靠的正是这些具体清单，而不是一句「有白名单校验」。
+    两条刻意的收敛（V2-04）：
+
+    * **按权限过滤**：``perms`` 是调用者的生效权限；没有 ``ai.exec`` 就看不到
+      「改动系统的命令」，没有 ``ssh.view`` 就看不到面板本机的登录分析。过滤
+      与执行共用 :data:`aitools.TOOL_PERMISSIONS`，不会出现「说明里没有、
+      实际能跑」。
+    * **不下发校验规则**：命令白名单 / 参数黑名单 / 路径白名单是**服务端**的
+      判定依据，页面只需要工具名与描述。把逐条规则摊给浏览器，等于给探测者
+      一份「哪条边最好绕」的清单。
     """
     tools: List[Dict[str, Any]] = []
-    for item in aitools.HOST_TOOLS:
-        tools.append(
-            {
-                "name": str(item.get("name") or ""),
-                "description": i18n.tr(str(item.get("description") or "")),
-                "kind": "host",
-            }
-        )
-    for item in aitools.INTERNAL_TOOLS:
-        tools.append(
-            {
-                "name": str(item.get("name") or ""),
-                "description": i18n.tr(str(item.get("description") or "")),
-                "kind": "internal",
-            }
-        )
+    for kind, catalog in (
+        ("host", aitools.HOST_TOOLS),
+        ("internal", aitools.INTERNAL_TOOLS),
+    ):
+        for item in catalog:
+            name = str(item.get("name") or "")
+            if not aitools.allowed_by_permissions(perms, name):
+                continue
+            tools.append(
+                {
+                    "name": name,
+                    "description": i18n.tr(str(item.get("description") or "")),
+                    "kind": kind,
+                }
+            )
     return {
         "tools": tools,
-        "policy": aitools.security_policy(),
         "max_steps": MAX_STEPS,
         "timeout_seconds": int(AGENT_TOTAL_TIMEOUT),
     }
@@ -2053,7 +2057,20 @@ async def _dispatch_tool(
     approval: Optional[Callable[[str, str], Awaitable[bool]]] = None,
     perms: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
-    """把一次工具调用派发到对应执行层。未知工具名也会走这里，由下层拒绝。"""
+    """把一次工具调用派发到对应执行层。未知工具名也会走这里，由下层拒绝。
+
+    第一道判断是**权限**，与能力说明共用 :data:`aitools.TOOL_PERMISSIONS`：
+    说明页里看不见的工具，模型就算被提示词注入点名也跑不起来。没有这一层，
+    「按权限过滤工具列表」只是把文档藏起来。
+    """
+    if not aitools.allowed_by_permissions(perms, name):
+        return {
+            "ok": False,
+            "output": i18n.pick(
+                "没有使用该工具的权限",
+                "You do not have permission to use this tool",
+            ),
+        }
     if name in aitools.INTERNAL_TOOL_MAP:
         # 内部工具需要用户身份做归属隔离（普通用户只看得到自己名下的虚拟机），
         # 权限清单一并透传：SSH 登录分析这类全局数据要按权限位决定给不给。

@@ -257,6 +257,24 @@ class TestApplyGuards:
         assert "v0.1.5" in reason
 
 
+class TestStaleLastUpdate:
+    """「上次更新未完成」不该一直挂着。
+
+    实测：用户手工跑 deploy.sh 升到新版之后，界面上仍然显示几天前那次失败，
+    看起来像更新永远没成功 —— 因为 last_update 一直没有过期判定。
+    """
+
+    def test_target_already_reached_is_stale(self) -> None:
+        assert update._stale_last_update({"tag": "v0.3.1"}, "0.3.2") is True
+
+    def test_target_still_ahead_is_not_stale(self) -> None:
+        assert update._stale_last_update({"tag": "v0.3.3"}, "0.3.2") is False
+
+    def test_no_tag_is_not_stale(self) -> None:
+        assert update._stale_last_update({}, "0.3.2") is False
+        assert update._stale_last_update({"tag": ""}, "0.3.2") is False
+
+
 class TestManualCommands:
     def test_docker_uses_compose(self) -> None:
         lines = update.manual_commands(_dep(form="docker"))

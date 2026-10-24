@@ -858,10 +858,33 @@ def _script_text(
         # 被覆盖的文件先备份到 logs/update-backup-<时间戳>/：这种安装没有 git 可以
         # stash，改错了得能捞回来。
         pack = f"ProxCenter-{tag.lstrip('vV')}"
+        # 下载这一段踩过两次坑：
+        #   · curl 默认**没有超时**，连不上 github.com 时会一直挂着（界面上进度条
+        #     停在 12% 不动，日志里只有一行 download），所以连接与总时长都要限死；
+        #   · 老代码把 `-fL -o` 同时用在 curl 和 wget 上，wget 没有这些参数 —— 机器上
+        #     只有 wget 时这一步直接报错，所以按探测到的命令分开拼。
+        # 走不走第三方镜像交给 PC_UPDATE_MIRROR：默认不用（把源码包的来源交给中转
+        # 站，等于把更新的信任链一起交出去），但网络确实到不了 GitHub 的部署可以
+        # 自己指定（形如 https://ghfast.top/ 的前缀）。
         code_section = f'''echo "PROGRESS 12 download"
 mkdir -p "$TMP"
-if ! {download} -fL -o "$TMP/src.tar.gz" "https://github.com/{repo or DEFAULT_REPO}/archive/refs/tags/{tag}.tar.gz"; then
-  echo "下载 {tag} 的源码包失败（网络问题？），放弃更新"; exit 1
+SRC_URL="https://github.com/{repo or DEFAULT_REPO}/archive/refs/tags/{tag}.tar.gz"
+fetch_src() {{
+  if [ "{download}" = "wget" ]; then
+    wget -q --timeout=20 --tries=2 -O "$2" "$1"
+  else
+    curl -fsSL --connect-timeout 15 --max-time 900 --retry 2 --retry-delay 2 -o "$2" "$1"
+  fi
+}}
+if ! fetch_src "$SRC_URL" "$TMP/src.tar.gz"; then
+  if [ -n "${{PC_UPDATE_MIRROR:-}}" ]; then
+    echo "直连 github.com 失败，改用镜像 $PC_UPDATE_MIRROR 重试"
+    if ! fetch_src "${{PC_UPDATE_MIRROR%/}}/$SRC_URL" "$TMP/src.tar.gz"; then
+      echo "经镜像下载也失败，放弃更新"; exit 1
+    fi
+  else
+    echo "下载 {tag} 的源码包失败（连不上 github.com）。可以在系统环境里设置 PC_UPDATE_MIRROR（形如 https://ghfast.top/）后重试，或改用 git / Docker 部署"; exit 1
+  fi
 fi
 echo "PROGRESS 30 switch"
 if ! tar -xzf "$TMP/src.tar.gz" -C "$TMP"; then echo "解包失败，放弃更新"; exit 1; fi
@@ -1154,6 +1177,17 @@ async def _announce_result(last: Dict[str, Any]) -> None:
             logger.warning("给 %s 发更新结果提醒失败", username, exc_info=True)
 
 
+def _stale_last_update(last: Dict[str, Any], current: str = __version__) -> bool:
+    """那条「上次更新」记录是不是已经过期了。
+
+    「过期」= 当前版本已经追上那次的目标版本（用户手工跑过 deploy.sh，或者后来又
+    补更新成功）。过期的记录不该继续显示成「上次更新未完成」—— 实测有人手动升级
+    之后，界面上一直挂着几天前那条失败，看起来像更新永远没成功。
+    """
+    tag = str(last.get("tag") or "")
+    return bool(tag) and not is_newer(tag, current)
+
+
 async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """界面要的全部信息：版本、检查结果、能否一键更新、手工命令。"""
     state = known if isinstance(known, dict) else await load_state()
@@ -1184,12 +1218,21 @@ async def status(known: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # 更新结束（成功或失败）后提醒一次：脚本是在面板之外跑完的，而它最后一步就是重启
     # 面板 —— 没人会在那里写消息，所以在这里补上，用 notified 标记保证只发一次。
     last = state.get("last_update") if isinstance(state.get("last_update"), dict) else {}
+    # 那次失败之后版本已经追上来了（用户手工跑了 deploy.sh，或者后来又补更新成功）：
+    # 这条记录已经过期，继续挂着「上次更新未完成」只会误导 —— 界面会把一条早已解决
+    # 的失败当成当前状态。判据与「有没有新版本」用同一套比较：目标版本不比当前新，
+    # 说明更新到位了。
+    stale = _stale_last_update(last)
+    if stale:
+        last = {}
+        state.pop("last_update", None)
     if last.get("tag") and not last.get("notified"):
         await _announce_result(last)
         last["notified"] = True
         state["last_update"] = last
-    # 落库一次：上面可能刚把「更新中」判定成成功/失败，让下次读到的就是干净的
-    if known is None:
+    # 落库一次：上面可能刚把「更新中」判定成成功/失败、或清掉了一条过期的记录，
+    # 让下次读到的就是干净的
+    if known is None or stale:
         await save_state(state)
     return {
         "current": __version__,

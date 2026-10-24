@@ -113,6 +113,11 @@ sudo ./deploy.sh --port 9000 --mysql-root-password '<root 口令>' \
 > NodeSource / nvm、在别的机器上 `npm run build` 后把 `dist/` 拷过来加 `--skip-frontend`、
 > 或者直接改用 Docker 镜像。宿主机一个 Node 都不装也能跑，只要 `dist/` 是新的。
 
+> 面板里的「立即更新」要联网拉取源码包，国内网络连 `github.com` 经常卡住。0.3.2 起下载
+> 限定了连接超时与总时长，失败会明确报错而不再一直挂着；如果确实连不上，可以在面板进程
+> 的环境里加一个可信镜像前缀后重试（`systemctl edit proxcenter` 里写
+> `Environment=PC_UPDATE_MIRROR=https://ghfast.top/`），或者干脆下载源码包手工升级 / 改用 Docker。
+
 > `SECRET_KEY` 生成之后别再改，换了它库里已存的 PVE Token、SMTP 口令全都解不开。`.env`
 > 已存在时，脚本只覆盖命令行上显式给出的键。
 

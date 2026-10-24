@@ -57,9 +57,13 @@ export function Login() {
   /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
   const refresh = useRefreshInterval();
 
-  /* 后端连接状态 */
+  /* 后端连接状态。
+     key 带 'public' 前缀：这里是**匿名**请求，后端只回 {"status":"ok"}（不含
+     pve_configured，见 routers/config.health 的两档设计）。若与登录后的
+     usePveStatus 共用 ['health']，登录瞬间会命中这份匿名缓存（全局 staleTime
+     30 秒），把「还没配连接」误判成「已配置」—— 引导条与初始化跳转一起消失。 */
   const health = useQuery({
-    queryKey: ['health'],
+    queryKey: ['health', 'public'],
     queryFn: healthApi.check,
     refetchInterval: refresh,
     retry: false,

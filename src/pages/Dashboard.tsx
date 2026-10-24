@@ -27,6 +27,7 @@ import { Table, type Column } from '../components/ui/Table';
 import { ErrorState, EmptyState } from '../components/ui/EmptyState';
 import { Modal } from '../components/ui/Modal';
 import { PveQueryError } from '../components/SetupRequired';
+import { isNotConfigured } from '../api/client';
 import { usePveReady } from '../hooks/usePveStatus';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { DonutChart, CHART_COLORS } from '../components/MetricChart';
@@ -133,12 +134,12 @@ const WIDGET_META: WidgetMeta[] = [
     id: 'top',
     nameKey: 'dashboard.widget.top',
     span: 'full',
-    /* 榜单跨虚拟机与容器两类（/dashboard/top 的守卫就是 require_any）。
-       接口那侧已经按归属过滤，普通用户即使请求也只拿到自己名下的机器；
-       这里再对普通用户整块拿掉 —— 他手上那几台机器排不出「榜」，
-       而这张卡片原本最容易让人以为「仪表盘显示的是全集群」。 */
-    permissions: ['vm.view', 'ct.view'],
-    adminOnly: true,
+    /* 榜单只统计运行中的虚拟机（后端 /dashboard/top 只取 type == "qemu"），
+       所以门槛跟「资源分布」一样是 vm.view，而不是 vm.view|ct.view ——
+       只有容器权限的账号拿到的是永远空着的榜，不如不显示。
+       普通用户也保留这张卡：接口那侧已按归属过滤（security.visible_owner），
+       他只会看到自己名下机器的排名；副标题写明「我名下」，避免误以为是全集群。 */
+    permissions: ['vm.view'],
   },
   {
     id: 'tasks',
@@ -247,19 +248,21 @@ export function Dashboard() {
      （括号里是各接口在后端的守卫，见 backend/app/routers） */
   const canVm = hasPermission('vm.view'); //       /vms list
   const canCt = hasPermission('ct.view'); //       /lxc list
-  const canGuest = canVm || canCt; //              /dashboard/top
+  const canGuest = canVm || canCt; //              工作台等「我的机器」聚合口径
   const canNode = hasPermission('node.view'); //   /nodes、/cluster/*、/dashboard/capacity
   const canStorage = hasPermission('storage.view'); // /storages
   const canTask = hasPermission('task.view'); //   /cluster/tasks
 
   /* 集群级那几路再加一道**身份**门槛（卡片侧对应 WIDGET_META 里的 adminOnly）：
-     普通用户的仪表盘只剩「我的机器」那一摊，看不到节点 / 容量 / 任务 / 榜单，
-     请求也就不该发 —— 不然卡片裁掉了、轮询还在跑，每 30 秒白打六路接口，其中
-     最重的容量预测还要逐节点去读 PVE 的 rrddata。 */
+     普通用户的仪表盘看不到节点 / 容量 / 任务，请求也就不该发 —— 不然卡片裁掉了、
+     轮询还在跑，每 30 秒白打几路接口，其中最重的容量预测还要逐节点去读 PVE 的
+     rrddata。
+     榜单（/dashboard/top）不在其中：它按行归属过滤后只含「我名下的虚拟机」，
+     对普通用户是「我的机器谁最吃资源」，与管理员那张榜共用一路接口。 */
   const loadNodes = isAdmin && canNode;
   const loadStorages = isAdmin && canStorage;
   const loadTasks = isAdmin && canTask;
-  const loadTop = isAdmin && canGuest;
+  const loadTop = canVm;
 
   /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
      （配好之后自动恢复） */
@@ -859,7 +862,9 @@ export function Dashboard() {
   /* 这张卡片此刻该不该出现（两条声明见 WIDGET_META，两处判断缺一不可）：
        * permissions —— 有没有看这件事的权限；
        * adminOnly   —— 这件事跟「普通用户」这个身份相不相称。集群节点、
-         跨用户榜单、任务队列都属于后者：普通用户的仪表盘只讲他自己那几台机器。
+         容量预测、任务队列都属于后者：普通用户的仪表盘只讲他自己那几台机器。
+         资源占用排行**不**属于后者：接口按归属过滤后它就是「我的机器谁最吃
+         资源」，普通用户看它不会看到别人的机器。
      **只过滤渲染，不动布局数据**：无权限期间随便拖一下就会把「裁短后」的
      顺序落库，权限恢复后卡片顺序再也回不来（见 useDashboardLayout 的说明）。 */
   const canSee = useCallback(
@@ -907,7 +912,13 @@ export function Dashboard() {
         <PveQueryError
           title={t('dashboard.loadErrorTitle')}
           message={t('dashboard.loadErrorMsg')}
-          error={vmsQuery.error}
+          /* 只要有一路是「还没配连接」（428），就按未配置渲染引导：
+             挑第一路 428 而不是固定拿 vms 的那份 —— 三路同时失败时，谁先返回
+             428 并不确定，固定取 vms 会在它恰好是 5xx 时把用户丢进红色报错。 */
+          error={
+            dataQueries.find((query) => isNotConfigured(query.error))?.error ??
+            vmsQuery.error
+          }
           onRetry={() => {
             void vmsQuery.refetch();
             void nodesQuery.refetch();
@@ -1351,7 +1362,9 @@ export function Dashboard() {
           subtitle={
             topQuery.isLoading
               ? t('common.loading')
-              : t('dashboard.top.subtitle', { n: topList.length || 8 })
+              : isAdmin
+                ? t('dashboard.top.subtitle', { n: topList.length || 8 })
+                : t('dashboard.top.subtitleMine', { n: topList.length || 8 })
           }
           icon={<IconActivity size={16} />}
           actions={
@@ -1376,7 +1389,11 @@ export function Dashboard() {
           ) : topList.length === 0 ? (
             <EmptyState
               title={t('dashboard.top.empty')}
-              description={t('dashboard.top.emptyDesc')}
+              description={
+                isAdmin
+                  ? t('dashboard.top.emptyDesc')
+                  : t('dashboard.top.emptyDescMine')
+              }
               compact
             />
           ) : (

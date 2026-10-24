@@ -20,7 +20,7 @@ import { usePveStatus } from '../hooks/usePveStatus';
 import { useT } from '../i18n';
 import { Notice } from './ui/EmptyState';
 import { Button } from './ui/Button';
-import { IconPlug } from './Icons';
+import { IconAlert, IconPlug } from './Icons';
 
 /* 「添加节点」跳转的目标：连接管理页，并让它自动摊开新增表单 */
 const SETUP_PATH = '/nodes/connections';
@@ -30,10 +30,40 @@ export function PveSetupNotice() {
   const navigate = useNavigate();
   const location = useLocation();
   const { isAdmin } = useAuth();
-  const { configured, loading } = usePveStatus();
+  const { configured, loading, reachable, hasData } = usePveStatus();
 
-  if (configured || loading || location.pathname.startsWith(SETUP_PATH)) {
+  if (loading || location.pathname.startsWith(SETUP_PATH)) {
     return null;
+  }
+
+  /* 「配了但连不上」：这不是「还没设置好」，但同样不该只留一屏红色报错。
+     只给提示与「检查连接」的出口，不往初始化流程里拽 —— 用户要做的是排查
+     地址 / 令牌 / 防火墙，不是再加一条连接。
+
+     要求 hasData：探测没回来时不能断言 PVE 连不上，那是把面板自己的故障
+     算到 PVE 头上（同 usePveStatus 里的说明）。 */
+  if (configured) {
+    if (!hasData || reachable) return null;
+    return (
+      <Notice
+        tone="warning"
+        icon={<IconAlert size={16} />}
+        title={t('pve.unreachableTitle')}
+        action={
+          isAdmin ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => navigate(SETUP_PATH)}
+            >
+              {t('setup.pveManage')}
+            </Button>
+          ) : undefined
+        }
+      >
+        {t('pve.unreachableDesc')}
+      </Notice>
+    );
   }
 
   if (!isAdmin) {

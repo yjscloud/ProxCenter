@@ -322,11 +322,29 @@ def vm_owner_from(
     if vmid is None or not str(vmid):
         return None
     cid = connection_id or "-"
+
+    # 精确匹配优先：多套 PVE 上可能存在同名节点 + 相同 vmid（例如两套集群里
+    # 都有 pve/105），而归属表按 ``<连接>:<节点>:<vmid>`` 记录，本来是能分清的。
+    # 只按后缀匹配会同时命中两条、归属人不同 → 返回 None，调用方就把它当成
+    # 「没有归属」—— 仪表盘榜单因此对普通用户永远是空表（/vms 列表用的是精确
+    # ref，所以列表能看到机器，两边表现不一致）。
+    #
+    # ``-`` 前缀是旧版本记录时未指定连接的写法，与 cid 同一个意思，一并认。
+    if node:
+        for exact in (f"{cid}:{node}:{vmid}", f"-:{node}:{vmid}"):
+            owner = vm_owners.get(exact)
+            if owner is not None:
+                return str(owner or "") or None
+
     usernames: List[str] = []
     for ref, username in vm_owners.items():
         text = str(ref)
         if node:
             if not text.endswith(f":{node}:{vmid}"):
+                continue
+            # 连接已知时只认同一连接（或旧版本的 “-” 前缀）的记录：否则 B 连接上
+            # 的同号机器会把 A 连接的归属认领走，隔离就漏了。
+            if cid != "-" and text.rsplit(":", 2)[0] not in (cid, "-"):
                 continue
         else:
             if not text.endswith(f":{vmid}") or text.rsplit(":", 2)[0] != cid:

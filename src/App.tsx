@@ -126,6 +126,16 @@ function RequireAuth({ children }: { children: ReactNode }) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
+  /* 角色要求 2FA、本人还没绑：后端除了 2FA 那几个端点，其余一律 403。
+     不在这里拦的话，用户会看到「连接测试失败」「无法加载集群数据」这类
+     各自的报错，却不知道根因是「先去绑两步验证」—— 一台新装的面板因此
+     看起来像坏了。直接把人带到绑定页，绑定完成后再回他想去的地方。
+
+     只在 /profile 以外拦：绑定页本身要能打开，否则成死循环。 */
+  if (user.totp_setup_required && location.pathname !== '/profile') {
+    return <Navigate to="/profile" replace state={{ from: location.pathname }} />;
+  }
+
   return <>{children}</>;
 }
 

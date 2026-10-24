@@ -77,6 +77,8 @@ export interface UserInfo {
   created?: string;
   /** 是否已绑定两步验证（TOTP） */
   totp_enabled?: boolean;
+  /** 角色被要求绑定 2FA 但还没绑：除了 2FA 相关接口，其余请求都会 403 */
+  totp_setup_required?: boolean;
   /** 账号有效期（Unix 秒）；0 = 永不过期 */
   expires_at?: number;
 }

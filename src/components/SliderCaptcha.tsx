@@ -1,48 +1,84 @@
 /* ==========================================================================
-   ProxCenter — 滑动验证（拖动滑块）
+   ProxCenter — 滑动验证（把滑块推到最右端）
    ==========================================================================
 
-   一句话：把滑块从轨道左端推到最右端即完成。没有拼图、没有图片素材 ——
-   服务端只下发几何量（见 backend/app/captcha.py）。
+   外观与交互回到最初那一版：一条通栏轨道，左侧一块白色手柄（「»」图标），
+   拖到右端后手柄变绿打勾，轨道下方提示「已拖到底 / 可以登录了」。
+   没有蓝色竖标、没有对准中心线的要求 —— 那两样在实测里反而让人不知道该
+   拖到哪里（见下方「为什么退回」）。
 
-   为什么改成「拖到底」而不是「拼图对位」：拼图要人对齐几个像素，手机上经常
-   反复划不过去，还要为一张验证码生成并传输两张 PNG。控制台里更常见也更省事
-   的做法是「拖到底即通过」，判据退化成「有没有推到末端」——它挡的是最朴素的
-   批量撞库，不是针对性攻击，这个取舍在后端注释里写清楚了。
+   为什么退回「拖到底」：
 
-   三个实现细节值得说明：
+   · v4 把随机目标画成轨道上的蓝色竖标，让用户对准。反馈是「不知道该拖到
+     哪」「拖过去了也不确定对没对上」，而且手柄会把竖标盖住。可用性优先。
+   · 判定回到 `x >= 右端点 - 容差`，前端因此**可以在本地判断是否已到位**，
+     于是又能给出「已拖到底」的即时反馈（v4 只能等服务端裁决）。
 
-   1. **几何全部按比例算，不写死像素。**
-      登录卡最大 400px 宽（左右各 34px 内边距 → 内容 332px），窄屏还会更窄
-      （640px 以下内边距收到 20px，360px 手机上内容只剩 296px）。轨道如果钉死
-      320px 就会溢出。所以轨道是宽度 100%，手柄宽度、位移都用百分比；指针位移
-      再按「设计坐标 / 实际渲染宽度」换算回设计坐标系 —— 上报给后端的位置必须
-      与后端算出的通过阈值同尺度。
+   退回样式不等于退回防护。仍然保留轨迹上报：拖动过程中的采样点（x + 毫秒
+   时间戳）随位置一起交上去，服务端要看到「多个递增采样点 + 合理耗时」才
+   认。只交一个坐标的脚本（H-1 的复现方式）照样被拒 —— 这一点对用户不可见。
 
-   2. **键盘可达靠一个透明的原生 range**，鼠标行为自己实现。
-      直接用 `<input type="range">` 最省事，但原生 range 在轨道上按下就会让
-      拇指直接跳过去 —— 也就是说「点一下」等同于「拖到位」，这既不符合
-      「拖动完成验证」的语义，也等于让人一键跳过验证。所以：轨道上的 input 设
-      `pointer-events: none`（只留 Tab + 方向键），指针操作只从手柄起手。
+   三个实现细节沿用旧版：
 
-   3. **位置用 ref 往上报，不走 state。**
-      拖动过程中每移动 1px 都会触发回调，如果上层用 state 接就会把整个登录
-      表单重渲染一遍；登录页只需要在提交时读一次最终值。
+   · **几何全部按比例算，不写死像素。** 登录卡在窄屏只有 296px 宽，轨道钉死
+     320px 会溢出，所以宽度 100%、手柄宽度与位移都用百分比，指针位移再按
+     「设计坐标 / 实际渲染宽度」换算回设计坐标 —— 上报的位置必须与后端算出的
+     阈值同尺度。
+   · **键盘可达靠一个透明的原生 range**，鼠标行为自己实现：原生 range 一按下
+     就会让拇指跳到点击处，等于「点一下」就跳过验证。这里 input 设
+     pointer-events: none，只留 Tab + 方向键。
+   · **位置用 ref 往上报，不走 state**：拖动中每移动 1px 都触发回调，上层用
+     state 接会把登录表单重渲染一遍。
 
-   换题（challenge.id 变化）会把位置归零：新题与上一题无关，不归零就会出现
-   「滑块停在上一次的落点、看起来已经拖到底」的假象。
+   换题（challenge.id 变化）会把位置与轨迹一起归零：新题与上一题无关，不归零
+   就会出现「滑块停在上一次的落点、看起来已经拖到底」的假象。
    ========================================================================== */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { IconCheck, IconChevronRight } from './Icons';
 import { useT } from '../i18n';
-import type { CaptchaChallenge } from '../api/types';
+import type { CaptchaChallenge, SliderTracePoint } from '../api/types';
+
+/** 服务端要求的最少采样点（见 backend/app/captcha.py 的 SLIDER_PATH_MIN_POINTS） */
+const MIN_TRACE_POINTS = 5;
+/** 补齐轨迹时假设的最短拖动耗时（ms），与服务端的 SLIDER_MIN_MS 对齐 */
+const MIN_ELAPSED_MS = 200;
+/** 服务端接受的拖动耗时上限（ms），与服务端的 SLIDER_MAX_MS 对齐 */
+const MAX_ELAPSED_MS = 30_000;
+
+/**
+ * 轨迹不足时按首末位置线性补齐。
+ *
+ * 只有键盘操作（方向键一下一下按）和极快的拖动会走到这里 —— 真实指针拖动
+ * 每秒会产生几十个 pointermove。补齐是为了不让无障碍路径被服务端直接判负。
+ */
+function padTrace(
+  trace: SliderTracePoint[],
+  x: number,
+  elapsed: number,
+): SliderTracePoint[] {
+  if (trace.length >= MIN_TRACE_POINTS) return trace.slice();
+  const total = Math.max(MIN_ELAPSED_MS, Math.round(elapsed));
+  const from = trace.length > 0 ? trace[0].x : 0;
+  const out: SliderTracePoint[] = [];
+  for (let i = 0; i < MIN_TRACE_POINTS; i += 1) {
+    const ratio = i / (MIN_TRACE_POINTS - 1);
+    out.push({
+      x: Math.round(from + (x - from) * ratio),
+      t: Math.round(total * ratio),
+    });
+  }
+  return out;
+}
 
 export interface SliderCaptchaProps {
   challenge: CaptchaChallenge;
-  /** 拖动位置变化（设计坐标 px，0 = 未拖动） */
-  onPosition: (x: number) => void;
+  /**
+   * 位置变化：设计坐标 px（0 = 未拖动）+ 截止当前的轨迹采样点。
+   * 上层用 ref 接收即可，不必触发渲染。
+   */
+  onPosition: (x: number, path: SliderTracePoint[]) => void;
   /** 换一道题 */
   onRefresh: () => void;
   loading?: boolean;
@@ -71,6 +107,10 @@ export function SliderCaptcha({
 
   const trackRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  /* 轨迹采样点：按下时清空，移动时追加（同一位置不重复记点） */
+  const traceRef = useRef<SliderTracePoint[]>([]);
+  /* 起手时刻（performance.now），用于给采样点打时间戳 */
+  const startedAtRef = useRef(0);
   /* 拖动起手信息：按下点、当时的偏移、以及渲染像素 → 设计坐标的换算比 */
   const dragRef = useRef<{ startX: number; startOffset: number; scale: number } | null>(
     null,
@@ -80,29 +120,66 @@ export function SliderCaptcha({
      （真正的判定在服务端，这里只是同一套阈值的视觉反馈） */
   const reached = offset >= maxOffset - tolerance && offset > 0;
 
-  useEffect(() => {
-    setOffset(0);
-    dragRef.current = null;
-    onPosition(0);
-    // onPosition 由上层用 useCallback 固定，不会导致重复归零
-  }, [challenge.id, onPosition]);
+  /* 位置与轨迹一起抛给上层：服务端要的是「拖到哪 + 怎么拖过去的」 */
+  const emit = useCallback(
+    (x: number, elapsed: number) => {
+      onPosition(x, padTrace(traceRef.current, x, elapsed));
+    },
+    [onPosition],
+  );
 
   const set = useCallback(
     (value: number) => {
       const clamped = Math.min(maxOffset, Math.max(0, Math.round(value)));
+      /* 停留太久再动手（尤其是键盘）：轨迹跨度会超出服务端上限，重置计时 */
+      if (performance.now() - startedAtRef.current > MAX_ELAPSED_MS) {
+        startedAtRef.current = performance.now();
+        traceRef.current = [];
+      }
+      const now = Math.max(0, Math.round(performance.now() - startedAtRef.current));
+      const trace = traceRef.current;
+      const last = trace[trace.length - 1];
+      if (!last || last.x !== clamped) trace.push({ x: clamped, t: now });
       setOffset(clamped);
-      onPosition(clamped);
+      emit(clamped, now);
     },
-    [maxOffset, onPosition],
+    [maxOffset, emit],
   );
+
+  useEffect(() => {
+    setOffset(0);
+    dragRef.current = null;
+    traceRef.current = [];
+    startedAtRef.current = performance.now();
+    onPosition(0, []);
+    // onPosition 由上层用 useCallback 固定，不会导致重复归零
+  }, [challenge.id, onPosition]);
+
+  /* 校验失败后把滑块弹回起点：停在原位会让人以为「位置没问题、只是按钮点错了」，
+     实际上服务端说的是「这次没过，重拖一次」。 */
+  useEffect(() => {
+    if (!error) return;
+    setOffset(0);
+    dragRef.current = null;
+    traceRef.current = [];
+    onPosition(0, []);
+  }, [error, onPosition]);
 
   const interactive = !disabled && !loading;
 
   const onHandleDown = (event: ReactPointerEvent<HTMLSpanElement>) => {
     if (!interactive) return;
-    // 指针捕获：滑出轨道后仍能继续拖，松手也一定能收到事件
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // 指针捕获：滑出轨道后仍能继续拖，松手也一定能收到事件。
+    // 捕获失败不该让整次拖动作废（合成事件、老版 Safari 都会抛 NotFoundError）。
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* 没有可捕获的指针：退化成普通拖动，不影响判定 */
+    }
     const rect = trackRef.current?.getBoundingClientRect();
+    startedAtRef.current = performance.now();
+    /* 起点也记一个采样点：服务端要判「整体单调向右」，缺了起点无法判断 */
+    traceRef.current = [{ x: offset, t: 0 }];
     dragRef.current = {
       startX: event.clientX,
       startOffset: offset,
@@ -120,18 +197,20 @@ export function SliderCaptcha({
   };
 
   const onHandleUp = (event: ReactPointerEvent<HTMLSpanElement>) => {
-    const drag = dragRef.current;
-    if (!drag) return;
+    if (!dragRef.current) return;
     dragRef.current = null;
     setDragging(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      /* 同上：释放失败不影响结果 */
     }
     // 松手时已经很接近末端：直接吸附到尽头。
     // 最后几像素手指很难停准，不吸附就会出现「明明推到头了却没通过」。
-    if (offset >= maxOffset - tolerance && offset < maxOffset) {
-      set(maxOffset);
-    }
+    // set() 负责补上末点采样并上报，末点必须等于提交的位置（服务端会核对）。
+    set(offset >= maxOffset - tolerance ? maxOffset : offset);
   };
 
   return (

@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { guestsApi } from '../api/guests';
 import { vmsApi } from '../api/endpoints';
@@ -659,7 +659,9 @@ interface VncProps {
   vmid: number;
   /** 容器走 /lxc/{vmid} 的端点，必须传下去 */
   guestType: GuestType;
-  containerRef: React.RefObject<HTMLDivElement>;
+  /* React 19 的类型定义里 useRef<T>(null) 返回 RefObject<T | null>：
+     初始值可能是 null，只读的 .current 也就必须允许 null。 */
+  containerRef: React.RefObject<HTMLDivElement | null>;
   onStateChange: (s: ConnState) => void;
   onError: (msg: string | null) => void;
   /** 连接建立后把剪贴板 / 键入能力交给外层（断开时传 null） */

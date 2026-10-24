@@ -136,6 +136,9 @@ logger = logging.getLogger("ProxCenter")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
+    # 会话有效期可能被管理员改过（存 settings KV），启动时读进进程缓存：
+    # 签发令牌是同步路径，不能在那儿查库（见 security.refresh_session_policy）
+    await security.refresh_session_policy()
     # AI 排查助手：谁在什么时候让 AI 在哪台机器上跑了什么命令，必须可追溯
     await aiaudit.init_table()
     # AI 会话：把「一次性排查」升级成可追问的对话（对话线程 + 消息）

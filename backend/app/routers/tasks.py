@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from .. import i18n, security
+from .. import i18n, ownership, security
 
 logger = logging.getLogger(__name__)
 from ..formatters import normalize_task
@@ -28,6 +28,44 @@ def _raise(exc: ProxmoxError) -> None:
     )
 
 
+def _task_guest(upid: str) -> Optional[tuple]:
+    """从 UPID 里解析出 (node, vmid)；非客户机级任务返回 None。
+
+    UPID 形如 ``UPID:node:pid:pstart:starttime:type:id:user@realm:``。只有
+    ``qm*``（虚拟机）与 ``vz*``（容器）开头的任务带客户机 id；节点级、存储级、
+    集群级的任务（``vzdump`` 之外的 ``aptupdate``、``ceph`` 等）没有归属可判，
+    一律不对外暴露。
+    """
+    parts = (upid or "").split(":")
+    if len(parts) < 7:
+        return None
+    if not (parts[5].startswith("qm") or parts[5].startswith("vz")):
+        return None
+    return parts[1], parts[6]
+
+
+async def _owned_guests(user: Dict[str, Any]) -> Optional[set]:
+    """当前用户名下的 (node, vmid) 集合；管理员返回 None（不限制）。
+
+    安全审计 M-1：任务面此前完全没做归属过滤，operator 能读到全平台的任务
+    列表（含 root@pam!master 身份、他人 VMID、开关机时间），与「只能看到自己
+    名下的机器」的承诺相悖，而同一用户的 ``GET /api/vms/{node}/{vmid}``
+    却是拒绝的。这里补上与客户机同源的隔离规则。
+    """
+    owner = security.visible_owner(user)
+    if owner is None:
+        return None
+    owned: set = set()
+    for kind in (ownership.KIND_VM, ownership.KIND_CT):
+        for ref in await ownership.list_owned(kind, owner):
+            # ref 形如 "<connection_id>:<node>:<vmid>"，只取后两段比对，
+            # 免得把连接 id 的解析规则复制一份到这里
+            parts = ref.rsplit(":", 2)
+            if len(parts) == 3:
+                owned.add((parts[1], parts[2]))
+    return owned
+
+
 @router.get("/tasks")
 async def list_tasks(
     node: Optional[str] = None,
@@ -44,6 +82,14 @@ async def list_tasks(
     output = [normalize_task(t) for t in (tasks or [])]
     if running_only:
         output = [t for t in output if t["running"]]
+
+    owned = await _owned_guests(user)
+    if owned is not None:
+        output = [
+            t
+            for t in output
+            if (guest := _task_guest(t.get("upid", ""))) is not None and guest in owned
+        ]
     return output
 
 
@@ -65,6 +111,14 @@ async def get_task(
             status_code=400,
             detail=i18n.tr("无法从 UPID 解析节点，请显式提供 node 参数"),
         )
+
+    # 与列表同源隔离：拿到别人的 UPID 也读不到任务详情与执行日志（M-1）。
+    # 用 404 而不是 403，免得 UPID 变成「存在性探针」。
+    owned = await _owned_guests(user)
+    if owned is not None:
+        guest = _task_guest(upid)
+        if guest is None or guest not in owned:
+            raise HTTPException(status_code=404, detail="任务不存在")
 
     try:
         status = await client.task_status(upid, resolved)
@@ -203,12 +257,24 @@ async def tasks_websocket(
 
     await websocket.accept()
 
+    # 推送流同样要按归属过滤，否则 HTTP 收紧了、WebSocket 还是全量（M-1）
+    owned = await _owned_guests(
+        {"username": payload.get("username") or payload.get("sub"), "role": role}
+    )
+
     last_signature = ""
     try:
         while True:
             try:
                 tasks = await client.tasks(limit=limit)
                 normalized = [normalize_task(t) for t in (tasks or [])]
+                if owned is not None:
+                    normalized = [
+                        t
+                        for t in normalized
+                        if (guest := _task_guest(t.get("upid", ""))) is not None
+                        and guest in owned
+                    ]
             except ProxmoxError as exc:
                 await websocket.send_json(
                     {"type": "error", "message": exc.message}

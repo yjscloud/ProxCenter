@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { BrandLogo } from '../../components/BrandLogo';
 import { IconCheck, IconChevronUp, IconKey } from '../../components/Icons';
 import type { FaqItem, SiteInfo } from '../../api/types';

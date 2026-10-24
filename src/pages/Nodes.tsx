@@ -16,7 +16,7 @@
    ========================================================================== */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { clusterApi, connectionsApi, nodesApi } from '../api/endpoints';
 import { errorMessage, isNotConfigured } from '../api/client';

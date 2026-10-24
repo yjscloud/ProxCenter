@@ -32,7 +32,7 @@ import io
 import random
 import secrets
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -233,16 +233,29 @@ async def set_mode(mode: str) -> str:
 # 二、滑动验证（拖动滑块）
 # ===========================================================================
 
-# 判定从「对位」改成了「到底」：
-#   早先是拼图 —— 背景挖个缺口，把拼图块拖过去对上，服务端比对 x 是否落在
-#   目标附近。它对真人不够友好（手机上经常差几个像素反复失败），还要生成并
-#   传输两张图。现在改成控制台里更常见的「拖到底即通过」：一条轨道，把滑块
-#   推到最右端就算完成，判据只有「有没有拖到底」。
+# 形态沿革，取舍要写清楚：
 #
-# 安全性上的取舍要说清楚：纯「拖到底」比拼图弱 —— 脚本可以直接提交最大值，
-# 它挡的是最朴素的批量撞库，挡不住针对性攻击。真要更硬得上行为特征或第三方
-# 人机验证。这里仍保留 id + 一次性 + TTL，至少让「不请求挑战直接提交」与
-# 「重放」都过不去。
+#   v1  拼图（背景挖缺口 + 拼图块对位）→ 真人常差几像素，反复失败；
+#   v2  「拖到底」：把滑块推到最右端即通过。判据只剩「有没有拖到底」，
+#       而答案就是 `width - handle_size` 这个固定值 —— 脚本 curl 一次
+#       带上 264 就能过，验证码对人机识别零作用（H-1）；
+#   v3  随机目标 + 把目标画进图片（脚本得先做 CV）；
+#   v4  随机目标 + 目标坐标直接下发，画成轨道上的蓝色竖标；
+#   v5（当前）外观退回 v2 的「拖到底」，但保留 v4 的轨迹校验。
+#
+# 退回原因：v3/v4 都要求用户「对准某个位置」，实测反馈是不知道往哪拖、
+# 拖过去也不确定对没对上，可用性代价大于它换来的防护。
+#
+# 退回样式不等于退回防护 —— v2 的死穴是「固定答案 + 不需要过程」，这里
+# 只补回了「拖到底」这个判据，过程仍然要交：
+#
+#   1. 轨迹校验：只交坐标不交轨迹直接判负（见 _path_ok），H-1 的复现脚本
+#      照旧过不去；要过就得伪造一条递增采样点，那已经不是三行脚本的量级；
+#   2. 一次性 + TTL：同一个 captcha_id 用一次就作废；
+#   3. 登录接口按来源 IP 限流兜底。
+#
+# 挡得住批量撞库与现成脚本，挡不住针对性攻击。要真正抗住，应该接第三方
+# 人机验证（Turnstile / hCaptcha），而不是继续在自研滑块上加像素。
 
 # 轨道的设计宽度（展示坐标；前端按它换算百分比，窄屏也不会走形）
 SLIDER_W = 320
@@ -256,20 +269,30 @@ SLIDER_TOLERANCE = 6
 SLIDER_TTL = 180
 _SLIDER_MAX = 2000
 
+# 轨迹校验的门槛。真人手指/鼠标拖动必然产生中间采样点与耗时；只提交一个最终
+# 坐标的脚本没有轨迹，在这一步就会被拒。
+SLIDER_PATH_MIN_POINTS = 5
+SLIDER_MIN_MS = 180
+SLIDER_MAX_MS = 30_000
+# 允许的手抖回弹（px）：轨迹整体要单调向右，但触控板回滑几像素很正常
+SLIDER_PATH_BACKTRACK = 3
+
 # id -> (拖到底时的 x, 过期时间戳)。一次性：校验即取出。
 _sliders: Dict[str, Tuple[int, float]] = {}
 
 
 def slider_pass_x() -> int:
-    """拖到底时的 x：可拖动范围的右端点。"""
+    """拖到底时的 x：可拖动范围的右端点（= SLIDER_W - SLIDER_HANDLE）。"""
     return max(0, SLIDER_W - SLIDER_HANDLE)
 
 
 def issue_slider() -> Dict[str, Any]:
     """签发一道滑动验证题。
 
-    只给几何量与 id，**没有任何图片**。也不需要藏答案：判定是「有没有拖到
-    底」，这个答案前端自己就能算出来；真正起作用的是 id 的一次性与时效。
+    只给几何量与 id，**没有任何图片，也不下发目标坐标** —— 判定是「有没有
+    拖到底」，这个答案前端自己就能算出来（width - handle_size），不需要也不
+    应该由服务端告诉它。真正起作用的是 id 的一次性、时效，以及提交时的轨迹
+    校验（见 :func:`check_slider`）。
     """
     _prune()
     cid = secrets.token_urlsafe(24)
@@ -284,8 +307,54 @@ def issue_slider() -> Dict[str, Any]:
     }
 
 
-def check_slider(captcha_id: Optional[str], x: Optional[float]) -> str:
-    """滑块的一次性校验，语义同 :func:`check`：先作废再比较。"""
+def _path_ok(path: Optional[List[Dict[str, Any]]], got: float) -> bool:
+    """拖动轨迹是否像真人拖出来的。
+
+    H-1 的复现脚本只交一个 captcha_x，没有轨迹 —— 这里直接判负。伪造一条
+    递增采样点 + 合理耗时当然可能，但那已经不是「三行脚本」的量级，
+    且每次都要新的 captcha_id（一次性）。
+    """
+    if not path:
+        return False
+    points: List[Tuple[float, float]] = []
+    for item in path:
+        if not isinstance(item, dict):
+            return False
+        try:
+            points.append((float(item.get("x")), float(item.get("t"))))
+        except (TypeError, ValueError):
+            return False
+    if len(points) < SLIDER_PATH_MIN_POINTS:
+        return False
+
+    ts = [t for _, t in points]
+    if any(b < a for a, b in zip(ts, ts[1:])):
+        return False
+    span = ts[-1] - ts[0]
+    if span < SLIDER_MIN_MS or span > SLIDER_MAX_MS:
+        return False
+
+    xs = [x for x, _ in points]
+    # 末点必须就是提交的位置：否则「轨迹画到 A、坐标交 B」也能蒙过
+    if abs(xs[-1] - got) > SLIDER_TOLERANCE:
+        return False
+    # 整体单调向右（允许小幅回弹）
+    if any(b < a - SLIDER_PATH_BACKTRACK for a, b in zip(xs, xs[1:])):
+        return False
+    return True
+
+
+def check_slider(
+    captcha_id: Optional[str],
+    x: Optional[float],
+    path: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """滑块的一次性校验，语义同 :func:`check`：先作废再比较。
+
+    三道关：拖到了末端（x >= 右端点 - 容差）、轨迹像人拖的、题目没过期且
+    只此一次。判据只要求「不短于末端 - 容差」，往右多报不会有额外好处
+    （前端本来最多就到右端点）。
+    """
     entry = _sliders.pop((captcha_id or "").strip(), None)
     if not entry:
         return RESULT_GONE
@@ -296,7 +365,11 @@ def check_slider(captcha_id: Optional[str], x: Optional[float]) -> str:
         got = float(x)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return RESULT_WRONG
-    return RESULT_OK if got >= target - SLIDER_TOLERANCE else RESULT_WRONG
+    if got < target - SLIDER_TOLERANCE:
+        return RESULT_WRONG
+    if not _path_ok(path, got):
+        return RESULT_WRONG
+    return RESULT_OK
 
 
 def verify_slider(captcha_id: Optional[str], x: Optional[float]) -> bool:

@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { lxcApi, vmsApi } from '../api/endpoints';
 import { guestPath } from '../api/guests';

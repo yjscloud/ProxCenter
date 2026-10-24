@@ -313,7 +313,7 @@ changed under *Background jobs*.
 Updating in the panel does exactly what the manual route does: fetch the new tag, then run
 `./deploy.sh` (install dependencies + build the frontend + restart the service). It is therefore
 only offered when it can actually work: the install directory is a git checkout, the process is
-managed by systemd, the user is root, Node.js 18+ is installed (without it the frontend cannot be
+managed by systemd, the user is root, Node.js 22.22+ is installed (without it the frontend cannot be
 rebuilt, and replacing only the backend would leave UI and API out of sync), and the work tree has
 no uncommitted changes. Whenever one of those fails, the panel explains why and shows these
 commands instead:

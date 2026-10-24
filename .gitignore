@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+# deploy.sh 自动下载的 Node.js 官方二进制（本机构建用的，不进版本库）
+.node
 
 # Editor directories and files
 .vscode/*

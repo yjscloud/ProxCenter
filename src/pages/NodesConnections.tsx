@@ -13,7 +13,7 @@
    为什么不再有「当前连接 / 默认节点」：见 ConnectionManager 顶部说明。
    ========================================================================== */
 
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { PageShell } from '../components/Layout';
 import { ConnectionManager } from '../components/ConnectionManager';
 import { NodeSubNav } from '../components/NodeSubNav';

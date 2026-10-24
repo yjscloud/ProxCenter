@@ -598,6 +598,67 @@ def _encode(payload: Dict[str, Any], expire: datetime, jti: str = "") -> str:
     return jwt.encode(body, settings.secret_key, algorithm=settings.algorithm)
 
 
+# --------------------------------------------------------------- 会话有效期
+#
+# 有效期有两个来源：
+#   · 环境变量（ACCESS_TOKEN_EXPIRE_MINUTES / REFRESH_TOKEN_EXPIRE_DAYS）——
+#     部署时的默认值；
+#   · 管理员在「设置 → 会话」里改的值 —— 存 settings 表（KV），优先级更高。
+#
+# 为什么在进程里再缓存一份：签发令牌、写 cookie 都是同步函数，没法在那里
+# await 一次查库。缓存在启动时加载，写入路径主动刷新，改完立刻生效、不用重启。
+_SESSION_KEY_ACCESS = "session_access_minutes"
+_SESSION_KEY_REFRESH = "session_refresh_days"
+
+# 允许的取值范围：access 下限 5 分钟（太短会把人反复踢出去），
+# refresh 上限 365 天（再长就等于永不过期）。
+SESSION_ACCESS_MIN = 5
+SESSION_ACCESS_MAX = 60 * 24 * 30
+SESSION_REFRESH_MIN = 1
+SESSION_REFRESH_MAX = 365
+
+_session_policy: Tuple[int, int] = (
+    int(settings.access_token_expire_minutes),
+    int(settings.refresh_token_expire_days),
+)
+
+
+def session_access_minutes() -> int:
+    """当前生效的访问令牌有效期（分钟）。"""
+    return _session_policy[0]
+
+
+def session_refresh_days() -> int:
+    """当前生效的刷新令牌 / 会话有效期（天）。"""
+    return _session_policy[1]
+
+
+async def refresh_session_policy() -> Tuple[int, int]:
+    """从 settings 表重新加载有效期；缺省回落到环境变量。
+
+    非法值（非数字、越界）当作没设置 —— 宁可回到默认，也不要让一条脏数据
+    把所有人锁在门外。
+    """
+    global _session_policy
+    access = int(settings.access_token_expire_minutes)
+    refresh = int(settings.refresh_token_expire_days)
+    try:
+        raw_access = await store.get_setting(_SESSION_KEY_ACCESS)
+        if raw_access:
+            value = int(str(raw_access).strip())
+            if SESSION_ACCESS_MIN <= value <= SESSION_ACCESS_MAX:
+                access = value
+        raw_refresh = await store.get_setting(_SESSION_KEY_REFRESH)
+        if raw_refresh:
+            value = int(str(raw_refresh).strip())
+            if SESSION_REFRESH_MIN <= value <= SESSION_REFRESH_MAX:
+                refresh = value
+    except Exception:  # noqa: BLE001 — 读不到就用默认值，不能因此启动失败
+        logger.warning("读取会话有效期设置失败，回落到环境变量", exc_info=True)
+    _session_policy = (access, refresh)
+    return _session_policy
+
+
 def create_access_token(
     username: str, role: str, token_version: int = 0, session_id: str = ""
 ) -> str:
@@ -619,7 +680,7 @@ def create_access_token(
             "typ": "access",
         },
         datetime.now(timezone.utc)
-        + timedelta(minutes=settings.access_token_expire_minutes),
+        + timedelta(minutes=session_access_minutes()),
     )
 
 
@@ -631,7 +692,7 @@ def create_refresh_token(username: str, token_version: int = 0) -> Tuple[str, st
     """
     expires_at = (
         datetime.now(timezone.utc)
-        + timedelta(days=settings.refresh_token_expire_days)
+        + timedelta(days=session_refresh_days())
     ).timestamp()
     jti = uuid.uuid4().hex
     token = _encode(
@@ -687,7 +748,7 @@ def set_refresh_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=REFRESH_COOKIE,
         value=token,
-        max_age=int(settings.refresh_token_expire_days) * 86400,
+        max_age=session_refresh_days() * 86400,
         path=REFRESH_COOKIE_PATH,
         httponly=True,
         secure=settings.secure_cookie,
@@ -710,7 +771,7 @@ def set_access_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=ACCESS_COOKIE,
         value=token,
-        max_age=int(settings.access_token_expire_minutes) * 60,
+        max_age=session_access_minutes() * 60,
         path=ACCESS_COOKIE_PATH,
         httponly=True,
         secure=settings.secure_cookie,
@@ -734,7 +795,7 @@ def set_csrf_cookie(response: Response, value: str = "") -> str:
     response.set_cookie(
         key=CSRF_COOKIE,
         value=token,
-        max_age=int(settings.refresh_token_expire_days) * 86400,
+        max_age=session_refresh_days() * 86400,
         path=CSRF_COOKIE_PATH,
         # 故意不加 HttpOnly：前端需要读出来放进请求头（攻击者站点读不到）
         httponly=False,

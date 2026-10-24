@@ -13,7 +13,7 @@
    给重试按钮等于把用户引到死路，还会让人以为平台坏了。
    ========================================================================== */
 
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ApiError, errorMessage, isNotConfigured, isNotImplemented } from '../api/client';
 import { useAuth } from '../hooks/useAuth';
 import { usePveStatus, type PveStatus } from '../hooks/usePveStatus';

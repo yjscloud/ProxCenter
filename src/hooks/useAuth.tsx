@@ -40,9 +40,15 @@ export interface AuthContextValue {
     password: string,
     /**
      * 登录验证的答案，形状跟着后端当前的方式走：
-     * 图形码传 ``code``，滑块传 ``x``（拖动结束时拼图块的水平位置）。
+     * 图形码传 ``code``，滑块传 ``x``（拖动结束时的位置）与 ``path``（拖动轨迹）。
+     * 轨迹不能省：服务端靠它区分「人拖的」和「脚本直接提交一个坐标」。
      */
-    captcha?: { id: string; code?: string; x?: number },
+    captcha?: {
+      id: string;
+      code?: string;
+      x?: number;
+      path?: Array<{ x: number; t: number }>;
+    },
   ) => Promise<LoginResponse>;
   /**
    * 登录第二步：动态码或一次性恢复码，成功后写入会话。
@@ -212,7 +218,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (
       username: string,
       password: string,
-      captcha?: { id: string; code?: string; x?: number },
+      captcha?: {
+        id: string;
+        code?: string;
+        x?: number;
+        /* 拖动轨迹：只交坐标不交轨迹会被服务端判失败（安全审计 H-1） */
+        path?: Array<{ x: number; t: number }>;
+      },
     ) => {
       const res = await authApi.login({
         username,
@@ -220,6 +232,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         captcha_id: captcha?.id ?? '',
         captcha_code: captcha?.code ?? '',
         captcha_x: captcha?.x,
+        captcha_path: captcha?.path,
       });
       adoptSession(res);
       return res;

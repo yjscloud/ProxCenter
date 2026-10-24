@@ -10,7 +10,7 @@
    与 SSH 安全那两个页面用的是同一套 `.subnav` 样式，视觉上属于同一个模式。
    ========================================================================== */
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { IconPlug, IconServer } from './Icons';
 import { useAuth } from '../hooks/useAuth';
 import { useT } from '../i18n';

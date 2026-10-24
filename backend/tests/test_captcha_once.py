@@ -30,12 +30,50 @@ def test_correct_answer_is_single_use() -> None:
     assert captcha.check(cid, "abc123") == captcha.RESULT_GONE
 
 
+def _trace(target: float, points: int = 8, duration_ms: int = 400) -> list:
+    """一条像人拖出来的轨迹：单调递增采样点 + 合理耗时。"""
+    return [
+        {"x": round(target * i / (points - 1)), "t": round(duration_ms * i / (points - 1))}
+        for i in range(points)
+    ]
+
+
+def test_slider_without_trace_is_wrong() -> None:
+    """位置完全正确但没有轨迹 ⇒ 判负。
+
+    这是安全审计 H-1 的复现路径：脚本拿到目标坐标后直接提交，不产生任何
+    拖动过程。修复前这种请求会直接通过。
+    """
+    cid = f"slider-{time.time_ns()}"
+    captcha._sliders[cid] = (200.0, time.time() + 120)
+    assert captcha.check_slider(cid, 200.0) == captcha.RESULT_WRONG
+
+
+def test_slider_must_reach_the_end() -> None:
+    """没拖到末端（差得比容差还多）⇒ 判负。
+
+    判据是 x >= 右端点 - 容差：拖到一半、或者脚本随手编个中间坐标，都过不去。
+    """
+    cid = f"slider-{time.time_ns()}"
+    captcha._sliders[cid] = (200.0, time.time() + 120)
+    short = 200.0 - captcha.SLIDER_TOLERANCE - 5
+    assert captcha.check_slider(cid, short, _trace(short)) == captcha.RESULT_WRONG
+
+
+def test_slider_within_tolerance_passes() -> None:
+    """差在容差以内就算拖到底：最后几像素不该让人反复划不过去。"""
+    cid = f"slider-{time.time_ns()}"
+    captcha._sliders[cid] = (200.0, time.time() + 120)
+    near = 200.0 - captcha.SLIDER_TOLERANCE + 1
+    assert captcha.check_slider(cid, near, _trace(near)) == captcha.RESULT_OK
+
+
 def test_slider_is_single_use() -> None:
     cid = f"slider-{time.time_ns()}"
     captcha._sliders[cid] = (200.0, time.time() + 120)
-    assert captcha.check_slider(cid, 1.0) == captcha.RESULT_WRONG
-    # 擦线拖到底也拿不到第二次机会
-    assert captcha.check_slider(cid, 199.0) == captcha.RESULT_GONE
+    assert captcha.check_slider(cid, 200.0, _trace(200.0)) == captcha.RESULT_OK
+    # 位置 + 轨迹都对，也拿不到第二次机会
+    assert captcha.check_slider(cid, 200.0, _trace(200.0)) == captcha.RESULT_GONE
 
 
 def test_expired_challenge_is_gone() -> None:

@@ -97,9 +97,11 @@ async def cluster_resources(
 
 @router.get("/cluster/nextid")
 async def next_id(
-    # 取下一个 VMID：虚拟机与容器的创建向导都会调，任一类查看权限即可
+    # 取下一个 VMID：只有**能建机器**的人才需要它（创建向导）。
+    # 原来只要 vm.view / ct.view 就能读 —— 那等于让只读用户拿到了
+    # 「下一个会被分配出去的 ID」，属于免费的集群增量情报（安全审计 L-1）。
     user: Dict[str, Any] = Depends(
-        security.require_any_permission("vm.view", "ct.view")
+        security.require_any_permission("vm.create", "ct.create")
     ),
 ) -> Dict[str, int]:
     client = get_client()
@@ -225,6 +227,11 @@ async def list_nodes(
 
     result: List[Dict[str, Any]] = []
     failure: Optional[ProxmoxError] = None
+    # SSL 指纹是连接凭据的一部分，只给管理员（安全审计 L-1）。它对 operator
+    # 侧的任何一个界面都不参与展示，却是「指纹有没有被换过 / 是不是同一个
+    # 集群」的现成侦察素材。容量与 uptime 保留 —— operator 需要据此判断
+    # 自己机器所在宿主机是否吃紧，属于「只看自己机器」的必要上下文。
+    is_admin = security.visible_owner(user) is None
 
     for profile, client in targets:
         try:
@@ -252,7 +259,9 @@ async def list_nodes(
                 "maxdisk": n.get("maxdisk"),
                 "uptime": n.get("uptime"),
                 "level": n.get("level", ""),
-                "ssl_fingerprint": n.get("ssl_fingerprint"),
+                **(
+                    {"ssl_fingerprint": n.get("ssl_fingerprint")} if is_admin else {}
+                ),
                 "connection_id": cid,
                 "connection_name": label,
             }

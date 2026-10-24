@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../hooks/useAuth';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
@@ -13,6 +13,7 @@ import { Button } from '../components/ui/Button';
 import { Checkbox, Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
 import { SliderCaptcha } from '../components/SliderCaptcha';
+import type { SliderTracePoint } from '../api/types';
 import {
   IconAlert,
   IconChevronLeft,
@@ -86,13 +87,18 @@ export function Login() {
   /*
     滑块位置用 ref 承接：拖动过程中每移动 1px 都会回调一次，走 state 会把整个
     登录表单重渲染一遍。这里只在提交时读一次最终值。
-    0 表示「尚未拖动」，也永远不会是正确答案（后端的目标 x 至少离左边半个拼图块）。
+    0 表示「尚未拖动」，也永远不会是正确答案（后端要求拖到轨道右端）。
   */
   const sliderXRef = useRef(0);
 
+  /* 拖动轨迹（采样点 + 时间戳）：服务端据此判断「是不是人拖的」，
+     只交 sliderXRef 一个坐标会被判失败（安全审计 H-1）。 */
+  const sliderPathRef = useRef<SliderTracePoint[]>([]);
+
   /* 拖动即视为「正在重新作答」，顺手清掉上一次的验证错误提示 */
-  const handleSliderPosition = useCallback((x: number) => {
+  const handleSliderPosition = useCallback((x: number, path: SliderTracePoint[]) => {
     sliderXRef.current = x;
+    sliderPathRef.current = path;
     if (x > 0) {
       setFieldErrors((prev) => (prev.captcha ? { ...prev, captcha: undefined } : prev));
     }
@@ -135,9 +141,9 @@ export function Login() {
     if (captchaMode === 'image') {
       if (!code) local.captcha = t('auth.err.captchaRequired');
     } else if (captchaMode === 'slider') {
-      /* 与后端同一个阈值：没拖到最右端就在本地拦一道，省掉一次必然失败的往返 */
-      const max = (captchaQ.data?.width ?? 320) - (captchaQ.data?.handle_size ?? 56);
-      if (sliderXRef.current < max - (captchaQ.data?.tolerance ?? 6)) {
+      /* 目标位置只在轨道图里，前端无从判断「对齐了没有」—— 这里只拦「压根
+         没拖」，其余交给服务端判定（它对不上会返回「请重新拖动滑块」）。 */
+      if (sliderXRef.current <= 0) {
         local.captcha = t('auth.err.sliderRequired');
       }
     }
@@ -158,6 +164,7 @@ export function Login() {
               id: captchaQ.data?.id ?? '',
               code: captchaMode === 'image' ? code : undefined,
               x: captchaMode === 'slider' ? sliderXRef.current : undefined,
+              path: captchaMode === 'slider' ? sliderPathRef.current : undefined,
             }
           : undefined,
       );

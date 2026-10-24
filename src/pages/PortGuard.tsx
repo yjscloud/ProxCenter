@@ -12,7 +12,7 @@
    ========================================================================== */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { portsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';

@@ -398,6 +398,26 @@ export const configApi = {
   saveLoginCaptcha: (mode: LoginCaptchaMode) =>
     put<{ mode: LoginCaptchaMode }>('/config/login-captcha', { mode }),
   /**
+   * 会话有效期：访问令牌多少分钟过期、会话（refresh token）保留几天。
+   *
+   * 读取只要求登录（设置页要回显）；写入需要 settings.manage + 二次确认，
+   * 改完**立即生效**，不需要重启面板（后端有一份进程内缓存）。
+   */
+  getSessionPolicy: () =>
+    get<{
+      access_minutes: number;
+      refresh_days: number;
+      limits: {
+        access_min: number;
+        access_max: number;
+        refresh_min: number;
+        refresh_max: number;
+      };
+      defaults: { access_minutes: number; refresh_days: number };
+    }>('/config/session'),
+  saveSessionPolicy: (body: { access_minutes: number; refresh_days: number }) =>
+    put<{ access_minutes: number; refresh_days: number }>('/config/session', body),
+  /**
    * 面板界面开关（导航栏里被逐个关闭的入口）。
    * 读取只要求登录：控制台外壳在每个用户登录后立刻要用。写入需要
    * settings.manage，但不需要二次确认 —— 它不降低安全门槛，只改新版式。

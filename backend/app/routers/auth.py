@@ -216,7 +216,10 @@ async def login(
     mode = await captcha.get_mode()
     if mode != captcha.MODE_OFF:
         if mode == captcha.MODE_SLIDER:
-            state = captcha.check_slider(payload.captcha_id, payload.captcha_x)
+            # 轨迹一并校验：只交坐标、不交轨迹的脚本在这一步就会被拒（H-1）
+            state = captcha.check_slider(
+                payload.captcha_id, payload.captcha_x, payload.captcha_path
+            )
         else:
             state = captcha.check(payload.captcha_id, payload.captcha_code)
         if state != captcha.RESULT_OK:
@@ -519,7 +522,9 @@ async def register(payload: RegisterRequest, request: Request) -> Dict[str, Any]
     mode = await captcha.get_mode()
     if mode != captcha.MODE_OFF:
         if mode == captcha.MODE_SLIDER:
-            state = captcha.check_slider(payload.captcha_id, payload.captcha_x)
+            state = captcha.check_slider(
+                payload.captcha_id, payload.captcha_x, payload.captcha_path
+            )
         else:
             state = captcha.check(payload.captcha_id, payload.captcha_code)
         if state != captcha.RESULT_OK:

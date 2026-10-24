@@ -111,11 +111,10 @@ async def _require_guest_access(
         return
     ref = ownership.vm_ref(_op_connection(), node, vmid)
     if await ownership.get_owner_for(kind, ref) != owner:
-        noun = "容器" if kind == ownership.KIND_CT else "虚拟机"
-        raise HTTPException(
-            status_code=403,
-            detail=f"{noun} {node}/{vmid} 不属于当前用户，无权访问",
-        )
+        # 404 而不是 403（安全审计 L-2）：403 等于承认「这台机器存在，只是不
+        # 属于你」，拿 100~200 号段批量打一遍就能把全平台在用的 VMID 摸出来。
+        # 文案也不能带 node/vmid —— 否则等于换个字段继续泄露存在性。
+        raise HTTPException(status_code=404, detail="资源不存在")
 
 
 async def require_vm_access(

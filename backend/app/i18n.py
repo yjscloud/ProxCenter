@@ -175,13 +175,16 @@ def tr_all(items: Optional[List[str]]) -> Optional[List[str]]:
 # 带占位符的消息表：新代码用这个写，比拼字符串好翻译。
 # 用法：t("error.permission_denied", permission="vm.create")
 MESSAGES: Dict[str, Dict[str, str]] = {
+    # 不回报「需要哪个权限 / 当前什么角色」（安全审计 I-1）：那等于把权限模型
+    # 画成一张地图，攻击者对着 403 逐个试就能摸清边界。占位符参数仍可传，
+    # str.format 会忽略多余的 kwargs，调用点不用改。
     "error.permission_denied": {
-        "zh-CN": "权限不足：需要 {permission}",
-        "en": "Permission denied: {permission} is required",
+        "zh-CN": "权限不足",
+        "en": "Permission denied",
     },
     "error.permission_denied_role": {
-        "zh-CN": "权限不足：需要 {permission} 权限（当前角色：{role}）",
-        "en": "Permission denied: {permission} is required (current role: {role})",
+        "zh-CN": "权限不足",
+        "en": "Permission denied",
     },
     "error.no_credentials": {
         "zh-CN": "未提供认证凭据",

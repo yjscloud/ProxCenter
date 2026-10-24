@@ -30,7 +30,7 @@
 
 import { useEffect, useRef, type ChangeEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { connectionsApi, prefsApi } from '../api/endpoints';
 import {
   SCOPE_PREF_KEY,

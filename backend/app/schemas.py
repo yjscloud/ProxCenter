@@ -16,9 +16,13 @@ class LoginRequest(BaseModel):
     # 图形验证码的答案；验证方式不是「图形验证码」时不校验，字段可缺省
     captcha_id: str = ""
     captcha_code: str = ""
-    # 滑块验证码：拖动结束时拼图块的水平位置（展示坐标 px）。
+    # 滑块验证码：拖动结束时手柄的水平位置（展示坐标 px）。
     # 与 captcha_code 二选一，用哪个由服务端的登录验证方式决定。
     captcha_x: Optional[float] = None
+    # 拖动轨迹采样点：[{"x": 12.5, "t": 133.2}, ...]（t 为毫秒时间戳）。
+    # 服务端用它判断「是不是人拖的」—— 只交一个坐标的脚本没有轨迹，
+    # 直接判负（安全审计 H-1）。
+    captcha_path: Optional[List[Dict[str, float]]] = None
 
 
 class UserOut(BaseModel):
@@ -273,6 +277,17 @@ class LoginCaptchaIn(BaseModel):
     """登录页的验证方式：off / image / slider（见 app/captcha.py）。"""
 
     mode: str
+
+
+class SessionPolicyIn(BaseModel):
+    """会话有效期（管理员可调，见 app/security.py 的会话策略缓存）。
+
+    上限不是随便定的：access 最多 30 天、refresh 最多 1 年 —— 再长就等于
+    「永不过期」，令牌一旦泄露就永久有效。下限则是防止把所有人锁在门外。
+    """
+
+    access_minutes: int = Field(ge=5, le=60 * 24 * 30)
+    refresh_days: int = Field(ge=1, le=365)
 
 
 class UiPrefsIn(BaseModel):
@@ -1275,6 +1290,8 @@ class RegisterRequest(BaseModel):
     captcha_code: str = ""
     # 滑块验证码：拖动结束时拼图块的水平位置（展示坐标 px）
     captcha_x: Optional[float] = None
+    # 拖动轨迹采样点，语义同 LoginRequest.captcha_path
+    captcha_path: Optional[List[Dict[str, float]]] = None
 
 
 class ApprovalRequest(BaseModel):

@@ -264,9 +264,18 @@ declare -A MSG_EN=(
   ['尝试启用 python311 模块流（RHEL 8 系需要）']='Trying to enable the python311 module stream (needed on RHEL 8)'
 
   # ---- Node.js ----
-  ['缺少可用的 Node.js 18+，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）']='No usable Node.js 18+, and it cannot be installed automatically under the current conditions (--skip-deps / no package manager / not root)'
-  ['本机没有可用的 Node.js 18+，尝试安装']='No usable Node.js 18+ on this machine, trying to install it'
-  ['尝试启用 nodejs:20 模块流']='Trying to enable the nodejs:20 module stream'
+  ['缺少可用的 Node.js 22.22+，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）']='No usable Node.js 22.22+, and it cannot be installed automatically under the current conditions (--skip-deps / no package manager / not root)'
+  ['本机没有可用的 Node.js 22.22+，尝试安装']='No usable Node.js 22.22+ on this machine, trying to install it'
+  ['发行版仓库的 nodejs 通常低于 22.22，这一步多半装不上；RHEL 9 试一下 nodejs:22 模块流']='Distro repos usually ship a nodejs below 22.22, so this step will most likely fall short; on RHEL 9 we try the nodejs:22 module stream'
+  ['尝试启用 nodejs:22 模块流（RHEL 8 没有这个流，会失败但不影响后续）']='Trying to enable the nodejs:22 module stream (RHEL 8 has no such stream; it fails harmlessly and we move on)'
+  ['发行版仓库给不到 Node.js 22.22+，改用官方二进制（装到 .node/，不碰系统）']='The distro repo cannot provide Node.js 22.22+, so we fall back to the official binaries (unpacked into .node/, system untouched)'
+  ['自动安装 Node.js 失败，继续按下面的提示手工处理']='Automatic Node.js installation failed; use the manual options below'
+  ['不支持的 CPU 架构（%s），没法自动下载 Node.js']='Unsupported CPU architecture (%s); cannot download Node.js automatically'
+  ['当前系统不是 glibc（Alpine/musl 这类），官方二进制跑不起来，需要从发行版仓库装 Node.js 22.22+']='This system is not glibc-based (Alpine/musl and friends), so the official binaries will not run; install Node.js 22.22+ from the distro repo instead'
+  ['查不到可下载的 Node.js 版本（网络不通或镜像不可用）']='Could not determine a downloadable Node.js version (network down or mirrors unavailable)'
+  ['下载 Node.js %s：%s']='Downloading Node.js %s: %s'
+  ['这个源不行，换下一个：%s']='That mirror did not work, trying the next one: %s'
+  ['解压到 %s']='Unpacking into %s'
   ['构建：npm run build → dist/']='Building: npm run build → dist/'
 
   # ---- 虚拟环境与依赖 ----
@@ -366,13 +375,21 @@ declare -A MSG_EN=(
   ['      backend/.env 里设 FORCE_HTTPS=true 并 systemctl restart %s。']='      set FORCE_HTTPS=true in backend/.env and run systemctl restart %s.'
 
   # ---- 多行的整句：单引号串可以跨行，直接原样保留原来的排版 ----------
-  ['未找到可用的 Node.js 18+，无法构建前端（当前：%s）。三种选择：
-      ① 手工装 Node.js 18+（Debian/Ubuntu：apt install nodejs npm；RHEL 系：dnf module enable nodejs:20 && dnf install nodejs npm）后重跑；
-      ② 在装有 Node.js 18+ 的机器上执行 npm install && npm run build，把 dist/ 拷到 %s/ 后加 --skip-frontend 重跑；
-      ③ 用 nvm 装好 Node.js 后重跑本脚本。']='No usable Node.js 18+ was found, so the frontend cannot be built (currently: %s). Three options:
-      ① install Node.js 18+ yourself (Debian/Ubuntu: apt install nodejs npm; RHEL family: dnf module enable nodejs:20 && dnf install nodejs npm) and re-run;
-      ② run npm install && npm run build on a machine that has Node.js 18+, copy dist/ to %s/, then re-run with --skip-frontend;
-      ③ install Node.js with nvm and re-run this script.'
+  ['未找到可用的 Node.js 22.22+，无法构建前端（当前：%s）。三种选择：
+      ① 自己装一个（发行版仓库的 nodejs 通常只有 18/20，得用第三方源）：
+         Debian/Ubuntu：curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+         RHEL 9：dnf module enable nodejs:22 && dnf install -y nodejs npm
+         nvm：nvm install 22 && nvm use 22
+         装完 node -v 确认是 v22.22 及以上再重跑本脚本；
+      ② 在装有 Node.js 22.22+ 的机器上执行 npm install && npm run build，把 dist/ 拷到 %s/ 后加 --skip-frontend 重跑；
+      ③ 改用 Docker 部署：镜像里的 dist/ 已经构建好了，宿主机不需要 Node.js。']='No usable Node.js 22.22+ was found, so the frontend cannot be built (currently: %s). Three options:
+      ① install one yourself (distro repos usually ship only 18/20 — a third-party source is required):
+         Debian/Ubuntu: curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+         RHEL 9: dnf module enable nodejs:22 && dnf install -y nodejs npm
+         nvm: nvm install 22 && nvm use 22
+         run node -v afterwards to confirm it is v22.22 or newer, then re-run this script;
+      ② run npm install && npm run build on a machine that has Node.js 22.22+, copy dist/ to %s/, then re-run with --skip-frontend;
+      ③ switch to Docker: the image already contains a built dist/, so the host needs no Node.js.'
 )
 
 # t：整句查表。英文模式下查不到就原样返回中文（与后端 tr() 同一套兜底）。
@@ -820,35 +837,145 @@ for required in backend/requirements.txt backend/run.py package.json; do
   [ -f "$ROOT/$required" ] || die "缺少 $required，仓库不完整（建议重新 git clone 后再执行）。"
 done
 
-# --- Node.js（只有要构建前端时才需要，且要 ≥ 18：Vite 5 的下限）--------------
-node_major() {
+# --- Node.js（只有要构建前端时才需要，且要 ≥ 22.22：react-router 8 的下限）--------------
+# **按完整版本比较，不能只看主版本**：22.0~22.21 能混过「主版本 ≥ 22」这种粗判，
+# 然后在构建阶段撞上 vite 8 的 Node 下限（22.12+），那一刻的报错远不如这里直白；
+# react-router 8 又要 22.22，所以这条线就按 22.22 划。
+NODE_MIN_MAJOR=22
+NODE_MIN_MINOR=22
+node_ok() {
   need_cmd node || return 1
-  node -p 'process.versions.node.split(".")[0]' 2>/dev/null || return 1
+  need_cmd npm || return 1
+  node -e "
+    const [a, b] = process.versions.node.split('.').map(Number);
+    process.exit(a > ${NODE_MIN_MAJOR} || (a === ${NODE_MIN_MAJOR} && b >= ${NODE_MIN_MINOR}) ? 0 : 1);
+  " >/dev/null 2>&1
+}
+
+# 发行版仓库基本到不了 22.22（Debian 12 / Ubuntu 24.04 是 18，Alpine 3.20 是 20，
+# RHEL 8 只有 18/20 的模块流），所以最后一级退路是**官方预编译包**：解压到
+# .node/ 里、只把 bin 挂进本次脚本的 PATH —— 不改 sources.list、不碰系统里已有的
+# node，卸载就是删目录。
+NODE_BOOTSTRAP_DIR="$ROOT/.node"
+
+# 上次装好的那份先挂上：重复执行脚本时不该再下一次 50MB
+node_bootstrap_use() {
+  local bin
+  for bin in "$NODE_BOOTSTRAP_DIR"/*/bin; do
+    [ -x "$bin/node" ] || continue
+    case ":$PATH:" in
+      *":$bin:"*) ;;
+      *) export PATH="$bin:$PATH" ;;
+    esac
+  done
+  return 0
+}
+
+node_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64)  echo "linux-x64" ;;
+    aarch64|arm64) echo "linux-arm64" ;;
+    armv7l)        echo "linux-armv7l" ;;
+    ppc64le)       echo "linux-ppc64le" ;;
+    s390x)         echo "linux-s390x" ;;
+    *) return 1 ;;
+  esac
+}
+
+# 官方二进制是 glibc 版：Alpine(musl) 上解压出来也跑不起来，别白下 50MB。
+# 先问 getconf（GNU_LIBC_VERSION 只有 glibc 认），再退回 ldd —— 后者在 RHEL 上
+# 输出的是 "ldd (GNU libc) 2.38"，只匹配 "GNU C Library" 会漏判（实测踩过）。
+node_glibc() {
+  if need_cmd getconf && getconf GNU_LIBC_VERSION >/dev/null 2>&1; then return 0; fi
+  need_cmd ldd || return 1
+  ldd --version 2>&1 | head -n1 | grep -qiE "glibc|gnu libc|GNU C Library"
+}
+
+# 要装哪个版本：写死补丁号迟早会 404（22.x 的补丁版每两周往前挪一次），所以问
+# index.json。优先最新的 24.x —— 与 .nvmrc / Dockerfile / CI 保持一致；24 的线
+# 拿不到时再退 22.x 的最新补丁版。
+node_pick_version() {
+  local base ver
+  if [ -n "${NODE_BOOTSTRAP_VERSION:-}" ]; then printf '%s' "$NODE_BOOTSTRAP_VERSION"; return 0; fi
+  need_cmd curl || return 1
+  for base in "https://npmmirror.com/mirrors/node" "https://nodejs.org/dist"; do
+    # index.json 是单行大 JSON，按版本号抓比解析整棵树省事，也不需要 jq
+    ver="$(curl -fsSL --connect-timeout 10 -m 60 "$base/index.json" 2>/dev/null \
+      | grep -oE '"version":"v24\.[0-9]+\.[0-9]+"' | grep -oE 'v24\.[0-9]+\.[0-9]+' \
+      | sort -V | tail -n1)"
+    if [ -z "$ver" ]; then
+      ver="$(curl -fsSL --connect-timeout 10 -m 60 "$base/index.json" 2>/dev/null \
+        | grep -oE '"version":"v22\.[0-9]+\.[0-9]+"' | grep -oE 'v22\.[0-9]+\.[0-9]+' \
+        | sort -V | tail -n1)"
+    fi
+    if [ -n "$ver" ]; then printf '%s' "${ver#v}"; return 0; fi
+  done
+  return 1
+}
+
+node_bootstrap() {
+  local arch ver dir url base tmp
+  arch="$(node_arch)" || { warn "$(tf '不支持的 CPU 架构（%s），没法自动下载 Node.js' "$(uname -m)")"; return 1; }
+  node_glibc || { warn "$(t '当前系统不是 glibc（Alpine/musl 这类），官方二进制跑不起来，需要从发行版仓库装 Node.js 22.22+')"; return 1; }
+  ver="$(node_pick_version)" || { warn "$(t '查不到可下载的 Node.js 版本（网络不通或镜像不可用）')"; return 1; }
+  dir="$NODE_BOOTSTRAP_DIR/node-v${ver}-${arch}"
+  if [ ! -x "$dir/bin/node" ]; then
+    mkdir -p "$NODE_BOOTSTRAP_DIR" || return 1
+    tmp="$NODE_BOOTSTRAP_DIR/.dl.$$"
+    local got=0
+    # 国内直连 nodejs.org 经常超时：先走 npmmirror（与 .npmrc 的源一致），再退官方
+    for base in "https://npmmirror.com/mirrors/node" "https://nodejs.org/dist"; do
+      url="$base/v$ver/node-v$ver-$arch.tar.gz"
+      info "$(tf '下载 Node.js %s：%s' "v$ver" "$url")"
+      if curl -fsSL --retry 2 --connect-timeout 15 -o "$tmp" "$url"; then got=1; break; fi
+      warn "$(tf '这个源不行，换下一个：%s' "$url")"
+    done
+    if [ "$got" -ne 1 ]; then rm -f "$tmp"; return 1; fi
+    info "$(tf '解压到 %s' "$NODE_BOOTSTRAP_DIR")"
+    if ! tar -xzf "$tmp" -C "$NODE_BOOTSTRAP_DIR"; then rm -f "$tmp"; return 1; fi
+    rm -f "$tmp"
+  fi
+  export PATH="$dir/bin:$PATH"
+  node_ok
 }
 
 if [ "$SKIP_FRONTEND" -eq 0 ]; then
-  if ! need_cmd npm || [ "$(node_major || echo 0)" -lt 18 ]; then
+  # 上次由本脚本下载的那份先挂进 PATH：重跑不该再下一次 50MB
+  node_bootstrap_use
+
+  if ! node_ok; then
     if [ "$CAN_INSTALL" -eq 0 ]; then
-      warn "缺少可用的 Node.js 18+，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）"
+      warn "$(t '缺少可用的 Node.js 22.22+，且当前条件下不能自动安装（--skip-deps / 无包管理器 / 无 root）')"
     fi
     if [ "$CAN_INSTALL" -eq 1 ]; then
-      info "本机没有可用的 Node.js 18+，尝试安装"
+      info "$(t '本机没有可用的 Node.js 22.22+，尝试安装')"
       pkg_install node npm || true
-      # 发行版仓库给的 nodejs 可能低于 18（RHEL 8 默认 10/12），试着切到 20 模块流
-      if [ "$(node_major || echo 0)" -lt 18 ] && { [ "$PKG" = "dnf" ] || [ "$PKG" = "yum" ]; }; then
-        info "尝试启用 nodejs:20 模块流"
+      # 发行版仓库给的 nodejs 通常到不了 22.22：Debian 12 / Ubuntu 24.04 是 18，
+      # Alpine 3.20 是 20，RHEL 8 只有 18/20 的模块流。RHEL 9 有 nodejs:22
+      # 模块流，先试它；还不行就走官方二进制（见 node_bootstrap）。
+      if ! node_ok && { [ "$PKG" = "dnf" ] || [ "$PKG" = "yum" ]; }; then
+        info "$(t '尝试启用 nodejs:22 模块流（RHEL 8 没有这个流，会失败但不影响后续）')"
         $SUDO "$PKG" module reset  nodejs     -y >/dev/null 2>&1 || true
-        $SUDO "$PKG" module enable nodejs:20  -y >/dev/null 2>&1 || true
+        $SUDO "$PKG" module enable nodejs:22  -y >/dev/null 2>&1 || true
         $SUDO "$PKG" install -y nodejs npm    >/dev/null 2>&1 || true
+      fi
+      # 最后一级：官方预编译包（不改系统源、不动已有的 node，装到 .node/ 里）
+      if ! node_ok; then
+        info "$(t '发行版仓库给不到 Node.js 22.22+，改用官方二进制（装到 .node/，不碰系统）')"
+        node_bootstrap || warn "$(t '自动安装 Node.js 失败，继续按下面的提示手工处理')"
       fi
     fi
   fi
 
-  if ! need_cmd npm || [ "$(node_major || echo 0)" -lt 18 ]; then
-    die "$(tf '未找到可用的 Node.js 18+，无法构建前端（当前：%s）。三种选择：
-      ① 手工装 Node.js 18+（Debian/Ubuntu：apt install nodejs npm；RHEL 系：dnf module enable nodejs:20 && dnf install nodejs npm）后重跑；
-      ② 在装有 Node.js 18+ 的机器上执行 npm install && npm run build，把 dist/ 拷到 %s/ 后加 --skip-frontend 重跑；
-      ③ 用 nvm 装好 Node.js 后重跑本脚本。' "$(node --version 2>/dev/null || echo "$(t '无')")" "$ROOT")"
+  if ! node_ok; then
+    die "$(tf '未找到可用的 Node.js 22.22+，无法构建前端（当前：%s）。三种选择：
+      ① 自己装一个（发行版仓库的 nodejs 通常只有 18/20，得用第三方源）：
+         Debian/Ubuntu：curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+         RHEL 9：dnf module enable nodejs:22 && dnf install -y nodejs npm
+         nvm：nvm install 22 && nvm use 22
+         装完 node -v 确认是 v22.22 及以上再重跑本脚本；
+      ② 在装有 Node.js 22.22+ 的机器上执行 npm install && npm run build，把 dist/ 拷到 %s/ 后加 --skip-frontend 重跑；
+      ③ 改用 Docker 部署：镜像里的 dist/ 已经构建好了，宿主机不需要 Node.js。' "$(node --version 2>/dev/null || echo "$(t '无')")" "$ROOT")"
   fi
   info "$(tf 'Node.js：%s / npm：%s' \
     "$(node --version 2>/dev/null || echo "$(t '未知')")" \

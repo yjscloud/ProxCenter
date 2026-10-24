@@ -256,13 +256,16 @@ paths are stated in the “Security posture” notes on the Settings page.
    `Permissions-Policy`, `frame-ancestors 'none'`, `X-Frame-Options: DENY` and HSTS are all
    emitted by the app (`SecurityHeadersMiddleware` in `backend/app/main.py`). The reverse proxy
    should only terminate TLS — **do not add the same headers again**; two HSTS lines are invalid.
-10. **TLS verification to Proxmox is on by default**: new connections start with `verify_ssl: true`
-    (`PVE_VERIFY_SSL=true`). PVE ships a self-signed certificate (cluster CA, `CN=pve.local`, no IP
-    SAN) — do not "fix" that by disabling verification. Paste the PVE certificate PEM into the
-    connection's **Certificate PEM** field instead (pinning via `ca_cert`: only that certificate is
-    trusted, refresh it after rotation). Fetch it with
-    `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509` or read
-    `/etc/pve/pve-root-ca.pem` on any node. A connection running unverified is reported in the log.
+10. **TLS verification to Proxmox is off by default**: new connections start with `verify_ssl: false`
+   (`PVE_VERIFY_SSL=false`). PVE ships a self-signed certificate (cluster CA, `CN=pve.local`, no IP
+   SAN), so verifying against the system trust store fails at the handshake — which reads like a
+   wrong address or token when you are wiring up a fresh install.
+   To verify, use pinning rather than just flipping the switch: paste the PVE certificate PEM into the
+   connection's **Certificate PEM** field (`ca_cert`: only that certificate is trusted, refresh it
+   after rotation). Pinning is stricter than the system store and independent of the switch. Fetch it
+   with `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509` or read
+   `/etc/pve/pve-root-ca.pem` on any node. Turn the switch on when the certificate is issued by a
+   public CA or already pinned. A connection running unverified is reported in the log.
 11. **Put the backend back on loopback once a reverse proxy is in front**: with `HOST=127.0.0.1`,
     8080 is not exposed to the LAN and every request goes through nginx (a fresh install binds
     `0.0.0.0` so `IP:8080` works out of the box). Set `client_header_timeout` / `client_body_timeout` /
@@ -409,7 +412,7 @@ that matter:
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions ask for your password again |
 | `PVE_HOST` / `PVE_PORT` | empty / `8006` | Proxmox address (no protocol) and API port |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | empty | The token from step 1 |
-| `PVE_VERIFY_SSL` | `true` | Keep it on. Turning it off exposes the API token to a man in the middle; for a self-signed PVE pin its certificate via the connection's `ca_cert` field instead |
+| `PVE_VERIFY_SSL` | `false` | Off by default: PVE is self-signed and verification fails at the handshake. For real security pin its certificate via the connection's `ca_cert` field, or set this to `true` when the certificate comes from a public CA |
 | `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | empty | Needed for the VNC console; an API token cannot open one |
 | `CORS_ORIGINS` | `http://localhost:5173` | Allowed frontend origins, comma separated |
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | — | MySQL connection. Only MySQL is supported |
@@ -521,7 +524,8 @@ The backend enforces it, so the defaults cannot ship by accident.
 
 HTTPS is expected in production, because credentials and the API token travel in plain text over
 HTTP. Set `FORCE_HTTPS=true` and terminate TLS in Nginx or Caddy, keep `FORWARDED_ALLOW_IPS` at the
-proxy's address, and keep `PVE_VERIFY_SSL=true` so nobody can sit between the panel and Proxmox.
+proxy's address, and close the gap between the panel and Proxmox — pin the PVE certificate via the
+connection's `ca_cert`, or set `PVE_VERIFY_SSL=true` — so nobody can sit in between.
 `--privsep 1` with precise ACLs keeps the token narrow, and PVE's port 8006 need not be reachable
 from outside at all.
 

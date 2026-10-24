@@ -264,12 +264,15 @@ FORWARDED_ALLOW_IPS=127.0.0.1
    `Permissions-Policy`、`frame-ancestors 'none'`、`X-Frame-Options: DENY` 与 HSTS
    都在应用层加（见 `backend/app/main.py` 的 `SecurityHeadersMiddleware`）。
    反代只做 TLS 终结，**不要重复添加同名头** —— 两份 HSTS 属于无效响应。
-10. **面板→PVE 默认校验证书**：新建连接 `verify_ssl` 默认 `true`（`PVE_VERIFY_SSL` 也是
-    `true`）。PVE 出厂是自签证书（cluster CA 签发、`CN=pve.local`、无 IP SAN），别用
-    “关掉校验”解决：在连接配置里把 PVE 的证书 PEM 填进「证书 PEM」，即按该证书钉扎
-    （`ca_cert`，只认这一张，证书轮换后需更新）。取证书：
-    `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509`，
-    或从任意节点 `cat /etc/pve/pve-root-ca.pem`。连接未校验时启动日志会告警。
+10. **面板→PVE 默认不校验证书**：新建连接 `verify_ssl` 默认 `false`（`PVE_VERIFY_SSL` 也是
+   `false`）。PVE 出厂是自签证书（cluster CA 签发、`CN=pve.local`、无 IP SAN），默认开着
+   校验会在握手阶段就失败，新装配连接时很容易误判成地址或令牌填错。
+   想要校验就别只勾开关：在连接配置里把 PVE 的证书 PEM 填进「证书 PEM」，按该证书钉扎
+   （`ca_cert`，只认这一张，证书轮换后需更新）—— 它只信这一张证书、比系统信任库更严，
+   也不受那个开关影响。取证书：
+   `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509`，
+   或从任意节点 `cat /etc/pve/pve-root-ca.pem`。正规 CA 签发（或已钉扎）时把开关打开。
+   连接未校验时启动日志会告警。
 11. **挂了反代就把后端绑回回环**：`HOST=127.0.0.1` 时 8080 不对内网开放、全部入口经 nginx
    （默认安装是 `0.0.0.0`，可直接用 `IP:8080` 访问；一旦上了反代，建议改回回环）；
    反代侧再配 `client_header_timeout` / `client_body_timeout` / `send_timeout`
@@ -490,7 +493,7 @@ CSV（一行 = 一次工具调用）。另有 Token 消耗入口，按 1 / 7 / 3
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | 危险操作是否要二次确认，以及确认的有效窗口 |
 | `PVE_HOST` / `PVE_PORT` | 空 / `8006` | Proxmox 地址（不带协议）与 API 端口 |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | 空 | 形如 `panel@pve!panel` 与 Token 的 UUID |
-| `PVE_VERIFY_SSL` | `true` | 出站是否校验 PVE 证书。关掉等于把 Token 暴露给中间人；PVE 自签时用连接配置里的「证书 PEM」（`ca_cert`）钉扎，而不是关掉校验 |
+| `PVE_VERIFY_SSL` | `false` | 出站是否校验 PVE 证书。默认关闭：PVE 出厂自签，开着会握手失败。要安全性就用连接配置里的「证书 PEM」（`ca_cert`）钉扎，或证书由正规 CA 签发时改成 `true` |
 | `PVE_TRUST_ENV` | `false` | 是否让请求走环境变量里的 `HTTP_PROXY` / `HTTPS_PROXY` |
 | `PVE_CONSOLE_USER` / `PVE_CONSOLE_PASSWORD` | 空 | 控制台用的 PVE 账号密码，留空则控制台不可用 |
 | `CORS_ORIGINS` | `http://localhost:5173` | 允许的前端来源，逗号分隔 |
@@ -618,8 +621,9 @@ tail -30` 找 `Access denied` / `Can't connect`，改法见 [Docker 部署](#doc
 
 必须套 HTTPS。登录凭据和 API Token 在 HTTP 上是明文。打开 `FORCE_HTTPS=true`，由
 Nginx / Caddy 在 443 上终结 TLS。反代要带 `X-Forwarded-Proto`，`FORWARDED_ALLOW_IPS` 只保留
-反代地址，否则公网请求可以自称 https 绕过跳转。同时保持 `PVE_VERIFY_SSL=true`（默认就是），
-避免面板和 PVE 之间被中间人截走 Token。另外 `--privsep 1` 配合精确的 ACL 能让面板只碰它该碰的
+反代地址，否则公网请求可以自称 https 绕过跳转。同时把面板到 PVE 的校验补上 —— 用连接里的
+「证书 PEM」（`ca_cert`）钉扎，或 `PVE_VERIFY_SSL=true` —— 避免面板和 PVE 之间被中间人截走 Token。
+另外 `--privsep 1` 配合精确的 ACL 能让面板只碰它该碰的
 资源，PVE 的 8006 端口也就不用对外暴露，流量全部经面板后端转发。
 
 密钥类配置不回传前端。`GET /api/config/connection` 只返回 `token_secret_set`，更新时留空即

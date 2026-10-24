@@ -4255,7 +4255,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'conn.optionsBlock': 'Connection options',
   'conn.optionsBlockHint': 'Certificate verification policy',
   'conn.verifySsl': 'Verify certificate (verify_ssl)',
-  'conn.verifySslHint': 'On by default. For PVE self-signed certificates use the PEM pinning field below instead of turning verification off — disabling it lets anyone on the LAN impersonate PVE.',
+  'conn.verifySslHint':
+    'Off by default: PVE ships a self-signed certificate, so verifying against the system trust store fails at the handshake. To verify, pin its certificate in the PEM field below — that trusts only that one certificate and is independent of this switch.',
   'conn.fieldCaCert': 'Certificate PEM (pinning, optional)',
   'conn.fieldCaCertHint':
     'Paste the PVE certificate (starting with -----BEGIN CERTIFICATE-----) to trust exactly that certificate (validated as a certificate, hostname is not checked). Suits self-signed PVE; update it after certificate rotation.',

@@ -3858,7 +3858,8 @@ export const zhCN = {
   'conn.optionsBlock': '连接选项',
   'conn.optionsBlockHint': '证书校验策略',
   'conn.verifySsl': '校验证书（verify_ssl）',
-  'conn.verifySslHint': '默认开启。PVE 自签证书请用下面的「证书 PEM」做钉扎，不要关掉校验——关掉等于允许内网冒充 PVE。',
+  'conn.verifySslHint':
+    '默认关闭：PVE 出厂是自签证书，拿系统信任库校验会直接握手失败。想要校验就在下面填「证书 PEM」做钉扎——只认那一张证书，也不受这个开关影响。',
   'conn.fieldCaCert': '证书 PEM（钉扎，可选）',
   'conn.fieldCaCertHint':
     '把 PVE 的证书（-----BEGIN CERTIFICATE----- 开头）粘在这里，就只信任这一张证书（按证书本身校验，不校验主机名）。适合 PVE 自签；证书轮换后需要更新。',

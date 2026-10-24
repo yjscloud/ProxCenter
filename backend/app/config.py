@@ -179,12 +179,14 @@ class Settings(BaseSettings):
     pve_port: int = 8006
     pve_token_id: str = ""       # e.g. "root@pam!panel"
     pve_token_secret: str = ""   # the UUID secret
-    # 出站访问 Proxmox 时是否校验服务端证书。**生产默认开启**：默认关闭等于
-    # 任何人在这台机器与 PVE 之间做个中间人就能拿到 API Token、劫持虚拟机。
-    # PVE 默认安装用的是自签证书（或证书过期）时置为 false，或在设置页里
-    # 对单条连接关闭并填 PVE 自签 CA。这是新建连接的默认值，已保存的连接
-    # 始终按自己存的值走。
-    pve_verify_ssl: bool = True
+    # 出站访问 Proxmox 时是否校验服务端证书。**默认关闭**：PVE 出厂是自签证书
+    # （cluster CA、CN=pve.local、没有 IP SAN），拿系统信任库校验必然失败 ——
+    # 新装面板配连接时会一直「握手失败」，看着像地址或令牌填错。
+    #
+    # 要安全性就把该集群的证书 PEM 填进单条连接的 ca_cert 做钉扎：钉扎只认那一张
+    # 证书，比「信任整个系统 CA」更严格，也不受这个开关影响。这是新建连接的默认
+    # 值，已保存的连接始终按自己存的值走。
+    pve_verify_ssl: bool = False
     pve_default_node: str = ""
 
     # Whether outbound PVE requests may be routed through HTTP_PROXY /

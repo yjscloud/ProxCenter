@@ -82,9 +82,12 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
     token_secret: '',
     console_user: '',
     console_password: '',
-    /* 新建连接默认**校验证书**：默认关闭等于把 8006 通道交给内网 MITM。
-       PVE 自签时改用下面的「证书 PEM」做钉扎（见 ca_cert），不要关校验。 */
-    verify_ssl: true,
+    /* 新建连接默认**不校验证书**：PVE 出厂是自签证书（cluster CA、CN=pve.local、
+       没有 IP SAN），拿系统信任库去校验必然握手失败 —— 新装面板第一件事是能连上，
+       默认开着会让人以为地址/令牌填错了。
+       要安全性就填下面的「证书 PEM」（ca_cert）做钉扎：填了它只认那张证书，
+       与这个开关无关；两者都没有时才是「不校验」。 */
+    verify_ssl: false,
     ca_cert: '',
     node_default: '',
   });
@@ -184,8 +187,11 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       token_secret: '',
       console_user: active.console_user ?? '',
       console_password: '',
-      verify_ssl:
-        active.verify_ssl ?? configQuery.data?.verify_ssl_default ?? true,
+      /* 编辑已有连接以存下来的值为准；老记录没这个字段时按「不校验」——
+         与新建连接同一套默认，别让人改一次端口就悄悄把校验打开。
+         这里不再回退到 configQuery.verify_ssl_default：那个值来自
+         PVE_VERIFY_SSL，老部署里多半还写着 true。 */
+      verify_ssl: active.verify_ssl ?? false,
       ca_cert: active.ca_cert ?? '',
       node_default: active.node_default ?? '',
     });
@@ -336,7 +342,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       token_secret: '',
       console_user: p.console_user ?? '',
       console_password: '',
-      verify_ssl: p.verify_ssl ?? true,
+      verify_ssl: p.verify_ssl ?? false,
       ca_cert: p.ca_cert ?? '',
       node_default: p.node_default ?? '',
     });
@@ -359,11 +365,10 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
       token_secret: '',
       console_user: '',
       console_password: '',
-      /* 新建连接默认**校验证书**。PVE 出厂是自签证书（cluster CA 签发、
-         CN=pve.local、没有 IP SAN），直接开校验会连不上 —— 但正确的解法是
-         把 PVE 证书填进下面「证书 PEM」做钉扎，而不是整条链路不校验：
-         后者等于允许内网任何人冒充 PVE 收走 API Token。 */
-      verify_ssl: true,
+      /* 新建连接默认**不校验证书**（PVE 出厂自签，开校验连不上）。
+         需要校验就把 PVE 证书填进下面「证书 PEM」做钉扎：填了 PEM 就只认那张
+         证书，比「信任整个系统 CA」更严格，也不受这个开关影响。 */
+      verify_ssl: false,
       ca_cert: '',
       node_default: '',
     });

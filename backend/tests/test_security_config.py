@@ -272,18 +272,21 @@ class TestHttpsEnforcement:
 
 # ---------------------------------------------------------- 出站 verify_ssl 默认
 class TestPveVerifySslDefault:
-    def test_code_default_is_true(self, monkeypatch) -> None:
-        """生产默认开启：代码里的字段默认值必须是 True。"""
-        assert Settings.model_fields["pve_verify_ssl"].default is True
+    def test_code_default_is_false(self, monkeypatch) -> None:
+        """新装默认关闭：PVE 出厂自签，开着校验连不上，容易误判成地址填错。
+
+        要安全性走 ca_cert 钉扎（只认那一张证书），或把 PVE_VERIFY_SSL 显式置 true。
+        """
+        assert Settings.model_fields["pve_verify_ssl"].default is False
         monkeypatch.delenv("PVE_VERIFY_SSL", raising=False)
         cfg = Settings(_env_file=None, secret_key=STRONG_KEY)
-        assert cfg.pve_verify_ssl is True
-
-    def test_env_can_turn_it_off(self, monkeypatch) -> None:
-        """PVE 自签 / 证书过期的环境可以显式关掉。"""
-        monkeypatch.setenv("PVE_VERIFY_SSL", "false")
-        cfg = Settings(_env_file=None, secret_key=STRONG_KEY)
         assert cfg.pve_verify_ssl is False
+
+    def test_env_can_turn_it_on(self, monkeypatch) -> None:
+        """正规 CA 签发 / 需要走系统信任库的环境可以显式打开。"""
+        monkeypatch.setenv("PVE_VERIFY_SSL", "true")
+        cfg = Settings(_env_file=None, secret_key=STRONG_KEY)
+        assert cfg.pve_verify_ssl is True
 
     @pytest.mark.parametrize("env_value", ["true", "false"])
     def test_schema_default_follows_env(self, env_value: str) -> None:

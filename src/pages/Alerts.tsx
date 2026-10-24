@@ -1237,6 +1237,18 @@ export function Alerts() {
               label={t("alerts.enableEmail")}
               hint={t("alerts.enableEmailHint")}
             />
+            {/* 当前**实际**会发到哪里。这一行就是用来解释「我的邮箱明明是好的，
+                为什么收不到告警」的：收件人留空时用账号邮箱，而开关关着时两边
+                都白搭 —— 以前只有一枚「已停用」徽章，看不出区别。 */}
+            <div className="fs-xs text-muted">
+              {emailCfg.enabled
+                ? emailCfg.recipients.trim()
+                  ? t("alerts.mailEffectiveTo", { to: emailCfg.recipients })
+                  : accountEmail
+                    ? t("alerts.mailEffectiveAccount", { email: accountEmail })
+                    : t("alerts.mailNoAddress")
+                : t("alerts.mailDisabledNow")}
+            </div>
             {/* 地址、间隔、次数放在同一行：这三项合起来才是「这封邮件发给谁、
                 隔多久再发、最多发几次」的一份完整设定，分成三行既占高度，又让
                 它们看着像互不相干的三个设置。
@@ -1468,6 +1480,13 @@ export function Alerts() {
                           />
                         </div>
                       )}
+                      {/* 虚拟机的磁盘已用量只能从客户机取：没有 agent 就没有数据，
+                          规则会一直静默。这句话就是用来解释「配了却不触发」的。 */}
+                      {r.target_type === 'vm' && r.metric === 'disk' ? (
+                        <div className="fs-xs text-muted" style={{ marginTop: 4 }}>
+                          {t('alerts.vmDiskAgentHint')}
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       <input

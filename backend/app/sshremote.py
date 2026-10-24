@@ -1556,7 +1556,12 @@ async def fleet_overview(
 # --------------------------------------------------------------- 多机告警
 
 async def evaluate_fleet() -> List[Dict[str, Any]]:
-    """按主机维度检查远程主机的 SSH 异常并告警。"""
+    """按主机维度检查远程主机的 SSH 异常并告警。
+
+    收件人跟着**主机归属**走（见 :class:`app.alerting.RecipientBook`）：受管主机归
+    添加它的人，爆破告警就发给那个人 —— 一台机器上被撞库，该去封禁的是它主人，
+    不是配策略的管理员。策略里的接收人只作为本机与无归属主机的兜底。
+    """
     # 先给「面板下发」的主机补上首见指纹。这一步与 SSH 告警策略的开关无关：
     # 用户关掉告警也不该让新建的机器一直停在「未确认」。
     try:
@@ -1567,11 +1572,11 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
     if not policy.get("enabled"):
         return []
     await sshguard.init_table()
-    target_owner = policy.get("notify_user") or await store.first_admin_username() or ""
-    # 按收件人的语言渲染（巡检是后台跑的，没有请求上下文，见 alerting.resolve_language）
-    i18n.pin_language(await alerting.resolve_language(target_owner))
-    feishu = await alerting.load_feishu(target_owner)
-    email_cfg = await alerting.load_alert_email(target_owner)
+    fallback_owner = policy.get("notify_user") or await store.first_admin_username() or ""
+    book = alerting.RecipientBook()
+    # 按收件人缓存通道配置，顺带把语言钉到这个人身上（巡检是后台跑的，
+    # 没有请求上下文，见 alerting.resolve_language）
+    channels = alerting.ChannelCache()
     cooldown = int(policy["cooldown_minutes"]) * 60
     threshold = int(policy["max_failures"])
     now = time.time()
@@ -1590,14 +1595,23 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
         if report.get("host_id") == "local":
             continue  # 本机由 sshguard.evaluate() 负责，避免重复告警
         label = str(report.get("name") or report.get("host") or "")
+        recipient = await book.host_recipient(fallback_owner, report.get("host_id"))
+        chans = await channels.of(recipient)
+        feishu = chans["feishu"]
+        email_cfg = chans["email"]
         for row in report.get("top_ips") or []:
             if row["count"] < threshold:
                 continue
             ip = row["ip"]
-            key = alerting.alarm_key(target_owner, "ssh-fail", f"{label}:{ip}")
+            key = alerting.alarm_key(recipient, "ssh-fail", f"{label}:{ip}")
             still.add(key)
             # prev 非空 = 上一轮就在告警中，这一轮只是重复提醒（不写新历史）
             prev = active.get(key) or {}
+            if not prev:
+                # 升级前这条告警记在策略接收人名下（见 alerting.adopt_active）
+                prev = await alerting.adopt_active(
+                    active, fallback_owner, recipient, "ssh-fail", f"{label}:{ip}"
+                )
             last = float(prev.get("ts") or 0)
             if now - last < cooldown:
                 continue
@@ -1642,7 +1656,7 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 f"Attempted usernames: {', '.join(row['users'][:8])}",
             )
             ok, detail = await alerting.dispatch(
-                target_owner,
+                recipient,
                 feishu,
                 email_cfg,
                 i18n.pick(
@@ -1654,7 +1668,8 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 source=alerting.SOURCE_SSHREMOTE,
             )
             state = {
-                "username": target_owner,
+                # 告警归主机的归属者：他的告警页与站内铃铛才看得到这条
+                "username": recipient,
                 "rule_id": "ssh-fail",
                 "rule_name": i18n.tr("SSH 登录失败次数"),
                 "target_type": "ssh",
@@ -1690,6 +1705,9 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
             continue  # 本机告警由 sshguard 处理
         if not await alerting.recovery_confirmed(key, row):
             continue  # 本轮只是回落到阈值以下，还没到「连续 N 轮正常」的恢复门槛
+        # 告警当初发给谁，恢复就发给谁
+        row_owner = str(row.get("username") or "") or fallback_owner
+        row_chans = await channels.of(row_owner)
         card = alerting.build_recovery_card(row, None, at=now)
         text = i18n.pick(
             f"{row.get('target')} 的 SSH 登录失败次数已回落到阈值以下，告警解除",
@@ -1697,9 +1715,9 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
             "threshold; the alert is cleared",
         )
         ok, detail = await alerting.dispatch(
-            target_owner,
-            feishu,
-            email_cfg,
+            row_owner,
+            row_chans["feishu"],
+            row_chans["email"],
             i18n.tr("恢复通知：") + str(row.get("target")),
             text,
             card,
@@ -1707,7 +1725,7 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
         )
         await alerting.record(
             {
-                "username": target_owner,
+                "username": row_owner,
                 "rule_id": row.get("rule_id"),
                 "rule_name": row.get("rule_name"),
                 "target_type": "ssh",

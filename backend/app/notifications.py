@@ -319,7 +319,11 @@ def alert_message(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def push_alert(entry: Dict[str, Any], created: Optional[int] = None) -> None:
-    """把一条告警 / 恢复记录投递到规则归属者的站内消息里。"""
+    """把一条告警 / 恢复记录投递到这条告警**收件人**的站内消息里。
+
+    ``entry["username"]`` 由调用方决定是谁：资源告警填机器归属者（不是配规则的人，
+    见 :class:`app.alerting.RecipientBook`），其余来源填各自策略里的接收人。
+    """
     message = alert_message(entry)
     await push(
         str(entry.get("username") or ""),

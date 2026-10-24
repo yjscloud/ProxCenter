@@ -1419,12 +1419,17 @@ def _card(
 
 
 async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
-    """巡检全部主机并把异常推给用户；``owner=None`` 表示发给策略指定的接收人。
+    """巡检全部主机并把异常推给用户。
 
     写法照抄 :func:`app.sshguard.evaluate`：自建 rule_id、自己判冷却、复用告警的
     去重 / 飞书邮件 / 恢复通知，因此**不需要**往告警规则表里加新指标。
     ``owner`` 参数只为对齐 ``alerting.evaluate`` 的调用方式，端口是主机级的，
     没有「按用户隔离」的概念，传进来的用户名会被忽略。
+
+    收件人跟着**主机归属**走（见 :class:`app.alerting.RecipientBook`）：受管主机归
+    添加它的人，告警就发给那个人；面板本机与没有归属的主机才回落到策略里的接收人。
+    一条全局策略扫描的是一批主人各不相同的机器，按策略接收人投递等于把别人的机器
+    报给了路人。
     """
     policy = await load_policy()
     if not policy.get("enabled"):
@@ -1437,11 +1442,11 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
 
     reachable = [r for r in reports if r.get("ok")]
 
-    target_owner = policy.get("notify_user") or await store.first_admin_username() or ""
-    # 按收件人的语言渲染（巡检是后台跑的，没有请求上下文，见 alerting.resolve_language）
-    i18n.pin_language(await alerting.resolve_language(target_owner))
-    feishu = await alerting.load_feishu(target_owner)
-    email_cfg = await alerting.load_alert_email(target_owner)
+    fallback_owner = policy.get("notify_user") or await store.first_admin_username() or ""
+    book = alerting.RecipientBook()
+    # 按收件人缓存通道配置，顺带把语言钉到这个人身上（巡检是后台跑的，
+    # 没有请求上下文，见 alerting.resolve_language）
+    channels = alerting.ChannelCache()
     cooldown = int(policy["cooldown_minutes"]) * 60
     now = time.time()
 
@@ -1459,24 +1464,34 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
 
     for report in reachable:
         summary = report["summary"]
+        # 这台主机归谁：受管主机归添加它的人，本机与无归属的主机回落给策略接收人
+        recipient = await book.host_recipient(fallback_owner, report.get("host_id"))
+        chans = await channels.of(recipient)
+        feishu = chans["feishu"]
+        email_cfg = chans["email"]
         for kind, kind_name, kind_name_en, rule_id, metric, enabled in checks:
             if not enabled:
                 continue
             value = summary["unexpected"] if kind == "ports" else summary["suspicious"]
             label = f"{report.get('name') or report.get('host_id')}·{kind_name}"
-            key = alerting.alarm_key(target_owner, rule_id, label)
             if not value:
                 continue
+            key = alerting.alarm_key(recipient, rule_id, label)
             still_alarming.add(key)
             # prev 非空 = 上一轮就在告警中，这一轮只是重复提醒（不写新历史）
             prev = active.get(key) or {}
+            if not prev:
+                # 升级前这条告警记在策略接收人名下（见 alerting.adopt_active）
+                prev = await alerting.adopt_active(
+                    active, fallback_owner, recipient, rule_id, label
+                )
             last = float(prev.get("ts") or 0)
             if now - last < cooldown:
                 continue
             host_label = report.get("name") or report.get("host_id")
             text = _finding_text(report, kind)
             ok, detail = await alerting.dispatch(
-                target_owner,
+                recipient,
                 feishu,
                 email_cfg,
                 i18n.pick(
@@ -1488,7 +1503,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 source=alerting.SOURCE_PORTGUARD,
             )
             state = {
-                "username": target_owner,
+                # 告警归主机的归属者：他的告警页与站内铃铛才看得到这条
+                "username": recipient,
                 "rule_id": rule_id,
                 "rule_name": i18n.pick(
                     f"主机{kind_name}", f"Host · {kind_name_en}"
@@ -1519,6 +1535,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             continue
         if not await alerting.recovery_confirmed(key, row):
             continue  # 本轮只是没命中，还没到「连续 N 轮正常」的恢复门槛
+        # 告警当初发给谁，恢复就发给谁
+        row_owner = str(row.get("username") or "") or fallback_owner
+        row_chans = await channels.of(row_owner)
         card = alerting.build_recovery_card(row, None, at=now)
         text = i18n.pick(
             f"{row.get('target')} 的{row.get('rule_name')}已恢复正常，告警解除",
@@ -1526,9 +1545,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             "the alert is cleared",
         )
         ok, detail = await alerting.dispatch(
-            target_owner,
-            feishu,
-            email_cfg,
+            row_owner,
+            row_chans["feishu"],
+            row_chans["email"],
             i18n.tr("恢复通知：") + str(row.get("target")),
             text,
             card,
@@ -1536,7 +1555,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         )
         await alerting.record(
             {
-                "username": row.get("username") or target_owner,
+                "username": row_owner,
                 "rule_id": row.get("rule_id"),
                 "rule_name": row.get("rule_name"),
                 "target_type": "host",

@@ -15,7 +15,17 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import crypto, database, i18n, mailer, notifications, prefs, site, store
+from . import (
+    crypto,
+    database,
+    i18n,
+    mailer,
+    notifications,
+    ownership,
+    prefs,
+    site,
+    store,
+)
 from .pve import get_client
 # 客户机 IP 的解析（Guest Agent / 容器网卡 / 静态配置）统一在 app.guestip，
 # 这里只是把「只按 node+vmid 解析虚拟机 IP」那个入口再导出一份用
@@ -131,7 +141,7 @@ def owner_of(item: Dict[str, Any]) -> str:
 
 
 def alarm_key(owner: str, rule_id: Any, label: str) -> str:
-    """告警状态的主键：同一对象在不同用户下各自独立计数与冷却。"""
+    """告警状态的主键：同一对象在不同**收件人**下各自独立计数与冷却。"""
     return str(owner or "") + "|" + str(rule_id) + "|" + str(label)
 
 
@@ -142,6 +152,141 @@ def visible_rules(
     if owner is None:
         return list(rules)
     return [rule for rule in rules if owner_of(rule) == owner]
+
+
+class RecipientBook:
+    """「机器归谁，告警就找谁」。
+
+    为什么不能照着规则归属投递
+    --------------------------
+    规则是**人**配的，告警说的是**机器**出事了。一条 ``target="*"`` 的规则通常由
+    管理员配（他看得见全部机器），按规则归属发就等于把所有人机器的告警都堆进
+    管理员一个人的通道；反过来，机器换了主人而规则没跟着改，告警还会继续发给
+    前任主人。机器归属（:mod:`app.ownership`）才是「谁该去处理」的答案，它本来
+    也是面板数据隔离的依据 —— 告警跟着归属走，机器主人在自己的告警页里才看得见
+    这条告警。
+
+    兜底：机器没有归属记录（面板之外创建的、对账时清掉的），或者归属记录指向一个
+    已经不存在的账号（用户被删掉时归属表不级联清理）时，回落给配规则的人。宁可
+    发给「不该收的人」，也不能让一条告警谁都不收到。
+
+    一轮巡检里同一个收件人会命中很多条规则，所以归属表与账号清单各读一次、
+    之后都在内存里判断 —— 不按每台机器查库。
+    """
+
+    def __init__(self) -> None:
+        self._guests: Optional[Dict[str, str]] = None
+        self._hosts: Optional[Dict[str, str]] = None
+        self._users: Optional[set] = None
+        self._connection: Optional[str] = None
+
+    async def _guest_owners(self) -> Dict[str, str]:
+        if self._guests is None:
+            try:
+                self._guests = await ownership.guest_owners_map()
+            except Exception:  # noqa: BLE001 - 读不到归属就全按「没有归属」处理
+                logger.warning(
+                    "读取资源归属失败，本轮告警按规则归属投递", exc_info=True
+                )
+                self._guests = {}
+        return self._guests
+
+    async def _host_owners(self) -> Dict[str, str]:
+        if self._hosts is None:
+            try:
+                self._hosts = await ownership.owners_map(ownership.KIND_SSH_HOST)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "读取受管主机归属失败，本轮告警按规则归属投递", exc_info=True
+                )
+                self._hosts = {}
+        return self._hosts
+
+    def _connection_id(self) -> str:
+        """归属 ref 的连接前缀。取不到时用空串（ref 里的旧写法 ``-`` 也认）。"""
+        if self._connection is None:
+            try:
+                self._connection = str(store.get_active_connection_id() or "")
+            except Exception:  # noqa: BLE001
+                self._connection = ""
+        return self._connection
+
+    async def _known(self, username: str) -> bool:
+        if self._users is None:
+            try:
+                self._users = {
+                    str(item.get("username") or "") for item in await store.list_users()
+                }
+            except Exception:  # noqa: BLE001
+                self._users = set()
+        return username in self._users
+
+    async def recipient(self, fallback: str, machine_owner: Optional[str]) -> str:
+        """合成收件人：机器归属者优先，不可用时回落给 ``fallback``（配规则的人）。"""
+        owner = str(machine_owner or "").strip()
+        if not owner or owner == fallback:
+            return fallback
+        if not await self._known(owner):
+            # 归属记录指向一个已不存在的账号：发给它等于把告警丢进黑洞
+            logger.info("机器归属 %s 已不是有效账号，告警回落到规则归属者", owner)
+            return fallback
+        return owner
+
+    async def guest_recipient(self, fallback: str, res: Dict[str, Any]) -> str:
+        """一台虚拟机 / 容器的告警该找谁。
+
+        ``res`` 是 ``/cluster/resources`` 的条目：只有 ``qemu`` / ``lxc`` 才有归属，
+        宿主机（``node``）是集群基础设施、不属于任何人，直接回落。
+        """
+        if str(res.get("type") or "") not in ("qemu", "lxc"):
+            return fallback
+        vmid = res.get("vmid")
+        if vmid is None or not str(vmid):
+            return fallback
+        owner = ownership.vm_owner_from(
+            await self._guest_owners(),
+            str(res.get("node") or ""),
+            vmid,
+            self._connection_id(),
+        )
+        return await self.recipient(fallback, owner)
+
+    async def host_recipient(self, fallback: str, host_id: Any) -> str:
+        """一台受管主机的告警该找谁。
+
+        面板本机（``local``）没有归属可言 —— 它不是任何用户的机器，仍发给兜底
+        收件人（策略里的接收人 / 第一个管理员）。
+        """
+        key = str(host_id or "")
+        if not key or key == "local":
+            return fallback
+        owners = await self._host_owners()
+        return await self.recipient(fallback, owners.get(key))
+
+
+class ChannelCache:
+    """一轮巡检内按收件人缓存三套通道配置，并按收件人的语言渲染。
+
+    收件人从「一个」变成「按机器归属分散的多个」之后，语言不能再整轮钉一次
+    （见 :func:`resolve_language`）：同一轮里 A 的中文告警和 B 的英文告警都要渲染
+    对，所以每次取通道时顺手把语言钉到这个人身上。缓存是为了让「同一个人名下
+    20 台机器」只读一次库。
+    """
+
+    def __init__(self) -> None:
+        self._items: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    async def of(self, recipient: str) -> Dict[str, Dict[str, Any]]:
+        name = str(recipient or "")
+        if name not in self._items:
+            self._items[name] = {
+                "feishu": await load_feishu(name),
+                "email": await load_alert_email(name),
+                "webhook": await load_webhook(name),
+            }
+        i18n.pin_language(await resolve_language(name))
+        return self._items[name]
+
 
 METRIC_LABELS = {
     "cpu": "CPU 使用率",
@@ -194,8 +339,15 @@ DEFAULT_FEISHU: Dict[str, Any] = {
 
 # 告警邮件的收件人配置。收件人留空时回退到账号邮箱，所以默认「开」也不会
 # 凭空发信 —— 没邮箱的用户根本不会被投递。
+#
+# 默认值曾经是 ``False``，理由大概是「通知要用户主动订阅」。实际效果很糟：
+# 普通用户在个人中心填了账号邮箱（那是账号的必备字段之一），但从没打开
+# 告警页这个开关，于是 **永远收不到告警邮件**，而面板里唯一能看出这件事的
+# 地方在「告警」页的一行徽章上。使用者看到的现象就是「监控告警不发邮件，
+# 可我的邮箱明明是好的」。告警本来就不该是订阅制，所以默认打开；存心不想
+# 收的人保存一次 ``enabled=false`` 即可（保存过就以他的值为准）。
 DEFAULT_ALERT_EMAIL: Dict[str, Any] = {
-    "enabled": False,
+    "enabled": True,
     "recipients": "",
     # 重复提醒的节奏。**邮件原先没有自己的节奏**：它蹭的是飞书那份 cooldown
     # （默认 600 秒），而且改飞书的冷却会连邮件一起改 —— 一台机器持续高负载，
@@ -1377,7 +1529,11 @@ async def send_feishu(card: Dict[str, Any], owner: str = "") -> Tuple[bool, str]
 async def record(
     entry: Dict[str, Any], *, source: str = "", repeat: bool = False
 ) -> None:
-    """记一条告警历史，并给规则归属者留一条站内消息。
+    """记一条告警历史，并给这条告警的**收件人**留一条站内消息。
+
+    收件人不一定是配规则的人：资源告警按机器归属投递（见 :class:`RecipientBook`），
+    历史行与站内消息都记在收件人名下，两处口径必须一致 —— 否则「告警页里全是别人
+    的机器」或「铃铛响了自己却查不到是哪条」都是从这里开始的。
 
     两件事放在一处，是因为它们描述的是同一个事件、且必须同时发生：
     「这条告警发生了」与「该有人知道」。分开写迟早会出现「历史里有、铃铛上没有」
@@ -1680,6 +1836,117 @@ def usage(res: Dict[str, Any], metric: str) -> Optional[float]:
     return None
 
 
+# guest agent 里那些「不是磁盘」的文件系统：内存盘、只读镜像层、容器 overlay。
+# 它们的 used/total 与用户关心的剩余空间无关，混进来会把「根分区 92%」稀释成
+# 「最高 12%」，看起来像规则坏了。
+_PSEUDO_FS = frozenset(
+    {"tmpfs", "devtmpfs", "ramfs", "overlay", "squashfs", "iso9660", "proc", "sysfs"}
+)
+
+
+async def vm_disk_usage(client: Any, node: str, vmid: int) -> Optional[float]:
+    """虚拟机的磁盘使用率（%），取使用率最高的真实文件系统。
+
+    虚拟机没有「已用 / 总量」这对现成字段：``/cluster/resources`` 里 qemu 条目的
+    ``disk`` 恒为 0、``maxdisk`` 只是磁盘大小，拿它算出来永远是 0%（这正是
+    「虚拟机磁盘告警不触发」的原因）。真实数据在客户机的 ``get-fsinfo`` 里。
+
+    没装 / 没起 qemu-guest-agent 的机器拿不到数据 —— 返回 None，由调用方按
+    「本轮不判定」处理，**不能当成 0%**，否则规则会一直静默。
+    """
+    try:
+        entries = await client.qemu_agent_fsinfo(node, vmid)
+    except Exception:
+        return None
+    best: Optional[float] = None
+    for item in entries or []:
+        if not isinstance(item, dict):
+            continue
+        total = item.get("total-bytes")
+        used = item.get("used-bytes")
+        if not isinstance(total, (int, float)) or total <= 0:
+            continue
+        if not isinstance(used, (int, float)) or used < 0:
+            continue
+        if str(item.get("type") or "").lower() in _PSEUDO_FS:
+            continue
+        pct = max(0.0, min(100.0, float(used) / float(total) * 100))
+        if best is None or pct > best:
+            best = pct
+    return best
+
+
+def _match_target(rule: Dict[str, Any], res: Dict[str, Any]) -> Optional[str]:
+    """这条规则命中这条资源吗？命中返回展示名（告警 key 的组成部分）。
+
+    抽出来是因为「预取虚拟机磁盘使用率」和主循环必须用同一套判定，否则会出现
+    「预取了但不评估」或「评估了却没数据」的两套口径。
+    """
+    target_type = rule.get("target_type")
+    if res.get("type") not in RESOURCE_TYPES.get(target_type, set()):
+        return None
+    metric = rule.get("metric")
+    if target_type == "vm":
+        # 模板一律跳过 —— 它们按设计就不运行。
+        # 使用率类指标需要运行中的数据，关机机器也跳过；
+        # 但「离线」指标恰恰只在未运行时才成立，不能跟着一起跳过。
+        if res.get("template"):
+            return None
+        if metric != "offline" and str(res.get("status")) != "running":
+            return None
+    label = _label(res, target_type)
+    want = rule.get("target") or "*"
+    if want != "*" and want != label and want != str(res.get("vmid") or ""):
+        return None
+    return label
+
+
+async def prefetch_vm_disk_usage(
+    client: Any, rules: Iterable[Dict[str, Any]], resources: List[Dict[str, Any]]
+) -> Dict[Tuple[str, int], Optional[float]]:
+    """本轮需要的虚拟机磁盘使用率，一次并发取完。
+
+    每台虚拟机一次 agent 往返，串行会拖慢整轮评估（agent 无响应时更久）。
+    同一个 VM 常被多条规则指到，按 (node, vmid) 去重后只取一次；并发压在 6
+    以内，避免把 PVE 的 agent 通道占满。
+    """
+    targets: set = set()
+    for rule in rules:
+        if str(rule.get("metric")) != "disk":
+            continue
+        if str(rule.get("target_type")) != "vm":
+            continue
+        for res in resources:
+            if _match_target(rule, res) is None:
+                continue
+            # 只有 qemu 需要问 agent。容器的 cluster/resources 条目本来就有真实
+            # 的 disk / maxdisk（lxc 报的是文件系统已用量），走 agent 反而会 404，
+            # 取不到值就再也触发不了 —— 别把容器一起拖进来。
+            if res.get("type") != "qemu":
+                continue
+            vmid = res.get("vmid")
+            if not isinstance(vmid, int):
+                continue
+            targets.add((str(res.get("node") or ""), vmid))
+    if not targets:
+        return {}
+
+    sem = asyncio.Semaphore(6)
+
+    async def one(node: str, vmid: int) -> Optional[float]:
+        async with sem:
+            return await vm_disk_usage(client, node, vmid)
+
+    items = sorted(targets)
+    results = await asyncio.gather(
+        *(one(node, vmid) for node, vmid in items), return_exceptions=True
+    )
+    out: Dict[Tuple[str, int], Optional[float]] = {}
+    for (node, vmid), value in zip(items, results):
+        out[(node, vmid)] = None if isinstance(value, BaseException) else value
+    return out
+
+
 def _label(res: Dict[str, Any], target_type: str) -> str:
     if target_type == "node":
         return str(res.get("node") or "")
@@ -1691,24 +1958,72 @@ def host_address(client: Any) -> str:
     return str(getattr(getattr(client, "conn", None), "host", "") or "")
 
 
+async def adopt_active(
+    active: Dict[str, Dict[str, Any]],
+    old_owner: str,
+    recipient: str,
+    rule_id: Any,
+    label: str,
+) -> Dict[str, Any]:
+    """把记在旧收件人名下的活动告警改挂到新收件人，返回那一行（可能为空）。
+
+    升级前的 key 用的是「配规则的人」，改造之后用的是「机器归属者」：同一台机器
+    在库里会换成另一个 key。只在「同一条规则 + 同一个对象」的旧 key 上动手，并且
+    只在机器**还在告警**时发生 —— 已经恢复的旧行走正常的恢复流程，通知发给原收件人，
+    那条告警本来就是他收到的，回一句「已经好了」不算错。
+
+    不搬会怎样：新 key 在库里查不到，于是这台机器同时产生一条新告警（给机器主人）
+    和一条「已恢复」（给旧归属），后者的时间戳还更新 —— 看着像告警刚响就自己好了。
+    """
+    if not old_owner or old_owner == recipient:
+        return {}
+    old_key = alarm_key(old_owner, rule_id, label)
+    new_key = alarm_key(recipient, rule_id, label)
+    row = active.pop(old_key, None)
+    if row is None:
+        return {}
+    moved = dict(row, username=recipient)
+    await mark_active(new_key, moved)
+    # 邮件计数走单独的列（不在 ACTIVE_COLUMNS 里，见 mark_mail_sent）：
+    # 不搬的话新行会从「没发过邮件」重新开始，下一轮立刻补一封 —— 换个人收
+    # 一条旧告警的副本，没有任何意义。
+    mail_ts = int(row.get("mail_ts") or 0)
+    mail_count = int(row.get("mail_count") or 0)
+    if mail_ts or mail_count:
+        await mark_mail_sent(new_key, mail_ts, mail_count)
+        moved["mail_ts"] = mail_ts
+        moved["mail_count"] = mail_count
+    await clear_active(old_key)
+    active[new_key] = dict(moved, alarm_key=new_key)
+    return moved
+
+
 async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     """拉取 PVE 资源，检查启用的规则：超阈值发告警，回落则发恢复通知。
 
     ``owner=None`` 表示评估全部用户（定时任务用）；传用户名则只评估该用户的规则与
-    告警状态（用户手动「立即检测」用），通知也只发到他自己配置的飞书机器人。
+    告警状态（用户手动「立即检测」用）。
+
+    **收件人跟着机器归属走，不跟规则归属走**（见 :class:`RecipientBook`）：管理员
+    给全部虚拟机配一条规则，告警照样落到每台机器的主人手上；宿主机与没有归属的
+    机器才回落到配规则的人。
     """
     await init_table()
-    rules = [r for r in await load_rules() if r.get("enabled")]
-    if owner is not None:
-        rules = [r for r in rules if owner_of(r) == owner]
-    enabled_ids = {str(r.get("id")) for r in rules}
+    all_rules = await load_rules()
+    rules = [r for r in all_rules if r.get("enabled")]
     active = await load_active()
     if owner is not None:
+        rules = [r for r in rules if owner_of(r) == owner]
+        # 「立即检测」只看自己名下规则的状态。不能按 username 过滤：状态现在记在
+        # **收件人**（机器归属者）名下，和配规则的人未必是同一个。按规则 id 过滤
+        # 才能连同该用户已停用规则留下的状态一起清理（见下面的恢复/清理分支）。
+        own_ids = {str(r.get("id")) for r in all_rules if owner_of(r) == owner}
         active = {
             key: row
             for key, row in active.items()
-            if str(row.get("username") or "") == owner
+            if str(row.get("rule_id")) in own_ids
         }
+    enabled_ids = {str(r.get("id")) for r in rules}
     if not rules:
         # 规则被全部停用/删除：清理它们的告警状态，避免下次重新启用时误报恢复
         for key, row in active.items():
@@ -1727,7 +2042,12 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     # 本轮各对象的实测值（key -> 百分比）与仍处于超阈值状态的对象
     measured: Dict[str, float] = {}
     alarming: set = set()
-    # 规则按归属分组：同一个用户共用一个飞书通道与冷却时间
+    # 虚拟机磁盘使用率要逐台问 guest agent，先并发取好（没有这类规则时是空表）
+    disk_usage = await prefetch_vm_disk_usage(client, rules, resources)
+    # 本轮拿不到实测值的对象：既不判超阈值，也不能被恢复逻辑当成「已恢复」
+    unmeasured: set = set()
+    # 规则按**配置者**分组（决定兜底收件人、也决定旧数据的归属）；
+    # 实际投递用哪个通道与冷却，按下面算出来的收件人走。
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for rule in rules:
         groups.setdefault(owner_of(rule), []).append(rule)
@@ -1738,60 +2058,36 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     if fallback and "" in groups:
         # 没有归属的规则（手工写进 settings 的旧数据）算作管理员的
         groups.setdefault(fallback, []).extend(groups.pop(""))
-    channels: Dict[str, Dict[str, Any]] = {}
-    mail_channels: Dict[str, Dict[str, Any]] = {}
-    hook_channels: Dict[str, Dict[str, Any]] = {}
-
-    async def channel(name: str) -> Dict[str, Any]:
-        """某个用户的飞书通知配置（含 cooldown）；一轮评估里只读一次。"""
-        if name not in channels:
-            channels[name] = await load_feishu(name)
-        return channels[name]
-
-    async def email_channel(name: str) -> Dict[str, Any]:
-        """某个用户的告警邮件配置；同样一轮只读一次。"""
-        if name not in mail_channels:
-            mail_channels[name] = await load_alert_email(name)
-        return mail_channels[name]
-
-    async def webhook_channel(name: str) -> Dict[str, Any]:
-        """某个用户的通用 Webhook 配置；同样一轮只读一次。"""
-        if name not in hook_channels:
-            hook_channels[name] = await load_webhook(name)
-        return hook_channels[name]
+    channels = ChannelCache()
+    # 「机器归谁，告警就找谁」：归属表与账号清单在本轮里各只读一次
+    # （RecipientBook 内部按需加载，规则里没有虚拟机目标时一个查询都不发）。
+    book = RecipientBook()
 
     for rule_owner, owner_rules in groups.items():
-        # 按收件人的语言渲染：巡检是后台跑的，没有请求上下文，不钉住的话整轮
-        # 都会按面板默认语言发出去（见 recipient_language 的说明）。
-        i18n.pin_language(await resolve_language(rule_owner))
-        feishu = await channel(rule_owner)
-        email_cfg = await email_channel(rule_owner)
-        webhook_cfg = await webhook_channel(rule_owner)
-        cooldown = int(feishu.get("cooldown") or 600)
-        # 邮件有自己的一套节奏（间隔 + 次数上限），不再跟飞书的冷却绑定：
-        # 以前它只能蹭 feishu.cooldown，调飞书的冷却会连带改掉邮件，反之亦然。
-        mail_on = bool(email_cfg.get("enabled"))
-        mail_interval = int(email_cfg.get("interval") or 0)
-        mail_max = int(email_cfg.get("max_repeats") or 0)
         for rule in owner_rules:
             target_type = rule.get("target_type")
-            want = rule.get("target") or "*"
+            metric = rule.get("metric")
             for res in resources:
-                if res.get("type") not in RESOURCE_TYPES.get(target_type, set()):
+                # 判定与「预取磁盘使用率」共用同一套（见 _match_target），
+                # 两边口径一旦不同就会漏评估或拿不到数据。
+                label = _match_target(rule, res)
+                if label is None:
                     continue
-                metric = rule.get("metric")
-                if target_type == "vm":
-                    # 模板一律跳过 —— 它们按设计就不运行。
-                    # 使用率类指标需要运行中的数据，关机机器也跳过；
-                    # 但「离线」指标恰恰只在未运行时才成立，不能跟着一起跳过，
-                    # 否则这个规则永远不会触发（这正是它要解决的问题）。
-                    if res.get("template"):
-                        continue
-                    if metric != "offline" and str(res.get("status")) != "running":
-                        continue
-                label = _label(res, target_type)
-                if want != "*" and want != label and want != str(res.get("vmid") or ""):
-                    continue
+                # 规则是人配的，机器是有主的：该处理这条告警的是机器归属者。
+                # 宿主机 / 没有归属的机器回落到配规则的人（见 RecipientBook）。
+                recipient = await book.guest_recipient(rule_owner, res)
+                # 按收件人的语言渲染：巡检是后台跑的，没有请求上下文，
+                # 不钉住的话整轮都会按面板默认语言发出去（见 resolve_language）。
+                chans = await channels.of(recipient)
+                feishu = chans["feishu"]
+                email_cfg = chans["email"]
+                webhook_cfg = chans["webhook"]
+                cooldown = int(feishu.get("cooldown") or 600)
+                # 邮件有自己的一套节奏（间隔 + 次数上限），不再跟飞书的冷却绑定：
+                # 以前它只能蹭 feishu.cooldown，调飞书的冷却会连带改掉邮件，反之亦然。
+                mail_on = bool(email_cfg.get("enabled"))
+                mail_interval = int(email_cfg.get("interval") or 0)
+                mail_max = int(email_cfg.get("max_repeats") or 0)
 
                 if metric in STATE_METRICS:
                     # 状态型指标：不看阈值，只看状态是否偏离预期。
@@ -1802,21 +2098,44 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     value = 0.0
                     threshold = 0.0
                 else:
-                    value = usage(res, metric)
+                    if (
+                        metric == "disk"
+                        and target_type == "vm"
+                        and res.get("type") == "qemu"
+                    ):
+                        # 虚拟机磁盘已用量只能来自 guest agent（cluster/resources
+                        # 里 qemu 的 disk 恒为 0，算出来永远是 0%）。
+                        # 容器不走这条路：它的 disk 字段就是真实已用量。
+                        value = disk_usage.get(
+                            (str(res.get("node") or ""), int(res.get("vmid") or 0))
+                        )
+                    else:
+                        value = usage(res, metric)
                     if value is None:
+                        # 数据缺失（典型：没装 qemu-guest-agent）—— 本轮不判定，
+                        # 但要让恢复逻辑知道「没测到」，别把静默当成已恢复。
+                        unmeasured.add(alarm_key(recipient, rule.get("id"), label))
                         continue
                     threshold = float(rule.get("threshold") or 80)
                     if value < threshold:
                         continue
 
-                # key 带上归属：不同用户的同名规则/对象各自独立计数与冷却
-                key = alarm_key(rule_owner, rule.get("id"), label)
+                # key 带上收件人：同一对象对不同人（同一台机器被多人关注过）各自
+                # 独立计数与冷却，不会因为谁先触发就把别人的冷却一起推后
+                key = alarm_key(recipient, rule.get("id"), label)
                 measured[key] = value
                 alarming.add(key)
                 # 冷却时间以库里的告警状态为准，重启后不会重复轰炸
                 # prev 非空 = 上一轮它就在告警中，这一轮属于「重复轮次」：
                 # 该提醒还是提醒，但历史不再记第二条（见 record 的 repeat 参数）
                 prev = active.get(key) or {}
+                if not prev:
+                    # 升级前这条告警记在「配规则的人」名下：把旧行接到新 key 上
+                    # （冷却与邮件计数一并带过去）。不接的话同一台机器会同时收到
+                    # 一条新告警和一条发给旧归属的「恢复」，后者纯属噪声。
+                    prev = await adopt_active(
+                        active, rule_owner, recipient, rule.get("id"), label
+                    )
                 last = float(prev.get("ts") or 0)
                 base_due = now - last >= cooldown
                 # 邮件单独判一次：间隔 + 次数上限。两次判断互不牵连，所以
@@ -1889,12 +2208,12 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     cooldown=cooldown,
                     target_type=target_type,
                 )
-                # 各发各的：用规则归属者自己的通道（飞书 / 邮件 / 通用 Webhook）推送。
+                # 各发各的：用**收件人**自己的通道（飞书 / 邮件 / 通用 Webhook）推送。
                 # context 供通用 Webhook 的请求体模板取用（飞书走卡片、邮件走正文，
                 # 只有自定义 Webhook 需要这些散字段）。
                 alert_title = kind + i18n.tr("：") + label
                 ok, detail = await dispatch(
-                    rule_owner,
+                    recipient,
                     # 本轮不该发的通道就地置为未启用：dispatch 只管「发什么」，
                     # 「这一步该不该发」由上面的 base_due / mail_due 决定。
                     feishu if base_due else {**feishu, "enabled": False},
@@ -1923,7 +2242,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     },
                 )
                 state = {
-                    "username": rule_owner,
+                    # 告警归收件人（机器归属者）：他的告警页与站内铃铛才看得到这条
+                    "username": recipient,
                     "rule_id": rule.get("id"),
                     "rule_name": rule.get("name"),
                     "target_type": target_type,
@@ -1963,13 +2283,13 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 fired.append(entry)
 
     # ---- 恢复通知：上一轮告警中、本轮已不再超阈值的对象 ----
-    enabled_by_owner: Dict[str, set] = {
-        name: {str(r.get("id")) for r in owner_rules}
-        for name, owner_rules in groups.items()
-    }
     for key, row in list(active.items()):
         if key in alarming:
             continue
+        if key in unmeasured:
+            # 本轮没取到数据（agent 未就绪 / 无响应）：保持告警状态，不发恢复
+            continue
+        # 状态记的 username 就是这条告警的收件人（机器归属者），恢复通知原路返回
         row_owner = str(row.get("username") or "") or fallback
         # 恢复通知同样按收件人语言，且每行可能属于不同用户，逐行钉
         i18n.pin_language(await resolve_language(row_owner))
@@ -1977,8 +2297,10 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             # 旧版（未按用户拆分）遗留的状态：静默清理，不误报恢复
             await clear_active(key)
             continue
-        if str(row.get("rule_id")) not in enabled_by_owner.get(row_owner, set()):
-            # 规则被停用或删除：静默清理状态，不打扰用户
+        if str(row.get("rule_id")) not in enabled_ids:
+            # 规则被停用或删除：静默清理状态，不打扰用户。
+            # 比对的是**全部在评估的规则**而不是收件人名下的规则 —— 告警和规则
+            # 已经不挂在同一个人名下了，按人找必然找不到，会误判成「规则没了」。
             await clear_active(key)
             continue
         if not await recovery_confirmed(key, row):
@@ -1993,9 +2315,10 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             + i18n.tr(str(METRIC_LABELS.get(row.get("metric"), row.get("metric"))))
             + i18n.pick(" 已恢复正常", " recovered")
         )
-        # 谁配置的规则，恢复通知就发给谁
-        feishu = await channel(row_owner)
-        email_cfg = await email_channel(row_owner)
+        # 告警当初发给谁，恢复就发给谁（同一条链路的收尾）
+        chans = await channels.of(row_owner)
+        feishu = chans["feishu"]
+        email_cfg = chans["email"]
         recovery_title = i18n.tr("恢复通知：") + str(row.get("target") or "-")
         ok, detail = await dispatch(
             row_owner,
@@ -2005,7 +2328,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             recovery_text,
             card,
             source=SOURCE_RESOURCE,
-            webhook=await webhook_channel(row_owner),
+            webhook=chans["webhook"],
             context={
                 "level": "recovery",
                 "title": recovery_title,

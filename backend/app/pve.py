@@ -724,6 +724,23 @@ class ProxmoxClient:
             return result if isinstance(result, list) else []
         return data if isinstance(data, list) else []
 
+    async def qemu_agent_fsinfo(self, node: str, vmid: int) -> List[Dict[str, Any]]:
+        """Guest Agent 的文件系统清单（``get-fsinfo``）。
+
+        虚拟机磁盘**已用量**只能从这里拿：``/cluster/resources`` 对 qemu 条目只报
+        「分配容量」，``disk`` 恒为 0、``maxdisk`` 是磁盘大小 —— 拿它俩算使用率
+        永远是 0%，磁盘告警规则配了也不会触发。
+
+        与 :meth:`qemu_agent_network` 一样，PVE 在结果外又套了 ``{"result": [...]}``。
+        客户机没装 / 没起 qemu-guest-agent 时 PVE 会报 500/595，调用方按「本轮
+        没有数据」处理，不要当成 0%。
+        """
+        data = await self.get(f"/nodes/{node}/qemu/{vmid}/agent/get-fsinfo")
+        if isinstance(data, dict):
+            result = data.get("result")
+            return result if isinstance(result, list) else []
+        return data if isinstance(data, list) else []
+
     async def qemu_agent_ping(self, node: str, vmid: int) -> Dict[str, Any]:
         data = await self.post(f"/nodes/{node}/qemu/{vmid}/agent/ping")
         return data or {}

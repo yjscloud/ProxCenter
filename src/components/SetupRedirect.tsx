@@ -27,12 +27,22 @@ import { usePveStatus } from '../hooks/usePveStatus';
 /* 与 SetupRequired / PveSetupNotice 用同一个目标：连接管理页 */
 const SETUP_PATH = '/nodes/connections';
 
-/** 已引导过的标记。只跳过**这一次全新部署**，连接被删掉后还能再引导 */
+/**
+ * 本次会话已引导过的标记。
+ *
+ * 这里曾经用 localStorage：写过一次就**永久**不再引导，而它记的只是「某个浏览器
+ * 曾经打开过初始化页」。换域名 / 重装服务 / 清空数据库后，同一个浏览器仍带着旧
+ * 标记 —— 新装的面板于是既不跳转、也不提示，用户第一眼只剩仪表盘上那句红色
+ * 「无法加载集群数据」，正是「指引怎么没了」的来源。
+ *
+ * 改成 sessionStorage：关掉标签页就重来，没配好的部署每次登录都会被带一次；
+ * 同一次会话里走开之后不再反复弹（这是原来「只引导一次」的本意）。
+ */
 const REDIRECTED_KEY = 'pve_setup_redirected';
 
 function readRedirected(): boolean {
   try {
-    return localStorage.getItem(REDIRECTED_KEY) === '1';
+    return sessionStorage.getItem(REDIRECTED_KEY) === '1';
   } catch {
     /* 隐私模式读不到：当作没引导过，本次会话由 ref 兜住 */
     return false;
@@ -41,7 +51,19 @@ function readRedirected(): boolean {
 
 function markRedirected(): void {
   try {
-    localStorage.setItem(REDIRECTED_KEY, '1');
+    sessionStorage.setItem(REDIRECTED_KEY, '1');
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 配置成功后清掉标记：连接被删掉时还能再引导一次 */
+function clearRedirected(): void {
+  try {
+    sessionStorage.removeItem(REDIRECTED_KEY);
+    /* 老版本写在 localStorage 里的那份一并清掉 —— 它不会再被读到，但留着只会
+       让后来的人查代码时误以为仍有两套标记。 */
+    localStorage.removeItem(REDIRECTED_KEY);
   } catch {
     /* 忽略 */
   }
@@ -65,11 +87,7 @@ export function SetupRedirect() {
 
     if (configured) {
       /* 配好了就把标记清掉：将来连接被删掉，还能再引导一次 */
-      try {
-        localStorage.removeItem(REDIRECTED_KEY);
-      } catch {
-        /* 忽略 */
-      }
+      clearRedirected();
       return;
     }
 

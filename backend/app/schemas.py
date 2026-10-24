@@ -36,6 +36,8 @@ class UserOut(BaseModel):
     permissions: List[str] = Field(default_factory=list)
     # 是否已绑定两步验证（密钥本身永不返回）
     totp_enabled: bool = False
+    # 角色被要求绑定两步验证、但这个账号还没绑（前端据此把人带到绑定页）
+    totp_setup_required: bool = False
     # 账号有效期（Unix 秒）；0 = 永不过期
     expires_at: float = 0
 

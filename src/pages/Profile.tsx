@@ -422,6 +422,18 @@ export function Profile() {
       title={t('profile.title')}
       subtitle={t('profile.subtitle')}
     >
+      {/* 被角色强制要求绑定 2FA 时，路由守卫会把人送到这里。先说清楚为什么
+          来、绑完能做什么 —— 否则「突然跳到个人中心」本身就像面板出了错。 */}
+      {user?.totp_setup_required ? (
+        <Notice
+          tone="warning"
+          icon={<IconShield size={16} />}
+          title={t('profile.tfaForcedTitle')}
+        >
+          {t('profile.tfaForcedDesc')}
+        </Notice>
+      ) : null}
+
       {/* ---------------- 账号概要 ----------------
           这一页有六个区块、将近两屏，直接铺卡片会让人不知道从哪里看起。
           顶部先把「我是谁、安不安全」讲清楚：身份 + 四个关键状态，

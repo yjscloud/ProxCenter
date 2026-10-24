@@ -2472,6 +2472,16 @@ button.kpi-card {
   min-width: 0;
 }
 
+/* 报错右侧的操作区（「去检查连接」+「重试」）。
+   单独成一格是为了别让 action 的长度把 error-body 挤扁 —— 上面已经给了 flex:1，
+   这里只要固定不换行即可。 */
+.error-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .error-title {
   font-weight: 600;
 }

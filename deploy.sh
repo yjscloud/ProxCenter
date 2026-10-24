@@ -68,6 +68,7 @@ DB_PASSWORD="${DB_PASSWORD:-}"
 DB_HOST="${DB_HOST:-}"
 DB_PORT="${DB_PORT:-}"
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
+LOG_DIR=""            # systemd 的日志目录；空 = 走 journal（见 [4/5] 里那段说明）
 LANG_OPT=""
 
 # --- 界面语言 -----------------------------------------------------------------
@@ -362,19 +363,74 @@ declare -A MSG_EN=(
   ['已写入 %s']='Wrote %s'
   ['面板已就绪：%s']='Panel is ready: %s'
   ['---- journalctl -u %s（最近 40 行）----']='---- journalctl -u %s (last 40 lines)----'
-  ['---- %s/logs/panel.log（最近 40 行）----']='---- %s/logs/panel.log (last 40 lines)----'
+  ['---- %s/panel.log（最近 40 行）----']='---- %s/panel.log (last 40 lines)----'
   ['    · Address already in use      → %s 被占用，用 --port 换一个']='    · Address already in use      → port %s is already taken, pick another one with --port'
   ['    持续跟踪： journalctl -u %s -f']='    Follow along: journalctl -u %s -f'
   ['   面板地址 : http://%s:%s']='   Panel      : http://%s:%s'
+  ['   注意     : firewalld 没放通 %s/tcp，从别的机器访问会失败；放通： firewall-cmd --permanent --add-port=%s/tcp && firewall-cmd --reload']='   Note       : firewalld does not allow %s/tcp, so other machines cannot reach the panel; open it with: firewall-cmd --permanent --add-port=%s/tcp && firewall-cmd --reload'
+  ['   注意     : ufw 没放通 %s/tcp，从别的机器访问会失败；放通： ufw allow %s/tcp']='   Note       : ufw does not allow %s/tcp, so other machines cannot reach the panel; open it with: ufw allow %s/tcp'
   ['   登录账号 : %s']='   Sign in as : %s'
   ['   API 文档 : 默认关闭（需要时在 .env 设 API_DOCS_ENABLED=true，且须管理员登录）']='   API docs  : off by default (set API_DOCS_ENABLED=true in .env; admin sign-in required)'
   ['   数据库   : %s @ %s:%s（账号 %s）']='   Database  : %s @ %s:%s (account %s)'
   ['   配置文件 : %s  ← 数据库口令在里面（自动生成，不回显）']='   Config    : %s  ← the database password lives here (generated, never echoed)'
   ['   服务管理 : systemctl {status|restart|stop} %s']='   Service   : systemctl {status|restart|stop} %s'
-  ['   日志     : journalctl -u %s -f   或   tail -f %s/logs/panel.log']='   Logs      : journalctl -u %s -f   or   tail -f %s/logs/panel.log'
+  ['   日志     : journalctl -u %s -f   或   tail -f %s/panel.log']='   Logs      : journalctl -u %s -f   or   tail -f %s/panel.log'
+  ['   日志     : journalctl -u %s -f']='   Logs      : journalctl -u %s -f'
+  ['无法创建日志目录 %s，改用 journal 输出（journalctl -u %s -f 查看）']='Cannot create the log directory %s; falling back to journal output (view with: journalctl -u %s -f)'
+  ['systemd 打不开日志文件（status=209/STDOUT，常见于 SELinux 限制），改用 journal 输出']='systemd cannot open the log file (status=209/STDOUT, usually an SELinux restriction); falling back to journal output'
   ['      backend/.env 里设 FORCE_HTTPS=true 并 systemctl restart %s。']='      set FORCE_HTTPS=true in backend/.env and run systemctl restart %s.'
+  ['安装 systemd 服务需要 root：请用 sudo 执行，或加 --no-systemd 只准备环境。']='Installing the systemd service requires root: run with sudo, or add --no-systemd to only prepare the environment.'
+  ['本机没有 systemd（systemctl 不存在），请改用 --no-systemd。']='This machine has no systemd (systemctl not found); use --no-systemd instead.'
+  ['apt-get update 失败，继续尝试安装（离线环境属正常）']='apt-get update failed; still trying to install (normal in offline environments)'
+  ['没装字体，图形验证码将使用 Pillow 内置字体（能看清，但不如系统字体好看）']='No font package installed; the captcha will use Pillow built-in font (readable, but less pretty than a system font)'
+  ['缺少 %s，仓库不完整（建议重新 git clone 后再执行）。']='Missing %s; the repository is incomplete (re-clone it with git and run again).'
+  ['缺少模板 %s，仓库不完整。']='Missing the template %s; the repository is incomplete.'
+  ['pip 自身升级失败，继续用现有版本']='Upgrading pip itself failed; continuing with the current version'
+  ['装 MySQL 客户端失败，稍后跳过自动建库']='Installing the MySQL client failed; automatic database creation will be skipped later'
+  ['启动 %s 失败，请手工检查：systemctl status %s']='Failed to start %s; check manually with: systemctl status %s'
+  ['MariaDB 装好但端口还没起来（初始化可能仍在进行），稍后自检会再确认']='MariaDB is installed but the port is not up yet (initialization may still be running); the later self-check will confirm'
+  ['--skip-frontend 要求 dist/index.html 已存在，请先构建或去掉该参数。']='--skip-frontend requires dist/index.html to exist; build it first or drop that option.'
+  ['构建结束但 dist/index.html 不存在，请检查上面的构建输出。']='The build finished but dist/index.html is missing; check the build output above.'
+  ['指定的运行用户 %s 不存在。']='The specified run user %s does not exist.'
+  ['请按上面那句话修 %s 后重跑本脚本。']='Fix %s as described above, then re-run this script.'
+  ['未知系统']='unknown system'
+  ['管理面板']='management panel'
 
   # ---- 多行的整句：单引号串可以跨行，直接原样保留原来的排版 ----------
+  ['用面板账号连不上数据库：%s@%s:%s 库 %s
+    （服务装上后会一直重启：Access denied for user）。两种成因与对策：
+      ① 账号早已存在且口令与 .env 里的不同 —— CREATE USER IF NOT EXISTS 不会改口令，
+         而 .env 的口令可能被重新生成过（删过 .env 再重跑）。该账号没被别的应用共用时：
+              sudo ./deploy.sh --reset-db-password
+      ② .env 里 DB_PASSWORD 的写法让解析截断了（值里有 # 空格 或引号时 dotenv 会截断）。
+         对比一下两边读到的长度：
+%s
+%s']='Cannot connect to the database with the panel account: %s@%s:%s, database %s
+    (the service would restart forever with: Access denied for user). Two likely causes and fixes:
+      ① the account already exists with a different password — CREATE USER IF NOT EXISTS does not change it,
+         while .env may have been regenerated (deleted .env and re-run). If no other app shares this account:
+              sudo ./deploy.sh --reset-db-password
+      ② the DB_PASSWORD value in .env got truncated while parsing (dotenv truncates values containing #, spaces or quotes).
+         compare the lengths read on both sides:
+%s
+%s'
+  ['ADMIN_PASSWORD 仍不满足强度要求，后端会拒绝启动。请手工在 %s 里
+    设一个至少 12 位的新口令后重跑；生成一个可用：
+%s']='ADMIN_PASSWORD still does not meet the strength requirement, so the backend will refuse to start. Set a new password of at least 12 characters in %s by hand, then re-run; you can generate one with:
+%s'
+  ['backend/.env 里读不到数据库配置（DB_NAME / DB_USER）。正常情况下本脚本会
+    自动生成并写入 %s —— 出现这句通常是文件不可读或键名被改坏了。
+    也可以直接显式指定后重跑：
+      sudo ./deploy.sh --db-name proxcenter_panel --db-user proxcenter --db-password %s']='Cannot read the database settings (DB_NAME / DB_USER) from backend/.env. Normally this script generates them and writes them to %s — this message usually means the file is unreadable or the keys were renamed.
+    You can also specify them explicitly and re-run:
+      sudo ./deploy.sh --db-name proxcenter_panel --db-user proxcenter --db-password %s'
+  ['连不上 MySQL（%s:%s），服务即使装上也会一直重启。请确认：
+      · 数据库已启动（本机：systemctl status mariadb / mysqld）
+      · 地址与端口正确、防火墙已放通
+      · 本机有库但没起来时，去掉 --no-install-db 重跑，脚本会尝试安装并启动它']='Cannot connect to MySQL (%s:%s); the service would restart forever even after installation. Please check:
+      · the database is running (locally: systemctl status mariadb / mysqld)
+      · the address and port are correct and the firewall allows them
+      · if a local database exists but is not running, re-run without --no-install-db and the script will try to install and start it'
   ['未找到可用的 Node.js 22.22+，无法构建前端（当前：%s）。三种选择：
       ① 自己装一个（发行版仓库的 nodejs 通常只有 18/20，得用第三方源）：
          Debian/Ubuntu：curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
@@ -406,8 +462,9 @@ tf() {
   local zh="$1"; shift
   local fmt="$zh"
   [ "$LANG_UI" = "zh" ] || fmt="${MSG_EN["$zh"]-$zh}"
-  # shellcheck disable=SC2059
-  printf "$fmt" "$@"
+  # `--` 不能省：帮助文本里有以「--db-host」开头的整句，printf 会把格式串当成
+  # 选项解析，直接报 `printf: --: invalid option`（openEuler 上装完就在这一行炸）。
+  printf -- "$fmt" "$@"
 }
 
 # --- 输出helper --------------------------------------------------------------
@@ -659,7 +716,7 @@ if [ "$USE_SYSTEMD" -eq 1 ]; then
 fi
 
 # --- 系统识别（只读，不装任何东西）-------------------------------------------
-OS_NAME="未知系统"; OS_ID=""; PKG=""; SUDO=""
+OS_NAME="$(t '未知系统')"; OS_ID=""; PKG=""; SUDO=""
 if [ -r /etc/os-release ]; then
   # shellcheck disable=SC1091
   . /etc/os-release
@@ -834,7 +891,7 @@ info "$(tf 'Python：%s（%s）' "$PYTHON" "$("$PYTHON" -c 'import sys; print(f"
 # 仓库完整性：脚本要用的三个入口文件缺一个都跑不下去。
 # 提前检查而不是等 pip / npm 报「文件不存在」——那种报错看不出「需要重新拉取」。
 for required in backend/requirements.txt backend/run.py package.json; do
-  [ -f "$ROOT/$required" ] || die "缺少 $required，仓库不完整（建议重新 git clone 后再执行）。"
+  [ -f "$ROOT/$required" ] || die "$(tf '缺少 %s，仓库不完整（建议重新 git clone 后再执行）。' "$required")"
 done
 
 # --- Node.js（只有要构建前端时才需要，且要 ≥ 22.22：react-router 8 的下限）--------------
@@ -1035,7 +1092,7 @@ info "安装 backend/requirements.txt（已装则跳过）"
 # ---------------------------------------------------------------------------
 step "[2/5] 准备后端配置"
 
-[ -f "$ENV_EXAMPLE" ] || die "缺少模板 $ENV_EXAMPLE，仓库不完整。"
+[ -f "$ENV_EXAMPLE" ] || die "$(tf '缺少模板 %s，仓库不完整。' "$ENV_EXAMPLE")"
 
 if [ ! -f "$ENV_FILE" ]; then
   cp "$ENV_EXAMPLE" "$ENV_FILE"
@@ -1202,7 +1259,7 @@ if db_is_local && ! db_listening "$DBH" "$DBP"; then
           if systemctl cat "${unit}.service" >/dev/null 2>&1; then
             info "$(tf '启动并设为开机自启：%s' "${unit}.service")"
             $SUDO systemctl enable --now "$unit" >/dev/null 2>&1 \
-              || warn "启动 ${unit} 失败，请手工检查：systemctl status ${unit}"
+              || warn "$(tf '启动 %s 失败，请手工检查：systemctl status %s' "$unit" "$unit")"
             break
           fi
         done
@@ -1258,15 +1315,18 @@ SQL
         # 这里不能自动 ALTER：账号可能被别的应用共用，悄悄改口令等于把别人的服务
         # 弄挂。但也不能只 warn —— 那样部署会「看起来成功」、装完服务才开始崩溃。
         # 所以直接失败，并把两种成因与对策写清楚（含一键开关）。
-        db_problem "用面板账号连不上数据库：$DB_USER_NOW@$DBH:$DBP 库 $DB_NAME_NOW
+        db_problem "$(tf '用面板账号连不上数据库：%s@%s:%s 库 %s
     （服务装上后会一直重启：Access denied for user）。两种成因与对策：
       ① 账号早已存在且口令与 .env 里的不同 —— CREATE USER IF NOT EXISTS 不会改口令，
          而 .env 的口令可能被重新生成过（删过 .env 再重跑）。该账号没被别的应用共用时：
               sudo ./deploy.sh --reset-db-password
       ② .env 里 DB_PASSWORD 的写法让解析截断了（值里有 # 空格 或引号时 dotenv 会截断）。
          对比一下两边读到的长度：
-              awk -F= '/^DB_PASSWORD=/{print \"env 长度\", length(\$2)}' $ENV_FILE
-              cd $ROOT && ./.venv/bin/python -c \"import sys; sys.path.insert(0,'backend'); from app.config import settings; print('app 长度', len(settings.db_password))\""
+%s
+%s' \
+          "$DB_USER_NOW" "$DBH" "$DBP" "$DB_NAME_NOW" \
+          "              awk -F= '/^DB_PASSWORD=/{print \"env_len\", length(\$2)}' $ENV_FILE" \
+          "              cd $ROOT && ./.venv/bin/python -c \"import sys; sys.path.insert(0,'backend'); from app.config import settings; print('app_len', len(settings.db_password))\"" )"
       fi
     else
       warn "自动建库失败，请手工执行下面这段 SQL："
@@ -1372,9 +1432,9 @@ elif admin_still_needs_creating; then
     warn "太短或太常见，请再试一次（至少 12 位）"
   done
   if [ "$admin_fixed" -ne 1 ]; then
-    db_problem "ADMIN_PASSWORD 仍不满足强度要求，后端会拒绝启动。请手工在 $ENV_FILE 里
+    db_problem "$(tf 'ADMIN_PASSWORD 仍不满足强度要求，后端会拒绝启动。请手工在 %s 里
     设一个至少 12 位的新口令后重跑；生成一个可用：
-      python -c \"import secrets; print(secrets.token_urlsafe(16))\""
+%s' "$ENV_FILE" '      python -c "import secrets; print(secrets.token_urlsafe(16))"')"
   fi
 else
   warn "backend/.env 里的 ADMIN_PASSWORD 偏弱，但库里已有管理员（改它不影响现有登录）；以后若要重建账号，请先换成至少 12 位的随机口令。"
@@ -1389,14 +1449,15 @@ else
   warn "后端拒绝了这份配置（原文如下）："
   sed 's/^/    /' /tmp/pc_cfg.$$ >&2 || true
   rm -f /tmp/pc_cfg.$$
-  db_problem "请按上面那句话修 $ENV_FILE 后重跑本脚本。"
+  db_problem "$(tf '请按上面那句话修 %s 后重跑本脚本。' "$ENV_FILE")"
 fi
 
 if [ -z "$DB_NAME_NOW" ] || [ -z "$DB_USER_NOW" ]; then
-  db_problem "backend/.env 里读不到数据库配置（DB_NAME / DB_USER）。正常情况下本脚本会
-    自动生成并写入 $ENV_FILE —— 出现这句通常是文件不可读或键名被改坏了。
+  db_problem "$(tf 'backend/.env 里读不到数据库配置（DB_NAME / DB_USER）。正常情况下本脚本会
+    自动生成并写入 %s —— 出现这句通常是文件不可读或键名被改坏了。
     也可以直接显式指定后重跑：
-      sudo ./deploy.sh --db-name proxcenter_panel --db-user proxcenter --db-password '<口令>'"
+      sudo ./deploy.sh --db-name proxcenter_panel --db-user proxcenter --db-password %s' \
+    "$ENV_FILE" "'<口令>'")"
 else
   if "$VPY" - "$DB_HOST_NOW" "$DB_PORT_NOW" <<'PY'
 import socket, sys
@@ -1406,7 +1467,7 @@ s.settimeout(3)
 try:
     s.connect((host, port))
 except OSError as exc:
-    print(f"无法连接 {host}:{port} —— {exc}")
+    print(f"{host}:{port} — {exc}")
     raise SystemExit(1)
 finally:
     s.close()
@@ -1415,10 +1476,10 @@ PY
     info "$(tf 'MySQL 可达：%s:%s / 库 %s' \
       "${DB_HOST_NOW:-127.0.0.1}" "${DB_PORT_NOW:-3306}" "$DB_NAME_NOW")"
   else
-    db_problem "连不上 MySQL（$DBH:$DBP），服务即使装上也会一直重启。请确认：
+    db_problem "$(tf '连不上 MySQL（%s:%s），服务即使装上也会一直重启。请确认：
       · 数据库已启动（本机：systemctl status mariadb / mysqld）
       · 地址与端口正确、防火墙已放通
-      · 本机有库但没起来时，去掉 --no-install-db 重跑，脚本会尝试安装并启动它"
+      · 本机有库但没起来时，去掉 --no-install-db 重跑，脚本会尝试安装并启动它' "$DBH" "$DBP")"
   fi
 fi
 
@@ -1460,20 +1521,43 @@ else
   mkdir -p "$ROOT/logs"
   UNIT="/etc/systemd/system/${SERVICE}.service"
 
+  # 日志落哪、以及用不用文件输出。
+  #
+  # 早先固定写 `${ROOT}/logs/panel.log`，在 openEuler 这类默认开 SELinux 的系统上
+  # 装完起不来：systemd 打开 /root 下的文件被策略拦掉，服务直接以
+  # `status=209/STDOUT` 反复重启（unit 本身没错，错在输出重定向）。
+  # 现在改到 /var/log/proxcenter（var_log_t，systemd 默认可写）；
+  # 目录建不出来，或者运行期仍然出现 209，就退回 journal —— 宁可少一个日志文件，
+  # 也不能让面板起不来。
+  LOG_DIR="${PANEL_LOG_DIR:-/var/log/proxcenter}"
+  if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    warn "$(tf '无法创建日志目录 %s，改用 journal 输出（journalctl -u %s -f 查看）' "$LOG_DIR" "$SERVICE")"
+    LOG_DIR=""
+  fi
+
   # 非 root 运行是更安全的做法，但代价是「这个用户得能读仓库、能写日志」——
-  # 脚本只能替它把 logs/ 的属主改对，仓库本身的权限（尤其是 backend/.env）
+  # 脚本只能替它把日志目录的属主改对，仓库本身的权限（尤其是 backend/.env）
   # 只能提醒：.env 里是明文口令，权限放宽给所有人读反而更糟。
   if [ "$RUN_USER" != "root" ]; then
-    id "$RUN_USER" >/dev/null 2>&1 || die "指定的运行用户 $RUN_USER 不存在。"
+    id "$RUN_USER" >/dev/null 2>&1 || die "$(tf '指定的运行用户 %s 不存在。' "$RUN_USER")"
     chown -R "$RUN_USER" "$ROOT/logs" 2>/dev/null || true
+    [ -n "$LOG_DIR" ] && chown -R "$RUN_USER" "$LOG_DIR" 2>/dev/null || true
     warn "$(tf '服务将以 %s 运行，请确认该用户能读 %s（含 .venv / dist / backend/.env）。' "$RUN_USER" "$ROOT")"
+  fi
+
+  if [ -n "$LOG_DIR" ]; then
+    LOG_LINES="StandardOutput=append:${LOG_DIR}/panel.log
+StandardError=append:${LOG_DIR}/panel.log"
+  else
+    LOG_LINES="StandardOutput=journal
+StandardError=journal"
   fi
 
   # 单元文件由脚本渲染，而不是仓库里放一份写死路径的模板：
   # 安装目录、端口、运行用户都是部署时才知道的，模板里的占位符反而容易漏改。
   cat > "$UNIT" <<EOF
 [Unit]
-Description=ProxCenter - Proxmox VE 管理面板 (FastAPI :${PORT_NOW})
+Description=ProxCenter - Proxmox VE $(t '管理面板') (FastAPI :${PORT_NOW})
 Documentation=file://${ROOT}/README.md
 After=network-online.target
 Wants=network-online.target
@@ -1490,8 +1574,7 @@ RestartSec=5
 # 该进程优雅退出较慢：15 秒后强制结束，避免重启被拖住
 TimeoutStopSec=15
 KillSignal=SIGTERM
-StandardOutput=append:${ROOT}/logs/panel.log
-StandardError=append:${ROOT}/logs/panel.log
+${LOG_LINES}
 
 [Install]
 WantedBy=multi-user.target
@@ -1501,6 +1584,18 @@ EOF
   systemctl daemon-reload
   systemctl enable "$SERVICE" >/dev/null 2>&1 || true
   systemctl restart "$SERVICE"
+
+  # 输出重定向打不开时 systemd 会用 209（EXIT_STDOUT）反复重启，且日志里只有
+  # 一行「Main process exited, code=exited, status=209/STDOUT」—— 看着像应用崩了，
+  # 实际应用一次都没跑起来。这里直接换成 journal 再来一次，把面板救起来。
+  sleep 2
+  if [ "$(systemctl show "$SERVICE" -p ExecMainStatus --value 2>/dev/null)" = "209" ]; then
+    warn "$(t 'systemd 打不开日志文件（status=209/STDOUT，常见于 SELinux 限制），改用 journal 输出')"
+    sed -i 's|^StandardOutput=.*|StandardOutput=journal|; s|^StandardError=.*|StandardError=journal|' "$UNIT"
+    systemctl daemon-reload
+    systemctl restart "$SERVICE"
+    LOG_DIR=""
+  fi
   info "服务已启动并设为开机自启"
 fi
 
@@ -1537,10 +1632,10 @@ urllib.request.urlopen('http://127.0.0.1:${PORT_NOW}/api/health', timeout=2)
     echo
     echo "$(tf '---- journalctl -u %s（最近 40 行）----' "$SERVICE")"
     journalctl -u "$SERVICE" -n 40 --no-pager 2>&1 || true
-    if [ -f "$ROOT/logs/panel.log" ]; then
+    if [ -n "$LOG_DIR" ] && [ -f "$LOG_DIR/panel.log" ]; then
       echo
-      echo "$(tf '---- %s/logs/panel.log（最近 40 行）----' "$ROOT")"
-      tail -n 40 "$ROOT/logs/panel.log" || true
+      echo "$(tf '---- %s/panel.log（最近 40 行）----' "$LOG_DIR")"
+      tail -n 40 "$LOG_DIR/panel.log" || true
     fi
     echo
     warn "怎么读这几段："
@@ -1571,13 +1666,32 @@ echo
 echo "============================================================"
 echo " $(t '部署完成')"
 echo "$(tf '   面板地址 : http://%s:%s' "$LAN_IP" "$PORT_NOW")"
+
+# 绑的是所有网卡时，防火墙可能把端口挡在外面 —— 表现和「面板没装好」一模一样
+# （本机 curl 通、别人的浏览器转圈）。不改用户的防火墙策略，只把命令摆出来。
+HOST_NOW="$(env_get HOST)"
+if [ "${HOST_NOW:-127.0.0.1}" = "0.0.0.0" ]; then
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    if ! firewall-cmd --query-port="${PORT_NOW}/tcp" >/dev/null 2>&1; then
+      echo "$(tf '   注意     : firewalld 没放通 %s/tcp，从别的机器访问会失败；放通： firewall-cmd --permanent --add-port=%s/tcp && firewall-cmd --reload' "$PORT_NOW" "$PORT_NOW")"
+    fi
+  elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    if ! ufw status 2>/dev/null | grep -q "${PORT_NOW}/tcp"; then
+      echo "$(tf '   注意     : ufw 没放通 %s/tcp，从别的机器访问会失败；放通： ufw allow %s/tcp' "$PORT_NOW" "$PORT_NOW")"
+    fi
+  fi
+fi
 echo "$(tf '   登录账号 : %s' "$ADMIN_USERNAME_NOW")"
 echo "$(t '   API 文档 : 默认关闭（需要时在 .env 设 API_DOCS_ENABLED=true，且须管理员登录）')"
 echo "$(tf '   数据库   : %s @ %s:%s（账号 %s）' \
   "${DB_NAME_NOW:-?}" "${DBH:-?}" "${DBP:-?}" "${DB_USER_NOW:-?}")"
 echo "$(tf '   配置文件 : %s  ← 数据库口令在里面（自动生成，不回显）' "$ENV_FILE")"
 echo "$(tf '   服务管理 : systemctl {status|restart|stop} %s' "$SERVICE")"
-echo "$(tf '   日志     : journalctl -u %s -f   或   tail -f %s/logs/panel.log' "$SERVICE" "$ROOT")"
+if [ -n "$LOG_DIR" ]; then
+  echo "$(tf '   日志     : journalctl -u %s -f   或   tail -f %s/panel.log' "$SERVICE" "$LOG_DIR")"
+else
+  echo "$(tf '   日志     : journalctl -u %s -f' "$SERVICE")"
+fi
 if [ "${FIRST_RUN:-0}" -eq 1 ] || [ "${ADMIN_PW_CHANGED:-0}" -eq 1 ]; then
   echo
   echo "   $(t '★ 初始管理员口令（只显示这一次）：')"

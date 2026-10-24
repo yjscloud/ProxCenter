@@ -263,8 +263,9 @@ paths are stated in the “Security posture” notes on the Settings page.
     trusted, refresh it after rotation). Fetch it with
     `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509` or read
     `/etc/pve/pve-root-ca.pem` on any node. A connection running unverified is reported in the log.
-11. **The backend listens on loopback only**: `HOST=127.0.0.1`, so 8080 is not exposed to the LAN and
-    every request goes through nginx. Set `client_header_timeout` / `client_body_timeout` /
+11. **Put the backend back on loopback once a reverse proxy is in front**: with `HOST=127.0.0.1`,
+    8080 is not exposed to the LAN and every request goes through nginx (a fresh install binds
+    `0.0.0.0` so `IP:8080` works out of the box). Set `client_header_timeout` / `client_body_timeout` /
     `send_timeout` and `limit_conn` on the proxy (the nginx example above carries the first three)
     so slow connections cannot exhaust workers.
 12. **API tokens are capped at 365 days** and can no longer be created without an expiry: tokens run
@@ -394,7 +395,7 @@ that matter:
 |---|---|---|
 | `SECRET_KEY` | placeholder | Required. Signs login JWTs and encrypts stored secrets. A placeholder or fewer than 32 characters refuses to start |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / empty | First account. A password under 12 characters, empty or a common one refuses to start |
-| `HOST` / `PORT` | `127.0.0.1` / `8080` | Bind address. Loopback only by default — the reverse proxy on the same host forwards to it, so 8080 is not reachable from the LAN; use `0.0.0.0` only if you intentionally expose it directly |
+| `HOST` / `PORT` | `0.0.0.0` / `8080` | Bind address. All interfaces by default, so `IP:8080` works right after install; switch back to `127.0.0.1` when a reverse proxy sits in front |
 | `FORCE_HTTPS` | `false` | Plain HTTP is answered with `308` and HSTS |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Which proxies may set `X-Forwarded-Proto` / `X-Forwarded-For`. Keep it at your proxy; **never `*`** |
 | `PANEL_ALLOW_CIDRS` | empty | Panel access allowlist (IP / CIDR, comma separated). Non-listed sources cannot even see the login page or open WebSockets; empty means no restriction |

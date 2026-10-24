@@ -56,6 +56,11 @@ const queryClient = new QueryClient({
           if (status === 502 || status === 503 || status === 504) {
             return failureCount < 5;
           }
+          /* 网络层错误（status 0）：后端还没起来 / 正在重启。刚跑完 deploy.sh
+             的第一次登录、或点完「一键更新」之后的那十几秒都属于这种，多等几轮
+             它自己就接上了 —— 默认那 2 次退避盖不住重启，用户第一眼看到的就是
+             一句「无法加载集群数据，请确认后端服务已启动」。 */
+          if (status === 0) return failureCount < 5;
         }
         return failureCount < 2;
       },

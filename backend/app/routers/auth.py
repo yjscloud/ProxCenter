@@ -141,6 +141,7 @@ def _user_out(user: Dict[str, Any]) -> UserOut:
         status=user.get("status", store.STATUS_ACTIVE),
         permissions=security.effective_permissions(user),
         totp_enabled=bool(user.get("totp_enabled")),
+        totp_setup_required=bool(user.get("totp_setup_required")),
         expires_at=security.account_expires_at(user),
     )
 
@@ -1040,6 +1041,7 @@ async def me(user: Dict[str, Any] = Depends(security.get_current_user)) -> UserO
         enabled=user.get("enabled", True),
         permissions=user.get("permissions", []),
         totp_enabled=bool(user.get("totp_enabled")),
+        totp_setup_required=bool(user.get("totp_setup_required")),
         expires_at=security.account_expires_at(user),
     )
 

@@ -45,6 +45,13 @@ export interface ErrorStateProps {
   onRetry?: () => void;
   /** 功能未实现时的友好提示 */
   notImplemented?: boolean;
+  /**
+   * 附加操作，与「重试」并列。
+   *
+   * 给「报错之外还有一条明确的出路」用：例如页面连不上 PVE 时，除了重试，
+   * 管理员更该去检查连接配置。没有它，红色报错就是一堵墙 —— 用户只能去翻文档。
+   */
+  action?: ReactNode;
 }
 
 export function ErrorState({
@@ -52,6 +59,7 @@ export function ErrorState({
   message,
   onRetry,
   notImplemented = false,
+  action,
 }: ErrorStateProps) {
   const t = useT();
   return (
@@ -65,10 +73,15 @@ export function ErrorState({
         </div>
         {message ? <div className="error-message">{message}</div> : null}
       </div>
-      {onRetry ? (
-        <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>
-          {t('common.retry')}
-        </button>
+      {onRetry || action ? (
+        <div className="error-actions">
+          {action}
+          {onRetry ? (
+            <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>
+              {t('common.retry')}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

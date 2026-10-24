@@ -270,7 +270,8 @@ FORWARDED_ALLOW_IPS=127.0.0.1
     （`ca_cert`，只认这一张，证书轮换后需更新）。取证书：
     `openssl s_client -connect <PVE-IP>:8006 </dev/null 2>/dev/null | openssl x509`，
     或从任意节点 `cat /etc/pve/pve-root-ca.pem`。连接未校验时启动日志会告警。
-11. **后端只监听回环**：`HOST=127.0.0.1`，8080 不对内网开放，全部入口经 nginx；
+11. **挂了反代就把后端绑回回环**：`HOST=127.0.0.1` 时 8080 不对内网开放、全部入口经 nginx
+   （默认安装是 `0.0.0.0`，可直接用 `IP:8080` 访问；一旦上了反代，建议改回回环）；
    反代侧再配 `client_header_timeout` / `client_body_timeout` / `send_timeout`
    与 `limit_conn`（README 的 nginx 示例已带前三项），抵御慢速连接耗尽 worker。
 12. **API Token 有效期上限 365 天**，且不再支持“永不过期”：令牌是无人值守凭据，
@@ -475,7 +476,7 @@ CSV（一行 = 一次工具调用）。另有 Token 消耗入口，按 1 / 7 / 3
 |---|---|---|
 | `SECRET_KEY` | 占位值 | 必填。签发登录 JWT，同时是库里密文的加密根，至少 32 位随机。留占位值或太短会拒绝启动 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 空 | 首次启动创建的管理员。口令至少 12 位，空或弱口令会拒绝启动 |
-| `HOST` / `PORT` | `127.0.0.1` / `8080` | 监听地址。默认只听回环，由同机反代转发（8080 不对内网开放）；没有反代、要直连 `IP:8080` 时才改 `0.0.0.0` |
+| `HOST` / `PORT` | `0.0.0.0` / `8080` | 监听地址。默认所有网卡，装完可直接用 `IP:8080` 访问；前面有反代时建议改回 `127.0.0.1`，让 8080 只对反代开放 |
 | `FORCE_HTTPS` | `false` | 明文 HTTP 一律 308 跳 https，HTTPS 响应带 HSTS，仅本机回环豁免 |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | 信任哪些来源的 `X-Forwarded-Proto` / `X-Forwarded-For`，只填反代地址；**不要填 `*`** |
 | `PANEL_ALLOW_CIDRS` | 空 | 面板准入白名单（IP / CIDR，逗号分隔）。配置后非名单来源连登录页和 WebSocket 都访问不到；留空 = 不限制 |

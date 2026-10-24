@@ -954,6 +954,13 @@ def _user_view(user: Dict[str, Any], path: str) -> Dict[str, Any]:
         "permissions_override": user.get("permissions_override"),
         "permissions": effective_permissions(user),
         "totp_enabled": bool(user.get("totp_enabled")),
+        # 角色被要求绑定 2FA、但这个账号还没绑：前端据此把人直接带到绑定页。
+        # 只在登录响应里给的话，会话还在时刷新页面就绕过了这道门 —— 用户会
+        # 看到每个接口都 403（包括「测试连接」），却不知道该去做什么。
+        "totp_setup_required": (
+            not user.get("totp_enabled")
+            and str(user.get("role") or "") in settings.totp_required_role_list
+        ),
         "expires_at": account_expires_at(user),
     }
 

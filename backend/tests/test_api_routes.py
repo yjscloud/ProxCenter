@@ -162,11 +162,20 @@ class TestAuthFlow:
         assert resp.status_code == 401
 
     def test_health_is_public_and_reports_pve(self, api) -> None:
+        """匿名只答「活着」，登录后才给诊断明细。
+
+        v0.3.1 起 PVE 版本 / 节点数 / 连接状态不再对匿名访客可见（审计项 FD-04：
+        版本号能拿去对公开漏洞库、节点数说明集群规模）。这条用例原先断言匿名
+        就能读到，改动后一直是红的 —— 红着的用例会掩盖真正的问题，所以一并
+        把两档都钉住。
+        """
         resp = api.get("/api/health")
         assert resp.status_code == 200
-        body = resp.json()
+        assert resp.json() == {"status": "ok"}
+
+        # 登录后字段与从前一致：mock 报告了 PVE 版本，说明连接可用。
+        body = api.get("/api/health", headers=auth_headers(api)).json()
         assert body["status"] == "ok"
-        # The mock reports a PVE version, proving the connection works.
         assert body["pve_connected"] is True
         assert body["pve_version"] == "8.2.4"
         # 配置状态与连通状态分开上报：前端据此区分「去添加」和「去排查」
@@ -592,6 +601,35 @@ class TestReadRoutes:
         assert body["by_cpu"][0]["vmid"] == 100
         assert body["by_memory"][0]["vmid"] == 100
         assert "connection_id" in body["by_cpu"][0]
+
+    def test_dashboard_top_only_lists_the_owners_vms(self, api) -> None:
+        """普通用户的榜单只含自己名下的机器。
+
+        仪表盘上这张卡以前对普通用户整块隐藏；现在保留（「我的机器谁最吃资源」
+        本身就是他要看的东西），但排名必须按归属过滤 —— 否则顺着 node/vmid
+        就能摸到别人机器的详情接口。
+        """
+        viewer = user_with_permissions(api, ["vm.view"], "top-viewer")
+        runtime = api.get("/api/vms", headers=auth_headers(api)).json()
+        target = next(row for row in runtime if row["vmid"] == 100)
+        _seed_owner(
+            ownership.KIND_VM,
+            ownership.vm_ref(
+                str(target.get("connection_id") or ""), target["node"], 100
+            ),
+            "top-viewer",
+        )
+
+        body = api.get("/api/dashboard/top?limit=5", headers=viewer).json()
+        assert body["total_running"] == 1
+        assert [entry["vmid"] for entry in body["by_cpu"]] == [100]
+        assert [entry["vmid"] for entry in body["by_memory"]] == [100]
+
+        # 没有指派记录的用户拿到的是空榜，而不是「全集群排名」
+        other = user_with_permissions(api, ["vm.view"], "top-viewer-2")
+        empty = api.get("/api/dashboard/top?limit=5", headers=other).json()
+        assert empty["total_running"] == 0
+        assert empty["by_cpu"] == []
 
     def test_task_listing(self, api) -> None:
         resp = api.get("/api/tasks", headers=auth_headers(api))

@@ -147,7 +147,10 @@ export function PveQueryError({
   notImplemented?: boolean;
   onRetry?: () => void;
 }) {
+  const t = useT();
   const status = usePveStatus();
+  const navigate = useNavigate();
+  const { isAdmin } = useAuth();
 
   /* 已经确定没配连接时不必等错误：页面可能压根没发请求（enabled 被关掉了），
      这时 error 是空的，但该显示的仍然是「去添加连接」的引导。 */
@@ -156,12 +159,26 @@ export function PveQueryError({
   const kind = pveFailureKind(error, status);
   if (kind) return <SetupRequired reason={kind} onRetry={onRetry} />;
 
+  /* 真的是故障（后端 5xx / 网络不可达 / 上游 500）。红色报错保留 —— 但别让它
+     成为死路：管理员最该做的事就是去看连接配置，所以并排放一个入口。 */
   return (
     <ErrorState
       title={title}
       message={message ?? errorMessage(error)}
       notImplemented={notImplemented ?? isNotImplemented(error)}
       onRetry={onRetry}
+      action={
+        isAdmin ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<IconPlug size={15} />}
+            onClick={() => navigate(SETUP_PATH)}
+          >
+            {t('setup.pveManage')}
+          </Button>
+        ) : undefined
+      }
     />
   );
 }

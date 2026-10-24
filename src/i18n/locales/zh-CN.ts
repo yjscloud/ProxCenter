@@ -600,7 +600,10 @@ export const zhCN = {
   'dashboard.emptyAllHiddenDesc':
     '点右上角「编辑布局」，从「已隐藏的卡片」里把它们放回来。',
   'dashboard.loadErrorTitle': '无法加载集群数据',
-  'dashboard.loadErrorMsg': '请确认后端服务已启动并已配置 Proxmox 连接。',
+  /* 「还没配连接」不会走到这里（那条路显示的是引导卡），所以文案聚焦真正的故障：
+     后端不可达 / Proxmox 报错。顺带给出下一步，而不是只让人「请确认」。 */
+  'dashboard.loadErrorMsg':
+    '面板后端暂时不可达，或 Proxmox 返回了错误。可以先重试一次；持续失败时检查面板服务状态与 Proxmox 连接配置。',
   'dashboard.widget.hide': '隐藏',
   'dashboard.widget.drag': '拖动调整顺序',
   'dashboard.widget.kpi': '关键指标',
@@ -688,10 +691,14 @@ export const zhCN = {
   'dashboard.dist.center': '虚拟机',
   'dashboard.top.title': '资源占用排行',
   'dashboard.top.subtitle': '运行中的虚拟机 · Top {n}',
+  /* 普通用户的版本：榜单只含他名下的机器，副标题与空态都得写明范围，
+     否则和管理员那张「集群 Top N」长得一样（同 dashboard.dist.subtitleMine） */
+  'dashboard.top.subtitleMine': '我名下运行中的虚拟机 · Top {n}',
   'dashboard.top.aria': '资源占用排行指标',
   'dashboard.top.memory': '内存',
   'dashboard.top.empty': '暂无数据',
   'dashboard.top.emptyDesc': '集群中还没有运行中的虚拟机。',
+  'dashboard.top.emptyDescMine': '你名下还没有运行中的虚拟机。',
   'dashboard.tasks.title': '最近任务',
   'dashboard.tasks.subtitle': '集群中最近执行的操作',
   'dashboard.tasks.colType': '任务类型',
@@ -2117,6 +2124,9 @@ export const zhCN = {
   'profile.tfaOn': '已开启',
   'profile.tfaOff': '未开启',
   'profile.tfaRequiredNote': '该角色被要求必须开启，未绑定前只能访问本页',
+  'profile.tfaForcedTitle': '当前角色要求必须绑定两步验证',
+  'profile.tfaForcedDesc':
+    '在下面「登录与安全」里点「开启两步验证」完成绑定。绑定之前，面板的其它页面与接口（包括连接测试）都会返回 403。',
   'profile.recoveryLeft': '剩余恢复码 {n} 张',
   'profile.opIncomplete': '操作未完成',
   'profile.saveRecoveryNow': '请立刻保存恢复码（只显示这一次）',

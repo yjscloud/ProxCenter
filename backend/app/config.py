@@ -79,8 +79,11 @@ class Settings(BaseSettings):
     # 面板本机的 22 端口经 frp 暴露到公网时，sshd 看到的来源永远是入口机
     # （例如 172.16.149.3），真实攻击者地址被 PROXY protocol 还原后只落在入口机
     # 的 haproxy 日志里。填上「入口机在 SSH 远程里的主机 id」与「转发机地址」后，
-    # 导入 host.ssh_failed 时会按时间把 IP 换成真实值；匹配不上就保留原值并在
-    # detail 里标记 forwarded。
+    # 导入 host.ssh_failed / host.ssh_login 时会按时间把 IP 换成真实值；匹配不上
+    # 就保留原值（还原成功的记录在 detail.forwarded_from 里留下入口机地址）。
+    #
+    # 成功登录要等会话结束才能配对（haproxy 到连接关闭才写日志行），所以会话中
+    # 导入的登录会先挂起，等下一轮导入补写 —— 不会先落一条入口机地址的记录。
     #
     # 两项都留空 = 关闭，行为与之前完全一致。
     #   SSH_FORWARD_LOG_HOST=hec92c0bc5c

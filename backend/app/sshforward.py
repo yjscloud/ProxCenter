@@ -41,28 +41,35 @@ PROXY protocol 头，把它写进了自己的日志（``frontend ssh_in``）::
 匹配不上就返回 ``None``，调用方保留原地址 —— 宁可显示入口机地址，也不要随便编
 一个攻击者。
 
-只对**面板本机**（``host_id == "local"``）生效：haproxy 的那条通道只转到本机
-22，其它主机的 22 走的是各自的 frp 端口，套用同一份日志会张冠李戴。
+每台被转发的机器在入口机上各有一条 frontend（``ssh_in`` 给面板本机、``ssh_in_8``
+给 172.16.149.8 …），日志第二列就是 frontend 名。所以「这条连接属于哪台机器」
+是日志自己带着的，不用猜。这个对应关系**自动发现**：读入口机的 haproxy 配置，
+按 ``frontend -> backend -> server <地址>:22`` 与各主机在面板里登记的地址对上；
+转发机地址同样自动取入口机自己的地址。不同部署的网段、frontend 命名、主机数量
+都不需要额外配置（``SSH_FORWARD_ROUTES`` 等只是读不到配置时的显式兜底）。
+对不上的主机保持原地址 —— 宁可显示入口机地址，也不要张冠李戴。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+import socket
 import time
 from datetime import datetime
-from typing import List, NamedTuple, Optional, Set
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from . import config, sshremote
 
 logger = logging.getLogger(__name__)
 
 #: haproxy 默认日志：``188.166.188.240:45560 [25/Oct/2026:11:48:40.954] ssh_in ssh_panel/panel 1/0/24906 1813 --``
+#: 第二个字段是 frontend 名（每台被转发的机器一个），第三个是 ``backend/server``，
 #: 中间那组 ``Tq/Tw/Tc`` 是纯 TCP 的三个计时器（毫秒），``Tc`` 就是整条连接的存活时长。
 _LINE = re.compile(
     r"^(?P<ip>[0-9a-fA-F:.]{2,45}):\d+ "
     r"\[(?P<ts>\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2})(?:\.\d+)?\] "
-    r"ssh_in \S+ "
+    r"(?P<fe>\S+) \S+ "
     r"\d+/\d+/(?P<tc>\d+) "
 )
 
@@ -98,6 +105,7 @@ class Conn(NamedTuple):
     start: float  #: 连接建立时刻（haproxy 记的时间戳）
     ttl: float  #: 连接存活秒数（会话关闭后才有意义）
     ip: str  #: PROXY protocol 里带的真实来源地址
+    fe: str = "ssh_in"  #: 是哪条 frontend 记下的（对应哪台被转发的机器）
 
 
 def _setting(name: str) -> str:
@@ -105,13 +113,329 @@ def _setting(name: str) -> str:
 
 
 def proxies() -> Set[str]:
+    """显式配置的「入口机地址」；留空 = 自动发现（见 :func:`proxies_set`）。"""
     raw = _setting("ssh_forward_proxies").replace(";", ",")
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+def routes() -> Dict[str, Set[str]]:
+    """显式配置的「主机 -> frontend」；留空 = 自动发现（见 :func:`frontends_for`）。
+
+    格式 ``local=ssh_in,hbe088f0e75=ssh_in_8``（一机多条 frontend 用 ``+``）。
+    正常情况下不需要它：面板会去读入口机的 haproxy 配置自己算出来。
+    """
+    raw = _setting("ssh_forward_routes").replace(";", ",")
+    out: Dict[str, Set[str]] = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        host, _, names = item.partition("=")
+        fronts = {name.strip() for name in names.split("+") if name.strip()}
+        if host.strip() and fronts:
+            out[host.strip()] = fronts
+    return out
+
+
 def enabled() -> bool:
-    """配置齐全才启用；否则完全不影响原有行为。"""
-    return bool(_setting("ssh_forward_log_host")) and bool(proxies())
+    """配了入口日志主机就启用；映射与转发机地址都会自动发现。
+
+    没配 = 完全关闭，行为与以前一致。
+    """
+    return bool(_setting("ssh_forward_log_host"))
+
+
+# ---------------------------------------------------------------- 自动发现
+#
+# 「哪台机器的连接落在哪条 frontend 上」不该让用户手填：入口机的 haproxy 配置里
+# 本来就写着 ``frontend X -> backend Y -> server Z <地址>:22``，而每条被转发的机器
+# 在面板里也有自己的地址（``ssh_hosts.host``）。两边按「后端地址:端口」对上即可，
+# 用户换网段、加机器、改 frontend 名字都不用动配置。
+#
+# 只认 ``bind ... accept-proxy`` 的 frontend —— 只有它能从 PROXY protocol 里拿到
+# 真实来源地址，其它 frontend 的日志里是连接发起方（入口机自己），拿来配对会张冠
+# 李戴。
+
+#: 自动发现的缓存时间（秒）：haproxy 配置与入口机地址都很少变
+DISCOVER_TTL = 300.0
+#: 入口机上 haproxy 配置文件的位置（可用 SSH_FORWARD_HAPROXY_CFG 覆盖）
+DEFAULT_HAPROXY_CFG = "/etc/haproxy/haproxy.cfg"
+
+_FE = re.compile(r"^frontend\s+(\S+)")
+_BE = re.compile(r"^backend\s+(\S+)")
+_DEFAULT_BE = re.compile(r"^\s+default_backend\s+(\S+)")
+_USE_BE = re.compile(r"^\s+use_backend\s+(\S+)")
+_BIND = re.compile(r"^\s+bind\s+(\S+)(.*)$")
+_SERVER = re.compile(r"^\s+server\s+(\S+)\s+(\S+)")
+
+_discover_at = 0.0
+_discover_map: Dict[Tuple[str, int], Set[str]] = {}
+_proxies_at = 0.0
+_discovered_proxies: Set[str] = set()
+_discover_lock = asyncio.Lock()
+
+
+def _split_addr(text: str) -> Optional[Tuple[str, int]]:
+    """``172.16.149.8:22`` / ``[::1]:22`` → ``(地址, 端口)``；解析不出返回 None。"""
+    value = text.strip()
+    if value.startswith("["):
+        host, _, rest = value.partition("]")
+        host = host[1:]
+        _, _, port = rest.partition(":")
+    else:
+        host, sep, port = value.rpartition(":")
+        if not sep:
+            return None
+    if not host or not port.isdigit():
+        return None
+    return host, int(port)
+
+
+def parse_haproxy(text: str) -> Dict[Tuple[str, int], Set[str]]:
+    """从 haproxy 配置推出「后端地址:端口 -> frontend 名」。
+
+    只收静态 ``default_backend`` 的 frontend；用 ``use_backend`` 做条件分流的
+    配不出唯一后端，跳过（那种部署请用 ``SSH_FORWARD_ROUTES`` 显式指定）。
+    """
+    frontends: Dict[str, Dict[str, Any]] = {}
+    backends: Dict[str, List[Tuple[str, int]]] = {}
+    section, name = "", ""
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        match = _FE.match(line)
+        if match:
+            section, name = "frontend", match.group(1)
+            frontends[name] = {"backend": "", "proxy": False, "dynamic": False}
+            continue
+        match = _BE.match(line)
+        if match:
+            section, name = "backend", match.group(1)
+            backends[name] = []
+            continue
+        if section == "frontend":
+            meta = frontends.get(name)
+            if meta is None:
+                continue
+            match = _BIND.match(line)
+            if match and "accept-proxy" in match.group(2):
+                meta["proxy"] = True
+                continue
+            if _USE_BE.match(line):
+                meta["dynamic"] = True
+                continue
+            match = _DEFAULT_BE.match(line)
+            if match:
+                meta["backend"] = match.group(1)
+            continue
+        if section == "backend":
+            match = _SERVER.match(line)
+            if match:
+                addr = _split_addr(match.group(2))
+                if addr:
+                    backends[name].append(addr)
+
+    out: Dict[Tuple[str, int], Set[str]] = {}
+    for fe_name, meta in frontends.items():
+        if not meta["proxy"] or meta["dynamic"] or not meta["backend"]:
+            continue
+        for addr in backends.get(meta["backend"], []):
+            out.setdefault(addr, set()).add(fe_name)
+    return out
+
+
+async def _entry_host() -> Optional[Dict[str, Any]]:
+    host_id = _setting("ssh_forward_log_host")
+    return await sshremote.get_host(host_id) if host_id else None
+
+
+async def _discover() -> Dict[Tuple[str, int], Set[str]]:
+    """读入口机的 haproxy 配置，算出「后端地址 -> frontend」。失败返回上次结果。"""
+    global _discover_at, _discover_map, _discovered_proxies
+    async with _discover_lock:
+        now = time.time()
+        if now - _discover_at < DISCOVER_TTL:
+            return _discover_map
+        _discover_at = now
+        row = await _entry_host()
+        if not row:
+            logger.warning("SSH 入口日志主机不存在，跳过真实来源解析")
+            return _discover_map
+
+        path = _setting("ssh_forward_haproxy_cfg") or DEFAULT_HAPROXY_CFG
+        ok, output = await sshremote.run_command(
+            row, f"cat {path}", timeout=sshremote.LOG_TIMEOUT
+        )
+        if not ok or not output.strip():
+            logger.warning(
+                "读不到入口机 %s 的 haproxy 配置（%s）：真实来源解析暂不可用",
+                row.get("host") or row.get("id"),
+                (output or "")[:160],
+            )
+            return _discover_map
+
+        _discover_map = parse_haproxy(output)
+        logger.info(
+            "入口机 haproxy 里发现 %d 条 SSH 转发：%s",
+            len(_discover_map),
+            sorted(f"{addr}:{port}={sorted(fe)}" for (addr, port), fe in _discover_map.items()),
+        )
+
+        # 入口机自己的地址就是「转发机地址」：frpc 从它出站回连各台 sshd，sshd 看到
+        # 的就是它。多网卡时全都收进来（哪个网卡出站取决于路由，宁可多认几个）。
+        ips = {str(row.get("host") or "").strip()}
+        ok_addr, out_addr = await sshremote.run_command(
+            row, "hostname -I", timeout=sshremote.LOG_TIMEOUT
+        )
+        if ok_addr:
+            ips |= set(out_addr.split())
+        ips.discard("")
+        _discovered_proxies = ips
+        return _discover_map
+
+
+async def proxies_set() -> Set[str]:
+    """「入口机地址」集合：显式配置优先，否则自动发现。"""
+    explicit = proxies()
+    if explicit:
+        return explicit
+    await _discover()
+    return set(_discovered_proxies)
+
+
+async def _self_addr(peer: str) -> str:
+    """本机到入口机的源地址（面板在 haproxy 后端里通常就是这个地址:22）。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect((peer, 22))
+            return str(sock.getsockname()[0])
+    except OSError:
+        return ""
+
+
+def _local_ips() -> Set[str]:
+    """本机的 IPv4 地址（多网卡时会有多个，用来对上 haproxy 里写的后端地址）。
+
+    先按主机名查；容器里主机名往往解析不出来（不一定写进 /etc/hosts），再退回到
+    枚举网卡地址 —— 少了这一步，多网卡的面板就永远对不上 haproxy 里的后端地址。
+    """
+    ips: Set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(str(info[4][0]))
+    except OSError:
+        pass
+    try:
+        import fcntl
+        import struct
+
+        for _, name in socket.if_nameindex():
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                try:
+                    res = fcntl.ioctl(
+                        sock.fileno(), 0x8915, struct.pack("256s", name[:15].encode())
+                    )
+                except OSError:
+                    continue
+                ips.add(socket.inet_ntoa(res[20:24]))
+    except (AttributeError, ImportError, OSError):
+        pass
+    return ips
+
+
+#: 地址解析结果缓存（秒）：主机多、导入频繁时不能每次都查 DNS
+DNS_TTL = 300.0
+_dns_at: Dict[str, Tuple[float, Set[str]]] = {}
+
+
+async def _addr_set(host: str) -> Set[str]:
+    """把一个地址规范成一组 IPv4：域名解析成 IP，IP 原样保留。
+
+    面板登记主机时允许填域名，而 haproxy 配置里多半写的是 IP —— 不解析的话，
+    新加的机器只要填的是域名就永远对不上 frontend。
+    """
+    value = str(host or "").strip()
+    if not value:
+        return set()
+    now = time.time()
+    hit = _dns_at.get(value)
+    if hit is not None and now - hit[0] < DNS_TTL:
+        return set(hit[1])
+    ips: Set[str] = {value}
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            value, None, family=socket.AF_INET
+        )
+    except (OSError, UnicodeError):
+        infos = []
+    for info in infos:
+        ips.add(str(info[4][0]))
+    ips.discard("")
+    _dns_at[value] = (now, ips)
+    return set(ips)
+
+
+async def _fronts_at(
+    mapping: Dict[Tuple[str, int], Set[str]], host: str, port: int
+) -> Set[str]:
+    """「地址:端口」→ frontend；地址先解析成 IP 再比，域名/IP 混着写也能对上。
+
+    端口必须一致：端口不同的那条 frontend 转的是别的服务，拿它的日志配对会
+    张冠李戴。
+    """
+    value = str(host or "").strip()
+    if not value:
+        return set()
+    port = int(port or 22)
+    fronts = set(mapping.get((value, port), ()))
+    if fronts:
+        return fronts
+    want = await _addr_set(value)
+    for (be_host, be_port), names in mapping.items():
+        if be_port != port:
+            continue
+        if want & await _addr_set(be_host):
+            fronts |= names
+    return fronts
+
+
+async def frontends_for(host_id: str, addr: str = "", port: int = 22) -> Set[str]:
+    """这台主机的连接落在入口机的哪几条 frontend 上；空集 = 不做还原。
+
+    ``SSH_FORWARD_ROUTES`` 里**显式写了这台主机**才用配置（个别特殊部署的例外），
+    没写的主机照旧自动发现 —— 不会因为给某一台写了例外，其它机器就都失效。
+
+    自动发现按「后端地址:端口」查，地址会先解析成 IP 再比。面板本机可能有多块
+    网卡，所以把「到入口机的源地址」和本机所有 IPv4 都试一遍。查不到就返回空集
+    —— 宁可显示入口机地址，也不要张冠李戴。
+    """
+    host_key = str(host_id)
+    explicit = routes()
+    if host_key in explicit:
+        return set(explicit[host_key])
+
+    mapping = await _discover()
+    port = int(port or 22)
+    host = str(addr or "").strip()
+    if host:
+        return await _fronts_at(mapping, host, port)
+
+    if host_key != "local":
+        return set()
+
+    row = await _entry_host()
+    candidates = _local_ips()
+    candidates.add(await _self_addr(str((row or {}).get("host") or "")))
+    candidates.discard("")
+    for candidate in candidates:
+        fronts = await _fronts_at(mapping, candidate, port)
+        if fronts:
+            return fronts
+    if not mapping:
+        # 读不到配置时的兜底：老部署就是一条 ssh_in 通到面板本机
+        return {"ssh_in"}
+    return set()
 
 
 async def _fetch() -> List[Conn]:
@@ -140,8 +464,14 @@ async def _fetch() -> List[Conn]:
             ).timestamp()
         except ValueError:
             continue
-        items.append(Conn(start=start, ttl=int(match.group("tc")) / 1000.0,
-                          ip=match.group("ip")))
+        items.append(
+            Conn(
+                start=start,
+                ttl=int(match.group("tc")) / 1000.0,
+                ip=match.group("ip"),
+                fe=match.group("fe"),
+            )
+        )
     items.sort()
     return items
 
@@ -161,14 +491,34 @@ async def _load() -> List[Conn]:
         return _cache_items
 
 
-async def resolve(ts: float, forwarded: str) -> Optional[str]:
+async def resolve(
+    ts: float,
+    forwarded: str,
+    host_id: str = "local",
+    fronts: Optional[Set[str]] = None,
+    proxy_ips: Optional[Set[str]] = None,
+    addr: str = "",
+    port: int = 22,
+) -> Optional[str]:
     """给一条「认证失败」记录找真实 IP。
 
     :param ts: 失败记录的时间戳（秒）
     :param forwarded: 日志里看到的来源地址（入口机）
-    :return: 真实 IP；未启用 / 找不到 / 该地址不是转发机时返回 ``None``
+    :param host_id: 这条记录属于哪台主机（决定看哪几条 frontend）
+    :param fronts: 预先算好的 frontend 集合（批量处理时避免重复发现）
+    :param proxy_ips: 预先算好的入口机地址集合
+    :param addr: 主机地址（自动发现映射时用；空 = 面板本机）
+    :param port: 主机 SSH 端口
+    :return: 真实 IP；未配置 / 找不到 / 该地址不是转发机时返回 ``None``
     """
-    if not forwarded or forwarded not in proxies():
+    if not enabled() or not forwarded:
+        return None
+    if fronts is None:
+        fronts = await frontends_for(host_id, addr, port)
+    if not fronts:
+        return None
+    ips = proxy_ips if proxy_ips is not None else await proxies_set()
+    if forwarded not in ips:
         return None
 
     items = await _load()
@@ -179,6 +529,8 @@ async def resolve(ts: float, forwarded: str) -> Optional[str]:
     # 连接里连续试多个用户名，一次连接对应多条失败记录是正常的，复用同一 IP 才对。
     best: Optional[Conn] = None
     for conn in items:
+        if conn.fe not in fronts:
+            continue  # 这条连接是打到别的机器上的
         if conn.start > ts + CLOCK_SKEW:
             continue  # 连接晚于这次失败：不是它
         if ts - conn.start > FAIL_GRACE:
@@ -191,7 +543,14 @@ async def resolve(ts: float, forwarded: str) -> Optional[str]:
 
 
 async def resolve_login(
-    ts: float, end: Optional[float], forwarded: str
+    ts: float,
+    end: Optional[float],
+    forwarded: str,
+    host_id: str = "local",
+    fronts: Optional[Set[str]] = None,
+    proxy_ips: Optional[Set[str]] = None,
+    addr: str = "",
+    port: int = 22,
 ) -> Optional[str]:
     """给一条「登录成功」记录找真实 IP。
 
@@ -201,11 +560,23 @@ async def resolve_login(
     :param ts: 登录开始时刻（wtmp 里的 start）
     :param end: 会话结束时刻；``None`` = 还没结束（此时必然返回 ``None``）
     :param forwarded: 日志里看到的来源地址（入口机）
-    :return: 真实 IP；未启用 / 会话未结束 / 找不到时返回 ``None``
+    :param host_id: 这条记录属于哪台主机（决定看哪几条 frontend）
+    :param fronts: 预先算好的 frontend 集合
+    :param proxy_ips: 预先算好的入口机地址集合
+    :param addr: 主机地址（自动发现映射时用；空 = 面板本机）
+    :param port: 主机 SSH 端口
+    :return: 真实 IP；未配置 / 会话未结束 / 找不到时返回 ``None``
     """
     if end is None or end <= ts:
         return None
-    if not forwarded or forwarded not in proxies():
+    if not enabled() or not forwarded:
+        return None
+    if fronts is None:
+        fronts = await frontends_for(host_id, addr, port)
+    if not fronts:
+        return None
+    ips = proxy_ips if proxy_ips is not None else await proxies_set()
+    if forwarded not in ips:
         return None
 
     items = await _load()
@@ -214,6 +585,8 @@ async def resolve_login(
 
     best: Optional[Conn] = None
     for conn in items:
+        if conn.fe not in fronts:
+            continue  # 这条连接是打到别的机器上的
         if conn.start > ts + CLOCK_SKEW:
             continue  # 连接晚于登录：不可能是这次会话
         if ts - conn.start > LOGIN_GRACE:

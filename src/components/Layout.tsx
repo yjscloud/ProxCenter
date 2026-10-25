@@ -14,6 +14,7 @@ import {
 } from './Sidebar';
 import { Topbar } from './Topbar';
 import { UpdateNotice } from './UpdateNotice';
+import { MaintenanceNotice } from './MaintenanceNotice';
 import { PveSetupNotice } from './PveSetupNotice';
 import { SetupRedirect } from './SetupRedirect';
 import { CommandPalette } from './CommandPalette';
@@ -140,6 +141,10 @@ export function Layout() {
           onOpenMobileNav={() => setMobileOpen(true)}
           onOpenSearch={() => setSearchOpen(true)}
         />
+
+        {/* 维护模式提示条：只对管理员出现。普通用户此时根本进不来后台，
+            所以这条的作用是提醒管理员「你开了个影响所有人的开关」 */}
+        <MaintenanceNotice />
 
         {/* 有面板新版本时的提示条（只对管理员出现，见组件内部判断） */}
         <UpdateNotice />

@@ -86,6 +86,8 @@ import type {
   IpPool,
   IpPoolStatus,
   AlertEmailConfig,
+  AlertTemplate,
+  MaintenanceState,
   ApiTokenCreated,
   ApiTokenList,
   AuthSession,
@@ -1162,6 +1164,21 @@ export const prefsApi = {
   reset: (key: string) => del<{ key: string; removed: boolean }>(`/prefs/${key}`),
 };
 
+/* ---------------------------------------------------------------------------
+   面板级设置（见后端 app/routers/panel.py）
+
+   维护模式：开启后普通用户登不进来、已登录的也会收到 503 + code=maintenance；
+   管理员照常，否则没人能把它关掉。
+   --------------------------------------------------------------------------- */
+
+export const panelApi = {
+  /** 公开接口：登录页 / 维护公告页用它决定要不要显示维护提示 */
+  maintenance: () => get<MaintenanceState>('/panel/maintenance'),
+  /** 仅超级管理员 */
+  saveMaintenance: (body: MaintenanceState) =>
+    put<MaintenanceState>('/panel/maintenance', body),
+};
+
 export const schedulerApi = {
   /** 全部作业及其运行状态 */
   list: () => get<SchedulerOverview>('/scheduler'),
@@ -1737,7 +1754,18 @@ export const frpApi = {
 };
 
 export const alertsApi = {
-  get: () => get<AlertsOverview>("/alerts"),
+  /** 告警总览；q 同时匹配对象名称与规则名称（服务端筛，不是只筛当前页） */
+  get: (q?: string) =>
+    get<AlertsOverview>("/alerts", q ? { params: { q } } : undefined),
+  /** 保存当前用户的邮件 / 飞书文案模板 */
+  saveTemplate: (cfg: AlertTemplate) =>
+    put<{ template: AlertTemplate; template_placeholders: string[] }>(
+      "/alerts/template",
+      cfg,
+    ),
+  /** 用编辑中的模板发一条样例通知（邮件 + 飞书），不落库 */
+  testTemplate: (cfg: AlertTemplate) =>
+    post<{ detail: string }>("/alerts/template/test", cfg),
   saveFeishu: (cfg: any) => put<any>("/alerts/feishu", cfg),
   /** 推送来源开关（全局，管理员）。只传要改的来源即可，其余保持不变。 */
   saveNotifySources: (cfg: Record<string, boolean>) =>

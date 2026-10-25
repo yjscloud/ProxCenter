@@ -76,20 +76,30 @@ class Settings(BaseSettings):
     forwarded_allow_ips: str = "127.0.0.1"
 
     # --- SSH 入口转发（frp / haproxy）--------------------------------------
-    # 面板本机的 22 端口经 frp 暴露到公网时，sshd 看到的来源永远是入口机
-    # （例如 172.16.149.3），真实攻击者地址被 PROXY protocol 还原后只落在入口机
-    # 的 haproxy 日志里。填上「入口机在 SSH 远程里的主机 id」与「转发机地址」后，
-    # 导入 host.ssh_failed / host.ssh_login 时会按时间把 IP 换成真实值；匹配不上
-    # 就保留原值（还原成功的记录在 detail.forwarded_from 里留下入口机地址）。
+    # 面板（以及同网段的其它主机）的 22 端口经 frp 暴露到公网时，sshd 看到的来源
+    # 永远是入口机（例如 172.16.149.3），真实攻击者地址被 PROXY protocol 还原后只
+    # 落在入口机某条 haproxy frontend 的日志里。填上「入口机在 SSH 远程里的主机 id」
+    # 后，导入 host.ssh_failed / host.ssh_login 时会按时间把 IP 换成真实值；匹配
+    # 不上就保留原值（还原成功的记录在 detail.forwarded_from 里留下入口机地址）。
     #
     # 成功登录要等会话结束才能配对（haproxy 到连接关闭才写日志行），所以会话中
     # 导入的登录会先挂起，等下一轮导入补写 —— 不会先落一条入口机地址的记录。
     #
-    # 两项都留空 = 关闭，行为与之前完全一致。
+    # 只要填了入口机 id 就启用，其它都不用配：面板会去读入口机的 haproxy 配置，
+    # 按「frontend -> backend -> server <地址>:22」自动对出「哪台机器走哪条
+    # frontend」，同时把入口机自己的地址当作转发机地址（frpc 从它出站回连 sshd）。
+    # 换网段、加机器、改 frontend 名字都不用改配置。
     #   SSH_FORWARD_LOG_HOST=hec92c0bc5c
-    #   SSH_FORWARD_PROXIES=172.16.149.3
+    #
+    # 下面三项是**可选覆盖**，只在自动发现不管用的部署里才需要：
+    #   SSH_FORWARD_PROXIES  转发机地址（多网卡 / 自动发现拿不到时）
+    #   SSH_FORWARD_ROUTES   主机id=frontend[,主机id=frontend]（用 use_backend
+    #                        条件分流、或 haproxy 配置读不到时）
+    #   SSH_FORWARD_HAPROXY_CFG  haproxy 配置文件路径（默认 /etc/haproxy/haproxy.cfg）
     ssh_forward_log_host: str = ""
     ssh_forward_proxies: str = ""
+    ssh_forward_routes: str = ""
+    ssh_forward_haproxy_cfg: str = ""
 
     # --- 公网暴露加固 ------------------------------------------------------
     # 面板准入白名单（逗号分隔的 IP / CIDR，例如

@@ -99,13 +99,16 @@ def _localized_history(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 @router.get("")
 async def get_alerts(
+    q: str = Query(default="", max_length=128),
     user: Dict[str, Any] = Depends(ALERT_VIEW),
 ) -> Dict[str, Any]:
+    """告警总览。``q`` 同时匹配对象名称与规则名称（一个搜索框，不必先选字段）。"""
     scope = security.visible_owner(user)
     # 通知通道永远是自己那一份，不做汇总
     feishu = await alerting.load_feishu(_own(user))
     email = await alerting.load_alert_email(_own(user))
     hook = await alerting.load_webhook(_own(user))
+    template = await alerting.load_alert_template(_own(user))
     return {
         **_masked_feishu(feishu),
         **_masked_hook(hook),
@@ -118,8 +121,10 @@ async def get_alerts(
         # 界面上直接提示「去设置页配置 SMTP」，而不是让用户猜为什么收不到
         "mail_ready": mailer.is_configured(await mailer.load_mail()),
         "account_email": (await store.get_user(_own(user)) or {}).get("email") or "",
+        "template": template,
+        "template_placeholders": alerting.ALERT_TEMPLATE_PLACEHOLDERS,
         "rules": alerting.visible_rules(await alerting.load_rules(), scope),
-        "history": _localized_history(await alerting.history(80, scope)),
+        "history": _localized_history(await alerting.history(80, scope, q=q)),
         # 此刻还没恢复的告警。与 history 的区别：history 是「发生过什么」，
         # 这里是「还有几件事没解决」—— 首页工作台的待办数量以它为准。
         "active": await alerting.visible_active(scope),
@@ -214,6 +219,58 @@ async def save_email(
         "email": cfg,
         "mail_ready": mailer.is_configured(await mailer.load_mail()),
     }
+
+
+@router.put("/template")
+async def save_template(
+    payload: Dict[str, Any],
+    request: Request,
+    user: Dict[str, Any] = Depends(ALERT_MANAGE),
+) -> Dict[str, Any]:
+    """保存当前用户的邮件 / 飞书文案模板。
+
+    与收件人、飞书机器人同一份归属（按用户存）：「我收到的告警长什么样」是个人
+    偏好，不是面板级配置。留空的字段回落内置文案，所以只改邮件正文的人，飞书
+    卡片不会被一起改掉。
+    """
+    cfg = await alerting.save_alert_template(payload, _own(user))
+    await security.audit(
+        request,
+        user,
+        "alert.template",
+        "alerts",
+        "success",
+        "更新告警通知模板（本人）：" + ("启用" if cfg["enabled"] else "关闭"),
+    )
+    return {
+        "template": cfg,
+        "template_placeholders": alerting.ALERT_TEMPLATE_PLACEHOLDERS,
+    }
+
+
+@router.post("/template/test")
+async def test_template(
+    payload: Dict[str, Any],
+    request: Request,
+    user: Dict[str, Any] = Depends(ALERT_MANAGE),
+) -> Dict[str, Any]:
+    """用当前编辑中的模板发一条样例通知（邮件 + 飞书各一份）。
+
+    收的是**还没保存**的模板，所以改完立刻能看效果，不用先保存再等真告警。
+    通道开关不参与判断；没配置的通道会如实报错。不写历史、不建站内消息。
+    """
+    ok, detail = await alerting.test_template(payload, _own(user))
+    await security.audit(
+        request,
+        user,
+        "alert.template",
+        "alerts",
+        "success" if ok else "failed",
+        "测试通知模板：" + detail,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=detail)
+    return {"detail": detail}
 
 
 @router.put("/webhook")

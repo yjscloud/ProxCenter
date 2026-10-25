@@ -19,6 +19,7 @@ import {
   healthApi,
   clusterApi,
   mailApi,
+  panelApi,
   siteApi,
 } from '../api/endpoints';
 import { errorMessage, isNotImplemented } from '../api/client';
@@ -79,11 +80,13 @@ import {
   IconMenu,
   IconPlug,
   IconKey,
+  IconWrench,
 } from '../components/Icons';
 import { formatDateTime } from '../utils/format';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useSectionSpy } from '../hooks/useSectionSpy';
+import { useMaintenance } from '../hooks/useMaintenance';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { DEFAULT_SITE_INFO } from '../hooks/useSiteInfo';
 import { BrandLogo } from '../components/BrandLogo';
@@ -95,6 +98,7 @@ import type {
   LoginCaptchaMode,
   MailConfigInput,
   MailTlsMode,
+  MaintenanceState,
   PanelSettings,
   SiteInfo,
   SiteLink,
@@ -451,6 +455,37 @@ function PanelSection() {
   const [settings, setSettings] = useState<PanelSettings>(() => loadSettings());
   const [saved, setSaved] = useState<PanelSettings>(() => loadSettings());
 
+  /* ---- 维护模式：服务端设置，与上面那几个「只存在这台浏览器」的偏好不是一回事，
+     所以单独一组状态 + 单独的保存按钮（后端的 PUT 也只认超级管理员）--- */
+  const { user } = useAuth();
+  const canMaintain = user?.role === 'admin';
+  const maintQuery = useMaintenance(canMaintain);
+  const [maint, setMaint] = useState<MaintenanceState | null>(null);
+  /* 用户正在改公告时，后台轮询 / 重新取数不能把他的输入冲掉 */
+  const [maintDirty, setMaintDirty] = useState(false);
+  useEffect(() => {
+    if (maintQuery.data && !maintDirty) setMaint(maintQuery.data);
+  }, [maintQuery.data, maintDirty]);
+
+  const patchMaint = (next: Partial<MaintenanceState>) => {
+    setMaint((prev) => (prev ? { ...prev, ...next } : prev));
+    setMaintDirty(true);
+  };
+
+  const saveMaint = async () => {
+    if (!maint) return;
+    try {
+      const next = await panelApi.saveMaintenance(maint);
+      setMaint(next);
+      setMaintDirty(false);
+      /* 顶栏那条「维护模式已开启」的提示读的是同一个 key，刷一下让它立刻出现/消失 */
+      await maintQuery.refetch();
+      toast.success(t('settings.maintenanceSaved'));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
   const dirty = useMemo(
     () =>
       settings.refreshInterval !== saved.refreshInterval ||
@@ -572,13 +607,81 @@ function PanelSection() {
             />
           </Field>
         </div>
+
+        {/* 这条说明只解释上面这三个字段（存在浏览器里，换设备就没了）。
+            移到块内部，别让它看起来像是也在解释下面的维护模式 —— 那个是
+            服务端设置，对所有人生效。 */}
+        <Notice tone="info" title={t('settings.localNoticeTitle')}>
+          {t('settings.localNoticePre')}{' '}
+          <span className="mono">localStorage.pve_panel_settings</span>
+          {t('settings.localNoticePost')}
+        </Notice>
       </div>
 
-      <Notice tone="info" title={t('settings.localNoticeTitle')}>
-        {t('settings.localNoticePre')}{' '}
-        <span className="mono">localStorage.pve_panel_settings</span>
-        {t('settings.localNoticePost')}
-      </Notice>
+      {/* 维护模式：服务端设置、仅超级管理员。放在「面板设置」这张卡里是因为
+          用户就是在找它；但它的影响面是整站，所以单独起一块、单独保存。 */}
+      {canMaintain ? (
+        <div className="dyn-list mt-16">
+          <div className="set-form-block-head">
+            <span className="set-form-block-icon">
+              <IconWrench size={15} />
+            </span>
+            <span className="set-form-block-title">
+              {t('settings.maintenanceTitle')}
+            </span>
+            <span className="set-form-block-hint">
+              {t('settings.maintenanceHint')}
+            </span>
+            <a
+              className="fs-xs"
+              style={{ marginLeft: 'auto' }}
+              href="/maintenance"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t('settings.maintenancePreview')}
+            </a>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<IconSave size={14} />}
+              onClick={() => void saveMaint()}
+              disabled={!maint || !maintDirty}
+            >
+              {t('common.save')}
+            </Button>
+          </div>
+
+          {maint ? (
+            <>
+              <div className="mt-12">
+                <Switch
+                  checked={maint.enabled}
+                  onChange={(v) => patchMaint({ enabled: v })}
+                  label={t('settings.maintenanceTitle')}
+                  hint={t('settings.maintenanceEnableHint')}
+                />
+              </div>
+              <div className="mt-12">
+                <Field
+                  label={t('settings.maintenanceNoticeLabel')}
+                  hint={t('settings.maintenanceNoticeHint')}
+                >
+                  <Textarea
+                    value={maint.message}
+                    rows={2}
+                    maxLength={500}
+                    onChange={(e) => patchMaint({ message: e.target.value })}
+                    placeholder={t('settings.maintenanceNoticePlaceholder')}
+                  />
+                </Field>
+              </div>
+            </>
+          ) : (
+            <div className="skeleton skeleton-text mt-12" />
+          )}
+        </div>
+      ) : null}
     </Card>
   );
 }

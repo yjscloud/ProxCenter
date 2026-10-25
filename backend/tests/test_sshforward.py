@@ -38,6 +38,200 @@ def test_line_parser_takes_real_ip() -> None:
     assert match.group("ts") == "25/Oct/2026:11:48:40"
     # Tq/Tw/Tc 里的 Tc 就是连接存活毫秒数，成功登录的配对要用它
     assert match.group("tc") == "5659"
+    # 第二列是 frontend 名：一条 frontend 对应一台被转发的机器
+    assert match.group("fe") == "ssh_in"
+
+
+def test_explicit_routes_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式配置（特殊部署的兜底）优先于自动发现。"""
+    monkeypatch.setattr(
+        config.settings,
+        "ssh_forward_routes",
+        "local=ssh_in,hbe0=ssh_in_8+ssh_in_8b",
+        raising=False,
+    )
+    # 没配置的机器不能顺手去连真实入口机：这里只验证显式配置
+    monkeypatch.setattr(config.settings, "ssh_forward_log_host", "", raising=False)
+    assert asyncio.run(sshforward.frontends_for("local")) == {"ssh_in"}
+    assert asyncio.run(sshforward.frontends_for("hbe0")) == {"ssh_in_8", "ssh_in_8b"}
+    assert asyncio.run(sshforward.frontends_for("nope")) == set()
+
+
+def test_explicit_route_only_affects_that_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """给某一台写了例外，别的机器仍然自动发现（不能一配就全退回不还原）。"""
+    monkeypatch.setattr(
+        config.settings, "ssh_forward_routes", "special=ssh_in_x", raising=False
+    )
+
+    async def fake_discover():
+        return {("172.16.149.8", 22): {"ssh_in_8"}}
+
+    monkeypatch.setattr(sshforward, "_discover", fake_discover)
+
+    assert asyncio.run(sshforward.frontends_for("special")) == {"ssh_in_x"}
+    assert asyncio.run(sshforward.frontends_for("wb8", "172.16.149.8")) == {"ssh_in_8"}
+    assert asyncio.run(sshforward.frontends_for("unknown", "10.0.0.9")) == set()
+
+
+def test_hostname_matches_ip_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """主机在面板里登记成域名、haproxy 里写的是 IP，也要能对上。"""
+    monkeypatch.setattr(config.settings, "ssh_forward_routes", "", raising=False)
+    monkeypatch.setattr(sshforward, "_dns_at", {})
+
+    async def fake_discover():
+        return {("127.0.0.1", 22): {"ssh_in_local"}}
+
+    monkeypatch.setattr(sshforward, "_discover", fake_discover)
+
+    assert asyncio.run(sshforward.frontends_for("h1", "localhost")) == {"ssh_in_local"}
+    # 端口不一致的不认：那条 frontend 转的是别的服务
+    assert asyncio.run(sshforward.frontends_for("h1", "localhost", 2222)) == set()
+
+
+def test_auto_discovery_matches_local_nic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """自动发现：面板本机有多块网卡，哪一个对上 haproxy 的后端地址就算哪一条。"""
+    monkeypatch.setattr(config.settings, "ssh_forward_routes", "", raising=False)
+    monkeypatch.setattr(sshforward, "_local_ips", lambda: {"172.16.149.17"})
+
+    async def fake_discover():
+        return {("172.16.149.17", 22): {"ssh_in"}, ("172.16.149.8", 22): {"ssh_in_8"}}
+
+    async def fake_host():
+        return {"host": "172.16.149.3"}
+
+    monkeypatch.setattr(sshforward, "_discover", fake_discover)
+    monkeypatch.setattr(sshforward, "_entry_host", fake_host)
+
+    assert asyncio.run(sshforward.frontends_for("local")) == {"ssh_in"}
+    # 别的机器按它自己的地址查，不能借用本机的 frontend
+    assert asyncio.run(sshforward.frontends_for("hbe0")) == set()
+    assert asyncio.run(sshforward.frontends_for("hbe0", "172.16.149.8")) == {"ssh_in_8"}
+
+
+def test_auto_discovery_uses_source_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """主机名解析不出地址时，用「到入口机的源地址」去对 —— 那也是本机的地址。"""
+    monkeypatch.setattr(config.settings, "ssh_forward_routes", "", raising=False)
+    monkeypatch.setattr(sshforward, "_local_ips", lambda: set())
+
+    async def fake_discover():
+        return {("172.16.149.17", 22): {"ssh_in"}}
+
+    async def fake_host():
+        return {"host": "172.16.149.3"}
+
+    async def fake_self(peer):
+        return "172.16.149.17"
+
+    monkeypatch.setattr(sshforward, "_discover", fake_discover)
+    monkeypatch.setattr(sshforward, "_entry_host", fake_host)
+    monkeypatch.setattr(sshforward, "_self_addr", fake_self)
+
+    assert asyncio.run(sshforward.frontends_for("local")) == {"ssh_in"}
+
+
+def test_auto_discovery_unknown_host_returns_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """对不上任何 frontend 就返回空集：宁可显示入口机地址，也不要张冠李戴。"""
+    monkeypatch.setattr(config.settings, "ssh_forward_routes", "", raising=False)
+    monkeypatch.setattr(sshforward, "_local_ips", lambda: {"10.0.0.5"})
+
+    async def fake_discover():
+        return {("172.16.149.8", 22): {"ssh_in_8"}}
+
+    async def fake_host():
+        return {"host": "172.16.149.3"}
+
+    async def fake_self(peer):
+        return "10.0.0.5"
+
+    monkeypatch.setattr(sshforward, "_discover", fake_discover)
+    monkeypatch.setattr(sshforward, "_entry_host", fake_host)
+    monkeypatch.setattr(sshforward, "_self_addr", fake_self)
+
+    assert asyncio.run(sshforward.frontends_for("local")) == set()
+    assert asyncio.run(sshforward.frontends_for("hbe0", "172.16.149.99")) == set()
+
+
+def test_old_deployment_falls_back_to_ssh_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """读不到 haproxy 配置时，老部署只有一条 ssh_in 通到面板本机。"""
+    monkeypatch.setattr(config.settings, "ssh_forward_routes", "", raising=False)
+    monkeypatch.setattr(sshforward, "_local_ips", lambda: set())
+
+    async def empty_discover():
+        return {}
+
+    async def fake_host():
+        return {"host": "172.16.149.3"}
+
+    async def fake_self(peer):
+        return ""
+
+    monkeypatch.setattr(sshforward, "_discover", empty_discover)
+    monkeypatch.setattr(sshforward, "_entry_host", fake_host)
+    monkeypatch.setattr(sshforward, "_self_addr", fake_self)
+
+    assert asyncio.run(sshforward.frontends_for("local")) == {"ssh_in"}
+    # 但只给本机兜底：别的机器没配置就不还原
+    assert asyncio.run(sshforward.frontends_for("hbe0")) == set()
+
+
+CONFIG_SAMPLE = """
+global
+    log stdout format raw local0
+defaults
+    mode tcp
+frontend ssh_in
+    bind 172.16.149.3:12222 accept-proxy
+    default_backend ssh_panel
+backend ssh_panel
+    server panel 172.16.149.17:22
+
+frontend ssh_in_8
+    bind 127.0.0.1:12223 accept-proxy
+    default_backend ssh_wb8
+backend ssh_wb8
+    server wb8 172.16.149.8:22
+
+frontend web_in
+    bind 172.16.149.3:8080
+    default_backend web_panel
+backend web_panel
+    server web 172.16.149.17:8080
+
+frontend ssh_dyn
+    bind :12224 accept-proxy
+    use_backend ssh_a if { dst_port 22 }
+    use_backend ssh_b
+"""
+
+
+def test_parse_haproxy_maps_backend_address_to_frontend() -> None:
+    """从配置里算出「后端地址:端口 -> frontend」，换网段/加机器都不用改配置。"""
+    mapping = sshforward.parse_haproxy(CONFIG_SAMPLE)
+    assert mapping[("172.16.149.17", 22)] == {"ssh_in"}
+    assert mapping[("172.16.149.8", 22)] == {"ssh_in_8"}
+    # 没开 accept-proxy 的 frontend 拿不到真实来源，不收
+    assert ("172.16.149.17", 8080) not in mapping
+    # 用 use_backend 条件分流：没有唯一后端，跳过
+    assert all("ssh_dyn" not in names for names in mapping.values())
+
+
+def test_resolve_ignores_other_hosts_connections(configured) -> None:
+    """别的机器的连接不能被拿来给这台机器配对（张冠李戴比不解析更糟）。"""
+    configured.setattr(
+        config.settings, "ssh_forward_routes", "local=ssh_in,wb8=ssh_in_8", raising=False
+    )
+    configured.setattr(
+        sshforward,
+        "_load",
+        _fake_load(
+            [
+                sshforward.Conn(1000.0, 60.0, "9.9.9.9", fe="ssh_in_8"),
+                sshforward.Conn(1002.0, 60.0, "1.1.1.1", fe="ssh_in"),
+            ]
+        ),
+    )
+    assert asyncio.run(sshforward.resolve(1010.0, "172.16.149.3", "local")) == "1.1.1.1"
+    assert asyncio.run(sshforward.resolve(1010.0, "172.16.149.3", "wb8")) == "9.9.9.9"
 
 
 def test_fetch_parses_connection_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -60,9 +254,17 @@ def test_fetch_parses_connection_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     assert items[0].ttl == pytest.approx(5.659)
 
 
-def test_line_parser_ignores_other_frontends() -> None:
-    line = SAMPLE.replace("ssh_in", "kvm_web")
-    assert sshforward._LINE.match(line) is None
+def test_line_parser_keeps_frontend_name() -> None:
+    """其它 frontend 也要认：frontend 名决定这条连接打到哪台机器。"""
+    line = SAMPLE.replace("ssh_in", "ssh_in_8")
+    match = sshforward._LINE.match(line)
+    assert match is not None
+    assert match.group("fe") == "ssh_in_8"
+
+
+def test_line_parser_ignores_non_haproxy_lines() -> None:
+    assert sshforward._LINE.match("Starting haproxy.service - HAProxy Load Balancer...") is None
+    assert sshforward._LINE.match("[NOTICE]   (3507276) : New worker (3507278) forked") is None
 
 
 @pytest.fixture()
@@ -70,6 +272,10 @@ def configured(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config.settings, "ssh_forward_log_host", "host-1", raising=False)
     monkeypatch.setattr(
         config.settings, "ssh_forward_proxies", "172.16.149.3", raising=False
+    )
+    # 显式 routes：用例不联网、也不去读入口机的 haproxy 配置
+    monkeypatch.setattr(
+        config.settings, "ssh_forward_routes", "local=ssh_in", raising=False
     )
     # 每个用例重置缓存，避免相互污染
     monkeypatch.setattr(sshforward, "_cache_items", [])

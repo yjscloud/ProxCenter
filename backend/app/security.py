@@ -16,7 +16,7 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 
 from .config import settings
-from . import apitokens, i18n, store, trusteddevices
+from . import apitokens, i18n, maintenance, store, trusteddevices
 
 logger = logging.getLogger(__name__)
 
@@ -1240,7 +1240,15 @@ async def get_current_user(
             detail=i18n.t("error.no_credentials"),
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return await _authenticate(request, raw)
+    user = await _authenticate(request, raw)
+    # 维护模式：普通用户整站 503，管理员照常。判定放在认证**之后** —— 先确认
+    # 「你是谁」，再决定「现在让不让你用」；反过来的话，维护期间所有请求都是 503，
+    # 管理员自己也会被挡在门外，开关就永远关不掉了。
+    if not is_admin(user):
+        state = await maintenance.state()
+        if state["enabled"]:
+            raise maintenance.error(state)
+    return user
 
 
 async def get_current_user_optional(
@@ -1279,6 +1287,12 @@ async def ensure_session_active(payload: Dict[str, Any]) -> None:
     # 这条路径不经过它（否则过期账号还能继续看控制台）。
     if is_account_expired(user):
         raise HTTPException(status_code=403, detail=i18n.t("error.account_frozen"))
+    # 维护模式同样适用于 WebSocket：否则已经打开的终端会一直连着，
+    # 「暂停对外服务」就只暂停了页面。
+    if not is_admin(user):
+        state = await maintenance.state()
+        if state["enabled"]:
+            raise maintenance.error(state)
     session_id = str(payload.get("sid") or "")
     if session_id and not await store.is_session_active(session_id):
         raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")

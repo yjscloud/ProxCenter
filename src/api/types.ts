@@ -835,6 +835,21 @@ export interface AlertEmailConfig {
 }
 
 /**
+ * 邮件 / 飞书的告警文案模板（按用户存）。
+ *
+ * 字段留空 = 该处仍用内置文案：只想改邮件正文的人，飞书卡片不会被一起改掉。
+ */
+export interface AlertTemplate {
+  enabled: boolean;
+  /** 邮件主题；留空 = 内置的「虚拟机：xxx」 */
+  subject: string;
+  /** 邮件正文（纯文本，换行保留） */
+  body: string;
+  /** 飞书卡片正文（markdown）；留空 = 内置的字段卡片 */
+  feishu: string;
+}
+
+/**
  * 通用 Webhook 通道配置。
  *
  * 一个通道覆盖企业微信 / 钉钉 / Slack / 自建接收端：差异只在请求体形状上，
@@ -2887,6 +2902,13 @@ export interface AlertRecord {
   detail: string;
   /** alarm = 触发告警，recovery = 恢复正常 */
   kind?: 'alarm' | 'recovery';
+  /**
+   * 1 = 同一事件的重复提醒（告警没恢复、冷却到点又发了一次）。
+   *
+   * 每发一次通知就有一条记录，所以「发了三封邮件」在历史里是三条；
+   * 这一列让界面能分清「三个事件」与「一个事件提醒了三次」。
+   */
+  is_repeat?: number;
   /** 归属用户：普通用户只看得到自己的，管理员可以看到全部 */
   username?: string;
   ts: number;
@@ -2934,6 +2956,10 @@ export interface AlertsOverview {
   hook_placeholders: string[];
   /** 当前用户自己的告警邮件收件人配置 */
   email: AlertEmailConfig;
+  /** 当前用户自己的邮件 / 飞书文案模板 */
+  template: AlertTemplate;
+  /** 模板里可用的变量名（后端注册表，前端列出来供点击插入） */
+  template_placeholders: string[];
   /** 全局 SMTP 是否已配好；没配好时邮件通道发不出去 */
   mail_ready: boolean;
   /** 账号邮箱，收件人留空时用它 */
@@ -4741,3 +4767,17 @@ export type AiStreamEvent =
   | { type: 'error'; message: string }
   /** 用户点了终止：排查停在当前这一步，属正常结束，不是失败 */
   | { type: 'aborted' };
+
+/**
+ * 维护模式（服务端设置，见后端 app/maintenance.py）。
+ *
+ * 开启后普通用户既登录不了、已登录的也会被 503 挡住；管理员完全不受影响。
+ */
+export interface MaintenanceState {
+  enabled: boolean;
+  /**
+   * 管理员写的公告正文；空串表示用内置文案（前端按当前语言渲染，
+   * 所以这里不回填默认值 —— 否则一保存就把某一种语言写死了）。
+   */
+  message: string;
+}

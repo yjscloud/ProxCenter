@@ -2723,6 +2723,31 @@ export const en: Partial<Record<MessageKey, string>> = {
   'settings.localNoticeTitle': 'Local settings',
   'settings.localNoticePre': 'These settings are stored in',
   'settings.localNoticePost': '; switching browsers or clearing site data restores the defaults.',
+  /* ---- maintenance mode (server-side, unlike the browser-only prefs above) ---- */
+  'settings.maintenanceTitle': 'Maintenance mode',
+  'settings.maintenanceHint':
+    'While on, the panel stops serving externally: non-admin users cannot sign in and signed-in ones are sent to the maintenance notice. Administrators are unaffected.',
+  'settings.maintenanceEnableHint':
+    'Takes effect immediately; non-admin users are sent to the maintenance notice',
+  'settings.maintenancePreview': 'Preview notice page',
+  'settings.maintenanceNoticeLabel': 'Maintenance notice',
+  'settings.maintenanceNoticeHint':
+    'Shown on the sign-in page and the maintenance page; leave empty for the default text',
+  'settings.maintenanceNoticePlaceholder':
+    'e.g. Storage upgrade tonight 22:00-23:00; only administrators can sign in.',
+  'settings.maintenanceSaved': 'Maintenance mode updated',
+  'maintenance.title': 'Panel under maintenance',
+  'maintenance.subtitle': 'The service is temporarily unavailable. Please come back later.',
+  'maintenance.defaultMessage':
+    'The panel is under maintenance. Only administrators can sign in right now.',
+  'maintenance.retry': 'Try again',
+  'maintenance.adminLogin': 'Administrator sign-in',
+  'maintenance.adminHint':
+    'Administrators: sign in, then turn off maintenance mode under Settings → Panel settings.',
+  'auth.maintenanceBanner': 'The panel is under maintenance: only administrators can sign in.',
+  'layout.maintenanceBanner':
+    'Maintenance mode is on: non-admin users cannot sign in right now',
+  'layout.maintenanceAction': 'Turn off',
   'settings.saveSettings': 'Save settings',
   'settings.restoreDefault': 'Restore defaults',
   'settings.unsaved': 'You have unsaved changes',
@@ -6674,6 +6699,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.totalRecords': '{n} records',
   'alerts.alarmCount': '{n} alerts',
   'alerts.recoveryCount': '{n} recoveries',
+  'alerts.repeatCount': '{n} repeat reminders',
   'alerts.failedCount': '{n} failed',
   'alerts.notInList': '{name} (no longer in the list)',
   'alerts.notifyTitle': 'Alert delivery switches',
@@ -6778,6 +6804,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.colObject': 'Target',
   'alerts.colValue': 'Value',
   'alerts.clearHistory': 'Clear history',
+  'alerts.clearHistorySearching': 'Clear the search before clearing history',
   'alerts.badgeRecovered': 'Recovered',
   'alerts.badgeSent': 'Sent',
   'alerts.badgeRecoveryFailed': 'Recovery notice failed',
@@ -6789,6 +6816,39 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.stateAbnormal': 'State abnormal',
   'alerts.threshold': 'Threshold {n}%',
   'alerts.historyEmpty': 'No alert records.',
+  'alerts.historyEmptySearch': 'No records match “{q}”.',
+  'alerts.searchPlaceholder': 'Search object or rule',
+  'alerts.repeatNotice': 'Repeat reminder',
+  /* ---- notification templates (email / Feishu) ---- */
+  'alerts.templateTitle': 'Notification templates',
+  'alerts.templateOff': 'Disabled',
+  'alerts.templateSubtitle':
+    'Customise the email and Feishu content. Empty fields keep the built-in text, so changing only the email body leaves the Feishu card untouched.',
+  'alerts.templateEnable': 'Use custom templates',
+  'alerts.templateEnableHint': 'When off, the built-in text is used as-is',
+  'alerts.templateSubject': 'Email subject',
+  'alerts.templateSubjectHint': 'Empty = built-in “Virtual machine: xxx”',
+  'alerts.templateSubjectPlaceholder': '[{kind}] {target} {metric} alert',
+  'alerts.templateBody': 'Email body',
+  'alerts.templateBodyHint': 'Plain text, line breaks preserved',
+  'alerts.templateFeishu': 'Feishu card body',
+  'alerts.templateFeishuHint': 'Feishu markdown is supported (**bold**, etc.)',
+  'alerts.templateScopeHint':
+    'Resource alerts expose the full field set; port / SSH / backup sources only provide title and body ({title}, {text}), other variables render blank.',
+  'alerts.templateVarsHint': 'Click a variable to insert it into the focused field:',
+  'alerts.templateSaved': 'Notification template saved',
+  'alerts.templateTest': 'Send test',
+  'alerts.templateTestSent': 'Test notification sent — check your email / Feishu',
+  'alerts.templateGuideMailLabel': 'Email body example',
+  'alerts.templateGuideFeishuLabel': 'Feishu card example',
+  'alerts.templateGuideCopy': 'Copy',
+  'alerts.templateGuideCopied': 'Example copied — paste it into the field on the left',
+  'alerts.templateGuideMail':
+    'VM: {target} (VMID {vmid})\nNode: {node}\nMemory: {used} / {total}\nMemory usage: {value}% (threshold {threshold}%)\nStatus: {status}  IP: {ip}\nRule: {rule}\nTime: {time}',
+  'alerts.templateGuideFeishu':
+    '**{title}**\n**Object**: {kind} {target}\n**Node**: {node}  **Status**: {status}\n**Memory**: {used} / {total} ({value}%)\n**Rule**: {rule}\n**Time**: {time}',
+  'alerts.templateGuideNote':
+    'Keep variables in braces as they are; {used} / {total} only carry values for memory and disk alerts and stay blank for CPU. Use “Send test” before saving to check the result.',
   'alerts.clearTitle': 'Clear alert history',
   'alerts.clearConfirm': 'Clear',
   'alerts.clearMessage': 'This will clear the alert history: the {n} records in the list plus older muted records that are no longer shown. This cannot be undone. Objects currently alerting are unaffected and a recovery notice is still sent when the metric recovers.',

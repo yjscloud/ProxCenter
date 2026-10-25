@@ -461,12 +461,11 @@ class TestPushGate:
 class TestConvergence:
     """告警收敛：一个「事件」在历史里占一条，而不是每个巡检周期一条。"""
 
-    def test_repeat_rounds_do_not_write_history(self, db, monkeypatch) -> None:
-        """持续告警期间的重复轮次：只提醒、不落库。
+    def test_repeat_rounds_are_recorded_when_sent(self, db, monkeypatch) -> None:
+        """重复轮次只要真发出去了就记一条，并用 ``is_repeat`` 标出来。
 
-        这是「一个 node 的 CPU 规则在 27 小时里刷出 40 条历史」的直接对策：
-        首轮落一条，之后冷却到点又触发的那几次都不再写历史，也不再建站内消息
-        （外部提醒由调用方的 dispatch 照常发，那才是冷却管的事）。
+        用户看到的是「邮件发了三封」，历史里就该有三条 —— 原先每轮只提醒不落库，
+        发信次数与记录数永远对不上账，复盘时没法确认到底发了几次、发给了谁。
         """
         rec = _Recorder(monkeypatch)
         before = _history_count()
@@ -475,8 +474,42 @@ class TestConvergence:
         _run(alerting.record(_entry(), source=SOURCE, repeat=True))
         _run(alerting.record(_entry(), source=SOURCE, repeat=True))
 
-        assert _history_count() == before + 1, "只有首轮该落库"
-        assert rec.calls["inbox"] == 1, "重复轮次不该再建站内消息"
+        assert _history_count() == before + 3
+        flags = [int(row[0]) for row in _exec("SELECT is_repeat FROM alert_history ORDER BY id")]
+        assert flags == [0, 1, 1], "首轮不是重复提醒，后两条是"
+        assert rec.calls["inbox"] == 3
+
+    def test_failed_repeat_round_is_not_recorded(self, db, monkeypatch) -> None:
+        """没送达的重复轮次仍然不记：冷却窗口里被拦下的轮次本来就没发东西。"""
+        _Recorder(monkeypatch)
+        before = _history_count()
+
+        _run(alerting.record(_entry(result="failed"), source=SOURCE))
+        _run(alerting.record(_entry(result="failed"), source=SOURCE, repeat=True))
+
+        assert _history_count() == before + 1, "首轮失败照记，重复失败不记"
+
+    def test_history_search_matches_target_or_rule(self, db, monkeypatch) -> None:
+        """一个搜索框同时匹配对象名称与规则名称。"""
+        _Recorder(monkeypatch)
+        _run(alerting.record(_entry(), source=SOURCE))
+        _run(
+            alerting.record(
+                _entry(rule_id="disk", rule_name="磁盘告警", target="10.0.0.9"),
+                source=SOURCE,
+            )
+        )
+
+        assert [r["target"] for r in _run(alerting.history(50, q="1.2.3"))] == ["1.2.3.4"]
+        assert [r["target"] for r in _run(alerting.history(50, q="磁盘"))] == ["10.0.0.9"]
+        assert _run(alerting.history(50, q="不存在的对象")) == []
+        assert len(_run(alerting.history(50))) == 2
+
+    def test_history_search_treats_wildcards_literally(self, db, monkeypatch) -> None:
+        """``%`` 是用户输入的字面量，不能当成 LIKE 通配符把全表搜出来。"""
+        _Recorder(monkeypatch)
+        _run(alerting.record(_entry(), source=SOURCE))
+        assert _run(alerting.history(50, q="%")) == []
 
     def test_recovery_is_never_treated_as_repeat(self, db) -> None:
         """恢复通知是事件的终点，不是重复轮次：调用方即使传了 repeat 也照写。"""

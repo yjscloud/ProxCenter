@@ -59,6 +59,8 @@ from .routers import (
     # 与 app.portguard（巡检实现）同名，取别名避免混淆
     portguard as ports_router,
     # 每用户的界面偏好（仪表盘布局等）
+    # 面板级设置（目前只有维护模式）：/api/panel/*
+    panel as panel_router,
     prefs as prefs_router,
     # 统一处置（预览 → 二次确认 → 执行）；动作实现在 app.remediation
     remediation as remediation_router,
@@ -869,6 +871,8 @@ app.include_router(scheduler_router.router)
 app.include_router(update_router.router)
 # 每用户界面偏好：/api/prefs（仪表盘布局等）
 app.include_router(prefs_router.router)
+# 面板级设置：/api/panel/maintenance（GET 公开，PUT 仅管理员）
+app.include_router(panel_router.router)
 app.include_router(cluster.router)
 # 虚拟机导入 / 导出（VMware 互操作）：OVF/OVA 导入与 VMDK/QCOW2/RAW/OVA 导出。
 # **必须注册在 vms.router 之前**：vms 里有 ``GET /vms/{node}/{vmid}`` 这条两段动态

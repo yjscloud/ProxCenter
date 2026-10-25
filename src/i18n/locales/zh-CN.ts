@@ -2331,6 +2331,28 @@ export const zhCN = {
   'settings.localNoticeTitle': '本地设置说明',
   'settings.localNoticePre': '这些设置保存在',
   'settings.localNoticePost': '，换浏览器或清空站点数据后会恢复默认。',
+  /* ---- 维护模式（服务端设置，与上面这些浏览器本地偏好不是一回事）---- */
+  'settings.maintenanceTitle': '维护模式',
+  'settings.maintenanceHint':
+    '开启后面板暂停对外服务：普通用户无法登录，已登录的会被挡在维护公告页；管理员不受影响。',
+  'settings.maintenanceEnableHint': '开启后立即生效；普通用户会被挡在维护公告页',
+  'settings.maintenancePreview': '预览公告页',
+  'settings.maintenanceNoticeLabel': '维护公告',
+  'settings.maintenanceNoticeHint': '显示在登录页与维护页；留空使用默认文案',
+  'settings.maintenanceNoticePlaceholder':
+    '例：今晚 22:00-23:00 升级存储，期间只允许管理员登录。',
+  'settings.maintenanceSaved': '维护模式已更新',
+  /* ---- 维护公告页 / 顶栏提示 ---- */
+  'maintenance.title': '面板维护中',
+  'maintenance.subtitle': '服务已暂停对外提供，请稍后再访问。',
+  'maintenance.defaultMessage': '面板正在维护，暂时只允许管理员登录，请稍后再试。',
+  'maintenance.retry': '重新尝试',
+  'maintenance.adminLogin': '管理员登录',
+  'maintenance.adminHint':
+    '如果你是管理员：登录后在「系统设置 → 面板设置」里关闭维护模式。',
+  'auth.maintenanceBanner': '面板维护中：暂时只允许管理员登录。',
+  'layout.maintenanceBanner': '维护模式已开启：普通用户当前无法登录面板',
+  'layout.maintenanceAction': '去关闭',
   'settings.saveSettings': '保存设置',
   'settings.restoreDefault': '恢复默认',
   'settings.unsaved': '有未保存的修改',
@@ -6537,6 +6559,7 @@ export const zhCN = {
   'alerts.totalRecords': '共 {n} 条',
   'alerts.alarmCount': '告警 {n}',
   'alerts.recoveryCount': '恢复 {n}',
+  'alerts.repeatCount': '重复提醒 {n}',
   'alerts.failedCount': '发送失败 {n}',
   'alerts.notInList': '{name}（已不在列表）',
   'alerts.notifyTitle': '告警推送开关',
@@ -6641,6 +6664,7 @@ export const zhCN = {
   'alerts.colObject': '对象',
   'alerts.colValue': '数值',
   'alerts.clearHistory': '清除历史',
+  'alerts.clearHistorySearching': '请先清空搜索再清除历史',
   'alerts.badgeRecovered': '已恢复',
   'alerts.badgeSent': '已发送',
   'alerts.badgeRecoveryFailed': '恢复通知失败',
@@ -6652,6 +6676,42 @@ export const zhCN = {
   'alerts.stateAbnormal': '状态异常',
   'alerts.threshold': '阈值 {n}%',
   'alerts.historyEmpty': '暂无告警记录。',
+  'alerts.historyEmptySearch': '没有匹配「{q}」的记录。',
+  'alerts.searchPlaceholder': '搜索对象或规则',
+  /* 每发一次通知就一条记录：重复提醒要标出来，否则同一对象的三条记录
+     看着像「告警触发了三次」。 */
+  'alerts.repeatNotice': '重复提醒',
+  /* ---- 通知内容模板（邮件 / 飞书）---- */
+  'alerts.templateTitle': '通知内容模板',
+  'alerts.templateOff': '未启用',
+  'alerts.templateSubtitle':
+    '自定义邮件与飞书的内容。留空的字段沿用内置文案，所以只改邮件正文不会把飞书卡片一起改掉。',
+  'alerts.templateEnable': '启用自定义模板',
+  'alerts.templateEnableHint': '关闭时完全使用内置文案',
+  'alerts.templateSubject': '邮件主题',
+  'alerts.templateSubjectHint': '留空沿用内置的「虚拟机：xxx」',
+  'alerts.templateSubjectPlaceholder': '【{kind}】{target} {metric} 告警',
+  'alerts.templateBody': '邮件正文',
+  'alerts.templateBodyHint': '纯文本，换行保留',
+  'alerts.templateFeishu': '飞书卡片正文',
+  'alerts.templateFeishuHint': '支持飞书 markdown（**加粗** 等）',
+  'alerts.templateScopeHint':
+    '资源告警的字段最全；端口 / SSH / 备份等来源只有标题与正文可用（{title}、{text}），其余变量会是空白。',
+  'alerts.templateVarsHint': '点击变量插入到当前编辑的输入框：',
+  'alerts.templateSaved': '通知模板已保存',
+  'alerts.templateTest': '发送测试',
+  'alerts.templateTestSent': '测试通知已发出，请查看邮件 / 飞书',
+  /* 右侧样例：给一份能直接用的内容，复制粘贴即可 —— 只列变量名是查手册的体验 */
+  'alerts.templateGuideMailLabel': '邮件正文示例',
+  'alerts.templateGuideFeishuLabel': '飞书卡片示例',
+  'alerts.templateGuideCopy': '复制',
+  'alerts.templateGuideCopied': '示例已复制，粘贴到左侧输入框即可',
+  'alerts.templateGuideMail':
+    '虚拟机：{target}（VMID {vmid}）\n节点：{node}\n内存：{used} / {total}\n内存使用率：{value}%（阈值 {threshold}%）\n状态：{status}　IP：{ip}\n规则：{rule}\n时间：{time}',
+  'alerts.templateGuideFeishu':
+    '**{title}**\n**对象**：{kind} {target}\n**节点**：{node}　**状态**：{status}\n**内存**：{used} / {total}（{value}%）\n**规则**：{rule}\n**时间**：{time}',
+  'alerts.templateGuideNote':
+    '变量用大括号包起来、原样保留即可；{used} / {total} 只有内存与磁盘告警有值，CPU 告警里会是空白。改完先点「发送测试」，确认效果再保存。',
   'alerts.clearTitle': '清除告警历史',
   'alerts.clearConfirm': '清除',
   'alerts.clearMessage': '将清空告警历史：列表中的 {n} 条，以及更早版本留下、已不再展示的静默记录。此操作不可撤销。正在告警中的对象不受影响，指标恢复时仍会推送恢复通知。',

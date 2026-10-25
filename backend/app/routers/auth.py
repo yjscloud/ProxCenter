@@ -12,6 +12,7 @@ from .. import (
     i18n,
     loginalert,
     mailer,
+    maintenance,
     panel_url,
     password_reset,
     prefs,
@@ -306,6 +307,21 @@ async def login(
         )
         raise HTTPException(status_code=403, detail=detail)
 
+    # 维护模式：对外暂停服务，只放管理员进来。
+    # 放在口令校验**之后**：登录页本身会先读公开的维护状态并给出提示，这里只是
+    # 「确实别让他登进来」的最后一道；也不必让未认证的请求靠这条分支去探面板状态。
+    if not security.is_admin(user):
+        state = await maintenance.state()
+        if state["enabled"]:
+            await store.add_audit(
+                username=str(user["username"]),
+                action="auth.login",
+                result="failed",
+                detail="维护模式：仅管理员可登录",
+                ip=ip,
+            )
+            raise maintenance.error(state)
+
     # 两步验证：口令对了，但还不算登录成功 —— 先发一枚只能走完这次验证的
     # 临时凭据，避免把 access token 直接交给只掌握了密码的一方。
     #
@@ -393,6 +409,11 @@ async def login_mfa(
         raise HTTPException(
             status_code=403, detail=i18n.t("error.account_frozen")
         )
+    # 维护模式：别让人白跑一趟两步验证（码用过一次就废了）
+    if not security.is_admin(user):
+        state = await maintenance.state()
+        if state["enabled"]:
+            raise maintenance.error(state)
 
     ok, used_recovery = await totp.verify_login_code(user, payload.code)
     if not ok:
@@ -476,6 +497,12 @@ async def refresh_session(request: Request, response: Response) -> LoginResponse
         await store.revoke_refresh_token(jti)
         security.clear_session_cookies(response)
         raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
+    # 维护模式：普通用户不续期。刻意不清 cookie —— 维护结束后这次登录还能用，
+    # 不必让所有人重输密码；管理员则完全不受影响。
+    if not security.is_admin(user):
+        state = await maintenance.state()
+        if state["enabled"]:
+            raise maintenance.error(state)
 
     await store.revoke_refresh_token(jti)
     access = await _issue_session(response, user, request)
@@ -503,6 +530,11 @@ async def register(payload: RegisterRequest, request: Request) -> Dict[str, Any]
     只说用户名被占用 —— 与登录接口的防枚举口径保持一致。
     """
     ip = security.client_ip(request)
+    # 维护模式：自助注册也属于「对外服务」，一并停掉。放在限流之前 —— 维护期间
+    # 没有理由再为注册消耗一次限流配额。
+    state = await maintenance.state()
+    if state["enabled"]:
+        raise maintenance.error(state)
     if await _anon_throttled("register", ip, 5):
         await store.add_audit(
             username=payload.username,

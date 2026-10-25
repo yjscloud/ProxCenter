@@ -4273,7 +4273,9 @@ body.is-col-resizing * {
    数据 —— 要找某一条只能一路滚到底，也没法横向比「哪台机器反复在告警」。
    下面这几个格子都压在一行内，行高只由 .table-dense 的 6px 内边距决定。 */
 
-/* 时间：相对时间更好读，绝对时间挂 title */
+/* 时间：绝对时间常显、相对时间退成第二行小字。
+   绝对时间原先挂在 title 上，等于藏起来 —— 复盘时最常问的恰恰是「这条哪一刻
+   发的」，而且触屏设备根本没有 hover。两行都不换行，宽度由列宽兜住。 */
 .alert-hist-time {
   display: inline-flex;
   align-items: center;
@@ -4281,6 +4283,204 @@ body.is-col-resizing * {
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
   white-space: nowrap;
+}
+
+.alert-hist-clock {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.alert-hist-abs {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-hist-rel {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+/* 状态 + 「重复提醒」标记：竖排。两个徽章并排会把这一格撑爆，
+   竖排还能让「已发送 / 重复提醒」读成一句话。 */
+.alert-hist-status {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.alert-hist-repeat {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+/* 历史卡片标题右侧：搜索框 + 清空按钮。窄屏换行，别把搜索框压成一条缝 */
+.alert-hist-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.alert-hist-actions .input-wrap {
+  width: 240px;
+}
+
+/* 通知模板的变量：一排可点的 {token}，点一下追加到正在编辑的那一格。
+   mono 字体是为了让「{target}」和正文里的中文一眼分得开。 */
+.alert-tpl-vars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.alert-tpl-var {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.alert-tpl-var:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 告警页的密度比别的设置页高一档（三块通道 + 模板 + 规则 + 历史），
+   卡片之间的 20px 收一档到 16px；只作用于本页，别把全站的呼吸感一起改掉。 */
+.page-alerts {
+  --page-gap: 16px;
+}
+
+/* 本页字段网格也收一档（全局 16px）：飞书那条通道是 2×2 的小网格，
+   16px 的行距让它在卡片里显得散。 */
+.page-alerts .form-grid {
+  gap: 12px;
+}
+
+/* 规则表里一个单元格就是一个输入框：34px 控件 + 上下 12px 内边距 = 每条规则
+   46px，八列一排看下来很占地方。本页压到 30px，一屏能多放两条规则。 */
+.page-alerts .table-dense .input-wrap,
+.page-alerts .table-dense .select {
+  height: 30px;
+}
+
+/* 通知模板：正文与样例**逐行并排**。
+   没有做成「左边一整列表单、右边一整列指引」—— 那样两列高度必然不一致，
+   短的那一列会在底部留出一块空白。现在每个 textarea 和它自己的样例同处
+   一个栅格行，默认 stretch，右栏永远与左侧输入框等高。 */
+.alert-tpl-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.alert-tpl-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+@media (max-width: 1080px) {
+  .alert-tpl-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 单列时右栏不再与左栏同行，绝对定位会让它塌成 0 高 —— 恢复成常规流、
+     按内容撑开。 */
+  .alert-tpl-guide {
+    padding-top: 0;
+  }
+
+  .alert-tpl-guide-label {
+    position: static;
+    height: auto;
+  }
+
+  .alert-tpl-sample {
+    position: static;
+    inset: auto;
+    overflow: visible;
+  }
+}
+
+/* 右栏：标题 + 样例。
+   样例用**绝对定位**撑满右栏剩余高度，而不是 flex 子项：flex 布局下样例自身
+   的内容高度仍会参与父容器的固有高度，示例比输入框长一行就把整行撑高，右边
+   又比左边多出一截。绝对定位后这一栏的高度完全由左栏的 textarea 决定。 */
+.alert-tpl-guide {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  /* 24px = 标题行（18px）+ 6px 间距，给绝对定位的样例让出顶部 */
+  padding-top: 24px;
+}
+
+/* 复用 .field-label 的字号与行高，左右两栏的标题才会在同一条基线上 */
+.alert-tpl-guide-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  line-height: 18px;
+  color: var(--text-muted);
+}
+
+/* 「复制」做成文字按钮而不是 Button 组件：Button 最小号也有 26px 高，
+   会把这一行撑得比左侧字段标签高，两栏标题就对不齐了。 */
+.alert-tpl-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--font-size-xs);
+  line-height: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.alert-tpl-copy:hover {
+  color: var(--accent);
+}
+
+/* 样例原样展示：pre 保留换行，长行折行而不是横向滚动（用户是要照着抄的） */
+.alert-tpl-sample {
+  position: absolute;
+  inset: 24px 0 0 0;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-hover);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  overflow: auto;
+}
+
+.alert-tpl-guide-note {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
 }
 
 /* 规则名 + 归属用户徽章，超长省略。间隙给到 8px：12px 字号下规则名与徽章
@@ -4381,10 +4581,11 @@ body.is-col-resizing * {
 
 /* 第二条渠道起，上方拉一条分隔线。飞书、通用 Webhook 与邮件是**三条独立通道**
    （可以只开一条，也可以都开），必须在视觉上能一眼看出是几块配置 ——
-   否则几组表单会连成一大片，读到一半分不清在配哪条。 */
+   否则几组表单会连成一大片，读到一半分不清在配哪条。
+   间距按「一眼能分开」的最小值取：22/20 在四条通道叠起来时多出一屏空白。 */
 .alc-ch:not(.alc-ch--first) {
-  margin-top: 22px;
-  padding-top: 20px;
+  margin-top: 16px;
+  padding-top: 14px;
   border-top: 1px solid var(--border-muted);
 }
 
@@ -4426,16 +4627,55 @@ body.is-col-resizing * {
 
    只覆盖 .form-grid（飞书 / 通用 Webhook 的字段网格）。邮件那条通道下面是
    「一行说明 + 条件出现的 Notice + 竖排字段」，形状不固定，间距由 Alerts.tsx
-   里的 mt-16 自己给，这里不猜。 */
+   里的 mt-12 自己给，这里不猜。 */
 .alc-ch + .form-grid {
-  margin-top: 16px;
+  margin-top: 12px;
+}
+
+/* 通用 Webhook 的请求体：模板与额外请求头并排。
+   两者是同一条 HTTP 请求的两半（body / headers），分上下摆会让人以为先设完
+   body 再另起一项配置。两列共用「标题行 + 输入框 + 说明」结构，标题行给同样
+   的最小高度，输入框才会齐平。 */
+.alc-hook-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 12px 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 1080px) {
+  .alc-hook-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.alc-hook-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.alc-hook-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  /* 与预设按钮同高：右列没有按钮，靠这个最小高度把两列的地基线拉平 */
+  min-height: 26px;
+}
+
+/* 说明贴底：右列的提示比左列短，让它跟左列在同一行收尾，底部不留一截空 */
+.alc-hook-col > .field-message {
+  margin-top: auto;
 }
 
 /* 渠道卡片内的字段间距比全局松一档。全局 --field-gap 是 6px，对这里 12px 的
    说明文字（「已加密存储，当前地址：https://…」）太挤；说明还常是长句，
    行高也要给足，否则三行说明糊成一块。 */
 .alc-channels .field {
-  gap: 8px;
+  gap: 6px;
 }
 
 .alc-channels .field-message {
@@ -4451,11 +4691,33 @@ body.is-col-resizing * {
    * 两个数字格封顶 200px：三四位数字放得下，宽屏上也不会跟着长成两个大框。
 
    列数照样不交给 auto-fit —— 只剩一个字段时它会把那一格拉成横贯整行的长条。 */
+/* 邮件通道上半行：开关在左、三项设置（地址 / 间隔 / 次数）在右。
+   开关只是「开不开」加一句说明，给 240px 上限；其余宽度全给输入框 ——
+   收件地址要装下若干个邮箱，挤窄了就只能看到半行。 */
+.alc-mail-top {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.9fr);
+  gap: 10px 16px;
+  align-items: start;
+}
+
+@media (max-width: 1180px) {
+  .alc-mail-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .alc-mail-fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 200px 200px;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 150px 150px;
+  gap: 12px;
   align-items: start;
+}
+
+@media (max-width: 720px) {
+  .alc-mail-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* 这一行说明是长句（「告警与恢复通知、以及你下发的机器……都发到这个邮箱」）：

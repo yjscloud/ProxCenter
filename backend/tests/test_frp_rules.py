@@ -7,7 +7,8 @@
 
 * 目标：回环 / 未指定 / 链路本地 / 组播 / 保留地址、面板自身地址、别人的机器
   与未放行网段一律拒绝；自己名下的机器与管理员放行的网段放行；
-* 端口：只能 40000–50000、关键端口不可占用、不可与其它规则撞车；
+* 端口：只能落在管理员设定的区间内（默认 40000–50000）、关键端口不可占用、
+  不可与其它规则撞车；
 * 请求体：``{}`` / 缺字段不再被默认值填成一条 ``127.0.0.1:80 -> 10000``。
 """
 from __future__ import annotations
@@ -77,6 +78,42 @@ def test_first_free_port_skips_used_ones() -> None:
     rules = [{"remote_port": frpguard.REMOTE_PORT_MIN}]
     assert frpguard.first_free_port(rules) == frpguard.REMOTE_PORT_MIN + 1
     assert frpguard.used_remote_ports(rules) == [frpguard.REMOTE_PORT_MIN]
+
+
+def test_port_range_defaults_follow_environment(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "frp_remote_port_min", 20000, raising=False)
+    monkeypatch.setattr(settings, "frp_remote_port_max", 20100, raising=False)
+    assert frpguard.default_port_range() == (20000, 20100)
+    # 自定义区间同样要过黑名单
+    with pytest.raises(frpguard.PolicyError):
+        frpguard.check_remote_port(40000, [])
+    assert frpguard.check_remote_port(20000, []) == 20000
+    assert frpguard.first_free_port([]) == 20000
+
+    # 环境配置写反了：回落内置默认值，不让所有规则写入直接 500
+    monkeypatch.setattr(settings, "frp_remote_port_min", 30000, raising=False)
+    monkeypatch.setattr(settings, "frp_remote_port_max", 20000, raising=False)
+    assert frpguard.default_port_range() == (
+        frpguard.REMOTE_PORT_MIN,
+        frpguard.REMOTE_PORT_MAX,
+    )
+
+
+def test_port_range_validation() -> None:
+    assert frpguard.normalise_port_range(40000, 50000) == (40000, 50000)
+    assert frpguard.normalise_port_range("1024", "65535") == (1024, 65535)
+    for bad in ((50000, 40000), (0, 100), (1, 70000), ("x", 100)):
+        with pytest.raises(frpguard.PolicyError):
+            frpguard.normalise_port_range(*bad)
+    # 整段都是关键端口：谁也建不出规则，保存时就要拒绝
+    with pytest.raises(frpguard.PolicyError):
+        frpguard.normalise_port_range(22, 22)
+
+
+def test_check_remote_port_accepts_explicit_range() -> None:
+    assert frpguard.check_remote_port(20000, [], port_range=(20000, 20100)) == 20000
+    with pytest.raises(frpguard.PolicyError):
+        frpguard.check_remote_port(40000, [], port_range=(20000, 20100))
 
 
 # ------------------------------------------------------------------ 目标地址
@@ -294,7 +331,7 @@ def test_rule_payload_is_strictly_validated() -> None:
         {"name": "t", "local_ip": "not-an-ip", "local_port": 8080, "remote_port": 40000},
         {"name": "t", "local_ip": "0.0.0.0", "local_port": 8080, "remote_port": 40000},
         {"name": "t", "local_ip": "10.0.0.25", "local_port": 0, "remote_port": 40000},
-        {"name": "t", "local_ip": "10.0.0.25", "local_port": 8080, "remote_port": 16080},
+        {"name": "t", "local_ip": "10.0.0.25", "local_port": 8080, "remote_port": 70000},
     ):
         with pytest.raises(ValidationError):
             FrpRuleIn.model_validate(bad)
@@ -332,13 +369,22 @@ class TestFrpRuleApi:
         resp = api.put(f"/api/frp/rules/{rule_id}", headers=headers, json={"name": "renamed"})
         assert resp.status_code == 422
 
-    def test_port_outside_range_is_rejected_at_the_edge(self, api) -> None:
-        """8080 在区间外，Pydantic 直接 422（黑名单是区间被调整时的兜底）。"""
+    def test_port_outside_tcp_range_is_rejected_at_the_edge(self, api) -> None:
+        """超出 1–65535 由 Pydantic 直接 422。"""
+        headers = auth_headers(api)
+        resp = api.post(
+            "/api/frp/rules", headers=headers, json={**RULE, "remote_port": 70000}
+        )
+        assert resp.status_code == 422
+
+    def test_port_outside_policy_range_is_rejected(self, api) -> None:
+        """8080 是合法端口但不在默认区间里：由策略层给出中文原因（400）。"""
         headers = auth_headers(api)
         resp = api.post(
             "/api/frp/rules", headers=headers, json={**RULE, "remote_port": 8080}
         )
-        assert resp.status_code == 422
+        assert resp.status_code == 400
+        assert "40000" in resp.json()["detail"]
 
     def test_port_conflict_is_rejected(self, api) -> None:
         headers = auth_headers(api)
@@ -394,6 +440,81 @@ class TestFrpRuleApi:
         assert body["restricted"] is False  # admin
         assert RULE["remote_port"] in body["used_remote_ports"]
         assert body["default_remote_port"] == frpguard.REMOTE_PORT_MIN + 1
+
+    def test_admin_can_change_port_range(self, api) -> None:
+        """区间可调：改完立刻影响新规则，老区间不再放行。"""
+        headers = auth_headers(api)
+        resp = api.put(
+            "/api/frp/policy/port-range",
+            headers=headers,
+            json={"remote_port_min": 20000, "remote_port_max": 20100},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["remote_port_min"] == 20000
+
+        body = api.get("/api/frp/policy", headers=headers).json()
+        assert (body["remote_port_min"], body["remote_port_max"]) == (20000, 20100)
+        assert body["default_remote_port"] == 20000
+
+        inside = api.post(
+            "/api/frp/rules", headers=headers, json={**RULE, "remote_port": 20000}
+        )
+        assert inside.status_code == 200, inside.text
+
+        outside = api.post(
+            "/api/frp/rules",
+            headers=headers,
+            json={**RULE, "name": "tunnel-2", "remote_port": 40000},
+        )
+        assert outside.status_code == 400
+        assert "20000" in outside.json()["detail"]
+
+    def test_narrowing_port_range_keeps_existing_rules(self, api) -> None:
+        headers = auth_headers(api)
+        assert api.post("/api/frp/rules", headers=headers, json=RULE).status_code == 200
+
+        resp = api.put(
+            "/api/frp/policy/port-range",
+            headers=headers,
+            json={"remote_port_min": 20000, "remote_port_max": 20100},
+        )
+        assert resp.status_code == 200, resp.text
+        # 已有规则仍然在列表里（不会因为区间收窄被删），但要提示管理员
+        assert RULE["remote_port"] in resp.json()["out_of_range_ports"]
+        rules = api.get("/api/frp/rules", headers=headers).json()["rules"]
+        assert [r["remote_port"] for r in rules] == [RULE["remote_port"]]
+
+    def test_invalid_port_range_is_rejected(self, api) -> None:
+        headers = auth_headers(api)
+        reversed_range = api.put(
+            "/api/frp/policy/port-range",
+            headers=headers,
+            json={"remote_port_min": 50000, "remote_port_max": 40000},
+        )
+        assert reversed_range.status_code == 400
+
+        all_forbidden = api.put(
+            "/api/frp/policy/port-range",
+            headers=headers,
+            json={"remote_port_min": 22, "remote_port_max": 22},
+        )
+        assert all_forbidden.status_code == 400
+
+        zero = api.put(
+            "/api/frp/policy/port-range",
+            headers=headers,
+            json={"remote_port_min": 0, "remote_port_max": 100},
+        )
+        assert zero.status_code == 422
+
+    def test_only_admin_can_change_port_range(self, api) -> None:
+        headers = user_with_permissions(api, ["frp.view", "frp.manage"], "frp-user3")
+        resp = api.put(
+            "/api/frp/policy/port-range",
+            headers=headers,
+            json={"remote_port_min": 20000, "remote_port_max": 20100},
+        )
+        assert resp.status_code == 403
 
     def test_owned_target_can_be_used_and_others_cannot(self, api, monkeypatch) -> None:
         """下拉里的那一个能建，别的地址一律 403 —— 两条路走同一份判定。"""

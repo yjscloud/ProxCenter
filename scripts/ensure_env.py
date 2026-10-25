@@ -36,7 +36,7 @@
 ## 退出码
 
     0  解释器版本已一致（依赖可能仍待安装，交由调用方执行 pip install）
-    1  无法修复（调用方应中止并提示用户）
+    1  无法修复（调用方应中止并提示用户），或解释器低于面板要求的 3.11
 """
 from __future__ import annotations
 
@@ -44,6 +44,13 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+
+# 面板支持的 Python 下限。**不能只看「有没有 python3」**：Ubuntu 20.04 / Debian 11
+# 自带 3.9、Ubuntu 22.04 自带 3.10，而依赖里的 Pillow 12 要求 ≥3.10（整套按 3.11
+# 固定），低版本上 pip 解析不出可安装组合。在这种环境里硬跑，得到的是「面板能
+# 启动、部分功能（典型是告警邮件）不工作」的半残状态，比直接报错难查得多。
+MIN_VERSION = (3, 11)
+MIN_VERSION_TEXT = "3.11"
 
 # 启动后端的必要依赖；缺任何一个都跑不起来。
 CRITICAL_MODULES = [
@@ -143,6 +150,26 @@ def smoke_test(vpy: Path) -> list[str]:
 
 
 def main() -> int:
+    # 先卡解释器版本：低版本上后面的 pip install 注定装不全，继续往下走只会
+    # 把「环境不满足要求」伪装成各种奇怪的启动报错。
+    if sys.version_info < MIN_VERSION:
+        current = ".".join(str(part) for part in sys.version_info[:3])
+        print(
+            f"[env] [x] 需要 Python {MIN_VERSION_TEXT}+，当前为 {current}"
+            f"（{sys.executable}）。",
+            file=sys.stderr,
+        )
+        print(
+            "[env]     面板依赖（Pillow 12 起要求 ≥3.10）整套按 3.11 固定，低版本上 "
+            "pip 装不全，会出现「能启动但部分功能不可用」。",
+            file=sys.stderr,
+        )
+        print(
+            "[env]     装好 3.11+ 后重跑；或用 PYTHON_BIN 指定解释器。",
+            file=sys.stderr,
+        )
+        return 1
+
     parser = argparse.ArgumentParser(description="校验并修复虚拟环境解释器版本")
     parser.add_argument("--venv", required=True, help="虚拟环境目录")
     parser.add_argument(

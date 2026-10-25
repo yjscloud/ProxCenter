@@ -46,6 +46,7 @@ export const PERMISSION_KEYS = [
   'frp.view',
   'network.manage',
   'network.view',
+  'node.scope',
   'node.view',
   'ports.manage',
   'ports.view',

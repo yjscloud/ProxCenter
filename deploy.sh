@@ -238,7 +238,12 @@ declare -A MSG_EN=(
   ['面板管理员（admin）口令（至少 12 位；留空 = 随机生成）']='Password for the panel administrator (admin), at least 12 characters (empty = generate a random one)'
 
   # ---- 故障排查用的「标签|命令」对照表（print_hint_list）--------------------
-  ['Debian / Ubuntu|sudo apt install python3 python3-venv']='Debian / Ubuntu|sudo apt install python3 python3-venv'
+  # 「装 python3」只在新发行版上等于 3.11+：Debian 12 是 3.11、Ubuntu 24.04 是
+  # 3.12，而 Debian 11 是 3.9、Ubuntu 20.04/22.04 是 3.9/3.10。旧发行版必须单独
+  # 给办法，否则用户照提示装完还是低版本，面板要么装不上、要么跑在半残状态。
+  ['Debian 12+ / Ubuntu 24.04+|sudo apt install python3 python3-venv']='Debian 12+ / Ubuntu 24.04+|sudo apt install python3 python3-venv'
+  ['Ubuntu 20.04 / 22.04（自带 3.9 / 3.10）|sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python3.11 python3.11-venv']='Ubuntu 20.04 / 22.04 (ship 3.9 / 3.10)|sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python3.11 python3.11-venv'
+  ['Debian 11（自带 3.9）|建议升级到 Debian 12，或用 pyenv / 源码装 3.11 后用 PYTHON_BIN 指定']='Debian 11 (ships 3.9)|upgrade to Debian 12, or build/install 3.11 via pyenv or from source and point PYTHON_BIN at it'
   ['RHEL 8 / CentOS 8|sudo dnf module enable python311 && sudo dnf install python3.11 python3.11-pip']='RHEL 8 / CentOS 8|sudo dnf module enable python311 && sudo dnf install python3.11 python3.11-pip'
   ['RHEL 9 / TencentOS 4 / Rocky / Alma|sudo dnf install python3.11']='RHEL 9 / TencentOS 4 / Rocky / Alma|sudo dnf install python3.11'
   ['其它发行版|用系统包管理器装 python3 ≥ 3.11']='Other distributions|install python3 ≥ 3.11 with your package manager'

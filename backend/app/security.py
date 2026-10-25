@@ -1,6 +1,7 @@
 """Panel authentication (JWT sessions) and role-based access control."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -135,8 +136,20 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
     ],
 }
 
+# 区域管理员：普通用户的全部能力，外加「本区域内所有机器」的可见与操作权
+# （含把区域内的机器指派给具体用户）。范围来自 users.regions（连接上的区域
+# 标签），不新增一套权限点 —— 权限点描述「能做什么」，区域描述「对谁生效」，
+# 混在一起会出现「勾了权限却看不到东西」的困惑。
+ROLE_PERMISSIONS["region_admin"] = [
+    *ROLE_PERMISSIONS["operator"],
+    "vm.assign",
+    "ct.assign",
+]
+
 ROLE_DESCRIPTIONS: Dict[str, str] = {
     "admin": "超级管理员：可见并管理全部资源（不受用户隔离限制），可管理用户、连接配置与宿主机网络。",
+    "region_admin": "区域管理员：管理指派区域内（可多个）的全部虚拟机与容器，可指派区域内机器的归属；"
+    "不能管理用户、全局连接配置或其它区域。",
     "operator": "普通用户：可创建、开关机、控制台、快照、备份、克隆，并删除「自己创建」的"
     "虚拟机与容器；只能看到自己名下的机器，不能管理用户、连接配置或宿主机网络。",
     "viewer": "只读用户：仅可查看自己名下的资源、监控与任务，不能执行任何变更操作。",
@@ -257,6 +270,11 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
         "label": "节点",
         "permissions": [
             {"key": "node.view", "label": "查看", "desc": "查看节点状态与监控"},
+            {
+                "key": "node.scope",
+                "label": "可见性",
+                "desc": "设置节点对哪些用户 / 角色可见（特殊项目节点可对普通用户隐藏）",
+            },
         ],
     },
     {
@@ -389,6 +407,7 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
 
 BUILTIN_ROLE_NAMES = {
     "admin": "超级管理员",
+    "region_admin": "区域管理员",
     "operator": "普通用户",
     "viewer": "只读用户",
 }
@@ -572,6 +591,154 @@ def is_admin(user: Dict[str, Any]) -> bool:
 def visible_owner(user: Dict[str, Any]) -> Optional[str]:
     """返回「只能看自己」时的用户名；管理员返回 None 表示不限制。"""
     return None if is_admin(user) else str((user or {}).get("username") or "")
+
+
+# ------------------------------------------------------- 区域 / 节点可见范围
+def is_region_admin(user: Dict[str, Any]) -> bool:
+    """区域管理员：可见并管理**指派区域内全部机器**（不是只有自己名下）。"""
+    return str((user or {}).get("role") or "") == "region_admin"
+
+
+def user_regions(user: Dict[str, Any]) -> List[str]:
+    """该用户被指派的区域名（来自连接的 region 标签）。空 = 一个区域都没指派。
+
+    库里的 :func:`store._user_row` 已解析成列表；这里再兼容一次 JSON 字符串与
+    逗号分隔文本 —— API Token / 旧数据 / 单元测试都可能只给原文，判空失效会让
+    区域管理员在整个面板里「看不见任何东西」。
+    """
+    raw = (user or {}).get("regions")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            parsed = [item for item in text.replace(";", ",").split(",")]
+        raw = parsed if isinstance(parsed, list) else [parsed]
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item or "").strip()]
+
+
+def region_in_scope(user: Dict[str, Any], region: Any) -> bool:
+    """该区域是否落在用户的可见范围内。
+
+    普通用户不受区域限制（他们的范围由「自己名下」+ 节点授权决定）。区域管理
+    员只在本区域内放行；**未分区（region 为空）的连接不归任何区域管理员** ——
+    否则「忘了填区域」的连接会变成一个谁都能管的缺口。
+    """
+    if not is_region_admin(user):
+        return True
+    text = str(region or "").strip()
+    if not text:
+        return False
+    return text in user_regions(user)
+
+
+def ensure_region_allowed(user: Dict[str, Any], connection_id: str) -> None:
+    """写操作入口用：区域管理员越区时直接拒绝。"""
+    if not region_in_scope(user, store.connection_region(connection_id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="该连接不在你负责的区域内",
+        )
+
+
+async def node_visibility(user: Dict[str, Any]) -> Callable[[str, str], bool]:
+    """返回 ``(connection_id, node) -> 是否可见`` 的判定函数。
+
+    管理员与区域管理员不做节点级限制（区域外的连接在连接/节点清单里已被挡掉）；
+    其余人按 ``node_scope`` 解析：用户行 > 角色行 > 默认行 > 无行（可见）。
+
+    读库失败时**放行**：升级前的行为就是「所有节点可见」，一次读库异常不该把
+    所有人的建机入口关掉；真正的授权仍由写操作时的 :func:`ensure_node_allowed`
+    兜住。
+    """
+    if is_admin(user) or is_region_admin(user):
+        return lambda _connection_id, _node: True
+
+    try:
+        rows = await store.list_node_scope()
+    except Exception:  # noqa: BLE001 - 读不到授权表时保持升级前的行为
+        logger.warning("读取节点可见性配置失败，按全部可见处理", exc_info=True)
+        return lambda _connection_id, _node: True
+
+    username = str((user or {}).get("username") or "")
+    role = str((user or {}).get("role") or "")
+    user_map: Dict[Tuple[str, str], bool] = {}
+    role_map: Dict[Tuple[str, str], bool] = {}
+    default_map: Dict[Tuple[str, str], bool] = {}
+    for row in rows:
+        kind = str(row.get("subject_type") or "")
+        subject = str(row.get("subject") or "")
+        key = (str(row.get("connection_id") or ""), str(row.get("node") or ""))
+        allowed = bool(row.get("allowed"))
+        if kind == "user" and subject == username:
+            user_map[key] = allowed
+        elif kind == "role" and subject == role:
+            role_map[key] = allowed
+        elif kind == "*" and subject == "*":
+            default_map[key] = allowed
+
+    def allowed(connection_id: str, node: str) -> bool:
+        key = (str(connection_id or ""), str(node or ""))
+        if key in user_map:
+            return user_map[key]
+        if key in role_map:
+            return role_map[key]
+        if key in default_map:
+            return default_map[key]
+        return True
+
+    return allowed
+
+
+async def ensure_node_allowed(
+    user: Dict[str, Any], connection_id: str, node: str
+) -> None:
+    """写操作入口用：节点对该用户不可见时拒绝。
+
+    **必须放在服务端**：前端下拉隐藏只是体验，构造一个请求体带上节点名就能
+    绕过 —— 在加上这道校验之前，创建接口对 ``payload.node`` 没有任何归属检查。
+    """
+    visible = await node_visibility(user)
+    if not visible(connection_id, node):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"节点 {node} 未对你开放，请联系管理员",
+        )
+
+
+def scoped_username(user: Dict[str, Any], requested: Any = None) -> Optional[str]:
+    """把「要看谁的记录」收敛成一个安全取值（``None`` = 不限制）。
+
+    管理员可以看全部，也可以按用户名筛；其他人**只能看自己** —— 被授予
+    ``audit.view`` 的普通用户也一样。显式索要别人的记录直接 403，而不是悄悄
+    换成自己：默默替换会让界面上的「按用户筛选」看起来生效了，实际返回的却是
+    自己的数据，排查问题时更容易跑偏。
+
+    用户名解析不出来（理论上不该出现）时同样拒绝：若返回空串，查询层会把
+    ``username = ''`` 当成「没加这个条件」，等于放开全量 —— 这里宁可 403。
+    """
+    scope = visible_owner(user)
+    if scope is None:
+        text = str(requested or "").strip()
+        return text or None
+
+    if not scope:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无法确定当前用户身份，拒绝读取记录",
+        )
+
+    wanted = str(requested or "").strip()
+    if wanted and wanted != scope:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只能查看自己的记录",
+        )
+    return scope
 
 
 # ------------------------------------------------------------------ passwords
@@ -953,6 +1120,10 @@ def _user_view(user: Dict[str, Any], path: str) -> Dict[str, Any]:
         # None 表示继承角色；有值表示该用户的权限以这份列表为准
         "permissions_override": user.get("permissions_override"),
         "permissions": effective_permissions(user),
+        # 区域管理员的可见范围必须跟着「当前用户」一起走：路由里所有区域判定
+        # （连接清单、节点列表、单机访问）读的都是这份视图。之前漏了这个字段，
+        # 区域管理员在 HTTP 请求里恒等于「没分配区域」，节点与机器全是空的。
+        "regions": user_regions(user),
         "totp_enabled": bool(user.get("totp_enabled")),
         # 角色被要求绑定 2FA、但这个账号还没绑：前端据此把人直接带到绑定页。
         # 只在登录响应里给的话，会话还在时刷新页面就绕过了这道门 —— 用户会

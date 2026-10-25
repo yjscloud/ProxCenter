@@ -90,7 +90,13 @@ async def export_audit(
     search: Optional[str] = None,
     user: Dict[str, Any] = Depends(security.require_permission("audit.view")),
 ):
-    """导出审计日志（全量，支持与列表页相同的筛选）。"""
+    """导出审计日志（支持与列表页相同的筛选）。
+
+    可见范围与列表页同一口径：管理员导出全量，其他人只能导出自己的记录 ——
+    导出等于把一批数据整体带走，比翻页看到的更多，隔离必须同样严格。
+    """
+    username = security.scoped_username(user, username)
+
     await security.audit_read(
         request,
         user,

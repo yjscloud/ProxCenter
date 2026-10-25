@@ -263,9 +263,30 @@ export function LxcCreateWizard({
     setMode(usable.length > 0 ? 'quick' : 'custom');
   }, [open, specsQuery.data]);
 
+  /* 区域 / 机房：先选区域把目标主机与节点收窄到一个机房内（与虚拟机向导一致） */
+  const [region, setRegion] = useState('');
+
+  const regionOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const item of connectionsQuery.data ?? []) {
+      const label = (item.region ?? '').trim();
+      if (label) seen.add(label);
+    }
+    return [
+      { label: t('vmCreate.regionAll'), value: '' },
+      ...[...seen].sort().map((label) => ({ label, value: label })),
+    ];
+  }, [connectionsQuery.data, t]);
+
+  const scopedConnections = useMemo(() => {
+    const list = connectionsQuery.data ?? [];
+    if (!region) return list;
+    return list.filter((c) => (c.region ?? '').trim() === region);
+  }, [connectionsQuery.data, region]);
+
   const connectionOptions = useMemo(
     () =>
-      (connectionsQuery.data ?? []).map((c) => ({
+      scopedConnections.map((c) => ({
         /* 标签里**不放主机地址**：普通用户不需要直接连这台 PVE，而「面板接了哪些
            主机、地址是什么」属于管理信息，不该从一个创建表单里漏出去 */
         label: `${c.name || c.host}${
@@ -273,19 +294,20 @@ export function LxcCreateWizard({
         }`,
         value: c.id,
       })),
-    [connectionsQuery.data, t],
+    [scopedConnections, t],
   );
 
-  /* 打开时默认落在顶栏「集群作用域」选的那一套，其次是兜底连接（与虚拟机向导一致） */
+  /* 打开时默认落在顶栏「集群作用域」选的那一套，其次是兜底连接（与虚拟机向导一致）。
+     选了区域后候选集变化，原来那套不在里面就重新挑。 */
   useEffect(() => {
-    if (!open || targetConn) return;
-    const conns = connectionsQuery.data ?? [];
+    if (!open) return;
+    if (targetConn && scopedConnections.some((c) => c.id === targetConn)) return;
     const target =
-      conns.find((c) => c.id === getGlobalScope()) ??
-      conns.find((c) => c.active) ??
-      conns[0];
-    if (target) setTargetConn(target.id);
-  }, [open, targetConn, connectionsQuery.data]);
+      scopedConnections.find((c) => c.id === getGlobalScope()) ??
+      scopedConnections.find((c) => c.active) ??
+      scopedConnections[0];
+    setTargetConn(target?.id ?? '');
+  }, [open, targetConn, scopedConnections]);
 
   /* 换了主机，节点名不通用（每台 PVE 各有自己的节点），清掉让用户重选。
      例外：从系统模板卡片带进来的预选节点要留住 —— 这个 effect 会在
@@ -644,6 +666,17 @@ export function LxcCreateWizard({
             <div className="form-grid">
               {/* 限宽必须包在外层：给 Select 传 style 只会缩窄内层输入框，
                   箭头（相对外层容器定位）会飘到框外 */}
+              {regionOptions.length > 1 ? (
+                <div className="field-compact">
+                  <Select
+                    label={t('vmCreate.fieldRegion')}
+                    value={region}
+                    onChange={(e) => setRegion(e.target.value)}
+                    options={regionOptions}
+                    hint={t('vmCreate.fieldRegionHint')}
+                  />
+                </div>
+              ) : null}
               <div className="field-compact">
                 <Select
                   label={t('lxcWizard.fieldConn')}

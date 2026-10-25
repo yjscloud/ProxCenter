@@ -58,6 +58,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useGlobalScope } from '../hooks/useGlobalScope';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { NodeNoteField, useNodeMeta } from '../components/NodeMeta';
+import { NodeScopeEditor } from '../components/NodeScopeEditor';
 import type { NodeInfo } from '../api/types';
 
 /* 「集群失去仲裁」提示的关闭状态记忆键 */
@@ -756,6 +757,9 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
   /* 节点备注写在面板自己的库里（见 node_notes.py），后端要 `node.view` ——
      这里与它保持一致，不再用「是不是非只读用户」的角色粗判 */
   const canEditNote = hasPermission('node.view');
+  /* 可见性只给管理员配：把特殊项目节点藏起来、或单独授权某个人 */
+  const canScope = hasPermission('node.scope');
+  const [scopeOpen, setScopeOpen] = useState(false);
   const pct = nodePercents(node);
   const meta = nodeStatusMeta(node.status, t);
   const offline = node.status !== 'online';
@@ -846,8 +850,25 @@ function NodeCard({ node, onOpen }: { node: NodeInfo; onOpen: () => void }) {
             </span>
           </span>
           <NodeNoteField node={node.node} canEdit={canEditNote} />
+          {canScope ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setScopeOpen(true)}
+              title={t('nodes.scopeButtonHint')}
+            >
+              {t('nodes.scopeButton')}
+            </Button>
+          ) : null}
         </div>
       </div>
+
+      <NodeScopeEditor
+        open={scopeOpen}
+        connectionId={node.connection_id ?? ''}
+        node={node.node}
+        onClose={() => setScopeOpen(false)}
+      />
     </Card>
   );
 }

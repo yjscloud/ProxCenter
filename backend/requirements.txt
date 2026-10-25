@@ -1,3 +1,8 @@
+# 整套依赖按 **Python 3.11+** 固定（见 README）。最硬的限制来自 Pillow 12：
+# 它要求 Python ≥3.10，因此 Python 3.9（Debian 11 / Ubuntu 20.04 自带的版本）
+# 上 pip 会直接解析失败。入口脚本与 backend/run.py 会先校验解释器版本，避免出现
+# 「在低版本上装了一半、面板能开但部分功能不工作」的情况。
+#
 # --- Web framework ---
 fastapi==0.115.0
 uvicorn[standard]==0.31.1

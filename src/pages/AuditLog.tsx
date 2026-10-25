@@ -33,6 +33,7 @@ import { formatDateTime, formatRelative } from '../utils/format';
 import { auditResultMeta } from '../utils/status'
 import { useT, type MessageKey, type TFunc } from '../i18n';
 import { useToast } from '../hooks/useToast';
+import { useAuth } from '../hooks/useAuth';
 import type { AuditEntry } from '../api/types';
 
 /* ---------------------------------------------------------------------------
@@ -114,6 +115,10 @@ function auditReason(entry: AuditEntry): string {
 export function AuditLog() {
   const t = useT();
   const toast = useToast();
+  /* 可见范围与后端同一口径：管理员看全部，其他人只看自己。后端已经强制
+     按当前用户过滤（越权索取别人的用户名会 403），这里只负责别把「操作者」
+     筛选框摆给一个永远只能看自己的人。 */
+  const { isAdmin } = useAuth();
 
   const [username, setUsername] = useState('');
   const [action, setAction] = useState('');
@@ -372,7 +377,7 @@ export function AuditLog() {
           {t('audit.title')}
         </>
       }
-      subtitle={t('audit.subtitle')}
+      subtitle={isAdmin ? t('audit.subtitle') : t('audit.subtitleOwn')}
       actions={
         <>
           <Button
@@ -403,6 +408,13 @@ export function AuditLog() {
         </>
       }
     >
+      {/* 只有管理员能看全量：把范围说清楚，别让人以为「记录只有这么几条」 */}
+      {!isAdmin ? (
+        <Notice tone="info" title={t('audit.ownScopeTitle')}>
+          {t('audit.ownScopeNotice')}
+        </Notice>
+      ) : null}
+
       {/* 统计 */}
       <div className="grid grid-4">
         <KpiCard
@@ -450,14 +462,18 @@ export function AuditLog() {
         />
         <div className="dyn-list">
           <div className="dyn-row">
-            <Field label={t('audit.fieldUser')}>
-              <Input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder={t('audit.usernamePlaceholder')}
-                prefix={<IconUser size={15} />}
-              />
-            </Field>
+            {/* 「操作者」筛选只对管理员有意义：其他人无论填谁都只会拿到自己的
+                记录（后端会 403），摆出来只会让人以为能看到别人的日志。 */}
+            {isAdmin ? (
+              <Field label={t('audit.fieldUser')}>
+                <Input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder={t('audit.usernamePlaceholder')}
+                  prefix={<IconUser size={15} />}
+                />
+              </Field>
+            ) : null}
 
             <Field label={t('audit.fieldAction')}>
               <Select

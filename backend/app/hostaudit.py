@@ -21,7 +21,7 @@ import subprocess
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import alerting, database, localhost, sshguard, sshremote, store
+from . import alerting, database, localhost, sshforward, sshguard, sshremote, store
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +526,9 @@ async def import_events(
 
         written = 0
         newest = cursor
+        # 同一轮里「真实 IP + 用户名」只写一条：被爆破时同一个人会反复打同一个
+        # 用户名，逐条写没有信息量，只会把审计表再灌满一次
+        seen_forwarded: set = set()
         try:
             for kind, action in (("success", "host.ssh_login"), ("failed", "host.ssh_failed")):
                 report = await collect_logins(hid, kind=kind, limit=LAST_LIMIT)
@@ -535,32 +538,55 @@ async def import_events(
                     ts = float(entry.get("start") or 0)
                     if ts <= floor or entry.get("kind") == "reboot":
                         continue
+                    original_ip = str(entry.get("ip") or "")
+                    ip = original_ip
+                    forwarded_from = ""
+                    # 面板本机的 22 经 frp 暴露时，sshd 只看到入口机；把入口机
+                    # haproxy 还原出的真实地址换回来（见 sshforward.py）
                     if (
                         action == "host.ssh_failed"
-                        and str(entry.get("ip") or "") in flooding
+                        and hid == "local"
+                        and sshforward.enabled()
                     ):
-                        # 正在被爆破的 IP：别逐条写审计 —— 那条信息已经在 SSH 爆破
-                        # 告警里（带失败次数），逐条写只会把审计表灌满。
-                        newest = max(newest, ts)
-                        summary["skipped_flood"] += 1
-                        continue
+                        real = await sshforward.resolve(ts, original_ip)
+                        if real and real != original_ip:
+                            forwarded_from = original_ip
+                            ip = real
+
+                    if action == "host.ssh_failed" and original_ip in flooding:
+                        if not forwarded_from:
+                            # 正在被爆破的 IP：别逐条写审计 —— 那条信息已经在 SSH 爆破
+                            # 告警里（带失败次数），逐条写只会把审计表灌满。
+                            newest = max(newest, ts)
+                            summary["skipped_flood"] += 1
+                            continue
+                        # 解析出真实 IP 后仍然去重：爆破时同一个 IP 会反复打同一个
+                        # 用户名，每种组合留一条就足够追查，不必把表再灌满一次。
+                        dedup_key = f"{ip}|{entry.get('user')}"
+                        if dedup_key in seen_forwarded:
+                            newest = max(newest, ts)
+                            summary["skipped_flood"] += 1
+                            continue
+                        seen_forwarded.add(dedup_key)
+
+                    detail = {
+                        "host": name,
+                        "os_user": entry.get("user"),
+                        "tty": entry.get("tty"),
+                        "duration": entry.get("duration"),
+                        "state": entry.get("state"),
+                        "end": entry.get("end"),
+                    }
+                    if forwarded_from:
+                        # 保留原始来源，方便和对账：这条记录的地址是「还原」出来的
+                        detail["forwarded_from"] = forwarded_from
                     await store.add_audit(
                         username=await _panel_user(str(entry.get("user") or "")),
                         action=action,
                         target=f"{entry.get('user') or '-'}@{name}",
                         result="success" if entry.get("success") else "failed",
-                        detail=json.dumps(
-                            {
-                                "host": name,
-                                "os_user": entry.get("user"),
-                                "tty": entry.get("tty"),
-                                "duration": entry.get("duration"),
-                                "state": entry.get("state"),
-                                "end": entry.get("end"),
-                            },
-                            ensure_ascii=False,
-                        ),
-                        ip=str(entry.get("ip") or ""),
+                        detail=json.dumps(detail, ensure_ascii=False),
+                        ip=ip,
                     )
                     written += 1
                     newest = max(newest, ts)

@@ -791,9 +791,182 @@
   margin-top: 4px;
 }
 
-/* 面板网段拦截开关的说明文字：小字 + 1.6 行高，两行读起来不粘在一起 */
-.grant-policy-hint {
+/* ---------------------------------------------------------------------------
+   内网穿透：策略面板（端口区间 / 面板网段拦截）
+   ---------------------------------------------------------------------------
+   这些是「管理员设定」的全局策略。原先只是几行说明文字直接摊在卡片里、控件
+   甩到最右侧，看不出它们属于同一组，也读不出谁控制谁。这里收成一块带标题栏
+   的面板：一行一个设置，左边名称 + 说明、右边控件，行间用细线分隔。 */
+
+.frp-policy {
+  margin: 12px 0 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  background: var(--bg-base);
+  overflow: hidden;
+}
+
+.frp-policy-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-muted);
+  color: var(--text-muted);
+}
+
+.frp-policy-title {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* 两项策略并排填满整行：之前每项独占一行、右侧留一大片空白 */
+.frp-policy-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+}
+
+.frp-policy-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.frp-policy-item + .frp-policy-item {
+  border-left: 1px solid var(--border-muted);
+}
+
+/* 标题与控件同一行：控件紧跟着标题，不再被推到卡片最右边 */
+.frp-policy-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  min-height: 34px;
+}
+
+.frp-policy-label {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* 说明文字限宽：一行读七十多个字符要来回扫，眼睛很累 */
+.frp-policy-hint {
+  max-width: 72ch;
+  font-size: var(--font-size-xs);
   line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.frp-policy-error {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--danger);
+}
+
+.frp-policy-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 起止端口共用一个外框：读起来是「一个区间」，而不是两个互不相干的字段 */
+.frp-port-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.frp-port-range:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.frp-port-range.is-invalid {
+  border-color: var(--danger);
+}
+
+.frp-port-range input {
+  width: 76px;
+  height: 100%;
+  padding: 0 4px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  text-align: center;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+/* 去掉 number 的上下小箭头：区间接键盘输入，箭头只会把数字挤到一边 */
+.frp-port-range input::-webkit-outer-spin-button,
+.frp-port-range input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.frp-port-range input:disabled {
+  color: var(--text-muted);
+}
+
+.frp-port-range-sep {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.frp-policy-control {
+  flex-wrap: wrap;
+}
+
+/* 窄屏：两项改成上下堆叠，分隔线由竖线换成横线 */
+@media (max-width: 900px) {
+  .frp-policy-body {
+    grid-template-columns: 1fr;
+  }
+
+  .frp-policy-item + .frp-policy-item {
+    border-left: none;
+    border-top: 1px solid var(--border-muted);
+  }
+}
+
+/* 卡片里的提示条与表格之间统一留白（原先 Notice 与相邻区块贴在一起） */
+.frp-rules-card > .notice {
+  margin: 12px 0;
+}
+
+/* 规则为空时别只挂一句光秃秃的文字，看着像没渲染完 */
+.frp-rules-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 18px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-base);
+  color: var(--text-muted);
 }
 
 /* --- 表格里的「只读复制框」（frp 公网访问地址等） ---
@@ -820,6 +993,81 @@
   width: 24px;
   height: 24px;
   color: var(--text-muted);
+}
+
+/* --- 内网穿透：规则表 ---
+   每一格都是行内可编辑的输入框。若全部常显边框，整张表看起来像一片表单、
+   数据本身反而读不清；默认透明、悬停 / 聚焦再浮现边框，行读起来是数据，
+   需要改的时候又明确可点。 */
+.frp-rules-table-wrap {
+  margin-top: 14px;
+}
+
+.frp-rules-table .input-wrap {
+  background: transparent;
+  border-color: transparent;
+  padding: 0 6px;
+}
+
+.frp-rules-table tbody tr:hover .input-wrap,
+.frp-rules-table .input-wrap:focus-within {
+  background: var(--bg-base);
+  border-color: var(--border);
+}
+
+/* 固定列宽：这张表有五列是行内输入框，auto 布局会按输入框的固有宽度把表格
+   撑出卡片，把「状态」和操作列挤出可视区。fixed 下按比例分配、内容自己截断，
+   IP / 地址本来就该用省略号兜底。窄窗口交给横向滚动（min-width）。 */
+.frp-rules-table {
+  table-layout: fixed;
+  min-width: 840px;
+}
+
+.frp-rules-table thead th,
+.frp-rules-table tbody td {
+  padding-left: 10px;
+  padding-right: 10px;
+  overflow: hidden;
+}
+
+.frp-rules-table th:nth-child(1),
+.frp-rules-table td:nth-child(1) {
+  width: 10%;
+}
+
+.frp-rules-table th:nth-child(2),
+.frp-rules-table td:nth-child(2) {
+  width: 15%;
+}
+
+.frp-rules-table th:nth-child(3),
+.frp-rules-table td:nth-child(3) {
+  width: 17%;
+}
+
+.frp-rules-table th:nth-child(4),
+.frp-rules-table td:nth-child(4) {
+  width: 12%;
+}
+
+.frp-rules-table th:nth-child(5),
+.frp-rules-table td:nth-child(5) {
+  width: 12%;
+}
+
+.frp-rules-table th:nth-child(6),
+.frp-rules-table td:nth-child(6) {
+  width: 18%;
+}
+
+.frp-rules-table th:nth-child(7),
+.frp-rules-table td:nth-child(7) {
+  width: 10%;
+}
+
+.frp-rules-table th:nth-child(8),
+.frp-rules-table td:nth-child(8) {
+  width: 6%;
 }
 
 /* ---------------------------------------------------------------------------

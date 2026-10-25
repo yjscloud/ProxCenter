@@ -522,6 +522,28 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
     retry: false,
   });
 
+  /* 区域 / 机房：连接的 region 标签。先选区域可以把「目标 PVE」与节点收窄到
+     一个机房内（后端也会把区域外的连接挡在清单之外）。留空 = 不筛选。 */
+  const [region, setRegion] = useState('');
+
+  const regionOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const item of connectionsQuery.data ?? []) {
+      const label = (item.region ?? '').trim();
+      if (label) seen.add(label);
+    }
+    return [
+      { label: t('vmCreate.regionAll'), value: '' },
+      ...[...seen].sort().map((label) => ({ label, value: label })),
+    ];
+  }, [connectionsQuery.data, t]);
+
+  const scopedConnections = useMemo(() => {
+    const list = connectionsQuery.data ?? [];
+    if (!region) return list;
+    return list.filter((c) => (c.region ?? '').trim() === region);
+  }, [connectionsQuery.data, region]);
+
   /* 面板配置的默认 DNS（服务端设置），用于预填 DNS 输入框 */
   const vmDefaultsQuery = useQuery({
     queryKey: ['config', 'vm-defaults'],
@@ -674,16 +696,17 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
   /* 默认选中一套具体连接：让所有取数都带上它，
      否则后端会走「未指定连接 → 合并所有 PVE」的分支，节点列表会混入别的主机。
      优先落在顶栏「集群作用域」选的那一套 —— 用户刚把作用域切到 B，进向导却
-     默认在 A，多半不是他想要的；作用域为「全部集群」时回落到兜底连接。 */
+     默认在 A，多半不是他想要的；作用域为「全部集群」时回落到兜底连接。
+     选了区域之后候选集缩小到该区域的连接，原来那套不在里面就重新挑一套。 */
   useEffect(() => {
-    if (!open || targetConn) return;
-    const conns = connectionsQuery.data ?? [];
+    if (!open) return;
+    if (targetConn && scopedConnections.some((c) => c.id === targetConn)) return;
     const target =
-      conns.find((c) => c.id === getGlobalScope()) ??
-      conns.find((c) => c.active) ??
-      conns[0];
-    if (target) setTargetConn(target.id);
-  }, [open, targetConn, connectionsQuery.data]);
+      scopedConnections.find((c) => c.id === getGlobalScope()) ??
+      scopedConnections.find((c) => c.active) ??
+      scopedConnections[0];
+    setTargetConn(target?.id ?? '');
+  }, [open, targetConn, scopedConnections]);
 
   /* 切换目标 PVE 主机后：VMID / 节点名 / 模板都不通用，清空后由下方效果按新主机重新填充。
      VMID 必须一起清掉：每台 PVE 的 VMID 空间各自独立，A 主机取到的号在 B 主机上
@@ -771,7 +794,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
      合并返回，创建向导的节点下拉就会混入别的主机的节点。 */
   const connectionOptions = useMemo(
     () =>
-      (connectionsQuery.data ?? []).map((c) => ({
+      scopedConnections.map((c) => ({
         /* 标签里**不放主机地址**：普通用户不需要直接连这台 PVE，而「面板接了哪些
            主机、地址是什么」属于管理信息，不该从一个创建表单里漏出去 */
         label: `${c.name || c.host}${
@@ -779,7 +802,7 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
         }`,
         value: c.id,
       })),
-    [connectionsQuery.data, t],
+    [scopedConnections, t],
   );
 
   const targetConnLabel =
@@ -1476,6 +1499,17 @@ export function VmCreateWizard({ open, onClose, onCreated }: VmCreateWizardProps
               />
               {/* 限宽必须包在外层：给 Select 传 style 只会缩窄内层输入框，
                   箭头（相对外层容器定位）会飘到框外 */}
+              {regionOptions.length > 1 ? (
+                <div className="field-compact">
+                  <Select
+                    label={t('vmCreate.fieldRegion')}
+                    value={region}
+                    onChange={(e) => setRegion(e.target.value)}
+                    options={regionOptions}
+                    hint={t('vmCreate.fieldRegionHint')}
+                  />
+                </div>
+              ) : null}
               <div className="field-compact">
                 <Select
                   label={t('vmCreate.fieldTargetConn')}

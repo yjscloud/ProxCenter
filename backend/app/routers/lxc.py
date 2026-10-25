@@ -129,6 +129,7 @@ async def list_containers(
 
         cid = str(profile.get("id") or "") if profile else str(requested_connection() or "")
         label = connection_label(profile) if profile else ""
+        region = str((profile or {}).get("region") or "").strip()
         items: List[Dict[str, Any]] = [
             {
                 "id": ct.get("id"),
@@ -158,6 +159,8 @@ async def list_containers(
                 "type": "lxc",
                 "connection_id": cid,
                 "connection_name": label,
+                # 内部字段，范围过滤后 pop 掉
+                "connection_region": region,
             }
             for ct in containers
         ]
@@ -196,10 +199,20 @@ async def list_containers(
         )
 
     if owner is not None:
-        result = [c for c in result if _owner_of(c) == owner]
+        if security.is_region_admin(user):
+            # 区域管理员看本区域全部容器（与 /vms 同口径）
+            result = [
+                c
+                for c in result
+                if security.region_in_scope(user, str(c.get("connection_region") or ""))
+            ]
+        else:
+            result = [c for c in result if _owner_of(c) == owner]
     else:
         for item in result:
             item["owner"] = _owner_of(item) or None
+    for item in result:
+        item.pop("connection_region", None)
 
     result.sort(key=lambda c: (c.get("node") or "", c.get("vmid") or 0))
     return result
@@ -360,6 +373,12 @@ async def create_container(
     user: Dict[str, Any] = Depends(security.require_permission("ct.create")),
 ) -> Dict[str, Any]:
     client = get_client()
+
+    # 范围校验：与创建虚拟机同一口径（区域 + 节点可见性），否则换个节点名
+    # 就能把容器建到特殊项目节点上
+    connection_id = _op_connection()
+    security.ensure_region_allowed(user, connection_id)
+    await security.ensure_node_allowed(user, connection_id, payload.node)
 
     # 容器走自己的额度（与虚拟机额度分开记账）
     await quota.enforce_for_create(user, request, "lxc")

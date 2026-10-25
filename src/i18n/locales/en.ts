@@ -1716,6 +1716,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'vmCreate.vmidHint': 'Must be a unique integer between 100 and 999999999',
   'vmCreate.fieldTargetConn': 'Target PVE host',
   'vmCreate.fieldTargetConnHint': 'Choose among the configured PVE hosts; defaults to the panel’s current connection',
+  'vmCreate.fieldRegion': 'Region / site',
+  'vmCreate.fieldRegionHint': 'Narrows the target host and node list to one site; leave empty for any',
+  'vmCreate.regionAll': 'All regions',
   'vmCreate.nodesLoadFailed': 'Could not read the node list — check this host’s connection',
   'vmCreate.fieldNodeHint': 'The VM is created on this node; the cards show each node’s current usage',
   'vmCreate.fieldTags': 'Tags',
@@ -2357,6 +2360,11 @@ export const en: Partial<Record<MessageKey, string>> = {
   'users.fieldConfirmPassword': 'Confirm password',
   'users.fieldRole': 'Role',
   'users.fieldRoleHint': 'Determines what the user can do in the panel',
+  'users.fieldRegions': 'Managed regions',
+  'users.fieldRegionsHint':
+    'Regions come from the "Region / site" label on each PVE connection. A region admin manages every VM and container in the selected regions; with none selected they only see their own machines.',
+  'users.regionsEmpty':
+    'No connection has a region label yet. Add one under Settings → PVE connections, then come back to assign regions.',
   'users.permBlock': 'Permissions',
   'users.permCustom': 'Custom ({n})',
   'users.permDiff': '{added} added, {removed} removed vs the role',
@@ -5278,6 +5286,11 @@ export const en: Partial<Record<MessageKey, string>> = {
   'audit.title': 'Audit log',
   'audit.subtitle':
     'Every action issued through the panel, for security auditing and troubleshooting',
+  'audit.subtitleOwn':
+    'Your own activity only; logs from other users are visible to administrators',
+  'audit.ownScopeTitle': 'Showing only your own log',
+  'audit.ownScopeNotice':
+    'Audit logs are isolated per user: you only see actions you issued through the panel. Ask an administrator if you need the full log (for example to investigate someone else’s actions).',
   'audit.exportPage': 'Export this page',
   'audit.exportAll': 'Export all',
   'audit.exportAllTitle': 'Export every record matching the filters (not limited by pagination)',
@@ -5491,6 +5504,28 @@ export const en: Partial<Record<MessageKey, string>> = {
   'nodes.pveVersion': 'PVE {version}',
   'nodes.kernel': 'Kernel {kernel}',
   'nodes.maintenanceLevel': 'Maintenance level {level}',
+  'nodes.scopeButton': 'Visibility',
+  'nodes.scopeButtonHint': 'Choose which users / roles can see this node',
+  'nodes.scopeTitle': 'Visibility of “{node}”',
+  'nodes.scopeSubtitle':
+    'Every node is visible to regular users by default. Once hidden, only the users or roles listed below can see it and pick it when creating a guest.',
+  'nodes.scopeHide': 'Hide this node from regular users',
+  'nodes.scopeHideHint':
+    'For special-project nodes. Administrators and the region admin responsible for this region always see it.',
+  'nodes.scopeRestrictedNotice':
+    'This node is hidden from regular users. Only explicitly granted users or roles can see it; the API also rejects unauthorised users creating guests on it.',
+  'nodes.scopeAddException': 'Grant access',
+  'nodes.scopeAddHint':
+    'Granted users / roles can see this node and select it when creating a guest.',
+  'nodes.scopeTypeUser': 'User',
+  'nodes.scopeTypeRole': 'Role',
+  'nodes.scopeUserPlaceholder': 'username',
+  'nodes.scopeRolePlaceholder': 'role id',
+  'nodes.scopeGrant': 'Grant',
+  'nodes.scopeNoExceptions': 'No user or role has been granted access yet.',
+  'nodes.scopeDeniedTag': ' (denied)',
+  'nodes.scopeUpdated': 'Node visibility updated',
+  'nodes.scopeUpdateFailed': 'Failed to update node visibility',
   'nodes.maintenance': 'Maintenance',
   'nodes.nodeLabel': 'Node {node}',
   'nodes.sourceHost': 'Source host: {name}',
@@ -5783,7 +5818,7 @@ export const en: Partial<Record<MessageKey, string>> = {
     'Once installed, click "Start tunnel" above to let frpc connect to the server.',
   'frp.rulesTitle': 'Tunnel rules',
   'frp.rulesSubtitleAdmin':
-    'Administrators see everyone\u2019s rules; the delete button on rules you do not own triggers a claim/migration',
+    'Administrators can view and manage every rule; ordinary users only see their own',
   'frp.rulesSubtitleUser': 'Only rules owned by {user} are shown',
   'frp.currentUser': 'the current user',
   'frp.newRule': 'New rule',
@@ -5878,12 +5913,28 @@ export const en: Partial<Record<MessageKey, string>> = {
   /* --------------------------------------------- Policy setting (panel subnet) */
   'frp.blockPanelLabel': 'Block the panel’s own subnet',
   'frp.blockPanelHint':
-    'When on, ordinary users cannot target addresses inside the subnet the panel backend lives in (protects the panel / PVE management network). Turn it off if other services in that subnet must be tunneled; the panel’s own address is always refused.',
+    'Ordinary users cannot target the subnet the panel backend lives in (protects the panel / PVE management network). Turn it off if other services in that subnet must be tunneled; the panel’s own address is always refused.',
   'frp.blockPanelOn': 'Panel-subnet blocking enabled',
   'frp.blockPanelOff': 'Panel subnet targeting allowed',
   'frp.blockPanelOffDetail':
     'The panel and the PVE management network can now be exposed through tunnels; the panel’s own address is still refused.',
   'frp.blockPanelToggleFailed': 'Could not update the setting',
+
+  /* --------------------------------------------- Public port range (adjustable) */
+  'frp.policyPanelTitle': 'Policy',
+  'frp.portRangeLabel': 'Public port range',
+  'frp.portRangeHint':
+    'Users may only pick ports inside this range; changes apply immediately. Existing rules keep working but must move into the range when edited. Critical ports (22 / 80 / 443 / 7000 / 7001 / 8006) are always refused.',
+  'frp.portRangeMinLabel': 'First port',
+  'frp.portRangeMaxLabel': 'Last port',
+  'frp.portRangeSave': 'Save range',
+  'frp.portRangeUnchanged': 'Range unchanged',
+  'frp.portRangeInvalid':
+    'Invalid range: both ports must be within 1–65535 and the first must not exceed the last',
+  'frp.portRangeSaved': 'Public port range updated',
+  'frp.portRangeOutOfRange':
+    'These existing rules use ports outside the new range. They keep working, but must be moved into the range when edited: {ports}',
+  'frp.portRangeSaveFailed': 'Could not save the port range',
 
   /* ------------------------------------------ Per-user grants (admin only) */
   'frp.grantsTitle': 'User grants',

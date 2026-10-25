@@ -411,6 +411,7 @@ that matter:
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | Per-IP limits for `/api/*` and for the sensitive endpoints |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | Destructive actions ask for your password again |
 | `FRP_ALLOW_LOCAL_CIDRS` / `FRP_BLOCK_PANEL_SUBNET` | empty / `true` | Tunnel target allowlist: ordinary users may only point at their own VM / container IPs; add networks here to open more (or grant single IPs per user under “User grants” on the frp page). Pointing at the panel's own subnet is blocked by default |
+| `FRP_REMOTE_PORT_MIN` / `FRP_REMOTE_PORT_MAX` | `40000` / `50000` | Initial / fallback range for public ports used by tunnel rules. Administrators can change it directly on the frp page to whatever frps actually has open (stored in the database, applied immediately; the page wins). Critical ports such as 22 / 80 / 443 / 7000 / 7001 / 8006 are always refused |
 | `PVE_HOST` / `PVE_PORT` | empty / `8006` | Proxmox address (no protocol) and API port |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | empty | The token from step 1 |
 | `PVE_VERIFY_SSL` | `false` | Off by default: PVE is self-signed and verification fails at the handshake. For real security pin its certificate via the connection's `ca_cert` field, or set this to `true` when the certificate comes from a public CA |
@@ -511,6 +512,13 @@ because cloud images do not write boot output to the graphical console: the pane
 **Docker: the container will not start or keeps restarting.** Almost always the database password.
 Run `docker compose logs panel | tail -30` and look for `Access denied` / `Can't connect`. See the
 two notes under [Docker deployment](#4-docker).
+
+**The panel runs on Python 3.9 / 3.10 and some features misbehave (typically: alert e-mails never
+arrive, updates fail).** The dependency set targets Python 3.11+, and the hardest floor is Pillow 12
+(≥3.10): on 3.9 `pip install -r backend/requirements.txt` cannot resolve, so dependencies stay stale
+and the built-in updater stops at the install step. Current `start-prod.sh` / `run.py` refuse an old
+interpreter and print the install commands; `/api/version` also reports the interpreter actually in
+use. Install 3.11+, then `rm -rf .venv` and start again (database and configuration are untouched).
 
 **The host-security pages read nothing.** Inside a container, `/var/log` and `/proc` belong to the
 container rather than the host. Mount them read-only as the comments in `docker-compose.yml`

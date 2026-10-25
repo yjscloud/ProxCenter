@@ -17,7 +17,13 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import frp, frpguard, security, store
-from ..schemas import FrpGrantIn, FrpPanelSubnetIn, FrpRuleIn, FrpRuleUpdateIn
+from ..schemas import (
+    FrpGrantIn,
+    FrpPanelSubnetIn,
+    FrpPortRangeIn,
+    FrpRuleIn,
+    FrpRuleUpdateIn,
+)
 
 router = APIRouter(prefix="/api/frp", tags=["frp"])
 
@@ -314,6 +320,9 @@ async def get_policy(
 ) -> Dict[str, Any]:
     """规则策略快照：端口区间 / 关键端口黑名单 / 目标白名单。
 
+    端口区间取管理员在页面上设定的值（见 :func:`set_port_range`），没设置过
+    时跟随环境配置，默认 40000–50000。
+
     前端用它做即时校验与提示（"你能选哪些目标"、"哪些端口已被占"）。普通用户
     还会拿到「自己名下虚机 / 容器的地址清单」（``targets``，含名字 / VMID）——
     这正是他们被允许指向的全部目标，创建规则时做成下拉即可，不必对着报错猜。
@@ -345,7 +354,9 @@ async def get_policy(
             "own_ips": [item["ip"] for item in targets],
             "own_ips_error": own_ips_error,
             "used_remote_ports": frpguard.used_remote_ports(rules),
-            "default_remote_port": frpguard.first_free_port(rules),
+            "default_remote_port": frpguard.first_free_port(
+                rules, (data["remote_port_min"], data["remote_port_max"])
+            ),
         }
     )
     return data
@@ -377,6 +388,55 @@ async def set_panel_subnet_block(
     return {"block_panel_subnet": enabled}
 
 
+@router.put("/policy/port-range")
+async def set_port_range(
+    payload: FrpPortRangeIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission(_PERM_ADMIN)),
+    _step_up: Dict[str, Any] = Depends(security.require_step_up()),
+) -> Dict[str, Any]:
+    """设定用户可用的公网端口区间（admin only）。
+
+    原先区间写死在 40000–50000：frps 前面有 NAT / 云安全组时，管理员往往只能
+    映射很窄的一段端口，写死的区间等于让规则「建得出来但连不上」。现在区间
+    由管理员按实际可用范围设定，普通用户建规则时只能填这一段。
+
+    关键端口黑名单与区间无关、始终生效（把区间放宽到 1–65535 也不会放出 22 /
+    80 / 443 / 8006）。已有规则不会因为区间收窄而失效 —— 只是下次修改时必须
+    改到新区间内，响应里的 ``out_of_range_ports`` 把这类端口列出来提醒管理员。
+    """
+    try:
+        low, high = await frpguard.set_remote_port_range(
+            payload.remote_port_min, payload.remote_port_max
+        )
+    except frpguard.PolicyError as exc:
+        await security.audit(
+            request, user, "frp.policy.port_range", "frp/policy", "denied",
+            f"remote_port={payload.remote_port_min}-{payload.remote_port_max}：{exc.message}",
+        )
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    out_of_range: List[int] = []
+    for rule in await _load_rules():
+        try:
+            port = int(rule.get("remote_port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if port and not (low <= port <= high) and port not in out_of_range:
+            out_of_range.append(port)
+    out_of_range.sort()
+    await security.audit(
+        request, user, "frp.policy.port_range", "frp/policy", "success",
+        f"remote_port={low}-{high}"
+        + (f"；已有规则端口不在区间内：{out_of_range}" if out_of_range else ""),
+    )
+    return {
+        "remote_port_min": low,
+        "remote_port_max": high,
+        "out_of_range_ports": out_of_range,
+    }
+
+
 @router.post("/rules")
 async def create_rule(
     payload: FrpRuleIn,
@@ -401,6 +461,7 @@ async def create_rule(
         raise HTTPException(status_code=400, detail="无法确定规则归属用户")
 
     grants = await frp.load_grants()
+    port_range = await frpguard.remote_port_range()
     try:
         local_ip = await frpguard.check_target(
             payload.local_ip,
@@ -408,7 +469,9 @@ async def create_rule(
             is_admin=_is_admin(user),
             granted=grants.get(target_user, []),
         )
-        remote_port = frpguard.check_remote_port(payload.remote_port, rules)
+        remote_port = frpguard.check_remote_port(
+            payload.remote_port, rules, port_range=port_range
+        )
     except frpguard.PolicyError as exc:
         await security.audit(
             request, user, "frp.rule.create", "frp/rule", "denied",
@@ -467,6 +530,7 @@ async def update_rule(
     # 指向某人无权访问的机器的规则塞给他（管理员自身仍走 bypass）。
     owner = str(target.get("username") or "")
     grants = await frp.load_grants()
+    port_range = await frpguard.remote_port_range()
     try:
         local_ip = await frpguard.check_target(
             payload.local_ip,
@@ -475,7 +539,7 @@ async def update_rule(
             granted=grants.get(owner, []),
         )
         remote_port = frpguard.check_remote_port(
-            payload.remote_port, rules, exclude_id=rule_id
+            payload.remote_port, rules, exclude_id=rule_id, port_range=port_range
         )
     except frpguard.PolicyError as exc:
         await security.audit(

@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import security
+from ..nodeaccess import require_node_visible
 from ..pve import ProxmoxError, get_client
 from ..schemas import NetworkUpsert
 
@@ -64,6 +65,7 @@ def _to_pve_payload(payload: NetworkUpsert) -> Dict[str, Any]:
 async def list_network(
     node: str,
     user: Dict[str, Any] = Depends(security.require_permission("network.view")),
+    _visible: None = Depends(require_node_visible),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:

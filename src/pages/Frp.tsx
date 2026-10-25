@@ -31,6 +31,7 @@ import {
   IconUsers,
   IconCopy,
   IconCheck,
+  IconSettings,
 } from "../components/Icons";
 import type {
   FrpGrant,
@@ -682,7 +683,7 @@ function RulesCard() {
   }
 
   return (
-    <Card>
+    <Card className="frp-rules-card">
       <CardHeader
         title={t('frp.rulesTitle')}
         icon={<IconNetwork size={16} />}
@@ -707,23 +708,35 @@ function RulesCard() {
 
       {policy ? (
         canAdmin ? (
-          /* 管理员：说明行 + 开关行保持原本的上下结构，只把字号与行距调松
-             （开关标题 fs-sm、说明 fs-xs + 1.6 行高），两块之间统一 12px 间距 */
-          <div className="flex flex-col gap-12">
-            <RuleTargetHint policy={policy} />
-            <div className="flex items-center justify-between gap-16">
-              <div className="flex flex-col gap-4">
-                <span className="fs-sm">{t('frp.blockPanelLabel')}</span>
-                <span className="fs-xs text-muted grant-policy-hint">
-                  {t('frp.blockPanelHint')}
-                </span>
+          /* 管理员：策略集中成一块带边框的面板（标题栏 + 若干设置行），
+             与下面的规则表分开。原先三行说明文字直接摊在卡片里、控件甩到
+             最右侧，既看不出它们属于同一组，也读不出谁控制谁。 */
+          <div className="frp-policy">
+            <div className="frp-policy-head">
+              <IconSettings size={13} />
+              <span className="frp-policy-title">{t('frp.policyPanelTitle')}</span>
+              <Badge variant="neutral" size="sm">
+                {t('frp.policyAdminTarget')}
+              </Badge>
+            </div>
+            {/* 两项策略并排：原先上下两行、每行右边一大片空白，既浪费高度，
+                也把「保存区间」推到离标题很远的地方 */}
+            <div className="frp-policy-body">
+              <PortRangeEditor policy={policy} />
+              <div className="frp-policy-item">
+                <div className="frp-policy-item-head">
+                  <span className="frp-policy-label">{t('frp.blockPanelLabel')}</span>
+                  <div className="frp-policy-control">
+                    <Switch
+                      checked={policy.block_panel_subnet ?? true}
+                      disabled={blockBusy}
+                      ariaLabel={t('frp.blockPanelLabel')}
+                      onChange={(next) => void toggleBlockPanelSubnet(next)}
+                    />
+                  </div>
+                </div>
+                <span className="frp-policy-hint">{t('frp.blockPanelHint')}</span>
               </div>
-              <Switch
-                checked={policy.block_panel_subnet ?? true}
-                disabled={blockBusy}
-                ariaLabel={t('frp.blockPanelLabel')}
-                onChange={(next) => void toggleBlockPanelSubnet(next)}
-              />
             </div>
           </div>
         ) : (
@@ -747,11 +760,14 @@ function RulesCard() {
       ) : null}
 
       {rules.length === 0 ? (
-        <p className="text-secondary fs-sm">{t('frp.noRules')}</p>
+        <div className="frp-rules-empty">
+          <IconNetwork size={20} />
+          <p className="fs-sm text-secondary">{t('frp.noRules')}</p>
+        </div>
       ) : (
         <>
-          <div className="table-container">
-            <table className="table table-dense">
+          <div className="table-container frp-rules-table-wrap">
+            <table className="table table-dense frp-rules-table">
               <thead>
                 <tr>
                   <th>{t('frp.colOwner')}</th>
@@ -761,7 +777,7 @@ function RulesCard() {
                   <th>{t('frp.colRemotePort')}</th>
                   <th>{t('frp.colPublic')}</th>
                   <th>{t('common.status')}</th>
-                  <th style={{ width: 96 }} />
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -770,6 +786,8 @@ function RulesCard() {
                     key={r.id}
                     rule={r}
                     publicHost={publicHost}
+                    portMin={policy?.remote_port_min}
+                    portMax={policy?.remote_port_max}
                     canManageRow={canManage && (isAdmin || r.username === ownUsername)}
                     isEffective={effectiveNames.has(r.name)}
                     onUpdate={async (patch) => {
@@ -884,6 +902,128 @@ function RuleTargetHint({ policy }: { policy: FrpPolicy }) {
       <div className="fs-xs text-muted">{portRange}</div>
       {/* 常显：机器不在下拉里时，用户最需要的是「为什么没有、该找谁」 */}
       <div className="fs-xs text-muted">{t('frp.targetIpHint')}</div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   公网端口区间（仅管理员）：原先写死 40000–50000。frps 前面有 NAT / 云安全组
+   时，能映射出去的往往只有很窄的一段端口，写死的区间会让规则「建得出来但
+   连不上」。这里让管理员按实际可用范围设定，普通用户建规则时只能填这一段。
+
+   关键端口黑名单与区间无关、始终生效（区间放到 1–65535 也不会放出 22 / 80 /
+   443 / 8006）。收窄区间不会让已有规则失效，只是它们下次修改时必须落到
+   区间内 —— 保存后把这类端口列出来提醒。
+   --------------------------------------------------------------------------- */
+function PortRangeEditor({ policy }: { policy: FrpPolicy }) {
+  const t = useT();
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [low, setLow] = useState(String(policy.remote_port_min));
+  const [high, setHigh] = useState(String(policy.remote_port_max));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  /* 策略快照不轮询，只在保存成功 / 别处改动后重取；那时把输入框同步成服务端值。
+     草稿由用户主动编辑，不会被这条同步冲掉。 */
+  useEffect(() => {
+    setLow(String(policy.remote_port_min));
+    setHigh(String(policy.remote_port_max));
+  }, [policy.remote_port_min, policy.remote_port_max]);
+
+  const min = Number(low);
+  const max = Number(high);
+  const valid =
+    Number.isInteger(min) &&
+    Number.isInteger(max) &&
+    min >= 1 &&
+    max <= 65535 &&
+    min <= max;
+  const dirty = min !== policy.remote_port_min || max !== policy.remote_port_max;
+
+  async function save() {
+    if (!valid) {
+      setError(t('frp.portRangeInvalid'));
+      return;
+    }
+    setError("");
+    setBusy(true);
+    try {
+      const res = await frpApi.setPortRange(min, max);
+      await qc.invalidateQueries({ queryKey: ["frp"] });
+      if (res.out_of_range_ports.length > 0) {
+        toast.warning(
+          t('frp.portRangeSaved'),
+          t('frp.portRangeOutOfRange', {
+            ports: res.out_of_range_ports.join('、'),
+          }),
+        );
+      } else {
+        toast.success(t('frp.portRangeSaved'));
+      }
+    } catch (err) {
+      toast.error(t('frp.portRangeSaveFailed'), errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="frp-policy-item">
+      <div className="frp-policy-item-head">
+        <span className="frp-policy-label">{t('frp.portRangeLabel')}</span>
+        <div className="frp-policy-control">
+          {/* 起止端口收在同一个框里：一眼就是「一个区间」，不是两个无关的字段 */}
+          <div className={`frp-port-range${error ? ' is-invalid' : ''}`}>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={65535}
+              value={low}
+              disabled={busy}
+              aria-label={t('frp.portRangeMinLabel')}
+              onChange={(e) => {
+                setLow(e.target.value);
+                setError("");
+              }}
+            />
+            <span className="frp-port-range-sep" aria-hidden="true">
+              –
+            </span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={65535}
+              value={high}
+              disabled={busy}
+              aria-label={t('frp.portRangeMaxLabel')}
+              onChange={(e) => {
+                setHigh(e.target.value);
+                setError("");
+              }}
+            />
+          </div>
+          {/* 没有改动时退成次级按钮：一个常亮的蓝色主按钮放在这里是纯噪音 */}
+          <Button
+            size="sm"
+            variant={dirty ? "primary" : "secondary"}
+            loading={busy}
+            disabled={!dirty}
+            title={dirty ? undefined : t('frp.portRangeUnchanged')}
+            onClick={() => void save()}
+          >
+            {t('frp.portRangeSave')}
+          </Button>
+        </div>
+      </div>
+      <span className="frp-policy-hint">{t('frp.portRangeHint')}</span>
+      {error ? (
+        <span className="frp-policy-error" role="alert">
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -1200,6 +1340,8 @@ function RuleDialog({
 function RuleRow({
   rule,
   publicHost,
+  portMin,
+  portMax,
   canManageRow,
   isEffective,
   onUpdate,
@@ -1208,6 +1350,9 @@ function RuleRow({
   rule: FrpRule;
   /** 公网访问地址（空串 = 管理员还没配，显示占位） */
   publicHost: string;
+  /** 当前生效的公网端口区间（管理员可调），用于输入框提示与校验范围 */
+  portMin?: number;
+  portMax?: number;
   canManageRow: boolean;
   isEffective: boolean;
   onUpdate: (patch: FrpRulePatch) => Promise<void>;
@@ -1312,11 +1457,14 @@ function RuleRow({
           <input
             className="input"
             type="number"
-            min={40000}
-            max={50000}
+            min={portMin ?? 40000}
+            max={portMax ?? 50000}
             value={draft.remote_port}
             disabled={locked}
-            title={t('frp.remotePortHint', { min: 40000, max: 50000 })}
+            title={t('frp.remotePortHint', {
+              min: portMin ?? 40000,
+              max: portMax ?? 50000,
+            })}
             onChange={(e) => setDraft({ ...draft, remote_port: Number(e.target.value) })}
           />
         </div>

@@ -14,15 +14,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$ROOT/.venv"
 
-# --- 1. 选择 Python 解释器 ---------------------------------------------------
+# --- 1. 选择 Python 解释器（必须 3.11+）--------------------------------------
+# 与 start.sh / deploy.sh 同一套候选顺序与判定。**必须校验版本**：Ubuntu 20.04 /
+# Debian 11 的 python3 是 3.9、Ubuntu 22.04 是 3.10，只判断命令存在就会静默使用
+# 低版本解释器；而 requirements.txt 里的 Pillow 12 要求 ≥3.10，3.9 上 pip 解析
+# 不出可安装组合，最后表现为「面板能开、告警邮件发不出」这类难排查的半残状态。
 find_python() {
+  local candidate
   for candidate in \
+    "${PYTHON_BIN:-}" \
     "$HOME/.workbuddy/binaries/python/versions/3.13.12/bin/python3" \
     "$VENV/bin/python" \
-    "python3" "python"
+    "python3.13" "python3.12" "python3.11" "python3" "python"
   do
+    [ -n "$candidate" ] || continue
     if command -v "$candidate" >/dev/null 2>&1; then
-      echo "$candidate"; return 0
+      if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        printf '%s' "$candidate"; return 0
+      fi
     fi
   done
   return 1
@@ -30,16 +39,29 @@ find_python() {
 
 PYTHON="$(find_python || true)"
 if [ -z "$PYTHON" ]; then
-  echo "[x] 未找到 Python 3.11+，请先安装。" >&2
+  DETECTED="$(
+    for candidate in python3 python; do
+      if command -v "$candidate" >/dev/null 2>&1; then
+        "$candidate" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])'
+        break
+      fi
+    done
+  )"
+  echo "[x] 需要 Python 3.11+，当前系统 python3 是 ${DETECTED:-未找到}。" >&2
+  echo "    Debian 12+ / Ubuntu 24.04+ : sudo apt install python3 python3-venv" >&2
+  echo "    Ubuntu 20.04 / 22.04        : sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python3.11 python3.11-venv" >&2
+  echo "    RHEL 9 / Rocky / Alma       : sudo dnf install python3.11" >&2
+  echo "    RHEL 8 / CentOS 8           : sudo dnf module enable python311 && sudo dnf install python3.11" >&2
+  echo "    自定义路径                  : PYTHON_BIN=/usr/bin/python3.11 ./start-prod.sh" >&2
   exit 1
 fi
-echo "[i] 使用 Python: $PYTHON"
+echo "[i] 使用 Python: $PYTHON（$("$PYTHON" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')）"
 
 # --- 2. 虚拟环境与后端依赖 ---------------------------------------------------
-if [ ! -x "$VENV/bin/python" ]; then
-  echo "[1/3] 创建虚拟环境 $VENV ..."
-  "$PYTHON" -m venv "$VENV"
-fi
+# 交给 ensure_env.py：环境不存在则创建；已存在但解释器版本不一致时重建启动器，
+# 避免「.venv 还是 3.9 建的、依赖二进制却是别的版本」这类问题（见脚本注释）。
+echo "[1/3] 准备虚拟环境 $VENV ..."
+"$PYTHON" "$ROOT/scripts/ensure_env.py" --venv "$VENV"
 VPY="$VENV/bin/python"
 
 echo "[2/3] 安装后端依赖..."

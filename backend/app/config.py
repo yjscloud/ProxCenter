@@ -75,6 +75,19 @@ class Settings(BaseSettings):
     # 0.0.0.0，公网请求就能自称「我是 https」从而绕过 force_https。
     forwarded_allow_ips: str = "127.0.0.1"
 
+    # --- SSH 入口转发（frp / haproxy）--------------------------------------
+    # 面板本机的 22 端口经 frp 暴露到公网时，sshd 看到的来源永远是入口机
+    # （例如 172.16.149.3），真实攻击者地址被 PROXY protocol 还原后只落在入口机
+    # 的 haproxy 日志里。填上「入口机在 SSH 远程里的主机 id」与「转发机地址」后，
+    # 导入 host.ssh_failed 时会按时间把 IP 换成真实值；匹配不上就保留原值并在
+    # detail 里标记 forwarded。
+    #
+    # 两项都留空 = 关闭，行为与之前完全一致。
+    #   SSH_FORWARD_LOG_HOST=hec92c0bc5c
+    #   SSH_FORWARD_PROXIES=172.16.149.3
+    ssh_forward_log_host: str = ""
+    ssh_forward_proxies: str = ""
+
     # --- 公网暴露加固 ------------------------------------------------------
     # 面板准入白名单（逗号分隔的 IP / CIDR，例如
     # "203.0.113.0/24,10.8.0.0/24,192.168.1.10"）。留空 = 不限制来源。
@@ -155,6 +168,11 @@ class Settings(BaseSettings):
     # 同网段，放开后就等于允许把面板 / PVE API 暴露出去。若业务虚机与面板
     # 同网段、且确实要穿透到该网段的其它服务，可以关掉（面板自身地址仍拒绝）。
     frp_block_panel_subnet: bool = True
+    # 公网端口区间的**默认值**。管理员在「内网穿透」页面上设置过就以页面为准，
+    # 这里的值只作为初始值 / 兜底（见 frpguard.remote_port_range）。区间内
+    # 22 / 80 / 443 / 7000 / 7001 / 8006 等关键端口始终不可占用，与区间无关。
+    frp_remote_port_min: int = 40000
+    frp_remote_port_max: int = 50000
 
     # --- 个人 API Token ----------------------------------------------------
     # 允许用户自助创建长期令牌，供脚本 / 外部系统调用（见 apitokens.py）。

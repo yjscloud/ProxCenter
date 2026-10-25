@@ -174,6 +174,14 @@ async def list_connections(
     conns = store.get_connections()
     active_id = str(store.get_active_connection().get("id") or "")
     can_manage = security.has_user_permission(user, "settings.manage")
+    # 区域管理员只应看到本区域的连接：连接清单决定他能切到哪台 PVE，看到
+    # 其它区域的连接等于把「另一个区域的入口」摆在他面前（普通用户不受限，
+    # 他们的范围由节点授权决定）。
+    conns = [
+        c
+        for c in conns
+        if security.region_in_scope(user, str(c.get("region") or ""))
+    ]
     result: List[Dict[str, Any]] = []
     for c in conns:
         pub = (

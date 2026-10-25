@@ -184,6 +184,11 @@ services:
       # 面板同网段、且确实要穿透到该网段的其它服务，可改成 false（面板自身
       # 地址仍然拒绝）。
       FRP_BLOCK_PANEL_SUBNET: ${FRP_BLOCK_PANEL_SUBNET:-true}
+      # 公网端口区间的初始值。管理员在「内网穿透」页面上设置过就以页面为准
+      # （设置存库、即时生效），这里只作为没设置过时的兜底。关键端口（22 / 80 /
+      # 443 / 7000 / 7001 / 8006 等）始终不可占用，与区间无关。
+      FRP_REMOTE_PORT_MIN: ${FRP_REMOTE_PORT_MIN:-40000}
+      FRP_REMOTE_PORT_MAX: ${FRP_REMOTE_PORT_MAX:-50000}
       # 首次从新 IP 登录时给管理员发站内消息 + 邮件
       LOGIN_IP_ALERT: ${LOGIN_IP_ALERT:-true}
       # 接口文档（/api/docs、/api/redoc、/api/openapi.json）：默认关闭；

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import platform
 import secrets
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
@@ -49,6 +50,7 @@ from .routers import (
     metrics as metrics_router,
     network,
     node_notes,
+    node_scope,
     # 站内通知（顶部铃铛）与跨资源全局搜索（Ctrl+K）。
     # 通知这里必须取别名：下面还有一句 `from . import notifications`（模块），
     # 同名会把路由模块覆盖掉。
@@ -187,6 +189,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 老版本只用 frp_config 一个 key 存整份配置；新版拆成 server + rules，
     # 启动时一次性迁移，避免第一个 GET 接口看到空数据。
     await frp.migrate_legacy()
+    # 把实际解释器版本写进启动日志：面板依赖按 3.11+ 固定，排查「装到了另一个
+    # Python 上」「服务跑在旧环境里」时，第一眼就能看到。
+    logger.info("运行环境：Python %s", platform.python_version())
     logger.info("数据库就绪：%s", database.describe())
     # 前端产物与后端是不是同一个版本。不一致时界面可能少功能或行为不对，而它此前
     # 在界面上毫无迹象（代码已是新版、服务照跑、页面照开）。见 app.buildinfo。
@@ -881,6 +886,7 @@ app.include_router(templates.router)
 app.include_router(storages.router)
 app.include_router(network.router)
 app.include_router(node_notes.router)
+app.include_router(node_scope.router)
 # 虚拟机/容器的手动 IP（面板侧补充信息，只用于展示，不回写 PVE）
 app.include_router(vm_meta.router)
 app.include_router(backups.router)
@@ -976,6 +982,9 @@ async def version(
         "name": info["name"],
         "version": __version__,
         "api": "v1",
+        # 实际运行的解释器版本。排查「依赖装到了另一个 Python 上」「面板跑在
+        # 3.9 这类过旧环境里」时，这一项比翻 systemd 单元快得多。
+        "python": platform.python_version(),
         # 前端构建产物的版本与一致性（见 app.buildinfo）：界面据此提示「产物陈旧」
         "frontend": buildinfo.status(),
     }

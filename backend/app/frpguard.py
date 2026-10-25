@@ -21,9 +21,10 @@
    PVE 时不放行（fail-closed）：宁可让用户看到一句「确认不了」，也不能让一条
    指向内网关键机器的规则悄悄落库。
 
-2. **公网端口区间**（:func:`check_remote_port`）：只在
-   :data:`REMOTE_PORT_MIN` – :data:`REMOTE_PORT_MAX` 内分配，并显式拒绝
-   22 / 80 / 443 / 7001 / 8006 这类关键端口（区间本身已覆盖，属于纵深防御）。
+2. **公网端口区间**（:func:`check_remote_port`）：只在管理员设定的区间内
+   分配（:func:`remote_port_range`，可随时在页面上调整，默认
+   :data:`REMOTE_PORT_MIN` – :data:`REMOTE_PORT_MAX`），并显式拒绝
+   22 / 80 / 443 / 7001 / 8006 这类关键端口（与区间无关，始终生效）。
 
 3. **端口冲突**：frpc 只有一个进程、连同一台 frps，同一个 ``remote_port``
    出现两次时后一条会抢不到端口，用户看到的是「规则建好了但连不上」。
@@ -49,14 +50,25 @@ Address = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
 # ---------------------------------------------------------------- 端口策略
-#: 公网端口的分配区间。刻意避开 1–1023 与常见服务端口：frps 暴露在公网时，
-#: 22 / 80 / 443 这类端口往往已被宿主机自己的服务占用，让用户随手填会撞车；
-#: 也避免把面板（8080）与 PVE（8006）的端口映射出去。
+#: 公网端口的**内置兜底区间**。管理员可以在「内网穿透」页面上把它改成任意
+#: 合法区间（见 :func:`remote_port_range` / :func:`set_remote_port_range`），
+#: 没在页面上改过时跟随环境配置 ``FRP_REMOTE_PORT_MIN`` / ``FRP_REMOTE_PORT_MAX``。
+#: 默认值刻意避开 1–1023 与常见服务端口：frps 暴露在公网时，22 / 80 / 443
+#: 这类端口往往已被宿主机自己的服务占用，让用户随手填会撞车；也避免把面板
+#: （8080）与 PVE（8006）的端口映射出去。
 REMOTE_PORT_MIN = 40000
 REMOTE_PORT_MAX = 50000
 
-#: 关键端口黑名单。区间本身已经排除了它们，列在这里是**纵深防御** ——
-#: 将来若有人调整区间，这些端口不会被顺手放进来。
+#: 管理员设定的区间在库里的键（写成 "40000-50000"）。没有这个键时回落到
+#: 环境配置，再回落到上面的内置默认值 —— 升级部署不会悄悄改变既有行为。
+PORT_RANGE_KEY = "frp.remote_port_range"
+
+#: 端口本身的合法边界（TCP 端口全集）。区间只是取值范围，不能超出这个范围。
+PORT_LIMIT_MIN = 1
+PORT_LIMIT_MAX = 65535
+
+#: 关键端口黑名单。默认区间已经排除了它们，列在这里是**纵深防御** ——
+#: 管理员把区间调大（例如 1–65535）时，这些端口仍然不会被顺手放进来。
 FORBIDDEN_REMOTE_PORTS = frozenset(
     {
         20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995,
@@ -77,6 +89,87 @@ class PolicyError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+# -------------------------------------------------------- 公网端口区间（可调）
+def normalise_port_range(minimum: Any, maximum: Any) -> Tuple[int, int]:
+    """校验并归一化一个端口区间，返回 ``(min, max)``。
+
+    只判断「能不能当端口区间用」：落在 1–65535、``min ≤ max``、且区间里至少
+    有一个端口不是关键端口。黑名单与区间无关、始终生效，所以整段都落在黑名单
+    里的区间等于一条规则也建不出来，直接在保存时报错比让用户对着报错猜要好。
+    """
+    try:
+        low = int(minimum)
+        high = int(maximum)
+    except (TypeError, ValueError) as exc:
+        raise PolicyError("公网端口区间必须是数字") from exc
+
+    if not (
+        PORT_LIMIT_MIN <= low <= PORT_LIMIT_MAX
+        and PORT_LIMIT_MIN <= high <= PORT_LIMIT_MAX
+    ):
+        raise PolicyError(
+            f"端口必须在 {PORT_LIMIT_MIN}–{PORT_LIMIT_MAX} 之间（当前 {low}–{high}）"
+        )
+    if low > high:
+        raise PolicyError(f"起始端口不能大于结束端口（当前 {low}–{high}）")
+    if all(port in FORBIDDEN_REMOTE_PORTS for port in range(low, high + 1)):
+        raise PolicyError(
+            "该区间里的端口全部是面板 / PVE / 常见服务的关键端口"
+            "（如 22 / 80 / 443 / 7000 / 8006），请换一个区间"
+        )
+    return low, high
+
+
+def default_port_range() -> Tuple[int, int]:
+    """环境配置给出的区间（没有库设置时的兜底）。
+
+    配置写错（起止颠倒 / 超出端口范围）只记日志、回落到内置默认值 —— 这是
+    规则校验的必经之路，不能让一个写错的启动参数把所有规则写入打成 500。
+    """
+    try:
+        return normalise_port_range(
+            settings.frp_remote_port_min, settings.frp_remote_port_max
+        )
+    except PolicyError as exc:
+        logger.warning(
+            "FRP_REMOTE_PORT_MIN / FRP_REMOTE_PORT_MAX 不是合法的端口区间，"
+            "已回落到 %s–%s：%s",
+            REMOTE_PORT_MIN,
+            REMOTE_PORT_MAX,
+            exc.message,
+        )
+        return REMOTE_PORT_MIN, REMOTE_PORT_MAX
+
+
+async def remote_port_range() -> Tuple[int, int]:
+    """当前生效的公网端口区间。
+
+    优先级：管理员在页面上保存的值 → 环境配置 → 内置默认值。读库失败
+    （单元测试没初始化数据库 / 库暂时不可用）同样回落到环境配置 —— 区间校验
+    是每次写规则的必经之路，不能因为 settings 读不到就整条链路 500。
+    """
+    try:
+        raw = await store.get_setting(PORT_RANGE_KEY)
+    except Exception:  # noqa: BLE001 - 读不到设置就退回环境配置
+        raw = None
+
+    text = str(raw or "").strip()
+    if text:
+        low_text, _, high_text = text.partition("-")
+        try:
+            return normalise_port_range(low_text, high_text)
+        except PolicyError:
+            logger.warning("库里保存的 frp 端口区间不合法，已忽略：%s", text)
+    return default_port_range()
+
+
+async def set_remote_port_range(minimum: Any, maximum: Any) -> Tuple[int, int]:
+    """保存管理员设定的区间（校验失败抛 :class:`PolicyError`）。"""
+    low, high = normalise_port_range(minimum, maximum)
+    await store.set_setting(PORT_RANGE_KEY, f"{low}-{high}")
+    return low, high
 
 
 # ------------------------------------------------------------------ 地址工具
@@ -500,17 +593,21 @@ def check_remote_port(
     rules: Iterable[Dict[str, Any]],
     *,
     exclude_id: str = "",
+    port_range: Optional[Tuple[int, int]] = None,
 ) -> int:
-    """校验 ``remote_port``：区间 → 黑名单 → 与现有规则冲突。"""
+    """校验 ``remote_port``：区间 → 黑名单 → 与现有规则冲突。
+
+    ``port_range`` 由路由层用 :func:`remote_port_range` 取出（管理员可调整）；
+    不传时用环境配置 / 内置默认值，纯函数调用（单元测试）不必先读库。
+    """
+    low, high = port_range or default_port_range()
     try:
         port = int(value)
     except (TypeError, ValueError) as exc:
         raise PolicyError("公网端口必须是数字") from exc
 
-    if port < REMOTE_PORT_MIN or port > REMOTE_PORT_MAX:
-        raise PolicyError(
-            f"公网端口必须在 {REMOTE_PORT_MIN}–{REMOTE_PORT_MAX} 之间（当前 {port}）"
-        )
+    if port < low or port > high:
+        raise PolicyError(f"公网端口必须在 {low}–{high} 之间（当前 {port}）")
     if port in FORBIDDEN_REMOTE_PORTS:
         raise PolicyError(f"公网端口 {port} 是面板 / PVE / 常见服务的关键端口，不能占用")
 
@@ -533,9 +630,10 @@ def check_remote_port(
 
 async def policy() -> Dict[str, Any]:
     """给前端做即时校验 / 提示用的策略快照（不含任何敏感信息）。"""
+    low, high = await remote_port_range()
     return {
-        "remote_port_min": REMOTE_PORT_MIN,
-        "remote_port_max": REMOTE_PORT_MAX,
+        "remote_port_min": low,
+        "remote_port_max": high,
         "forbidden_ports": sorted(FORBIDDEN_REMOTE_PORTS),
         "allow_cidrs": [str(net) for net in allowed_cidrs()],
         "block_panel_subnet": await block_panel_subnet_enabled(),
@@ -554,10 +652,14 @@ def used_remote_ports(rules: Iterable[Dict[str, Any]]) -> List[int]:
     return sorted(ports)
 
 
-def first_free_port(rules: Iterable[Dict[str, Any]]) -> Optional[int]:
+def first_free_port(
+    rules: Iterable[Dict[str, Any]],
+    port_range: Optional[Tuple[int, int]] = None,
+) -> Optional[int]:
     """区间内第一个没被占用的端口（前端「新建规则」的默认值用）。"""
+    low, high = port_range or default_port_range()
     used = set(used_remote_ports(rules))
-    for port in range(REMOTE_PORT_MIN, REMOTE_PORT_MAX + 1):
+    for port in range(low, high + 1):
         if port not in used and port not in FORBIDDEN_REMOTE_PORTS:
             return port
     return None

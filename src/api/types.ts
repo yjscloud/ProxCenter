@@ -64,6 +64,8 @@ export interface UserOut {
   expires_at?: number;
   /** 已到期冻结的时间（Unix 秒）；非 0 = 名下机器已关机、账号已锁定 */
   expiry_frozen?: number;
+  /** 区域管理员可管理的区域名；空 = 不按区域限制 */
+  regions?: string[];
 }
 
 export interface UserInfo {
@@ -85,6 +87,25 @@ export interface UserInfo {
   totp_setup_required?: boolean;
   /** 账号有效期（Unix 秒）；0 = 永不过期 */
   expires_at?: number;
+  /**
+   * 区域管理员可管理的区域名（来自连接的 region 标签）。
+   * 空数组 = 不按区域限制（对 admin 无意义，admin 本来就是全平台视角）。
+   */
+  regions?: string[];
+}
+
+/**
+ * 一条节点可见性授权（见后端 routers/node_scope.py）。
+ *
+ * ``subject_type`` 为 ``'*'`` 时是「默认策略」：``allowed=false`` 表示该节点
+ * 对普通用户默认隐藏；``user`` / ``role`` 则是针对具体人或角色的例外。
+ */
+export interface NodeScopeEntry {
+  connection_id: string;
+  node: string;
+  subject_type: '*' | 'role' | 'user';
+  subject: string;
+  allowed: boolean;
 }
 
 /** 自助注册：提交后进入待审批队列 */
@@ -2747,8 +2768,11 @@ export interface FrpTarget {
  * 管理员不受目标白名单限制。
  */
 export interface FrpPolicy {
+  /** 公网端口区间的起始值（管理员可在页面上调整，默认 40000） */
   remote_port_min: number;
+  /** 公网端口区间的结束值（管理员可在页面上调整，默认 50000） */
   remote_port_max: number;
+  /** 关键端口黑名单：与区间无关，始终不可占用 */
   forbidden_ports: number[];
   allow_cidrs: string[];
   block_panel_subnet: boolean;

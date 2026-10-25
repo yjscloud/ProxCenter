@@ -152,6 +152,7 @@ import type {
   NetworkInterface,
   NetworkInterfaceInput,
   NodeInfo,
+  NodeScopeEntry,
   PasswordChangeInput,
   ForgotPasswordInput,
   ForgotPasswordResult,
@@ -595,6 +596,31 @@ export const nodeNotesApi = {
   get: () => get<{ notes: Record<string, string> }>('/node-notes'),
   save: (notes: Record<string, string>) =>
     put<{ notes: Record<string, string> }>('/node-notes', notes),
+};
+
+/* ---------------------------------------------------------------------------
+   节点可见性（哪些用户 / 角色能看到哪些节点）
+   ---------------------------------------------------------------------------
+   默认所有节点可见；把某个节点标成受限（subject_type='*' / allowed=false）
+   之后，只有被显式授权的用户或角色还能看到它。判定与写操作校验都在后端
+   （见 routers/node_scope.py、security.node_visibility）。
+   --------------------------------------------------------------------------- */
+
+export const nodeScopeApi = {
+  list: () => get<{ items: NodeScopeEntry[] }>('/node-scope'),
+  save: (body: {
+    connection_id?: string;
+    node: string;
+    subject_type?: '*' | 'role' | 'user';
+    subject?: string;
+    allowed?: boolean;
+  }) => put<Omit<NodeScopeEntry, 'allowed'> & { allowed: boolean }>('/node-scope', body),
+  remove: (params: {
+    connection_id?: string;
+    node: string;
+    subject_type?: string;
+    subject?: string;
+  }) => del<{ removed: number }>('/node-scope', { params }),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1302,6 +1328,8 @@ export const usersApi = {
     permissions?: string[] | null;
     /** 账号有效期（Unix 秒）；0 / 不传 = 永不过期 */
     expires_at?: number;
+    /** 区域管理员可管理的区域名（连接的 region 标签），可多个 */
+    regions?: string[];
   }) => post<UserOut>('/users', body),
   update: (
     username: string,
@@ -1317,6 +1345,10 @@ export const usersApi = {
       status?: UserAccountStatus;
       /** 账号有效期（Unix 秒）；不传 = 不改，0 = 永不过期 */
       expires_at?: number;
+      /** 区域管理员可管理的区域名；配合 set_regions 决定是否写入 */
+      regions?: string[];
+      /** 只有为 true 时才改动区域列表（用于区分「不改」与「清空」） */
+      set_regions?: boolean;
     },
   ) => put<UserOut>(`/users/${username}`, body),
   remove: (username: string) => del<{ deleted?: boolean; username?: string }>(`/users/${username}`),
@@ -1330,6 +1362,13 @@ export const usersApi = {
    * ``users.view`` —— 是唯一一个普通用户也能读到的角色清单。
    */
   roles: () => get<RoleOut[]>('/users/roles'),
+  /**
+   * 可指派的区域名（各 PVE 连接上的 region 标签去重）。
+   *
+   * 区域不是独立实体，这份清单直接来自连接配置；没填区域的连接不出现
+   * （它们不归任何区域管理员管）。
+   */
+  regions: () => get<string[]>('/users/regions'),
   /** 审批通过注册申请，同时定下角色与权限 */
   approve: (
     username: string,
@@ -1405,8 +1444,15 @@ export const quotaApi = {
    --------------------------------------------------------------------------- */
 
 export const auditApi = {
+  /**
+   * 审计日志列表。
+   *
+   * **可见范围由后端决定**：管理员看全部（`scope: 'all'`），其他人只能看
+   * 自己的记录（`scope: 'own'`）；非管理员传别人的 `username` 会直接 403。
+   * 前端不承担隔离职责，隐藏筛选框只是别让人误会。
+   */
   list: (params: AuditQuery = {}) =>
-    get<Paginated<AuditEntry>>('/audit', { params }),
+    get<Paginated<AuditEntry> & { scope?: 'all' | 'own' }>('/audit', { params }),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1673,6 +1719,18 @@ export const frpApi = {
     put<{ block_panel_subnet: boolean }>("/frp/policy/panel-subnet", {
       enabled,
     }),
+  /**
+   * 设定用户可用的公网端口区间（admin only，需二次确认）。
+   *
+   * 响应里的 `out_of_range_ports` 是「已有规则中落在新区间外的端口」——
+   * 区间收窄不会让这些规则失效，只是它们下次修改时必须改到区间内。
+   */
+  setPortRange: (remote_port_min: number, remote_port_max: number) =>
+    put<{
+      remote_port_min: number;
+      remote_port_max: number;
+      out_of_range_ports: number[];
+    }>("/frp/policy/port-range", { remote_port_min, remote_port_max }),
   effective: () => get<FrpEffective>("/frp/effective"),
   status: () => get<FrpStatus>("/frp/status"),
   logs: () => get<{ logs: string[] }>("/frp/logs"),

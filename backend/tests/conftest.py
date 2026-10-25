@@ -88,6 +88,9 @@ TABLES = (
     "inspection_history",
     "guest_ip",
     "inspection_lease",
+    # 节点可见性：不清的话上一条用例把某节点设成受限，下一条用例里它就「凭空
+    # 消失」，建机与节点列表的断言会跟着误判。
+    "node_scope",
 )
 
 

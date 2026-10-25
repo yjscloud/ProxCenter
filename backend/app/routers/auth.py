@@ -143,6 +143,8 @@ def _user_out(user: Dict[str, Any]) -> UserOut:
         totp_enabled=bool(user.get("totp_enabled")),
         totp_setup_required=bool(user.get("totp_setup_required")),
         expires_at=security.account_expires_at(user),
+        # 区域管理员的可管理区域：前端据此决定建机向导里能选哪些区域
+        regions=security.user_regions(user),
     )
 
 
@@ -1043,6 +1045,8 @@ async def me(user: Dict[str, Any] = Depends(security.get_current_user)) -> UserO
         totp_enabled=bool(user.get("totp_enabled")),
         totp_setup_required=bool(user.get("totp_setup_required")),
         expires_at=security.account_expires_at(user),
+        # 区域管理员的可管理区域：前端据此决定建机向导里能选哪些区域
+        regions=security.user_regions(user),
     )
 
 

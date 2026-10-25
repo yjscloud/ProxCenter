@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .. import fleetstatus, pvecache, security
 from ..formatters import pve_flag
+from ..nodeaccess import require_node_visible
 from ..pve import (
     ProxmoxError,
     all_connection_clients,
@@ -221,9 +222,22 @@ async def list_nodes(
             (c for c in _store.get_connections() if str(c.get("id")) == cid),
             None,
         )
+        # 区域管理员越区索取节点：明确拒绝，而不是返回空列表（空列表看起来像
+        # 「这台 PVE 挂了」，排查方向会跑偏）
+        security.ensure_region_allowed(user, cid)
         targets: List[Tuple[Optional[Dict[str, Any]], Any]] = [(profile, get_client())]
     else:
-        targets = list(all_connection_clients()) or [(None, get_client())]
+        # 区域管理员只向本区域的连接取节点；普通用户的收窄发生在节点级
+        targets = [
+            (profile, client)
+            for profile, client in (all_connection_clients() or [(None, get_client())])
+            if security.region_in_scope(user, str((profile or {}).get("region") or ""))
+        ]
+        if not targets:
+            return []
+
+    # 节点级可见性：一次读全表，循环里只做内存判断（见 security.node_visibility）
+    node_visible = await security.node_visibility(user)
 
     result: List[Dict[str, Any]] = []
     failure: Optional[ProxmoxError] = None
@@ -247,6 +261,9 @@ async def list_nodes(
                 {},
             )
         )
+        # 节点级可见性：被限制的节点（特殊项目专用机）对普通用户整条消失，
+        # 建机向导的下拉来自这里，所以「看不到」同时等于「选不到」。
+        nodes = [n for n in nodes if node_visible(cid, str(n.get("node") or ""))]
         result.extend(
             {
                 "node": n.get("node"),
@@ -444,6 +461,7 @@ async def connections_status(
 async def node_status(
     node: str,
     user: Dict[str, Any] = Depends(security.require_permission("node.view")),
+    _visible: None = Depends(require_node_visible),
 ) -> Dict[str, Any]:
     client = get_client()
     try:
@@ -457,6 +475,7 @@ async def node_rrddata(
     node: str,
     timeframe: str = Query(default="hour", pattern="^(hour|day|week|month|year)$"),
     user: Dict[str, Any] = Depends(security.require_permission("node.view")),
+    _visible: None = Depends(require_node_visible),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:
@@ -469,6 +488,7 @@ async def node_rrddata(
 async def node_network(
     node: str,
     user: Dict[str, Any] = Depends(security.require_permission("network.view")),
+    _visible: None = Depends(require_node_visible),
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:

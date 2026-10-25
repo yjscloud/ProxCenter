@@ -516,11 +516,17 @@ ZH_EN: Dict[str, str] = {
     "查看操作审计日志": "View the operation audit log",
     # ---- 内置角色 ----
     "超级管理员": "Super administrator",
+    "区域管理员": "Region administrator",
     "普通用户": "Standard user",
     "只读用户": "Read-only user",
     "超级管理员：可见并管理全部资源（不受用户隔离限制），可管理用户、连接配置与宿主机网络。":
         "Super administrator: can see and manage every resource without per-user isolation, "
         "including users, connection settings and the host network.",
+    "区域管理员：管理指派区域内（可多个）的全部虚拟机与容器，可指派区域内机器的归属；"
+    "不能管理用户、全局连接配置或其它区域。":
+        "Region administrator: manages every virtual machine and container inside the assigned "
+        "regions (possibly several) and can reassign their ownership; cannot manage users, "
+        "global connection settings or other regions.",
     "普通用户：可创建、开关机、控制台、快照、备份、克隆，并删除「自己创建」的虚拟机；"
     "只能看到自己名下的虚拟机，不能管理用户、连接配置或宿主机网络。":
         "Standard user: can create virtual machines, power them on and off, use the console, "

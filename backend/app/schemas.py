@@ -41,6 +41,8 @@ class UserOut(BaseModel):
     totp_setup_required: bool = False
     # 账号有效期（Unix 秒）；0 = 永不过期
     expires_at: float = 0
+    # 区域管理员可管理的区域名（连接的 region 标签）；空 = 不按区域限制
+    regions: List[str] = Field(default_factory=list)
 
 
 class LoginResponse(BaseModel):
@@ -369,6 +371,20 @@ class CloneSpec(BaseModel):
     # 是给新机器用的 —— 给了这个值就在克隆完成后把系统盘扩到它（**只增不减**，
     # 缩小由 PVE 拒绝；失败不阻断创建，原因随响应回给前端）。
     disk_size: Optional[int] = Field(default=None, gt=0)
+
+
+class NodeScopeIn(BaseModel):
+    """一条节点可见性授权（见 routers/node_scope.py）。
+
+    ``subject_type='*'`` + ``subject='*'`` 表示「默认策略」，用来把某个节点标记
+    为受限（``allowed=False``）；``user`` / ``role`` 则是针对具体人或角色的例外。
+    """
+
+    connection_id: str = ""
+    node: str = Field(min_length=1, max_length=64)
+    subject_type: str = Field(default="*", pattern=r"^(\*|role|user)$")
+    subject: str = "*"
+    allowed: bool = False
 
 
 class NumaNodeSpec(BaseModel):
@@ -1260,6 +1276,8 @@ class UserCreate(BaseModel):
     permissions: Optional[List[str]] = None
     # 账号有效期（Unix 秒）；0 / 不传 = 永不过期
     expires_at: float = 0
+    # 区域管理员可管理的区域名（来自连接的 region 标签），可多个
+    regions: Optional[List[str]] = None
 
 
 class UserUpdate(BaseModel):
@@ -1276,6 +1294,9 @@ class UserUpdate(BaseModel):
     status: Optional[str] = None
     # 账号有效期（Unix 秒）。不传 = 不改；0 = 取消有效期（永不过期）
     expires_at: Optional[float] = Field(default=None, ge=0)
+    # 区域管理员可管理的区域；不传 = 不改，传空列表 = 清空
+    regions: Optional[List[str]] = None
+    set_regions: bool = False
 
 
 class RegisterRequest(BaseModel):
@@ -1669,9 +1690,9 @@ class _FrpRuleTarget(BaseModel):
     local_port: int = Field(..., ge=1, le=65535, description="要暴露的内网服务端口")
     remote_port: int = Field(
         ...,
-        ge=frpguard.REMOTE_PORT_MIN,
-        le=frpguard.REMOTE_PORT_MAX,
-        description="公网端口（受统一区间限制）",
+        ge=frpguard.PORT_LIMIT_MIN,
+        le=frpguard.PORT_LIMIT_MAX,
+        description="公网端口（区间由管理员设定，写入前由 frpguard 判定）",
     )
 
     @field_validator("name")
@@ -1719,6 +1740,17 @@ class FrpPanelSubnetIn(BaseModel):
     """开关「阻止把穿透目标指向面板后端所在网段」（见 /api/frp/policy）。"""
 
     enabled: bool
+
+
+class FrpPortRangeIn(BaseModel):
+    """管理员设定的公网端口区间（见 /api/frp/policy/port-range）。
+
+    只做「是不是端口」这一层校验，起止顺序与黑名单覆盖率由
+    :func:`app.frpguard.normalise_port_range` 判定 —— 那里能给出中文原因。
+    """
+
+    remote_port_min: int = Field(..., ge=frpguard.PORT_LIMIT_MIN, le=frpguard.PORT_LIMIT_MAX)
+    remote_port_max: int = Field(..., ge=frpguard.PORT_LIMIT_MIN, le=frpguard.PORT_LIMIT_MAX)
 
 
 # -------------------------------------------------------------------- tasks

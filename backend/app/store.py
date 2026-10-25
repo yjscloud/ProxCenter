@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS users (
     expiry_notice INT          NOT NULL DEFAULT 0,
     -- 到期冻结时间（Unix 秒）。非 0 = 已经关过机并踢下线，不再重复处理
     expiry_frozen DOUBLE       NOT NULL DEFAULT 0,
+    -- 区域管理员可管理的区域名（JSON 数组，来自连接的 region 标签）。
+    -- NULL / 空 = 不按区域限制；对 admin 无意义（admin 本来就是全平台视角）。
+    regions       TEXT,
     PRIMARY KEY (id),
     UNIQUE KEY uk_users_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -158,6 +161,26 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     KEY idx_refresh_user (username),
     KEY idx_refresh_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 节点可见性（按连接 + 节点授权）。
+--
+-- 默认语义：**没有行 = 可见**，保持升级前的行为不变；管理员始终可见全部。
+-- 想把某个节点藏起来（特殊项目专用机），写入一行 subject_type='*' /
+-- subject='*' / allowed=0 —— 该节点从此对普通用户默认隐藏，再给需要的人
+-- 写 subject_type='user' 或 'role' 的 allowed=1 行放开。
+--
+-- 取值优先级：user 行 > role 行 > 默认行（'*'/'*'）> 无行（可见）。
+-- 用一张表而不是「受限节点表 + 白名单表」，是因为判定要按这个顺序短路，
+-- 两张表反而要在代码里手工拼优先级，容易两处不一致。
+CREATE TABLE IF NOT EXISTS node_scope (
+    connection_id VARCHAR(64) NOT NULL DEFAULT '',
+    node          VARCHAR(64) NOT NULL,
+    subject_type  VARCHAR(8)  NOT NULL,
+    subject       VARCHAR(64) NOT NULL,
+    allowed       TINYINT     NOT NULL DEFAULT 0,
+    PRIMARY KEY (connection_id, node, subject_type, subject),
+    KEY idx_node_scope_subject (subject_type, subject)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 
@@ -206,6 +229,9 @@ async def init_db() -> None:
                 "expiry_frozen",
                 "ALTER TABLE users ADD COLUMN expiry_frozen DOUBLE NOT NULL DEFAULT 0",
             ),
+            # 区域管理员可管理的区域（JSON 数组）。NULL = 不按区域限制，存量账号
+            # 无需迁移；这一列只对 role='region_admin' 的账号有实际作用。
+            ("regions", "ALTER TABLE users ADD COLUMN regions TEXT"),
         ):
             if column not in columns:
                 await db.execute(ddl)
@@ -371,6 +397,20 @@ def _row_to_user(row: database.Row) -> Dict[str, Any]:
     except (KeyError, IndexError, TypeError, ValueError):
         expiry_frozen = 0.0
 
+    # 可管理区域（区域管理员用）：后补的列，缺失 / 非法 JSON 一律按「不限」兜底。
+    try:
+        raw_regions = row["regions"]
+    except (KeyError, IndexError):
+        raw_regions = None
+    regions: List[str] = []
+    if raw_regions:
+        try:
+            parsed_regions = json.loads(raw_regions)
+            if isinstance(parsed_regions, list):
+                regions = [str(r) for r in parsed_regions if str(r).strip()]
+        except (ValueError, TypeError):
+            regions = []
+
     return {
         "id": row["id"],
         "username": row["username"],
@@ -385,6 +425,7 @@ def _row_to_user(row: database.Row) -> Dict[str, Any]:
         "expires_at": expires_at,
         "expiry_notice": expiry_notice,
         "expiry_frozen": expiry_frozen,
+        "regions": regions,
     }
 
 
@@ -462,6 +503,20 @@ def _row_to_role(row: database.Row) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------- users
+def _clean_regions(regions: Optional[List[str]]) -> List[str]:
+    """区域名清洗：去空白、去重、保序。
+
+    区域是连接上的自由文本标签，前后空格不一样就会「看起来配了、实际不匹配」，
+    所以在这里统一收口 —— 写入与判定用的是同一个函数。
+    """
+    out: List[str] = []
+    for item in regions or []:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 async def get_user(username: str) -> Optional[Dict[str, Any]]:
     async with database.connect() as db:
         cursor = await db.execute("SELECT * FROM users WHERE username = ?", (username,))
@@ -497,6 +552,7 @@ async def create_user(
     permissions: Optional[List[str]] = None,
     status: str = STATUS_ACTIVE,
     expires_at: float = 0.0,
+    regions: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """新建用户。
 
@@ -509,11 +565,12 @@ async def create_user(
     if status not in USER_STATUSES:
         status = STATUS_ACTIVE
     expires = max(float(expires_at or 0), 0.0)
+    clean_regions = _clean_regions(regions)
     async with database.connect() as db:
         cursor = await db.execute(
             "INSERT INTO users (username, password_hash, role, email, enabled,"
-            " created, permissions, status, expires_at)"
-            " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
+            " created, permissions, status, expires_at, regions)"
+            " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
             (
                 username,
                 pwd_context.hash(password),
@@ -523,6 +580,7 @@ async def create_user(
                 json.dumps(sorted(set(permissions))) if permissions is not None else None,
                 status,
                 expires,
+                json.dumps(clean_regions) if clean_regions else None,
             ),
         )
         await db.commit()
@@ -539,6 +597,7 @@ async def create_user(
         "expires_at": expires,
         "expiry_notice": 0,
         "expiry_frozen": 0.0,
+        "regions": clean_regions,
     }
 
 
@@ -553,6 +612,8 @@ async def update_user(
     permissions_provided: bool = False,
     status: Optional[str] = None,
     expires_at: Optional[float] = None,
+    regions: Optional[List[str]] = None,
+    regions_provided: bool = False,
 ) -> Optional[Dict[str, Any]]:
     fields: List[str] = []
     values: List[Any] = []
@@ -591,6 +652,11 @@ async def update_user(
     if password:
         fields.append("password_hash = ?")
         values.append(pwd_context.hash(password))
+    if regions_provided:
+        # 空列表表示清空（= 恢复成「不按区域限制」）
+        clean = _clean_regions(regions)
+        fields.append("regions = ?")
+        values.append(json.dumps(clean) if clean else None)
 
     if not fields:
         return await get_user(username)
@@ -1156,6 +1222,30 @@ def get_connections() -> List[Dict[str, Any]]:
     return []
 
 
+def connection_region(connection_id: str) -> str:
+    """该连接所属的区域名（连接 profile 上的 ``region`` 标签）。
+
+    区域就是连接上的自由文本标签（多个连接可共用同一个区域名），不另建实体
+    —— 这样升级不需要迁移任何连接配置。找不到连接时返回空串（视为「未分区」）。
+    """
+    if not connection_id:
+        return ""
+    for conn in get_connections():
+        if str(conn.get("id") or "") == str(connection_id):
+            return str(conn.get("region") or "").strip()
+    return ""
+
+
+def connection_regions() -> List[str]:
+    """已配置的区域名（去重、排序），供用户管理页的「可管理区域」多选使用。"""
+    seen: List[str] = []
+    for conn in get_connections():
+        region = str(conn.get("region") or "").strip()
+        if region and region not in seen:
+            seen.append(region)
+    return sorted(seen)
+
+
 def connection_ids() -> List[str]:
     """已保存连接的 id 列表（**不解密密钥**）。
 
@@ -1328,6 +1418,68 @@ async def first_admin_username() -> str:
         if str(user.get("role") or "") == "admin":
             return str(user.get("username") or "")
     return str(settings.admin_username or "")
+
+
+# --------------------------------------------------------------- node scope
+async def list_node_scope() -> List[Dict[str, Any]]:
+    """节点可见性授权全表（判定侧一次读全，避免逐节点查库）。
+
+    表很小（只登记「受限节点」与它们的例外），一次全读比按节点查 N 次划算。
+    """
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT connection_id, node, subject_type, subject, allowed"
+            " FROM node_scope"
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+
+async def save_node_scope(
+    connection_id: str,
+    node: str,
+    subject_type: str,
+    subject: str,
+    allowed: bool,
+) -> None:
+    """写入/覆盖一条节点授权（按主键 upsert）。"""
+    async with database.connect() as db:
+        await db.execute(
+            "INSERT INTO node_scope"
+            " (connection_id, node, subject_type, subject, allowed)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON DUPLICATE KEY UPDATE allowed = VALUES(allowed)",
+            (
+                str(connection_id or ""),
+                str(node or ""),
+                str(subject_type or ""),
+                str(subject or ""),
+                1 if allowed else 0,
+            ),
+        )
+        await db.commit()
+
+
+async def delete_node_scope(
+    connection_id: str,
+    node: str,
+    subject_type: str = "",
+    subject: str = "",
+) -> int:
+    """删除节点授权。不传 subject_type/subject 时清空该节点的全部例外。
+
+    返回删除行数：界面据此区分「删掉了一条」与「本来就没有」。
+    """
+    where = ["connection_id = ?", "node = ?"]
+    params: List[Any] = [str(connection_id or ""), str(node or "")]
+    if subject_type and subject:
+        where.extend(["subject_type = ?", "subject = ?"])
+        params.extend([subject_type, subject])
+    async with database.connect() as db:
+        cursor = await db.execute(
+            f"DELETE FROM node_scope WHERE {' AND '.join(where)}", params
+        )
+        await db.commit()
+        return int(cursor.rowcount or 0)
 
 
 # ------------------------------------------------------------------- cleanup

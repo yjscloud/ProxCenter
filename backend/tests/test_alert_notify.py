@@ -160,6 +160,7 @@ class TestNotifySourcesConfig:
             "sshremote",
             "backupguard",
             "quorum",
+            "quota",
             "alert_rootcause",
         ]
         assert alerting.NOTIFY_SOURCE_IDS == tuple(ids)
@@ -175,6 +176,7 @@ class TestNotifySourcesConfig:
             "SOURCE_SSHREMOTE",
             "SOURCE_BACKUPGUARD",
             "SOURCE_QUORUM",
+            "SOURCE_QUOTA",
             "SOURCE_ROOTCAUSE",
         ):
             assert getattr(alerting, name) in alerting.NOTIFY_SOURCE_IDS

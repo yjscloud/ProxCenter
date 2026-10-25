@@ -1326,6 +1326,8 @@ function UserEditor({
   const [confirm, setConfirm] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [role, setRole] = useState<string>('viewer');
+  /* 区域管理员可管理的区域（只有 role === 'region_admin' 时有意义） */
+  const [regions, setRegions] = useState<string[]>([]);
   const [email, setEmail] = useState('');
   const [comment, setComment] = useState('');
   const [enabled, setEnabled] = useState(true);
@@ -1349,6 +1351,15 @@ function UserEditor({
     queryKey: ['roles'],
     queryFn: () => rolesApi.list(),
     enabled: open,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  /* 可指派的区域名：只在「区域管理员」这个角色下才需要 */
+  const regionsQuery = useQuery({
+    queryKey: ['user-regions'],
+    queryFn: () => usersApi.regions(),
+    enabled: open && role === 'region_admin',
     staleTime: 60_000,
     retry: false,
   });
@@ -1397,6 +1408,7 @@ function UserEditor({
     if (user) {
       setUsername(user.username);
       setRole(user.role);
+      setRegions(user.regions ?? []);
       setEmail(user.email ?? '');
       setComment(user.comment ?? '');
       setEnabled(user.enabled ?? true);
@@ -1411,6 +1423,7 @@ function UserEditor({
     } else {
       setUsername('');
       setRole('viewer');
+      setRegions([]);
       setEmail('');
       setComment('');
       setEnabled(true);
@@ -1489,6 +1502,10 @@ function UserEditor({
           status: status as UserAccountStatus,
           /* 0 是有意义的：清空 = 永不过期 */
           expires_at: expires ? fromLocalInput(expires) : 0,
+          /* 换了角色就一起写：从区域管理员改成别的角色时，区域必须被清掉，
+             否则下次改回区域管理员会「继承」上一轮的区域 */
+          regions: role === 'region_admin' ? regions : [],
+          set_regions: true,
         });
         toast.success(t('users.updatedToast', { name: user.username }));
       } else {
@@ -1500,6 +1517,7 @@ function UserEditor({
           comment: comment.trim() || undefined,
           permissions: useOverride ? perms : null,
           expires_at: expires ? fromLocalInput(expires) : 0,
+          regions: role === 'region_admin' ? regions : [],
         });
         toast.success(
           t('users.createdToast', { name: username.trim() }),
@@ -1617,6 +1635,46 @@ function UserEditor({
             options={roleOptions}
           />
         </Field>
+
+        {/* ---- 可管理区域（仅区域管理员）----------------------------------
+            区域不是独立实体，选项直接来自各 PVE 连接上的「区域 / 机房」标签。
+            一个区域管理员可以管多个区域；不选任何区域时他只能看到自己名下的
+            机器（与普通用户一样），所以至少选一个才说得过去。 */}
+        {role === 'region_admin' ? (
+          <Field
+            label={t('users.fieldRegions')}
+            hint={t('users.fieldRegionsHint')}
+          >
+            {regionsQuery.isLoading ? (
+              <span>{t('common.loading')}</span>
+            ) : (regionsQuery.data ?? []).length === 0 ? (
+              <Notice tone="info">{t('users.regionsEmpty')}</Notice>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {(regionsQuery.data ?? []).map((item) => {
+                  const active = regions.includes(item);
+                  return (
+                    <Button
+                      key={item}
+                      size="sm"
+                      variant={active ? 'primary' : 'secondary'}
+                      aria-pressed={active}
+                      onClick={() =>
+                        setRegions((prev) =>
+                          prev.includes(item)
+                            ? prev.filter((r) => r !== item)
+                            : [...prev, item],
+                        )
+                      }
+                    >
+                      {item}
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+          </Field>
+        ) : null}
 
         {/* ---- 账号状态（只有编辑时才有）---------------------------------
             提到权限块之前：它俩回答的是「这个账号到底能不能登录」—— 角色与权限

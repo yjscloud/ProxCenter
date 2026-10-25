@@ -1325,6 +1325,9 @@ export const zhCN = {
   'vmCreate.vmidHint': '需为 100 ~ 999999999 之间的唯一整数',
   'vmCreate.fieldTargetConn': '目标 PVE 主机',
   'vmCreate.fieldTargetConnHint': '可在已配置的多台 PVE 之间选择，默认使用面板当前连接',
+  'vmCreate.fieldRegion': '区域 / 机房',
+  'vmCreate.fieldRegionHint': '先选区域可把目标主机与节点收窄到一个机房内；留空表示不限',
+  'vmCreate.regionAll': '全部区域',
   'vmCreate.nodesLoadFailed': '读取节点失败，请检查该主机的连接',
   'vmCreate.fieldNodeHint': '虚拟机将在此节点上创建；卡片上是各节点当前的资源占用',
   'vmCreate.fieldTags': '标签',
@@ -1966,6 +1969,11 @@ export const zhCN = {
   'users.fieldConfirmPassword': '确认密码',
   'users.fieldRole': '角色',
   'users.fieldRoleHint': '决定该用户在面板中可执行的操作范围',
+  'users.fieldRegions': '可管理区域',
+  'users.fieldRegionsHint':
+    '区域来自各 PVE 连接上填写的「区域 / 机房」标签；区域管理员可管理所选区域内的全部虚拟机与容器，一个都不选时只能看到自己名下的机器',
+  'users.regionsEmpty':
+    '还没有任何连接填写区域标签。请先到「设置 → PVE 连接」给连接填上区域名，再回来指派。',
   'users.permBlock': '权限',
   'users.permCustom': '自定义（{n} 项）',
   'users.permDiff': '比角色多 {added} 项、少 {removed} 项',
@@ -5222,6 +5230,10 @@ export const zhCN = {
   /* --------------------------------------------------------- 审计日志 */
   'audit.title': '审计日志',
   'audit.subtitle': '记录所有经面板发起的操作，用于安全审计与故障回溯',
+  'audit.subtitleOwn': '查看你自己的操作记录；其他用户的日志仅管理员可见',
+  'audit.ownScopeTitle': '当前只显示你自己的日志',
+  'audit.ownScopeNotice':
+    '审计日志按用户隔离：你只能看到自己经面板发起的操作。需要查看全量记录（例如排查他人操作）请联系管理员。',
   'audit.exportPage': '导出当前页',
   'audit.exportAll': '导出全部',
   'audit.exportAllTitle': '按当前筛选条件导出全部记录（不受分页限制）',
@@ -5426,6 +5438,27 @@ export const zhCN = {
   'nodes.pveVersion': 'PVE {version}',
   'nodes.kernel': '内核 {kernel}',
   'nodes.maintenanceLevel': '维护级别 {level}',
+  'nodes.scopeButton': '可见性',
+  'nodes.scopeButtonHint': '设置这个节点对哪些用户 / 角色可见',
+  'nodes.scopeTitle': '「{node}」的可见性',
+  'nodes.scopeSubtitle':
+    '默认所有节点对普通用户可见；把节点隐藏后，只有下方被授权的用户或角色还能看到它、并能在建机时选择它。',
+  'nodes.scopeHide': '对普通用户隐藏此节点',
+  'nodes.scopeHideHint':
+    '适用于特殊项目专用节点。管理员与负责该区域的区域管理员始终可见。',
+  'nodes.scopeRestrictedNotice':
+    '该节点已对普通用户隐藏。只有被显式授权的用户或角色能看到它，接口层同样会拒绝未授权用户在该节点上建机。',
+  'nodes.scopeAddException': '单独授权',
+  'nodes.scopeAddHint': '被授权的用户 / 角色可以在节点页看到该节点，并在建机时选择它。',
+  'nodes.scopeTypeUser': '用户',
+  'nodes.scopeTypeRole': '角色',
+  'nodes.scopeUserPlaceholder': '用户名',
+  'nodes.scopeRolePlaceholder': '角色 id',
+  'nodes.scopeGrant': '授权',
+  'nodes.scopeNoExceptions': '还没有单独授权的用户或角色。',
+  'nodes.scopeDeniedTag': '（拒绝）',
+  'nodes.scopeUpdated': '节点可见性已更新',
+  'nodes.scopeUpdateFailed': '更新节点可见性失败',
   'nodes.maintenance': '维护',
   'nodes.nodeLabel': '节点 {node}',
   'nodes.sourceHost': '来源主机：{name}',
@@ -5697,7 +5730,7 @@ export const zhCN = {
   'frp.autoRestartOnDetail': '进程停止后会被重新拉起',
   'frp.installNextStep': '安装完成后点上方「启动穿透」即可让 frpc 连接服务端。',
   'frp.rulesTitle': '穿透规则',
-  'frp.rulesSubtitleAdmin': '管理员可看到所有人的规则；非本人规则请同步删除按钮可触发认领/迁移',
+  'frp.rulesSubtitleAdmin': '管理员可查看并管理所有人的规则；普通用户只能看到自己的规则',
   'frp.rulesSubtitleUser': '只显示归属 {user} 的规则',
   'frp.currentUser': '当前用户',
   'frp.newRule': '新建规则',
@@ -5784,12 +5817,27 @@ export const zhCN = {
   /* ------------------------------------------------- 策略设置（面板网段拦截） */
   'frp.blockPanelLabel': '阻止指向面板所在网段',
   'frp.blockPanelHint':
-    '开启后，普通用户不能把穿透目标指到面板后端所在的网段（防探测面板 / PVE 管理网络）；确需穿透该网段的其它服务时可关闭，面板自身地址始终拒绝。',
+    '普通用户不能把穿透目标指向面板后端所在网段（防探测面板 / PVE 管理网）；确需穿透该网段的其它服务时可关闭，面板自身地址始终拒绝。',
   'frp.blockPanelOn': '已开启面板网段拦截',
   'frp.blockPanelOff': '已允许指向面板所在网段',
   'frp.blockPanelOffDetail':
     '面板与 PVE 管理网络可能被穿透暴露，请确认你了解风险；面板自身地址仍然拒绝。',
   'frp.blockPanelToggleFailed': '设置失败',
+
+  /* ------------------------------------------------- 公网端口区间（可调） */
+  'frp.policyPanelTitle': '策略设置',
+  'frp.portRangeLabel': '公网端口区间',
+  'frp.portRangeHint':
+    '用户建规则时只能填这一段端口，改完立即生效；已有规则不受影响，下次修改需落回区间内。关键端口（22 / 80 / 443 / 7000 / 7001 / 8006）始终不可占用。',
+  'frp.portRangeMinLabel': '起始端口',
+  'frp.portRangeMaxLabel': '结束端口',
+  'frp.portRangeSave': '保存区间',
+  'frp.portRangeUnchanged': '区间没有改动',
+  'frp.portRangeInvalid': '端口区间不合法：起止端口需在 1–65535 之间，且起始不能大于结束',
+  'frp.portRangeSaved': '公网端口区间已更新',
+  'frp.portRangeOutOfRange':
+    '以下已有规则的端口不在新区间内，仍然生效，但下次修改要改到区间内：{ports}',
+  'frp.portRangeSaveFailed': '保存端口区间失败',
 
   /* ------------------------------------------------- 用户授权（仅管理员） */
   'frp.grantsTitle': '用户授权',

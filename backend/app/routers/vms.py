@@ -109,6 +109,12 @@ async def _require_guest_access(
     owner = security.visible_owner(user)
     if owner is None:
         return
+    if security.is_region_admin(user):
+        # 区域管理员管的是「区域内的全部机器」，不再逐台看归属；区域外按不存在
+        # 处理（与归属不匹配同口径，避免用 403 探出哪些 VMID 属于别的区域）。
+        if security.region_in_scope(user, store.connection_region(_op_connection())):
+            return
+        raise HTTPException(status_code=404, detail="资源不存在")
     ref = ownership.vm_ref(_op_connection(), node, vmid)
     if await ownership.get_owner_for(kind, ref) != owner:
         # 404 而不是 403（安全审计 L-2）：403 等于承认「这台机器存在，只是不
@@ -231,6 +237,7 @@ async def collect_vms(
         # 记录归属时用的 ref 前缀一致
         cid = str(profile.get("id") or "") if profile else str(requested_connection() or "")
         label = connection_label(profile) if profile else ""
+        region = str((profile or {}).get("region") or "").strip()
         items: List[Dict[str, Any]] = [
             {
                 "id": vm.get("id"),
@@ -264,6 +271,9 @@ async def collect_vms(
                 "diskwrite": vm.get("diskwrite"),
                 "connection_id": cid,
                 "connection_name": label,
+                # 内部字段：区域管理员按它判断「这台在不在我负责的区域」，
+                # 过滤完会 pop 掉，不进接口响应。
+                "connection_region": region,
             }
             for vm in vms
         ]
@@ -309,12 +319,23 @@ async def collect_vms(
         )
 
     if owner is not None:
-        result = [v for v in result if _owner_of(v) == owner]
+        if security.is_region_admin(user):
+            # 区域管理员：本区域内的机器全部可见（不看归属），区域外一条不给
+            result = [
+                v
+                for v in result
+                if security.region_in_scope(user, str(v.get("connection_region") or ""))
+            ]
+        else:
+            result = [v for v in result if _owner_of(v) == owner]
     else:
         # 只看得见自己机器的人不需要这个字段（回填也只是把他自己重复一遍），
         # 所以只给能看全量的人 —— 少一处「哪台归谁」的暴露面。
         for item in result:
             item["owner"] = _owner_of(item) or None
+    # connection_region 只用于上面的范围判定，不返回给前端
+    for item in result:
+        item.pop("connection_region", None)
 
     result.sort(key=lambda v: (v.get("node") or "", v.get("vmid") or 0))
     return result
@@ -937,6 +958,17 @@ async def create_vm(
 ) -> Dict[str, Any]:
     """Create a VM, either blank, from a cloud image, or as a clone."""
     client = get_client()
+
+    # --- 范围校验：节点必须对该用户开放，连接必须在其区域内 ---
+    # 这道校验以前完全没有：前端把节点下拉隐藏了，但接口直接收 payload.node，
+    # 换一条连接 + 任意节点名就能把机器建到不该去的地方（特殊项目节点尤其）。
+    connection_id = _op_connection()
+    security.ensure_region_allowed(user, connection_id)
+    await security.ensure_node_allowed(user, connection_id, payload.node)
+    if payload.clone_from and payload.clone_from.node:
+        await security.ensure_node_allowed(
+            user, connection_id, payload.clone_from.node
+        )
 
     # --- 虚拟机额度：可下发为 0（或已用达到上限）时普通用户不能再建 ---
     # 放在最前面，别等做完 DNS / VMID / 存储探测才告诉人家不行。
@@ -2044,6 +2076,12 @@ async def _require_snapshot_access(
     scope = security.visible_owner(user)
     if scope is None:
         return
+    # 区域管理员：本区域机器上的快照同样归他管（路由级 require_vm_access 已按
+    # 区域放行，这里若继续按「快照创建者」判定，会出现「进得了详情、点不开快照」）
+    if security.is_region_admin(user) and security.region_in_scope(
+        user, store.connection_region(_op_connection())
+    ):
+        return
     ref = ownership.snapshot_ref(_op_connection(), node, vmid, name)
     owner = await ownership.get_owner(ownership.KIND_SNAPSHOT, ref)
     if owner is None:
@@ -2072,6 +2110,11 @@ async def _filter_snapshots(
     owners = await ownership.owners_map(ownership.KIND_SNAPSHOT)
     vm_owners = await ownership.owners_map_for(kind)
     scope = security.visible_owner(user)
+    # 区域管理员看本区域机器上的全部快照（与单条访问判定同口径）
+    if security.is_region_admin(user) and security.region_in_scope(
+        user, store.connection_region(_op_connection())
+    ):
+        scope = None
     vm_owner = ownership.vm_owner_from(vm_owners, node, vmid, _op_connection())
     output: List[Dict[str, Any]] = []
     for snap in snaps or []:
@@ -2250,6 +2293,11 @@ async def all_snapshots(
     # 快照级用户隔离：创建者标记优先；无标记（旧版本创建）时按所属机器归属回落。
     # 虚拟机看 KIND_VM、容器看 KIND_CT，逐台按 type 选表。
     scope = security.visible_owner(user)
+    # 区域管理员：当前连接属于他的区域就放开快照过滤（越区直接拒绝）；这页只读
+    # 一条连接，区域外的机器本来就不会出现在他的连接清单里
+    if security.is_region_admin(user):
+        security.ensure_region_allowed(user, _op_connection())
+        scope = None
     snap_owners = await ownership.owners_map(ownership.KIND_SNAPSHOT)
     vm_owners = await ownership.owners_map(ownership.KIND_VM)
     ct_owners = await ownership.owners_map_for(ownership.KIND_CT)

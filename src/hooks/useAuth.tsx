@@ -70,6 +70,10 @@ export interface AuthContextValue {
   hasRole: (...roles: string[]) => boolean;
   /** 是否为管理员 */
   isAdmin: boolean;
+  /** 是否为区域管理员（管理指派区域内的全部机器） */
+  isRegionAdmin: boolean;
+  /** 当前账号可管理的区域名（空数组 = 不按区域限制） */
+  regions: string[];
   /** 是否可写（admin/operator）*/
   canWrite: boolean;
 }
@@ -329,6 +333,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasPermission,
       hasRole,
       isAdmin: user?.role === 'admin',
+      isRegionAdmin: user?.role === 'region_admin',
+      regions: user?.regions ?? [],
       canWrite: canWriteFor(user),
     }),
     [

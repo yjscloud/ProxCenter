@@ -492,6 +492,7 @@ CSV（一行 = 一次工具调用）。另有 Token 消耗入口，按 1 / 7 / 3
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_AUTH_PER_MINUTE` | `true` / `300` / `30` | 限流开关、每 IP 每分钟的普通请求与敏感入口（登录 / 注册 / 找回密码 / 刷新 / 2FA）上限 |
 | `STEP_UP_REQUIRED` / `STEP_UP_WINDOW_MINUTES` | `true` / `5` | 危险操作是否要二次确认，以及确认的有效窗口 |
 | `FRP_ALLOW_LOCAL_CIDRS` / `FRP_BLOCK_PANEL_SUBNET` | 空 / `true` | 内网穿透的目标白名单：普通用户只能指向自己名下的虚机 / 容器 IP，另外可用这里放行网段（也可在穿透页「用户授权」里按人放行具体 IP）；默认还禁止指向面板自身所在网段 |
+| `FRP_REMOTE_PORT_MIN` / `FRP_REMOTE_PORT_MAX` | `40000` / `50000` | 穿透规则可用的公网端口区间的初始值 / 兜底。管理员可在「内网穿透」页面直接改成 frps 实际可用的那一段（改完即时生效并写库，以页面为准）；22 / 80 / 443 / 7000 / 7001 / 8006 等关键端口始终不可占用 |
 | `PVE_HOST` / `PVE_PORT` | 空 / `8006` | Proxmox 地址（不带协议）与 API 端口 |
 | `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` | 空 | 形如 `panel@pve!panel` 与 Token 的 UUID |
 | `PVE_VERIFY_SSL` | `false` | 出站是否校验 PVE 证书。默认关闭：PVE 出厂自签，开着会握手失败。要安全性就用连接配置里的「证书 PEM」（`ca_cert`）钉扎，或证书由正规 CA 签发时改成 `true` |
@@ -609,6 +610,13 @@ pveum acl modify / --tokens 'root@pam!panel' --roles PVEAuditor   # 节点指标
 **Docker 部署，容器起不来或反复重启**：多半是数据库口令对不上。`docker compose logs panel |
 tail -30` 找 `Access denied` / `Can't connect`，改法见 [Docker 部署](#docker-部署) 里那两条
 注意事项。
+
+**面板跑在 Python 3.9 / 3.10 上，某些功能不正常（典型：告警邮件发不出、更新失败）。**
+整套依赖按 Python 3.11+ 固定，其中最硬的限制是 Pillow 12 要求 ≥3.10 —— 在 3.9 上
+`pip install -r backend/requirements.txt` 直接解析失败，依赖停在旧版本，一键更新也会卡在
+装依赖这一步。新版 `start-prod.sh` / `run.py` 会直接拒绝低版本解释器并给出安装命令；
+登录后访问 `/api/version` 也能看到实际运行的 Python 版本。装好 3.11+ 后执行
+`rm -rf .venv` 再重新启动即可（数据库与配置不受影响）。
 
 **主机安全页面读不到数据**：容器里 `/var/log`、`/proc` 属于容器而不是宿主机，页面会说明，
 需要时按 `docker-compose.yml` 里注释的挂载项只读挂进去。

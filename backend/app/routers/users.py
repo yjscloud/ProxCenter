@@ -81,6 +81,19 @@ async def list_roles(
     return items
 
 
+@router.get("/users/regions")
+async def list_regions(
+    user: Dict[str, Any] = Depends(security.require_permission("users.view")),
+) -> List[str]:
+    """可指派的区域名（来自各 PVE 连接上的 region 标签）。
+
+    区域不是独立实体，界面上「可管理区域」的多选项就是这份清单。未填区域的
+    连接不会出现在这里 —— 没有区域名的连接不归任何区域管理员管（见
+    :func:`security.region_in_scope`）。
+    """
+    return store.connection_regions()
+
+
 @router.get("/users")
 async def list_users(
     status: Optional[str] = Query(
@@ -115,6 +128,8 @@ async def get_user(
         # 账号有效期：0 = 永不过期；expiry_frozen 非 0 = 已到期冻结（已关机）
         "expires_at": found.get("expires_at", 0),
         "expiry_frozen": found.get("expiry_frozen", 0),
+        # 区域管理员可管理的区域（空 = 不按区域限制）
+        "regions": found.get("regions") or [],
     }
 
 
@@ -148,6 +163,7 @@ async def create_user(
         payload.email,
         permissions=permissions,
         expires_at=payload.expires_at,
+        regions=payload.regions,
     )
 
     await security.audit(
@@ -156,6 +172,7 @@ async def create_user(
             "role": role_id,
             "permissions": permissions,
             "expires_at": payload.expires_at or 0,
+            "regions": list(created.get("regions") or []),
         },
     )
     return created
@@ -228,6 +245,8 @@ async def update_user(
         permissions_provided=payload.set_permissions,
         status=payload.status,
         expires_at=payload.expires_at,
+        regions=payload.regions,
+        regions_provided=payload.set_regions,
     )
 
     detail: Dict[str, Any] = {
@@ -237,6 +256,7 @@ async def update_user(
         "password_changed": bool(payload.password),
         "permissions": permissions,
         "expires_at": payload.expires_at,
+        "regions": payload.regions if payload.set_regions else None,
     }
 
     # 动到「还能不能继续用这个凭据」的字段时，把对方的所有凭据一并作废：

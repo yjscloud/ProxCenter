@@ -375,13 +375,20 @@ class TestHostAuditApi:
         async def fake_sudo(host_id: str, hours: int = 24):
             return {"host_id": host_id, "name": "pve-1", "ok": True, "error": "", "entries": []}
 
-        async def fake_resolve_login(ts, end, forwarded):
+        async def fake_resolve_login(ts, end, forwarded, host_id="local", **kwargs):
             return "203.0.113.9" if end else None
+
+        async def fake_proxies() -> set:
+            return {"172.16.149.3"}
+
+        async def fake_fronts(host_id, addr="", port=22) -> set:
+            return {"ssh_in"}
 
         monkeypatch.setattr(hostaudit, "collect_logins", fake_logins)
         monkeypatch.setattr(hostaudit, "collect_sudo", fake_sudo)
         monkeypatch.setattr(hostaudit.sshforward, "enabled", lambda: True)
-        monkeypatch.setattr(hostaudit.sshforward, "proxies", lambda: {"172.16.149.3"})
+        monkeypatch.setattr(hostaudit.sshforward, "proxies_set", fake_proxies)
+        monkeypatch.setattr(hostaudit.sshforward, "frontends_for", fake_fronts)
         monkeypatch.setattr(hostaudit.sshforward, "resolve_login", fake_resolve_login)
 
         headers = auth_headers(api)
@@ -438,8 +445,14 @@ class TestHostAuditApi:
         async def fake_sudo(host_id: str, hours: int = 24):
             return {"host_id": host_id, "name": "pve-1", "ok": True, "error": "", "entries": []}
 
-        async def fake_resolve(ts, forwarded):
+        async def fake_resolve(ts, forwarded, host_id="local", **kwargs):
             return state["real"]
+
+        async def fake_proxies() -> set:
+            return {"172.16.149.3"}
+
+        async def fake_fronts(host_id, addr="", port=22) -> set:
+            return {"ssh_in"}
 
         async def no_alarms():
             return set()
@@ -448,7 +461,8 @@ class TestHostAuditApi:
         monkeypatch.setattr(hostaudit, "collect_sudo", fake_sudo)
         monkeypatch.setattr(hostaudit, "_alarming_ips", no_alarms)
         monkeypatch.setattr(hostaudit.sshforward, "enabled", lambda: True)
-        monkeypatch.setattr(hostaudit.sshforward, "proxies", lambda: {"172.16.149.3"})
+        monkeypatch.setattr(hostaudit.sshforward, "proxies_set", fake_proxies)
+        monkeypatch.setattr(hostaudit.sshforward, "frontends_for", fake_fronts)
         monkeypatch.setattr(hostaudit.sshforward, "resolve", fake_resolve)
 
         headers = auth_headers(api)

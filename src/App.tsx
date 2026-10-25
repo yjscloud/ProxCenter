@@ -5,20 +5,31 @@
    打进首屏那一个 2.4 MB 的包里 —— 用户打开任何一个页面，都要先把所有页面的
    代码下载并解析一遍，冷启动白等好几秒。改成按需之后，首屏只带当前这一个页面。
 
-   两个例外刻意保持静态：`NotFound` 与下面的加载态本身。404 是「地址不对」的
-   兜底，专程再发一个网络请求去取它只是让错误页也变慢。
+   三个例外刻意保持静态：`NotFound`、下面的加载态本身，以及维护公告页。404 是
+   「地址不对」的兜底，专程再发一个网络请求去取它只是让错误页也变慢；维护页同理
+   —— 它出现的时机正是「后端只肯回 503」，这时候不该再依赖一次成功的懒加载。
    ========================================================================== */
 
 import { Navigate, Route, Routes, useLocation } from 'react-router';
-import { Suspense, lazy, type ComponentType, type ReactNode } from 'react';
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import { Layout } from './components/Layout';
 import { Spinner } from './components/ui/Spinner';
+import { setMaintenanceHandler } from './api/client';
 import { useAuth } from './hooks/useAuth';
+import { useMaintenance } from './hooks/useMaintenance';
 import type { PermissionKey } from './api/permissions';
 import { useSiteInfo } from './hooks/useSiteInfo';
 import { useT } from './i18n';
 
 import { NotFound } from './pages/NotFound';
+import { Maintenance } from './pages/Maintenance';
 
 /**
  * 把一个页面组件变成按需加载。
@@ -179,8 +190,33 @@ function RequireAnyPermission({
 /* 已登录用户访问 /login 时跳回控制台首页 */
 function RedirectIfAuthed({ children }: { children: ReactNode }) {
   const { user, initializing } = useAuth();
+  const maintenance = useMaintenance();
   if (initializing) return <FullPageLoader />;
-  if (user) return <Navigate to="/dashboard" replace />;
+  /* 维护期间**不**把被挡住的普通用户弹回控制台：他已经什么都干不了，弹回去
+     只会让人以为「管理员登录」按钮点了没反应（这正是原来的 bug）。
+     管理员照旧跳回控制台 —— 他本来就是登录状态。 */
+  /* 只有**确认**维护已关闭才把普通用户弹回控制台：状态还没取回来时（undefined）
+     弹走会造成竞态 —— 刚跳到 /login 就被送回去，看起来仍是「按钮没反应」。 */
+  const maintenanceOff = maintenance.data?.enabled === false;
+  if (user && (user.role === 'admin' || maintenanceOff)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
+/**
+ * 维护期间把**公开页面**换成公告页（产品官网 / 注册 / 找回密码）。
+ *
+ * 这些页面不调接口，光靠「收到 503 再切维护页」永远切不过去 —— 有用户打开
+ * 官网看到的还是原来的官网。管理员不受影响（他要能正常访问）。
+ */
+function MaintenanceGate({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const maintenance = useMaintenance();
+  if (user?.role === 'admin') return <>{children}</>;
+  if (maintenance.data?.enabled) {
+    return <Maintenance message={maintenance.data.message} />;
+  }
   return <>{children}</>;
 }
 
@@ -193,10 +229,63 @@ export function App() {
      放在这里可以覆盖登录页、产品官网与所有后台页面。 */
   useSiteInfo();
 
+  const { user } = useAuth();
+  /* 维护模式：普通用户的任何接口都会拿到 503 + code=maintenance（见 api/client），
+     这里把它变成一整页公告 —— 否则用户看到的是满屏「服务不可用」。
+
+     管理员永远收不到这个信号（后端对他们放行），所以不必判断「是不是管理员」之后
+     再把他放进来：真收到就说明确实不该继续用。 */
+  const [maintenanceNotice, setMaintenanceNotice] = useState<string | null>(null);
+
+  /* 主动探一次（每 30 秒），而不是只等接口 503：
+     有些页面（产品官网、纯展示页）压根不发请求，光等 503 会一直停在原页面 ——
+     「开了维护模式但页面没变」就是这个问题。 */
+  const maintenance = useMaintenance(true, 30_000);
+
+  useEffect(() => {
+    setMaintenanceHandler((message) => setMaintenanceNotice(message || ''));
+    return () => setMaintenanceHandler(null);
+  }, []);
+
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      setMaintenanceNotice(null);
+      return;
+    }
+    /* 只在**拿到状态**时才算数：维护期间这个接口本身就是 503，data 是 undefined，
+       此时别把它当成「已关闭」，否则刚记下的公告会被立刻清掉。 */
+    if (maintenance.data?.enabled === true) {
+      setMaintenanceNotice(maintenance.data.message || '');
+    } else if (maintenance.data?.enabled === false) {
+      /* 关掉维护模式后要能把公告页放出来，否则用户会一直卡在公告上等刷新。 */
+      setMaintenanceNotice(null);
+    }
+  }, [user, maintenance.data]);
+
+  const location = useLocation();
+  /* 登录页与公告页本身要能打开：前者是管理员唯一的入口，后者是这条提示的落点。
+     放行登录页也顺带解掉一个死循环 —— 覆盖渲染会盖住 /login，点「管理员登录」
+     等于什么都没发生。 */
+  const noticePageOpen =
+    location.pathname === '/login' || location.pathname === '/maintenance';
+
+  if (maintenanceNotice !== null && user?.role !== 'admin' && !noticePageOpen) {
+    return <Maintenance message={maintenanceNotice} />;
+  }
+
   return (
     <Routes>
       {/* 公开路由（每一条都套 PublicBoundary：这些页面按需加载，而它们不在
           Layout 里，拿不到里面那道边界） */}
+      {/* 维护公告：可以直接访问，管理员用它预览自己写的公告 */}
+      <Route
+        path="/maintenance"
+        element={
+          <PublicBoundary>
+            <Maintenance />
+          </PublicBoundary>
+        }
+      />
       <Route
         path="/login"
         element={
@@ -213,9 +302,11 @@ export function App() {
         path="/register"
         element={
           <PublicBoundary>
-            <RedirectIfAuthed>
-              <Register />
-            </RedirectIfAuthed>
+            <MaintenanceGate>
+              <RedirectIfAuthed>
+                <Register />
+              </RedirectIfAuthed>
+            </MaintenanceGate>
           </PublicBoundary>
         }
       />
@@ -228,9 +319,11 @@ export function App() {
         path="/forgot-password"
         element={
           <PublicBoundary>
-            <RedirectIfAuthed>
-              <ForgotPassword />
-            </RedirectIfAuthed>
+            <MaintenanceGate>
+              <RedirectIfAuthed>
+                <ForgotPassword />
+              </RedirectIfAuthed>
+            </MaintenanceGate>
           </PublicBoundary>
         }
       />
@@ -243,12 +336,14 @@ export function App() {
         }
       />
 
-      {/* 产品官网（免登录） */}
+      {/* 产品官网（免登录）：维护期间换成维护公告 —— 它不调接口，靠 503 是切不过来的 */}
       <Route
         path="/"
         element={
           <PublicBoundary>
-            <Landing />
+            <MaintenanceGate>
+              <Landing />
+            </MaintenanceGate>
           </PublicBoundary>
         }
       />

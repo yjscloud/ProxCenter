@@ -21,6 +21,7 @@ import {
   IconTrash,
   IconRefresh,
   IconSave,
+  IconSearch,
   IconCpu,
   IconMemory,
   IconDisk,
@@ -32,6 +33,7 @@ import {
   IconDownload,
   IconChat,
   IconMail,
+  IconCopy,
 } from "../components/Icons";
 import { useToast } from "../hooks/useToast";
 import { useRefreshInterval } from "../hooks/useRefreshInterval";
@@ -44,6 +46,7 @@ import type {
   AlertEmailConfig,
   AlertRecord,
   AlertRule,
+  AlertTemplate,
   AlertWebhookConfig,
 } from "../api/types";
 
@@ -161,12 +164,29 @@ export function Alerts() {
   const [hookWebhookClear, setHookWebhookClear] = useState(false);
   const [hookSecretClear, setHookSecretClear] = useState(false);
   const [clearHistoryOpen, setClearHistoryOpen] = useState(false);
+  /* 历史搜索：一个框同时匹配对象名称与规则名称。
+     必须交给服务端筛 —— 历史只回最近 80 条，在前端过滤的话，上周那条永远搜不到。
+     300ms 防抖：别让每个按键都打一次接口。 */
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+  /* 通知文案模板：本地副本 + 显式保存，与其它通道配置同一套交互 */
+  const [template, setTemplate] = useState<AlertTemplate | null>(null);
+  /* 变量按钮插到哪里：记住最后一个获得焦点的输入框，点变量就追加到那儿 */
+  const [templateField, setTemplateField] = useState<"subject" | "body" | "feishu">(
+    "body",
+  );
 
   /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
   const refresh = useRefreshInterval();
   const query = useQuery({
-    queryKey: ["alerts"],
-    queryFn: alertsApi.get,
+    /* 没搜索时用 ["alerts"]，与首页工作台共用同一份缓存（它也要 active 那份）；
+       带搜索词才另开一条 key。 */
+    queryKey: search ? ["alerts", search] : ["alerts"],
+    queryFn: () => alertsApi.get(search),
     refetchInterval: refresh,
     retry: false,
   });
@@ -243,7 +263,12 @@ export function Alerts() {
         },
       );
     }
-  }, [query.data, rules, feishu, emailCfg, hook]);
+    if (template === null) {
+      setTemplate(
+        query.data.template ?? { enabled: false, subject: '', body: '', feishu: '' },
+      );
+    }
+  }, [query.data, rules, feishu, emailCfg, hook, template]);
 
   /**
    * 跑一次保存 / 测试类的操作，只报「成没成」。
@@ -302,6 +327,51 @@ export function Alerts() {
       "mail",
       () => alertsApi.saveEmail(emailCfg),
       t("alerts.emailSaved"),
+    );
+  }
+
+  async function saveTemplate() {
+    if (!template) return;
+    await run(
+      "tpl",
+      () => alertsApi.saveTemplate(template),
+      t("alerts.templateSaved"),
+    );
+  }
+
+  /** 把 {变量} 追加到当前正在编辑的那一格（变量名是后端注册的固定集合）。 */
+  function insertTemplateVar(name: string) {
+    setTemplate((prev) =>
+      prev
+        ? { ...prev, [templateField]: `${prev[templateField]}{${name}}` }
+        : prev,
+    );
+  }
+
+  /**
+   * 复制右侧示例。写剪贴板只在一处：非 HTTPS / 老浏览器下会抛错，那时给一句
+   * 失败提示，而不是静默什么都不发生 —— 用户会以为按钮坏了。
+   */
+  async function copyTemplateGuide(kind: "mail" | "feishu") {
+    const example =
+      kind === "mail"
+        ? t("alerts.templateGuideMail")
+        : t("alerts.templateGuideFeishu");
+    try {
+      await navigator.clipboard.writeText(example);
+      toast.success(t("alerts.templateGuideCopied"));
+    } catch {
+      toast.error(t("common.opFailed"));
+    }
+  }
+
+  /** 用编辑中的模板真发一条样例通知（不保存也能测，方便边改边看）。 */
+  async function testTemplate() {
+    if (!template) return;
+    await run(
+      "tpltest",
+      () => alertsApi.testTemplate(template),
+      t("alerts.templateTestSent"),
     );
   }
 
@@ -377,6 +447,8 @@ export function Alerts() {
   const recoveryCount = records.filter((r) => r.kind === "recovery").length;
   const alarmCount = records.length - recoveryCount;
   const failCount = records.filter((r) => r.result !== "sent").length;
+  /* 同一事件的重复提醒：记录里要数出来，否则「告警 8 条」会被读成触发了 8 次 */
+  const repeatCount = records.filter((r) => Number(r.is_repeat) === 1).length;
 
   /* 「正在告警」与「历史条数」是两个数，混着看必然误会（「50 条待处理」里有
      一大半是早就恢复了的旧记录）。所以副标题把两者并列写出来：前者是还没解决
@@ -390,6 +462,7 @@ export function Alerts() {
     records.length > 0 ? t("alerts.totalRecords", { n: records.length }) : "",
     records.length > 0 ? t("alerts.alarmCount", { n: alarmCount }) : "",
     records.length > 0 ? t("alerts.recoveryCount", { n: recoveryCount }) : "",
+    repeatCount > 0 ? t("alerts.repeatCount", { n: repeatCount }) : "",
     failCount > 0 ? t("alerts.failedCount", { n: failCount }) : "",
   ]
     .filter(Boolean)
@@ -461,7 +534,9 @@ export function Alerts() {
      定宽布局有两条互补的规则（实测过）：
        * 声明宽度之和小于容器 → 各列**按比例放大**填满容器，右侧不留洞；
        * 之和大于容器 → 表格溢出，`.table-container` 出现横向滚动条。
-     所以下面的和（935）刻意压在常见容器宽度（1000~1250）**之下**，让它走第一条路。
+     所以下面的和（998）刻意压在常见容器宽度（1000~1250）**之下**，让它走第一条路。
+    时间列要装下「2026-10-25 19:26:48」整串数字，比相对时间宽了近 50px —— 这份
+    宽度是从规则 / 对象 / 指标 / 数值四列里各匀出一点换来的。
      宽屏上多出来的那部分由「数值」列里那根条形吸收（见 .alert-hist-bar 的
      max-width），而不是变成空白。
 
@@ -472,37 +547,48 @@ export function Alerts() {
       {
         key: "time",
         header: t("alerts.colTime"),
-        width: 115,
+        width: 168,
         sortable: true,
         sortValue: (r) => Number(r.ts ?? 0),
         render: (r) => (
-          /* 相对时间读起来快（「3 小时前」比一串日期省眼睛），但要核对具体是哪一刻
-             就得有绝对时间 —— 挂在 title 上，两种读法都留着 */
-          <span className="alert-hist-time" title={formatDateTime(r.ts)}>
+          /* 绝对时间必须常显：复盘时最常问的就是「这条到底哪一刻发的」，
+             挂在 title 上等于藏起来（触屏设备连 hover 都没有）。
+             相对时间退成第二行小字，「3 小时前」的一眼可读性也留着。 */
+          <span className="alert-hist-time">
             <IconClock size={12} aria-hidden="true" />
-            {formatRelative(r.ts)}
+            <span className="alert-hist-clock">
+              <span className="alert-hist-abs">{formatDateTime(r.ts)}</span>
+              <span className="alert-hist-rel">{formatRelative(r.ts)}</span>
+            </span>
           </span>
         ),
       },
       {
         key: "status",
         header: t("alerts.colStatus"),
-        width: 120,
+        width: 145,
         sortable: true,
         sortValue: (r) => deliveryMeta(r, t).rank,
         render: (r) => {
           const meta = deliveryMeta(r, t);
           return (
-            <Badge variant={meta.variant} size="sm" dot>
-              {meta.label}
-            </Badge>
+            <span className="alert-hist-status">
+              <Badge variant={meta.variant} size="sm" dot>
+                {meta.label}
+              </Badge>
+              {/* 每发一次通知就落一条，重复提醒要标出来：否则同一对象的三条
+                  记录看着像「告警触发了三次」，而不是「提醒了三次」 */}
+              {r.is_repeat ? (
+                <span className="alert-hist-repeat">{t("alerts.repeatNotice")}</span>
+              ) : null}
+            </span>
           );
         },
       },
       {
         key: "rule",
         header: t("alerts.colRule"),
-        width: 215,
+        width: 200,
         sortable: true,
         sortValue: (r) => r.rule_name || "",
         render: (r) => (
@@ -522,7 +608,7 @@ export function Alerts() {
       {
         key: "object",
         header: t("alerts.colObject"),
-        width: 175,
+        width: 165,
         sortable: true,
         sortValue: (r) => `${r.target_type}:${r.target ?? ""}`,
         render: (r) => (
@@ -537,7 +623,7 @@ export function Alerts() {
       {
         key: "metric",
         header: t("alerts.colMetric"),
-        width: 150,
+        width: 130,
         sortable: true,
         sortValue: (r) => r.metric,
         render: (r) => {
@@ -568,7 +654,7 @@ export function Alerts() {
         key: "value",
         header: t("alerts.colValue"),
         /* 条形 + 16px 间距 + 约 30px 数值 + 约 58px 阈值文案 + 20px 内边距 */
-        width: 215,
+        width: 190,
         sortable: true,
         sortValue: (r) => Number(r.value ?? 0),
         render: (r) => {
@@ -636,10 +722,13 @@ export function Alerts() {
     [records, histColumns, histSort],
   );
   /* 归属作用域一变（管理员 ↔ 普通用户）就回第一页；条数不够时的越界由 hook 自己夹住 */
-  const histPage = usePaged(sortedRecords, `${isAdmin}`);
+  /* 搜索词也进 resetKey：换关键词后必须回到第一页 —— 停在第 4 页而新结果只有
+     一页时，用户看到的是「搜不到」。 */
+  const histPage = usePaged(sortedRecords, `${isAdmin}|${search}`);
 
   return (
     <PageShell
+      className="page-alerts"
       title={t("alerts.title")}
       subtitle={t("alerts.subtitle")}
       actions={
@@ -1093,7 +1182,7 @@ export function Alerts() {
               </div>
             </div>
 
-            <div className="mt-16">
+            <div className="mt-12">
               <Switch
                 checked={hook.enabled}
                 onChange={(v) => setHook({ ...hook, enabled: v })}
@@ -1102,71 +1191,74 @@ export function Alerts() {
               />
             </div>
 
-            <div className="mt-16">
-              <div className="flex items-center gap-8 flex-wrap">
-                <span className="fs-sm fw-500">{t("alerts.templateLabel")}</span>
-                {Object.entries(query.data?.hook_presets ?? {}).map(([key, preset]) => (
-                  <Button
-                    key={key}
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => applyHookPreset(key)}
-                  >
-                    {preset.label}
-                  </Button>
-                ))}
-              </div>
-              {/* 12px 而不是 8px：上面那排是模板按钮，textarea 贴太近会看着像
-                  按钮组的一部分，而不是「点完按钮后在这里改内容」 */}
-              <div className="mt-12">
+            {/* 请求体模板与额外请求头并排：一个决定 body，一个决定 headers，
+                是同一条 HTTP 请求的两半，摆在一行才好对照着改。 */}
+            <div className="mt-12 alc-hook-split">
+              <div className="alc-hook-col">
+                <div className="alc-hook-col-head">
+                  <span className="fs-sm fw-500">{t("alerts.templateLabel")}</span>
+                  {Object.entries(query.data?.hook_presets ?? {}).map(([key, preset]) => (
+                    <Button
+                      key={key}
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => applyHookPreset(key)}
+                    >
+                      {preset.label}
+                    </Button>
+                  ))}
+                </div>
                 <Textarea
                   value={hook.template}
-                  rows={4}
+                  rows={5}
                   mono
                   placeholder='{"msgtype":"markdown","markdown":{"content":"**{{title}}**\n{{text}}"}}'
                   onChange={(e) => setHook({ ...hook, template: e.target.value })}
                 />
-              </div>
-              <div className="field-message">
-                <div>{t("alerts.templateHint1")}</div>
-                <div className="mt-4">
-                  {t("alerts.placeholders")}
-                  {(
-                    query.data?.hook_placeholders ?? [
-                      "title",
-                      "text",
-                      "level",
-                      "target",
-                      "metric",
-                      "value",
-                      "threshold",
-                      "time",
-                    ]
-                  ).map((name) => (
-                    <span key={name} className="mono fs-xs" style={{ marginRight: 8 }}>
-                      {`{{${name}}}`}
-                    </span>
-                  ))}
+                <div className="field-message">
+                  <div>{t("alerts.templateHint1")}</div>
+                  <div className="mt-4">
+                    {t("alerts.placeholders")}
+                    {(
+                      query.data?.hook_placeholders ?? [
+                        "title",
+                        "text",
+                        "level",
+                        "target",
+                        "metric",
+                        "value",
+                        "threshold",
+                        "time",
+                      ]
+                    ).map((name) => (
+                      <span
+                        key={name}
+                        className="mono fs-xs"
+                        style={{ marginRight: 8 }}
+                      >
+                        {`{{${name}}}`}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="mt-16">
-              <Field
-                label={t("alerts.extraHeaders")}
-                hint={t("alerts.extraHeadersHint")}
-              >
+              <div className="alc-hook-col">
+                <div className="alc-hook-col-head">
+                  <span className="fs-sm fw-500">{t("alerts.extraHeaders")}</span>
+                </div>
                 <Textarea
                   value={hook.headers}
-                  rows={2}
+                  rows={5}
                   mono
                   placeholder='{"Authorization": "Bearer ..."}'
                   onChange={(e) => setHook({ ...hook, headers: e.target.value })}
                 />
-              </Field>
+                <div className="field-message">{t("alerts.extraHeadersHint")}</div>
+              </div>
             </div>
 
-            <div className="mt-16">
+            <div className="mt-12">
               <Notice tone="info" title={t("alerts.aboutSignature")}>
                 {t("alerts.sigIntro")}
                 <strong>{t("alerts.sigDingtalkStrong")}</strong>
@@ -1214,15 +1306,15 @@ export function Alerts() {
         {/* 原来「邮件通道」那张卡片标题栏里的副标题搬到这里。合并之后整块只剩
             标题行，但「这个邮箱会收到什么」仍然得讲清楚 —— 除了告警与恢复，下发
             机器（配置、IP、口令）与重装结果这些非告警邮件也走它。 */}
-        <div className="field-message alc-mail-desc mt-16">
+        <div className="field-message alc-mail-desc mt-12">
           {t("alerts.emailSubtitle")}
         </div>
 
-        {/* mt-16：邮件这一段的每一块都紧跟在渠道行（或说明）后面，.alc-ch 系列
+        {/* mt-12：邮件这一段的每一块都紧跟在渠道行（或说明）后面，.alc-ch 系列
             样式只给随后的 .form-grid 留了间距，这里自己补上，否则 Notice 会贴在
             渠道行上 */}
         {!mailReady ? (
-          <div className="mb-16 mt-16">
+          <div className="mb-12 mt-12">
             <Notice tone="warning" title={t("alerts.smtpMissingTitle")}>
               {t("alerts.smtpMissingBody")}
             </Notice>
@@ -1230,85 +1322,244 @@ export function Alerts() {
         ) : null}
 
         {emailCfg ? (
-          <div className="mt-16 flex flex-col gap-16">
-            <Switch
-              checked={emailCfg.enabled}
-              onChange={(v) => setEmailCfg({ ...emailCfg, enabled: v })}
-              label={t("alerts.enableEmail")}
-              hint={t("alerts.enableEmailHint")}
-            />
-            {/* 当前**实际**会发到哪里。这一行就是用来解释「我的邮箱明明是好的，
-                为什么收不到告警」的：收件人留空时用账号邮箱，而开关关着时两边
-                都白搭 —— 以前只有一枚「已停用」徽章，看不出区别。 */}
-            <div className="fs-xs text-muted">
-              {emailCfg.enabled
-                ? emailCfg.recipients.trim()
-                  ? t("alerts.mailEffectiveTo", { to: emailCfg.recipients })
-                  : accountEmail
-                    ? t("alerts.mailEffectiveAccount", { email: accountEmail })
-                    : t("alerts.mailNoAddress")
-                : t("alerts.mailDisabledNow")}
+          <div className="mt-12">
+            {/* 开关在左、三项在右、同一行：它们回答的是同一组问题 ——「开不开 /
+                发给谁 / 隔多久 / 发几次」。分成上下两段会让这条通道白白高一倍，
+                而下面还有模板和规则要放。 */}
+            <div className="alc-mail-top">
+              <div>
+                <Switch
+                  checked={emailCfg.enabled}
+                  onChange={(v) => setEmailCfg({ ...emailCfg, enabled: v })}
+                  label={t("alerts.enableEmail")}
+                  hint={t("alerts.enableEmailHint")}
+                />
+                {/* 当前**实际**会发到哪里。这一行解释「我的邮箱明明是好的，为什么
+                    收不到告警」：收件人留空时用账号邮箱，开关关着时两边都白搭。 */}
+                <div className="fs-xs text-muted mt-8">
+                  {emailCfg.enabled
+                    ? emailCfg.recipients.trim()
+                      ? t("alerts.mailEffectiveTo", { to: emailCfg.recipients })
+                      : accountEmail
+                        ? t("alerts.mailEffectiveAccount", { email: accountEmail })
+                        : t("alerts.mailNoAddress")
+                    : t("alerts.mailDisabledNow")}
+                </div>
+              </div>
+              {/* 地址、间隔、次数仍是一行：合起来才是「这封邮件发给谁、隔多久再发、
+                  最多发几次」的完整设定。宽度见 .alc-mail-fields。 */}
+              <div className="alc-mail-fields">
+                <Field
+                  label={t("alerts.recipientsLabel")}
+                  hint={
+                    accountEmail
+                      ? t("alerts.recipientsHintAccount", { email: accountEmail })
+                      : t("alerts.recipientsHintNoAccount")
+                  }
+                >
+                  <Input
+                    value={emailCfg.recipients}
+                    onChange={(e) =>
+                      setEmailCfg({ ...emailCfg, recipients: e.target.value })
+                    }
+                    placeholder={t("alerts.recipientsPlaceholder")}
+                    mono
+                  />
+                </Field>
+                <Field
+                  label={t("alerts.mailIntervalLabel")}
+                  hint={t("alerts.mailIntervalHint")}
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    value={emailCfg.interval}
+                    onChange={(e) =>
+                      setEmailCfg({
+                        ...emailCfg,
+                        interval: Number(e.target.value) || 0,
+                      })
+                    }
+                  />
+                </Field>
+                <Field
+                  label={t("alerts.mailMaxRepeatsLabel")}
+                  hint={t("alerts.mailMaxRepeatsHint")}
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    value={emailCfg.max_repeats}
+                    onChange={(e) =>
+                      setEmailCfg({
+                        ...emailCfg,
+                        max_repeats: Number(e.target.value) || 0,
+                      })
+                    }
+                  />
+                </Field>
+              </div>
             </div>
-            {/* 地址、间隔、次数放在同一行：这三项合起来才是「这封邮件发给谁、
-                隔多久再发、最多发几次」的一份完整设定，分成三行既占高度，又让
-                它们看着像互不相干的三个设置。
-                宽度见 components.css 的 .alc-mail-fields：地址那格吃掉剩余宽度
-                （要装下若干个邮箱），两个数字格封顶 200px。整行铺满卡片、不留
-                宽度上限 —— 上限会把卡片右半边空出来，比数字框略宽更难看。
+          </div>
+        ) : (
+          <div className="skeleton skeleton-text" />
+        )}
 
-                注：重复提醒的节奏是邮件独有的 —— 以前只能蹭飞书的冷却，
-                同一台机器持续高负载会一直重发。 */}
-            <div className="alc-mail-fields">
-              <Field
-                label={t("alerts.recipientsLabel")}
-                hint={
-                  accountEmail
-                    ? t("alerts.recipientsHintAccount", { email: accountEmail })
-                    : t("alerts.recipientsHintNoAccount")
+        {/* ---- 文案模板：邮件主题/正文与飞书卡片正文都可以自己写 ----
+            默认关闭，且留空的字段回落内置文案：只改邮件正文的人，飞书卡片
+            不会被一起改掉。变量按后端注册的集合列出，点一下就插进当前那一格。 */}
+        <div className="alc-ch">
+          <div className="alc-ch-id">
+            <span className="alc-ch-name">
+              <IconChat size={15} />
+              {t("alerts.templateTitle")}
+            </span>
+            {template && !template.enabled ? (
+              <Badge variant="neutral" size="sm" dot>
+                {t("alerts.templateOff")}
+              </Badge>
+            ) : null}
+          </div>
+          <div className="alc-ch-actions">
+            {/* 测试用**编辑中**的模板发：改完不用先保存就能看到真实效果 */}
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<IconPlug size={14} />}
+              loading={busy === "tpltest"}
+              disabled={!template}
+              onClick={() => void testTemplate()}
+            >
+              {t("alerts.templateTest")}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<IconSave size={14} />}
+              loading={busy === "tpl"}
+              disabled={!template}
+              onClick={() => void saveTemplate()}
+            >
+              {t("common.save")}
+            </Button>
+          </div>
+        </div>
+
+        <div className="field-message alc-mail-desc mt-12">
+          {t("alerts.templateSubtitle")}
+        </div>
+
+        {template ? (
+          <div className="alert-tpl-form mt-12">
+            <Switch
+              checked={template.enabled}
+              onChange={(v) => setTemplate({ ...template, enabled: v })}
+              label={t("alerts.templateEnable")}
+              hint={t("alerts.templateEnableHint")}
+            />
+            <Field
+              label={t("alerts.templateSubject")}
+              hint={t("alerts.templateSubjectHint")}
+            >
+              <Input
+                value={template.subject}
+                onFocus={() => setTemplateField("subject")}
+                onChange={(e) =>
+                  setTemplate({ ...template, subject: e.target.value })
                 }
-              >
-                <Input
-                  value={emailCfg.recipients}
-                  onChange={(e) =>
-                    setEmailCfg({ ...emailCfg, recipients: e.target.value })
-                  }
-                  placeholder={t("alerts.recipientsPlaceholder")}
-                  mono
-                />
-              </Field>
+                placeholder={t("alerts.templateSubjectPlaceholder")}
+              />
+            </Field>
+
+            {/* 正文与样例**逐行并排**：左边写、右边照着抄，两块天然等高，
+                不会有「右边短一截、底下空一块」的观感。 */}
+            <div className="alert-tpl-pair">
               <Field
-                label={t("alerts.mailIntervalLabel")}
-                hint={t("alerts.mailIntervalHint")}
+                label={t("alerts.templateBody")}
+                hint={t("alerts.templateBodyHint")}
               >
-                <Input
-                  type="number"
-                  min={0}
-                  value={emailCfg.interval}
-                  onChange={(e) =>
-                    setEmailCfg({
-                      ...emailCfg,
-                      interval: Number(e.target.value) || 0,
-                    })
+                <Textarea
+                  value={template.body}
+                  rows={6}
+                  onFocus={() => setTemplateField("body")}
+                  onChange={(e) => setTemplate({ ...template, body: e.target.value })}
+                  placeholder={
+                    "虚拟机：{target}\n内存：{used} / {total}\n内存使用率：{value}%\n节点：{node}"
                   }
                 />
               </Field>
-              <Field
-                label={t("alerts.mailMaxRepeatsLabel")}
-                hint={t("alerts.mailMaxRepeatsHint")}
-              >
-                <Input
-                  type="number"
-                  min={0}
-                  value={emailCfg.max_repeats}
-                  onChange={(e) =>
-                    setEmailCfg({
-                      ...emailCfg,
-                      max_repeats: Number(e.target.value) || 0,
-                    })
-                  }
-                />
-              </Field>
+              <div className="alert-tpl-guide">
+                <div className="field-label alert-tpl-guide-label">
+                  <span>{t("alerts.templateGuideMailLabel")}</span>
+                  <button
+                    type="button"
+                    className="alert-tpl-copy"
+                    onClick={() => void copyTemplateGuide("mail")}
+                  >
+                    <IconCopy size={12} />
+                    {t("alerts.templateGuideCopy")}
+                  </button>
+                </div>
+                <pre className="alert-tpl-sample">
+                  {t("alerts.templateGuideMail")}
+                </pre>
+              </div>
             </div>
+
+            <div className="alert-tpl-pair">
+              <Field
+                label={t("alerts.templateFeishu")}
+                hint={t("alerts.templateFeishuHint")}
+              >
+                <Textarea
+                  value={template.feishu}
+                  rows={5}
+                  onFocus={() => setTemplateField("feishu")}
+                  onChange={(e) =>
+                    setTemplate({ ...template, feishu: e.target.value })
+                  }
+                  placeholder={"**{target}** {metric} {value}%（{used}/{total}）"}
+                />
+              </Field>
+              <div className="alert-tpl-guide">
+                <div className="field-label alert-tpl-guide-label">
+                  <span>{t("alerts.templateGuideFeishuLabel")}</span>
+                  <button
+                    type="button"
+                    className="alert-tpl-copy"
+                    onClick={() => void copyTemplateGuide("feishu")}
+                  >
+                    <IconCopy size={12} />
+                    {t("alerts.templateGuideCopy")}
+                  </button>
+                </div>
+                <pre className="alert-tpl-sample">
+                  {t("alerts.templateGuideFeishu")}
+                </pre>
+              </div>
+            </div>
+
+            <div>
+              <div className="fs-xs text-muted mb-8">
+                {t("alerts.templateScopeHint")}
+              </div>
+              <div className="fs-xs text-muted mb-8">
+                {t("alerts.templateVarsHint")}
+              </div>
+              <div className="alert-tpl-vars">
+                {(query.data?.template_placeholders ?? []).map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className="alert-tpl-var"
+                    onClick={() => insertTemplateVar(name)}
+                  >
+                    {`{${name}}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="alert-tpl-guide-note">{t("alerts.templateGuideNote")}</p>
           </div>
         ) : (
           <div className="skeleton skeleton-text" />
@@ -1523,16 +1774,31 @@ export function Alerts() {
           subtitle={historySubtitle || undefined}
           icon={<IconAlert size={16} />}
           actions={
-            <Button
-              variant="danger"
-              size="sm"
-              icon={<IconTrash size={14} />}
-              loading={busy === "clear"}
-              disabled={records.length === 0}
-              onClick={() => setClearHistoryOpen(true)}
-            >
-              {t("alerts.clearHistory")}
-            </Button>
+            <div className="alert-hist-actions">
+              {/* 一个框同时匹配对象名称与规则名称：先想「按哪个字段查」再选下拉，
+                  纯属多余 */}
+              <Input
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                prefix={<IconSearch size={14} />}
+                placeholder={t("alerts.searchPlaceholder")}
+                aria-label={t("alerts.searchPlaceholder")}
+                block={false}
+              />
+              <Button
+                variant="danger"
+                size="sm"
+                icon={<IconTrash size={14} />}
+                loading={busy === "clear"}
+                /* 搜索时禁用：确认框里的条数用的是当前列表长度，筛选状态下
+                   那个数字与「将要删掉多少」对不上，容易让人以为只删这几十条 */
+                disabled={!!search || records.length === 0}
+                title={search ? t("alerts.clearHistorySearching") : undefined}
+                onClick={() => setClearHistoryOpen(true)}
+              >
+                {t("alerts.clearHistory")}
+              </Button>
+            </div>
           }
         />
 
@@ -1544,7 +1810,11 @@ export function Alerts() {
           dense
           sort={histSort}
           onSortChange={setHistSort}
-          emptyTitle={t("alerts.historyEmpty")}
+          emptyTitle={
+            search
+              ? t("alerts.historyEmptySearch", { q: search })
+              : t("alerts.historyEmpty")
+          }
           rowTitle={(r) => r.detail ?? ""}
         />
         {/* 分页条只在真有记录时出现：空列表上那个「每页 N 条」下拉会让人以为

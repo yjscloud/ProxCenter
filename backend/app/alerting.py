@@ -359,6 +359,51 @@ DEFAULT_ALERT_EMAIL: Dict[str, Any] = {
     "max_repeats": 3,
 }
 
+# ------------------------------------------------------- 通知内容模板（按用户）
+#
+# 邮件与飞书的文案原先写死在代码里（见 build_alert_card / send_alert_email）：
+# 想加一行「内存 12.3G / 16G」都只能改代码。这里让每个用户自己写模板，
+# 用 ``{变量}`` 取字段（与通用 Webhook 的 ``{{变量}}`` 刻意区分：那是 JSON，
+# 双花括号更像模板语言的转义写法；这里是给人读的一段话，单括号更好写）。
+#
+# 留空的字段回落内置文案 —— 只想改邮件正文的人不必把飞书也重写一遍。
+ALERT_TEMPLATE_KEY_PREFIX = "alert_template:"
+
+DEFAULT_ALERT_TEMPLATE: Dict[str, Any] = {
+    # 默认关闭：不填模板就与升级前完全一致，不会有人「更新完文案突然变了」
+    "enabled": False,
+    # 邮件主题；留空 = 内置的「虚拟机：xxx」
+    "subject": "",
+    # 邮件正文（纯文本，换行保留）
+    "body": "",
+    # 飞书卡片正文（markdown）；留空 = 内置的字段卡片
+    "feishu": "",
+}
+
+#: 模板里可用的变量。前端把它列出来并支持点击插入，避免用户对着一片空白猜。
+ALERT_TEMPLATE_PLACEHOLDERS: List[str] = [
+    "level",
+    "title",
+    "text",
+    "rule",
+    "kind",
+    "target",
+    "target_type",
+    "metric",
+    "value",
+    "threshold",
+    "used",
+    "total",
+    "node",
+    "status",
+    "ip",
+    "vmid",
+    "time",
+]
+
+#: ``{name}``：允许花括号内有空格，方便手写
+_ALERT_VAR_RE = re.compile(r"\{\s*([a-z_]+)\s*\}")
+
 # =============================================================== 推送来源开关
 #
 # 五个告警来源各有一个「是否发送告警」开关。它**只管推送，不管巡检**：关掉之后
@@ -562,6 +607,10 @@ CREATE TABLE IF NOT EXISTS alert_history (
     result      VARCHAR(32),
     detail      TEXT,
     kind        VARCHAR(16) DEFAULT 'alarm',
+    -- 1 = 同一事件的重复提醒（告警没恢复、冷却到点又发了一次）。
+    -- 每发一次就记一条（用户要的就是「发了三封 = 三条记录」），这一列让界面
+    -- 能分清「三次告警」与「一条告警的三次提醒」，也不影响按事件去统计。
+    is_repeat   TINYINT NOT NULL DEFAULT 0,
     ts          BIGINT,
     PRIMARY KEY (id),
     KEY idx_alert_history_owner (username, ts DESC),
@@ -607,6 +656,11 @@ async def init_table() -> None:
         if "username" not in columns:
             await db.execute(
                 "ALTER TABLE alert_history ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT ''"
+            )
+        if "is_repeat" not in columns:
+            # 旧库补列：升级前的历史里没有「重复提醒」这种行，默认 0 正好
+            await db.execute(
+                "ALTER TABLE alert_history ADD COLUMN is_repeat TINYINT NOT NULL DEFAULT 0"
             )
         columns = await database.table_columns(db, "alert_active")
         if "username" not in columns:
@@ -1211,6 +1265,104 @@ async def send_alert_email(
     return await mailer.send_mail(targets, subject, body, html=html, cfg=cfg)
 
 
+# ------------------------------------------------------- 通知内容模板（按用户）
+def template_key(owner: str) -> str:
+    """通知模板的存储 key：每个用户各自一份（与告警邮件收件人同一口径）。"""
+    return ALERT_TEMPLATE_KEY_PREFIX + str(owner or "")
+
+
+async def load_alert_template(owner: str = "") -> Dict[str, Any]:
+    """读取某个用户的通知模板；没配过 / 存坏了都回落默认（= 内置文案）。"""
+    cfg = dict(DEFAULT_ALERT_TEMPLATE)
+    raw = await store.get_setting(template_key(owner))
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            for key in DEFAULT_ALERT_TEMPLATE:
+                if key in parsed:
+                    cfg[key] = parsed[key]
+    cfg["enabled"] = bool(cfg.get("enabled"))
+    cfg["subject"] = str(cfg.get("subject") or "").strip()[:200]
+    cfg["body"] = str(cfg.get("body") or "")[:4000]
+    cfg["feishu"] = str(cfg.get("feishu") or "")[:4000]
+    return cfg
+
+
+async def save_alert_template(raw: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
+    """保存模板。字段留空 = 该处仍用内置文案（不是「清空通知内容」）。"""
+    cfg = {
+        "enabled": bool((raw or {}).get("enabled")),
+        "subject": str((raw or {}).get("subject") or "").strip()[:200],
+        "body": str((raw or {}).get("body") or "")[:4000],
+        "feishu": str((raw or {}).get("feishu") or "")[:4000],
+    }
+    await store.set_setting(template_key(owner), json.dumps(cfg, ensure_ascii=False))
+    return cfg
+
+
+def render_alert_template(text: str, values: Dict[str, Any]) -> str:
+    """把 ``{变量}`` 换成实际值；不认识的变量原样留着。
+
+    留着而不是抹成空串，是为了让人一眼看出「这个变量名拼错了」—— 静默变空白
+    的话，邮件里只会少一行，谁也不会去查模板。
+    """
+    if not text:
+        return ""
+
+    def replace(match: "re.Match[str]") -> str:
+        key = match.group(1)
+        if key not in values:
+            return match.group(0)
+        value = values.get(key)
+        return "" if value is None else str(value)
+
+    return _ALERT_VAR_RE.sub(replace, str(text))
+
+
+def _apply_card_body(card: Dict[str, Any], body: str) -> Dict[str, Any]:
+    """用自定义正文替换卡片的固定字段，保留标题与页脚（触发时间等）。"""
+    if not body.strip():
+        return card
+    notes = [
+        item
+        for item in (card.get("elements") or [])
+        if isinstance(item, dict) and item.get("tag") == "note"
+    ]
+    return {
+        **card,
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+            *notes,
+        ],
+    }
+
+
+def _capacity(value: Any, unit: str = "GB") -> str:
+    """字节数 → 人类可读的容量（模板里的 ``{used}`` / ``{total}``）。"""
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if size <= 0:
+        return ""
+    return format(size / (1024 ** 3), ".1f") + " " + unit
+
+
+def _metric_capacity(res: Dict[str, Any], metric: str) -> Tuple[str, str]:
+    """某个指标的「已用 / 总量」，供模板写「内存 12.3 GB / 16.0 GB」。
+
+    只对内存与磁盘有意义：CPU 的「已用」是核数占比，写出来反而让人误解。
+    """
+    if metric == "mem":
+        return _capacity(res.get("mem")), _capacity(res.get("maxmem"))
+    if metric == "disk":
+        return _capacity(res.get("disk")), _capacity(res.get("maxdisk"))
+    return "", ""
+
+
 # ------------------------------------------------------------ 收件人语言
 #
 # 告警绝大多数由**后台巡检**发出（见 scheduler），那一刻没有 HTTP 请求，
@@ -1274,6 +1426,7 @@ async def dispatch(
     webhook: Optional[Dict[str, Any]] = None,
     context: Optional[Dict[str, Any]] = None,
     source: str = "",
+    template: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str]:
     """按用户配置的通道发一条通知：飞书 + 邮件 + 通用 Webhook，任一送达即算送达。
 
@@ -1282,6 +1435,10 @@ async def dispatch(
 
     ``source`` 是告警来源（见 NOTIFY_SOURCES）。该来源被停推时直接返回，一个
     通道都不碰。判定放在**最前面**：停推时连长啥样都不该去读库。
+
+    ``context`` 同时喂给三处：Webhook 的请求体模板、以及用户自己的文案模板
+    （``{变量}``）。没传 context 的来源只有 ``{title}`` / ``{text}`` / ``{time}``
+    可用，其余变量渲染成空白。
 
     三个通道都没开时保持原提示「告警通知已停用，仅记录」，
     免得历史行为被这次改动改掉。
@@ -1299,14 +1456,38 @@ async def dispatch(
     ):
         return False, i18n.tr("告警通知已停用，仅记录")
 
+    # 自定义文案：只覆盖「邮箱标题/正文」与「飞书卡片正文」，通道开没开仍按上面的
+    # 配置走。模板里留空的字段回落调用方渲染好的内置文案。
+    # ``template`` 可由调用方传进来 —— 「发送测试」用的是编辑中、还没保存的那份。
+    if template is None:
+        template = await load_alert_template(owner)
+    mail_title, mail_text, out_card = title, text, card
+    if template.get("enabled"):
+        # 已知变量先铺成空串：没传 context 的来源（端口 / SSH / 备份 / 配额）
+        # 渲染出来就是空白，而不是让用户收到一条写满 "{target}" 的邮件。
+        # 拼错的变量仍会原样保留（它不在这份清单里），这一点见 render_alert_template。
+        values: Dict[str, Any] = {name: "" for name in ALERT_TEMPLATE_PLACEHOLDERS}
+        values.update(context or {})
+        values["title"] = values.get("title") or title
+        values["text"] = values.get("text") or text
+        values["time"] = values.get("time") or _now_text()
+        if template["subject"]:
+            mail_title = render_alert_template(template["subject"], values) or title
+        if template["body"]:
+            mail_text = render_alert_template(template["body"], values) or text
+        if template["feishu"]:
+            out_card = _apply_card_body(
+                card, render_alert_template(template["feishu"], values)
+            )
+
     channels: List[str] = []
     delivered = False
     if feishu.get("enabled"):
-        ok, detail = await send_feishu(card, owner)
+        ok, detail = await send_feishu(out_card, owner)
         delivered = delivered or ok
         channels.append(i18n.tr("飞书：") + detail)
     if email_cfg.get("enabled"):
-        ok, detail = await send_alert_email(owner, title, text)
+        ok, detail = await send_alert_email(owner, mail_title, mail_text)
         delivered = delivered or ok
         channels.append(i18n.tr("邮件：") + detail)
     if webhook.get("enabled"):
@@ -1314,6 +1495,76 @@ async def dispatch(
         delivered = delivered or ok
         channels.append(i18n.tr("Webhook：") + detail)
     return delivered, i18n.pick("；", "; ").join(channels)
+
+
+#: 「发送测试」用的样例告警：字段与资源告警一致，好让人一眼看到每行会长什么样
+SAMPLE_TARGET = "web-1"
+
+
+async def test_template(cfg: Dict[str, Any], owner: str) -> Tuple[bool, str]:
+    """用**编辑中**（可能还没保存）的模板发一条样例通知，邮件 + 飞书各一份。
+
+    刻意不看通道开关：点「测试」就是想看效果，被自己的开关拦下只会让人以为
+    模板没生效。没配置的通道仍会如实报「未配置收件地址 / 未配置飞书」，那正是
+    用户需要知道的信息。不落库、不写站内消息 —— 这是预览，不是真告警。
+    """
+    template = {
+        "enabled": bool((cfg or {}).get("enabled")),
+        "subject": str((cfg or {}).get("subject") or "").strip()[:200],
+        "body": str((cfg or {}).get("body") or "")[:4000],
+        "feishu": str((cfg or {}).get("feishu") or "")[:4000],
+    }
+    now = time.time()
+    rule = i18n.tr("内存使用率过高")
+    title = i18n.tr("告警测试：") + SAMPLE_TARGET
+    text = i18n.pick(
+        f"虚拟机 {SAMPLE_TARGET} 的内存使用率 88.0%（12.3 GB / 16.0 GB），超过阈值 85%。",
+        f"VM {SAMPLE_TARGET} memory usage 88.0% (12.3 GB / 16.0 GB), above the 85% threshold.",
+    )
+    card = build_card(
+        "warning",
+        title,
+        rule,
+        [
+            (i18n.tr("对象"), i18n.pick("虚拟机 ", "VM ") + SAMPLE_TARGET),
+            (i18n.tr("内存"), "12.3 GB / 16.0 GB"),
+            (i18n.tr("内存使用率"), "88.0%"),
+            (i18n.tr("节点"), "pve-1"),
+            (i18n.tr("状态"), i18n.pick("运行中", "running")),
+        ],
+        _now_text(now),
+    )
+    sample = {
+        "level": "alarm",
+        "kind": i18n.pick("虚拟机", "VM"),
+        "target": SAMPLE_TARGET,
+        "target_type": "vm",
+        "rule": rule,
+        "metric": i18n.tr("内存使用率"),
+        "value": "88.0",
+        "threshold": "85",
+        "used": "12.3 GB",
+        "total": "16.0 GB",
+        "node": "pve-1",
+        "vmid": "100",
+        "status": i18n.pick("运行中", "running"),
+        "ip": "172.16.149.220",
+        "time": _now_text(now),
+    }
+    feishu = await load_feishu(owner)
+    email_cfg = await load_alert_email(owner)
+    return await dispatch(
+        owner,
+        {**feishu, "enabled": True},
+        {**email_cfg, "enabled": True},
+        title,
+        text,
+        card,
+        # 通用 Webhook 与文案模板无关，别因为点一次预览就往那边灌一条请求
+        webhook={"enabled": False},
+        context=sample,
+        template=template,
+    )
 
 
 def _sign(secret: str, ts: int) -> str:
@@ -1540,10 +1791,12 @@ async def record(
     这种漏报 —— 而铃铛正是外部通道没配或发失败时的兜底。
 
     ``repeat=True`` 表示这是**同一对象持续告警期间的重复轮次**（上一轮的状态还在
-    库里，冷却到点后又走到这里）。这种轮次只更新状态、不落库也不建站内消息：
-    一个「事件」在历史里占一条，重复轮次只是提醒 —— 通知照发（由调用方的
-    dispatch 负责），但历史不该被同一个对象的每分钟提醒刷满。
-    实测过：一个 node 的 CPU 规则在 27 小时里写下 40 条历史 + 20 条恢复。
+    库里，冷却到点后又走到这里）。这种轮次**确实发出去了就照记一条**，用
+    ``is_repeat=1`` 标出来：用户看到的是「邮件发了三封」，历史里就该有三条，
+    否则复盘时会对不上账（原先是每轮只提醒不落库，发信次数与记录数永远不一致）。
+
+    没送达的重复轮次不记：冷却窗口里那些被拦下的轮次本来就没发东西，记下来
+    只会把同一个对象的失败刷满整页。首次告警不受此限 —— 失败也要留痕。
 
     来源被停推（``source`` 对应的开关关掉了）时**整条丢弃**：不写历史、不留站内
     消息。停推是「这一类告警我不要了」的明确说法，再往告警历史里塞记录，会连带
@@ -1553,8 +1806,9 @@ async def record(
     唯一的例外是 ``result=sent``：这条其实已经投递出去了，说明开关是在投递之后
     才关的。这种时间差不该把一条真发出去的记录抹掉，所以照写。
     """
-    # 门禁一：重复轮次不落库（恢复通知不算重复轮次，它是事件的终点）
-    if repeat and entry.get("kind", "alarm") == "alarm":
+    # 门禁一：重复轮次只在真的发出去了才补一条（恢复通知不算重复轮次，它是事件的终点）
+    is_repeat = bool(repeat) and entry.get("kind", "alarm") == "alarm"
+    if is_repeat and entry.get("result") != RESULT_SENT:
         return
 
     # 门禁二：判定放在入库前、且是唯一的写入口 —— record 是告警历史唯一的写点，
@@ -1567,7 +1821,8 @@ async def record(
 
     sql = (
         "INSERT INTO alert_history (username, rule_id, rule_name, target_type, target, metric,"
-        " value, threshold, result, detail, kind, ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+        " value, threshold, result, detail, kind, is_repeat, ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
     )
     at = int(entry.get("ts") or time.time())
     async with database.connect() as db:
@@ -1585,6 +1840,7 @@ async def record(
                 entry.get("result", ""),
                 entry.get("detail", ""),
                 entry.get("kind", "alarm"),
+                1 if is_repeat else 0,
                 at,
             ),
         )
@@ -1735,19 +1991,40 @@ async def recovery_confirmed(key: str, row: Dict[str, Any]) -> bool:
     return False
 
 
-async def history(limit: int = 100, owner: Optional[str] = None) -> List[Dict[str, Any]]:
+def _like_escape(text: str) -> str:
+    """把用户输入当成**字面量**去 LIKE：% 和 _ 是通配符，不转义就等于没筛。"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def history(
+    limit: int = 100,
+    owner: Optional[str] = None,
+    q: str = "",
+    kind: str = "",
+) -> List[Dict[str, Any]]:
     """告警历史：``owner=None``（管理员）返回全部，否则只返回该用户的。
 
     滤掉 ``result='muted'`` 的旧记录（见 RESULT_MUTED）。这一步放在读取端，
     对调用方透明：告警页的历史列表与首页工作台的待处理条数都用这一个函数，
     过滤写在这里就不存在「某个消费方忘了滤」的可能。
+
+    ``q`` 同时匹配「对象名称」与「规则名称」：界面上就一个搜索框，让用户先想
+    「我要按哪个字段查」再选下拉框，纯属多余。``kind`` 只认 alarm / recovery。
     """
     sql = "SELECT * FROM alert_history WHERE result <> ?"
     params: List[Any] = [RESULT_MUTED]
     if owner is not None:
         sql += " AND username = ?"
         params.append(owner)
-    sql += " ORDER BY ts DESC LIMIT ?"
+    keyword = str(q or "").strip()
+    if keyword:
+        like = "%" + _like_escape(keyword) + "%"
+        sql += " AND (target LIKE ? OR rule_name LIKE ?)"
+        params.extend([like, like])
+    if kind in ("alarm", "recovery"):
+        sql += " AND kind = ?"
+        params.append(kind)
+    sql += " ORDER BY ts DESC, id DESC LIMIT ?"
     params.append(max(1, min(1000, limit)))
     async with database.connect() as db:
         cursor = await db.execute(sql, tuple(params))
@@ -2127,7 +2404,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 alarming.add(key)
                 # 冷却时间以库里的告警状态为准，重启后不会重复轰炸
                 # prev 非空 = 上一轮它就在告警中，这一轮属于「重复轮次」：
-                # 该提醒还是提醒，但历史不再记第二条（见 record 的 repeat 参数）
+                # 该提醒还是提醒，提醒成功也照记一条（标 is_repeat，见 record）
                 prev = active.get(key) or {}
                 if not prev:
                     # 升级前这条告警记在「配规则的人」名下：把旧行接到新 key 上
@@ -2186,6 +2463,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                         + format(threshold, ".0f")
                         + "%)"
                     )
+                # 模板里的 {used}/{total}（「内存 12.3 GB / 16.0 GB」）。
+                # 只有内存与磁盘有意义，CPU 返回空串，模板里不会凭空多出 0.0 GB。
+                used, total = _metric_capacity(res, str(rule.get("metric")))
                 text = (
                     kind + i18n.tr("：") + label + chr(10)
                     + detail_text + chr(10)
@@ -2229,11 +2509,15 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                         "level": "alarm",
                         "title": alert_title,
                         "text": text,
+                        "rule": str(rule.get("name") or ""),
+                        "kind": kind,
                         "target": label,
                         "target_type": target_type,
                         "metric": metric_label,
                         "value": format(value, ".1f"),
                         "threshold": format(threshold, ".0f"),
+                        "used": used,
+                        "total": total,
                         "node": node,
                         "vmid": "" if vmid is None else vmid,
                         "status": status,
@@ -2333,6 +2617,11 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 "level": "recovery",
                 "title": recovery_title,
                 "text": recovery_text,
+                "rule": str(row.get("rule_name") or ""),
+                # 恢复时对象已回落，容量没有参考意义，留空让模板里那行自然消失
+                "kind": i18n.pick("虚拟机", "VM")
+                if str(row.get("target_type")) == "vm"
+                else i18n.pick("宿主机", "Node"),
                 "target": row.get("target") or "",
                 "target_type": row.get("target_type") or "",
                 "metric": METRIC_LABELS.get(
@@ -2340,6 +2629,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 ),
                 "value": "" if value is None else format(float(value), ".1f"),
                 "threshold": row.get("threshold") or "",
+                "used": "",
+                "total": "",
                 "node": row.get("node") or "",
                 "vmid": row.get("vmid") or "",
                 "status": "",

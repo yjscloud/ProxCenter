@@ -558,6 +558,8 @@ async def import_events(
         if host_id is None or row.get("id") == host_id
     ]
     flooding = await _alarming_ips()
+    # 入口机地址（转发机）一批只算一次：显式配置优先，否则自动发现
+    proxy_ips = await sshforward.proxies_set() if sshforward.enabled() else set()
     summary: Dict[str, Any] = {
         "hosts": len(rows),
         "imported": 0,
@@ -569,6 +571,11 @@ async def import_events(
     for row in rows:
         hid = str(row.get("id"))
         name = str(row.get("name") or row.get("host") or hid)
+        # 这台主机的 22 在入口机上对应哪几条 frontend：按「后端地址:端口」自动
+        # 对出来（显式配了 SSH_FORWARD_ROUTES 就用配置）；空 = 不做真实地址还原
+        addr = "" if hid == "local" else str(row.get("host") or "")
+        port = int(row.get("port") or 22)
+        fronts = await sshforward.frontends_for(hid, addr, port) if sshforward.enabled() else set()
         cursor = await get_cursor(hid)
         pending = await get_pending(hid)
         pending_before = len(pending)
@@ -596,7 +603,14 @@ async def import_events(
             # 上一轮「会话还没结束」的登录：现在会话关了，入口机日志里就有对应的
             # 连接行了，把真实地址补上再写审计（见 _settle_pending）
             settled = await _settle_pending(
-                name, pending, reports.get("host.ssh_login") or []
+                hid,
+                name,
+                pending,
+                reports.get("host.ssh_login") or [],
+                fronts=fronts,
+                proxy_ips=proxy_ips,
+                addr=addr,
+                port=port,
             )
             written += settled
 
@@ -616,20 +630,31 @@ async def import_events(
                     unresolved_forward = False
                     # 面板本机的 22 经 frp 暴露时，sshd 只看到入口机；把入口机
                     # haproxy 还原出的真实地址换回来（见 sshforward.py）
-                    via_proxy = (
-                        hid == "local"
-                        and sshforward.enabled()
-                        and original_ip in sshforward.proxies()
-                    )
+                    via_proxy = bool(fronts and original_ip in proxy_ips)
                     if via_proxy and action == "host.ssh_failed":
-                        real = await sshforward.resolve(ts, original_ip)
+                        real = await sshforward.resolve(
+                            ts,
+                            original_ip,
+                            hid,
+                            fronts=fronts,
+                            proxy_ips=proxy_ips,
+                            addr=addr,
+                            port=port,
+                        )
                         if real and real != original_ip:
                             forwarded_from = original_ip
                             ip = real
                     elif via_proxy and action == "host.ssh_login":
                         end = entry.get("end")
                         real = await sshforward.resolve_login(
-                            ts, float(end) if end else None, original_ip
+                            ts,
+                            float(end) if end else None,
+                            original_ip,
+                            hid,
+                            fronts=fronts,
+                            proxy_ips=proxy_ips,
+                            addr=addr,
+                            port=port,
                         )
                         if real and real != original_ip:
                             forwarded_from = original_ip
@@ -785,9 +810,15 @@ async def import_events(
 
 
 async def _settle_pending(
+    host_id: str,
     name: str,
     pending: List[Dict[str, Any]],
     successes: List[Dict[str, Any]],
+    *,
+    fronts: Optional[set] = None,
+    proxy_ips: Optional[set] = None,
+    addr: str = "",
+    port: int = 22,
 ) -> int:
     """补写上几轮配不出真实 IP、先挂起来的记录。
 
@@ -822,13 +853,30 @@ async def _settle_pending(
         if is_login:
             end = ends.get((ts, os_user))
             real = (
-                await sshforward.resolve_login(ts, float(end), original_ip)
+                await sshforward.resolve_login(
+                    ts,
+                    float(end),
+                    original_ip,
+                    host_id,
+                    fronts=fronts,
+                    proxy_ips=proxy_ips,
+                    addr=addr,
+                    port=port,
+                )
                 if end
                 else None
             )
             ttl, action, result = PENDING_TTL, "host.ssh_login", "success"
         else:
-            real = await sshforward.resolve(ts, original_ip)
+            real = await sshforward.resolve(
+                ts,
+                original_ip,
+                host_id,
+                fronts=fronts,
+                proxy_ips=proxy_ips,
+                addr=addr,
+                port=port,
+            )
             ttl, action, result = PENDING_FAIL_TTL, "host.ssh_failed", "failed"
 
         if real and real != original_ip:

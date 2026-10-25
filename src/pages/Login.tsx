@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../hooks/useAuth';
+import { useMaintenance } from '../hooks/useMaintenance';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { authApi, healthApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
@@ -22,6 +23,7 @@ import {
   IconKey,
   IconShield,
   IconUser,
+  IconWrench,
 } from '../components/Icons';
 import { AuthShell } from '../components/AuthShell';
 import { useT } from '../i18n';
@@ -235,6 +237,10 @@ export function Login() {
 
   const backendUp = !health.isError;
 
+  /* 维护模式：先问一次公开接口，把「现在只允许管理员登录」说在前头 ——
+     否则普通用户输完账号密码才收到拒绝，会以为是自己记错了密码。 */
+  const maint = useMaintenance();
+
 
   return (
     <AuthShell>
@@ -252,6 +258,14 @@ export function Login() {
         onSubmit={mfaToken ? handleVerifyMfa : handleSubmit}
         noValidate
       >
+        {maint.data?.enabled ? (
+          <div className="login-notice" role="status">
+            <IconWrench size={16} />
+            <span>
+              {maint.data.message || t('auth.maintenanceBanner')}
+            </span>
+          </div>
+        ) : null}
         {error ? (
           <div className="login-error" role="alert">
             <IconAlert size={16} />

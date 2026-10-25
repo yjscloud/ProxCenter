@@ -135,7 +135,9 @@ export function Workbench() {
   const refresh = useRefreshInterval();
   const alertsQuery = useQuery({
     queryKey: ['alerts'],
-    queryFn: alertsApi.get,
+    // 首页只看「还有几件事没解决」，不需要搜索：显式传空参，别把 React Query
+    // 的上下文对象漏给 alertsApi.get（它的第一个参数是搜索词）
+    queryFn: () => alertsApi.get(),
     refetchInterval: refresh,
     enabled: canAlert,
   });

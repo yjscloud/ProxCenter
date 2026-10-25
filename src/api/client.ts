@@ -228,6 +228,22 @@ export function setStepUpHandler(handler: StepUpHandler | null): void {
   onStepUpRequired = handler;
 }
 
+/* ---- 维护模式钩子（由 App 注入）---- */
+/**
+ * 后端在维护模式下对普通用户一律回 503 + ``X-Error-Code: maintenance``。
+ *
+ * 这里只做一件事：把「现在整站不可用」这件事告诉顶层，让它切到维护公告页。
+ * 错误照旧 reject —— 页面级的错误提示该出现还得出，别把一次失败悄悄吞掉。
+ */
+const MAINTENANCE_CODE = 'maintenance';
+
+type MaintenanceHandler = (message: string) => void;
+let onMaintenance: MaintenanceHandler | null = null;
+
+export function setMaintenanceHandler(handler: MaintenanceHandler | null): void {
+  onMaintenance = handler;
+}
+
 /* ---- 从错误响应中提取 detail ---- */
 function extractMessage(payload: unknown, fallback: string): string {
   if (!payload) return fallback;
@@ -364,6 +380,12 @@ http.interceptors.response.use(
       return Promise.reject(
         new ApiError(tStatic('api.notImplemented'), status, data),
       );
+    }
+
+    /* 维护模式：单独认一下错误码，通知顶层切到维护公告页（管理员不会收到它） */
+    if (status === 503 && readErrorCode(error.response.headers) === MAINTENANCE_CODE) {
+      onMaintenance?.(message);
+      return Promise.reject(new ApiError(message, status, data, MAINTENANCE_CODE));
     }
 
     return Promise.reject(

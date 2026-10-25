@@ -31,12 +31,23 @@ CREATE TABLE IF NOT EXISTS host_audit_cursor (
     last_ts  DOUBLE,
     updated  BIGINT,
     detail   TEXT,
+    pending  MEDIUMTEXT,
     PRIMARY KEY (host_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 # 每次最多往面板审计里写多少条（防止首次导入把表灌满）
 IMPORT_BATCH = 200
+# 成功登录要等会话结束才能从入口机日志里配对（haproxy 到连接关闭才写日志行）。
+# 挂太久就说明这条配不上了（日志只回溯 sshforward.LOOKBACK 小时），用已有地址补写。
+PENDING_TTL = 6 * 3600
+# 失败记录：入口机要到连接关闭才写日志行，刚发生的失败可能还配不上。这种只值得
+# 挂几分钟（连接一般几十秒内就结束），等太久说明本来就没有对应连接。
+PENDING_FAIL_TTL = 30 * 60
+# 只有「刚发生」的失败才挂起来等（更早的还配不上就是真配不上了）
+DEFER_FRESH = 15 * 60
+# 每台主机最多挂多少条待补写的记录（防止异常情况下无限堆积）
+MAX_PENDING = 50
 # 保留游标多少天前的记录不再导入（首次部署只导最近的）
 IMPORT_LOOKBACK_DAYS = 7
 
@@ -438,6 +449,10 @@ async def collect_sudo(host_id: str, hours: int = 24) -> Dict[str, Any]:
 async def init_table() -> None:
     async with database.connect() as db:
         await db.executescript(SCHEMA)
+        # 旧库补列：会话还没结束的登录先挂在游标行上（只有启用入口机日志解析才会用到）
+        columns = await database.table_columns(db, "host_audit_cursor")
+        if "pending" not in columns:
+            await db.execute("ALTER TABLE host_audit_cursor ADD COLUMN pending MEDIUMTEXT")
         await db.commit()
 
 
@@ -449,6 +464,31 @@ async def get_cursor(host_id: str) -> float:
         )
         row = await cursor.fetchone()
     return float(row["last_ts"] or 0) if row else 0.0
+
+
+async def get_pending(host_id: str) -> List[Dict[str, Any]]:
+    """读回「会话还没结束、暂时配不出真实 IP」的登录。
+
+    读不到或格式不对就当作没有 —— 这些只是待补写的登录，不能因为一行脏数据
+    让整台主机的导入失败。
+    """
+    await init_table()
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT pending FROM host_audit_cursor WHERE host_id = ?", (host_id,)
+        )
+        row = await cursor.fetchone()
+    raw = (row["pending"] if row else "") or ""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("主机 %s 的未结案登录队列不是合法 JSON，已忽略", host_id)
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict) and item.get("ts")]
 
 
 async def forget_host(host_id: str) -> int:
@@ -468,17 +508,25 @@ async def forget_host(host_id: str) -> int:
     return removed
 
 
-async def set_cursor(host_id: str, last_ts: float, detail: str = "") -> None:
+async def set_cursor(
+    host_id: str,
+    last_ts: float,
+    detail: str = "",
+    pending: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """写游标；传 ``pending`` 时一并落这份「未结案登录」队列。"""
     await init_table()
+    columns = ["host_id", "last_ts", "updated", "detail"]
+    values: List[Any] = [host_id, float(last_ts), int(time.time()), detail[:500]]
+    updates = ["last_ts", "updated", "detail"]
+    if pending is not None:
+        columns.append("pending")
+        values.append(json.dumps(pending, ensure_ascii=False))
+        updates.append("pending")
     async with database.connect() as db:
         await db.execute(
-            database.upsert_sql(
-                "host_audit_cursor",
-                ["host_id", "last_ts", "updated", "detail"],
-                ["host_id"],
-                ["last_ts", "updated", "detail"],
-            ),
-            (host_id, float(last_ts), int(time.time()), detail[:500]),
+            database.upsert_sql("host_audit_cursor", columns, ["host_id"], updates),
+            tuple(values),
         )
         await db.commit()
 
@@ -515,43 +563,101 @@ async def import_events(
         "imported": 0,
         "skipped": 0,
         "skipped_flood": 0,
+        "deferred": 0,
         "details": [],
     }
     for row in rows:
         hid = str(row.get("id"))
         name = str(row.get("name") or row.get("host") or hid)
         cursor = await get_cursor(hid)
+        pending = await get_pending(hid)
+        pending_before = len(pending)
         # 首次导入只回溯最近几天，避免把几年的历史一下灌进审计表
         floor = cursor or (time.time() - IMPORT_LOOKBACK_DAYS * 86400)
 
         written = 0
+        suppressed = 0
+        deferred = 0
         newest = cursor
         # 同一轮里「真实 IP + 用户名」只写一条：被爆破时同一个人会反复打同一个
         # 用户名，逐条写没有信息量，只会把审计表再灌满一次
         seen_forwarded: set = set()
+        # btmp 里同一次失败会有两条一模一样的记录（sshd 对「无效用户」和「认证
+        # 失败」各写一条），按「秒 + 用户名」去掉重复的那条
+        seen_fail: set = set()
         try:
+            # 两种记录先都取回来：补写上一轮挂起的登录要用到成功记录里的结束时间
+            reports: Dict[str, List[Dict[str, Any]]] = {}
             for kind, action in (("success", "host.ssh_login"), ("failed", "host.ssh_failed")):
                 report = await collect_logins(hid, kind=kind, limit=LAST_LIMIT)
-                if not report.get("ok"):
-                    continue
-                for entry in report.get("entries") or []:
+                if report.get("ok"):
+                    reports[action] = list(report.get("entries") or [])
+
+            # 上一轮「会话还没结束」的登录：现在会话关了，入口机日志里就有对应的
+            # 连接行了，把真实地址补上再写审计（见 _settle_pending）
+            settled = await _settle_pending(
+                name, pending, reports.get("host.ssh_login") or []
+            )
+            written += settled
+
+            for action, entries in (
+                ("host.ssh_login", reports.get("host.ssh_login") or []),
+                ("host.ssh_failed", reports.get("host.ssh_failed") or []),
+            ):
+                for entry in entries:
                     ts = float(entry.get("start") or 0)
                     if ts <= floor or entry.get("kind") == "reboot":
+                        summary["skipped"] += 1
                         continue
+                    os_user = str(entry.get("user") or "")
                     original_ip = str(entry.get("ip") or "")
                     ip = original_ip
                     forwarded_from = ""
+                    unresolved_forward = False
                     # 面板本机的 22 经 frp 暴露时，sshd 只看到入口机；把入口机
                     # haproxy 还原出的真实地址换回来（见 sshforward.py）
-                    if (
-                        action == "host.ssh_failed"
-                        and hid == "local"
+                    via_proxy = (
+                        hid == "local"
                         and sshforward.enabled()
-                    ):
+                        and original_ip in sshforward.proxies()
+                    )
+                    if via_proxy and action == "host.ssh_failed":
                         real = await sshforward.resolve(ts, original_ip)
                         if real and real != original_ip:
                             forwarded_from = original_ip
                             ip = real
+                    elif via_proxy and action == "host.ssh_login":
+                        end = entry.get("end")
+                        real = await sshforward.resolve_login(
+                            ts, float(end) if end else None, original_ip
+                        )
+                        if real and real != original_ip:
+                            forwarded_from = original_ip
+                            ip = real
+                        elif (
+                            not end
+                            and ts > time.time() - PENDING_TTL
+                            and len(pending) < MAX_PENDING
+                        ):
+                            # 会话还没结束：haproxy 此时还没有这条连接的日志行。
+                            # 先挂起来等下一轮，不能先写入口机地址 —— 审计日志写进去
+                            # 就改不了了，那样这条记录永远显示的是入口机。
+                            pending.append(
+                                {
+                                    "ts": ts,
+                                    "user": os_user,
+                                    "ip": original_ip,
+                                    "kind": "success",
+                                }
+                            )
+                            newest = max(newest, ts)
+                            deferred += 1
+                            continue
+                        else:
+                            # 配不上真实地址：会话早结束了（日志滚出去了），或者排队
+                            # 已满 / 太旧不能再挂。照实留下入口机地址，但标出来，
+                            # 免得被当成真实来源
+                            unresolved_forward = True
 
                     if action == "host.ssh_failed" and original_ip in flooding:
                         if not forwarded_from:
@@ -559,6 +665,7 @@ async def import_events(
                             # 告警里（带失败次数），逐条写只会把审计表灌满。
                             newest = max(newest, ts)
                             summary["skipped_flood"] += 1
+                            suppressed += 1
                             continue
                         # 解析出真实 IP 后仍然去重：爆破时同一个 IP 会反复打同一个
                         # 用户名，每种组合留一条就足够追查，不必把表再灌满一次。
@@ -566,8 +673,33 @@ async def import_events(
                         if dedup_key in seen_forwarded:
                             newest = max(newest, ts)
                             summary["skipped_flood"] += 1
+                            suppressed += 1
                             continue
                         seen_forwarded.add(dedup_key)
+
+                    if action == "host.ssh_failed":
+                        same = f"{int(ts)}|{os_user}|{ip}"
+                        if same in seen_fail:
+                            newest = max(newest, ts)
+                            summary["skipped"] += 1
+                            continue
+                        seen_fail.add(same)
+
+                    if (
+                        action == "host.ssh_failed"
+                        and via_proxy
+                        and not forwarded_from
+                        and ts > time.time() - DEFER_FRESH
+                        and len(pending) < MAX_PENDING
+                    ):
+                        # 刚发生的失败：入口机那边这条连接可能还没关闭，日志行也就还
+                        # 没写出来。挂到下一轮再配，别急着把入口机地址写进审计。
+                        pending.append(
+                            {"ts": ts, "user": os_user, "ip": original_ip, "kind": "failed"}
+                        )
+                        newest = max(newest, ts)
+                        deferred += 1
+                        continue
 
                     detail = {
                         "host": name,
@@ -580,6 +712,9 @@ async def import_events(
                     if forwarded_from:
                         # 保留原始来源，方便和对账：这条记录的地址是「还原」出来的
                         detail["forwarded_from"] = forwarded_from
+                    elif unresolved_forward:
+                        # 没能还原：ip 就是入口机地址，明着标出来
+                        detail["unresolved_from"] = original_ip
                     await store.add_audit(
                         username=await _panel_user(str(entry.get("user") or "")),
                         action=action,
@@ -597,6 +732,7 @@ async def import_events(
             for event in sudo.get("entries") or []:
                 ts = float(event.get("ts") or 0)
                 if ts <= floor:
+                    summary["skipped"] += 1
                     continue
                 await store.add_audit(
                     username=await _panel_user(str(event.get("user") or "")),
@@ -625,11 +761,123 @@ async def import_events(
             summary["details"].append({"host": name, "ok": False, "error": str(exc)[:200]})
             continue
 
-        if written:
-            await set_cursor(hid, newest, detail=f"imported {written}")
+        # 「只跳过、没写入」也要推进游标：这批爆破记录是**故意**不入库的，不推进
+        # 下次还会把同样几千条再拉一遍（而且是每轮都拉）。
+        if newest > cursor or len(pending) != pending_before:
+            detail = f"imported {written}"
+            if suppressed:
+                detail += f", suppressed {suppressed}"
+            if pending:
+                detail += f", pending {len(pending)}"
+            await set_cursor(hid, newest, detail=detail, pending=pending)
         summary["imported"] += written
-        summary["details"].append({"host": name, "ok": True, "imported": written})
+        summary["deferred"] += deferred
+        summary["details"].append(
+            {
+                "host": name,
+                "ok": True,
+                "imported": written,
+                "suppressed": suppressed,
+                "deferred": deferred,
+            }
+        )
     return summary
+
+
+async def _settle_pending(
+    name: str,
+    pending: List[Dict[str, Any]],
+    successes: List[Dict[str, Any]],
+) -> int:
+    """补写上几轮配不出真实 IP、先挂起来的记录。
+
+    入口机的 haproxy 要到**连接关闭**才写这条连接的日志行，所以两种情况都得等：
+
+    * ``kind == "success"``：会话还没结束 —— 等 ``last`` 里出现结束时间后，按
+      「连接时刻 + 存活时长 ≈ 会话结束时刻」配对；
+    * ``kind == "failed"``：失败刚发生 —— 承载它的那条连接可能还没关闭，下一轮
+      通常就能配上。
+
+    实在配不上（超过各自的等待上限）就用入口机地址补写：审计事件不能因为解析不
+    出来就整条消失。返回补写的条数，``pending`` 会被就地改成仍未结案的部分。
+    """
+    if not pending:
+        return 0
+
+    # (登录开始时刻, 用户名) -> 会话结束时刻；同一条 wtmp 记录这两个字段稳定
+    ends: Dict[tuple, Any] = {}
+    for entry in successes:
+        start = float(entry.get("start") or 0)
+        if start:
+            ends[(start, str(entry.get("user") or ""))] = entry.get("end")
+
+    written = 0
+    now = time.time()
+    keep: List[Dict[str, Any]] = []
+    for item in pending:
+        ts = float(item.get("ts") or 0)
+        os_user = str(item.get("user") or "")
+        original_ip = str(item.get("ip") or "")
+        is_login = str(item.get("kind") or "success") != "failed"
+        if is_login:
+            end = ends.get((ts, os_user))
+            real = (
+                await sshforward.resolve_login(ts, float(end), original_ip)
+                if end
+                else None
+            )
+            ttl, action, result = PENDING_TTL, "host.ssh_login", "success"
+        else:
+            real = await sshforward.resolve(ts, original_ip)
+            ttl, action, result = PENDING_FAIL_TTL, "host.ssh_failed", "failed"
+
+        if real and real != original_ip:
+            await store.add_audit(
+                username=await _panel_user(os_user),
+                action=action,
+                target=f"{os_user or '-'}@{name}",
+                result=result,
+                detail=json.dumps(
+                    {
+                        "host": name,
+                        "os_user": os_user,
+                        "forwarded_from": original_ip,
+                        # 这条是延后补写的：当时入口机还没有对应的连接日志
+                        "deferred": True,
+                    },
+                    ensure_ascii=False,
+                ),
+                ip=real,
+            )
+            written += 1
+            continue
+        if now - ts > ttl:
+            logger.info(
+                "主机 %s 的 %s（%s）等不到入口机连接日志，按原地址补写", name, action, os_user
+            )
+            await store.add_audit(
+                username=await _panel_user(os_user),
+                action=action,
+                target=f"{os_user or '-'}@{name}",
+                result=result,
+                detail=json.dumps(
+                    {
+                        "host": name,
+                        "os_user": os_user,
+                        "forwarded_from": original_ip,
+                        "unresolved": True,
+                        "deferred": True,
+                    },
+                    ensure_ascii=False,
+                ),
+                ip=original_ip,
+            )
+            written += 1
+            continue
+        keep.append(item)
+
+    pending[:] = keep[-MAX_PENDING:]
+    return written
 
 
 async def _alarming_ips() -> set:

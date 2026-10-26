@@ -592,6 +592,9 @@ async def import_events(
         # btmp 里同一次失败会有两条一模一样的记录（sshd 对「无效用户」和「认证
         # 失败」各写一条），按「秒 + 用户名」去掉重复的那条
         seen_fail: set = set()
+        # 经入口机转发、却对不上任何 haproxy 映射的主机，每轮只告警一次，避免
+        # 爆破时刷屏
+        warned_unmapped: set = set()
         try:
             # 两种记录先都取回来：补写上一轮挂起的登录要用到成功记录里的结束时间
             reports: Dict[str, List[Dict[str, Any]]] = {}
@@ -631,6 +634,23 @@ async def import_events(
                     # 面板本机的 22 经 frp 暴露时，sshd 只看到入口机；把入口机
                     # haproxy 还原出的真实地址换回来（见 sshforward.py）
                     via_proxy = bool(fronts and original_ip in proxy_ips)
+                    # 来源就是入口机、却没匹配到任何 haproxy 映射：说明这台主机经
+                    # frp 直连到了目标 sshd（没走 PROXY protocol 代理），真实来源
+                    # 在入口机这一层就没记下来，拿不到了。照实留入口机地址，但明着
+                    # 标出来并告警，别让入口机 IP 被当成真实攻击源。
+                    entry_unmapped = bool(not fronts and original_ip in proxy_ips)
+                    if entry_unmapped:
+                        unresolved_forward = True
+                        if hid not in warned_unmapped:
+                            warned_unmapped.add(hid)
+                            logger.warning(
+                                "主机 %s 的登录来源是入口机 %s，但没匹配到任何 haproxy 转发映射："
+                                "它很可能经 frp 直连目标 sshd、未走 PROXY protocol 代理，真实来源 IP 拿不到。"
+                                "请像其它已代理主机一样，在 frpc 里把它指到入口机的 haproxy（accept-proxy），"
+                                "并在 haproxy 里补对应的 frontend/backend。",
+                                name,
+                                original_ip,
+                            )
                     if via_proxy and action == "host.ssh_failed":
                         real = await sshforward.resolve(
                             ts,

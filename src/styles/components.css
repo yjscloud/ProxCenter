@@ -4411,6 +4411,38 @@ body.is-col-resizing * {
   }
 }
 
+/* 指标页签：邮件正文与飞书卡片各按指标分五页，页签横排在正文区上方。
+   邮件与飞书共用同一个当前页签，所以两排页签的选中态永远一致。 */
+.alert-tpl-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.alert-tpl-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.alert-tpl-tab:hover {
+  background: var(--bg-hover);
+}
+
+.alert-tpl-tab.is-active {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
 /* 右栏：标题 + 样例。
    样例用**绝对定位**撑满右栏剩余高度，而不是 flex 子项：flex 布局下样例自身
    的内容高度仍会参与父容器的固有高度，示例比输入框长一行就把整行撑高，右边

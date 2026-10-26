@@ -5282,9 +5282,9 @@ export const zhCN = {
   'audit.fieldQuota': '额度拒绝',
   'audit.onlyQuotaDenied': '只看被额度挡住的',
   'audit.fieldRange': '时间范围',
-  'audit.fieldKeyword': '本页关键词过滤',
-  'audit.keywordHint': '仅在当前已加载的这一页内做文本匹配，不触发新请求',
-  'audit.searchPlaceholder': '搜索动作、对象、详情…',
+  'audit.fieldKeyword': '关键词搜索',
+  'audit.keywordHint': '在动作、对象、详情、用户与来源 IP 中做全量匹配',
+  'audit.searchPlaceholder': '搜索动作、对象、详情、用户、IP…',
   'audit.window': '查询区间：',
   'audit.resultAll': '全部结果',
   'audit.resultPartial': '部分完成',
@@ -6696,7 +6696,7 @@ export const zhCN = {
   'alerts.templateFeishu': '飞书卡片正文',
   'alerts.templateFeishuHint': '支持飞书 markdown（**加粗** 等）',
   'alerts.templateScopeHint':
-    '资源告警的字段最全；端口 / SSH / 备份等来源只有标题与正文可用（{title}、{text}），其余变量会是空白。',
+    '资源告警的字段最全；端口 / SSH / 备份等来源只有标题与正文可用（{title}、{text}），其余变量渲染为空、所在行会整行省略。',
   'alerts.templateVarsHint': '点击变量插入到当前编辑的输入框：',
   'alerts.templateSaved': '通知模板已保存',
   'alerts.templateTest': '发送测试',
@@ -6706,12 +6706,33 @@ export const zhCN = {
   'alerts.templateGuideFeishuLabel': '飞书卡片示例',
   'alerts.templateGuideCopy': '复制',
   'alerts.templateGuideCopied': '示例已复制，粘贴到左侧输入框即可',
-  'alerts.templateGuideMail':
-    '虚拟机：{target}（VMID {vmid}）\n节点：{node}\n内存：{used} / {total}\n内存使用率：{value}%（阈值 {threshold}%）\n状态：{status}　IP：{ip}\n规则：{rule}\n时间：{time}',
-  'alerts.templateGuideFeishu':
-    '**{title}**\n**对象**：{kind} {target}\n**节点**：{node}　**状态**：{status}\n**内存**：{used} / {total}（{value}%）\n**规则**：{rule}\n**时间**：{time}',
+  'alerts.tplTab.mem': '内存',
+  'alerts.tplTab.cpu': 'CPU',
+  'alerts.tplTab.disk': '硬盘',
+  'alerts.tplTab.offline': '离线',
+  'alerts.tplTab.backup': '备份',
+  'alerts.templateGuideMail.mem':
+    '{kind}：{target}（VMID {vmid}）\n节点：{node}\n内存使用率：{value}%（阈值 {threshold}%）\n内存用量：{used} / {total}\n状态：{status}　IP：{ip}\n规则：{rule}\n时间：{time}',
+  'alerts.templateGuideMail.cpu':
+    '{kind}：{target}（VMID {vmid}）\n节点：{node}\nCPU 使用率：{value}%（阈值 {threshold}%）\n状态：{status}　IP：{ip}\n规则：{rule}\n时间：{time}',
+  'alerts.templateGuideMail.disk':
+    '{kind}：{target}（VMID {vmid}）\n节点：{node}\n磁盘使用率：{value}%（阈值 {threshold}%）\n磁盘用量：{used} / {total}\n状态：{status}　IP：{ip}\n规则：{rule}\n时间：{time}',
+  'alerts.templateGuideMail.offline':
+    '{kind}：{target}（VMID {vmid}）\n节点：{node}\n离线告警：当前状态 {status}\nIP：{ip}\n规则：{rule}\n时间：{time}',
+  'alerts.templateGuideMail.backup':
+    '{kind}：{target}（VMID {vmid}）\n节点：{node}\n备份失败：当前状态 {status}\nIP：{ip}\n规则：{rule}\n时间：{time}',
+  'alerts.templateGuideFeishu.mem':
+    '**{title}**\n**对象**：{kind} {target}\n**节点**：{node}　**状态**：{status}\n**内存使用率**：{value}%（阈值 {threshold}%）\n**内存用量**：{used} / {total}\n**规则**：{rule}\n**时间**：{time}',
+  'alerts.templateGuideFeishu.cpu':
+    '**{title}**\n**对象**：{kind} {target}\n**节点**：{node}　**状态**：{status}\n**CPU 使用率**：{value}%（阈值 {threshold}%）\n**规则**：{rule}\n**时间**：{time}',
+  'alerts.templateGuideFeishu.disk':
+    '**{title}**\n**对象**：{kind} {target}\n**节点**：{node}　**状态**：{status}\n**磁盘使用率**：{value}%（阈值 {threshold}%）\n**磁盘用量**：{used} / {total}\n**规则**：{rule}\n**时间**：{time}',
+  'alerts.templateGuideFeishu.offline':
+    '**{title}**\n**对象**：{kind} {target}\n**节点**：{node}\n**离线告警**：当前状态 {status}\n**IP**：{ip}\n**规则**：{rule}\n**时间**：{time}',
+  'alerts.templateGuideFeishu.backup':
+    '**{title}**\n**对象**：{kind} {target}\n**节点**：{node}\n**备份失败**：当前状态 {status}\n**IP**：{ip}\n**规则**：{rule}\n**时间**：{time}',
   'alerts.templateGuideNote':
-    '变量用大括号包起来、原样保留即可；{used} / {total} 只有内存与磁盘告警有值，CPU 告警里会是空白。改完先点「发送测试」，确认效果再保存。',
+    '每个指标页签有独立的模板与示例，哪条规则触发就用哪个页签渲染。变量用大括号包起来、原样保留即可；不适用的行（如 CPU 页签里的内存行）会整行省略。改完先点「发送测试」，确认效果再保存。',
   'alerts.clearTitle': '清除告警历史',
   'alerts.clearConfirm': '清除',
   'alerts.clearMessage': '将清空告警历史：列表中的 {n} 条，以及更早版本留下、已不再展示的静默记录。此操作不可撤销。正在告警中的对象不受影响，指标恢复时仍会推送恢复通知。',

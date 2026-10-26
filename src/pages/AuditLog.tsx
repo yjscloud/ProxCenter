@@ -100,12 +100,6 @@ function auditDetail(entry: AuditEntry): string | Record<string, unknown> {
   }
 }
 
-/** detail 的纯文本形态（搜索与展示都用它） */
-function auditDetailText(entry: AuditEntry): string {
-  const parsed = auditDetail(entry);
-  return typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
-}
-
 /** 拒绝原因（后端写的 ``reason``）；纯文本的 detail 没有它，返回空串 */
 function auditReason(entry: AuditEntry): string {
   const parsed = auditDetail(entry);
@@ -156,8 +150,11 @@ export function AuditLog() {
       result: result || undefined,
       start: timeWindow.start,
       end: timeWindow.end,
+      /* 关键词交给后端做全量匹配（动作/对象/详情/用户/来源 IP），而不是只翻
+         当前这一页 —— 审计表几十万行，本页过滤搜 IP 基本搜不到。 */
+      search: search.trim() || undefined,
     }),
-    [pageSize, offset, username, action, result, timeWindow],
+    [pageSize, offset, username, action, result, timeWindow, search],
   );
 
   const auditQuery = useQuery({
@@ -169,26 +166,19 @@ export function AuditLog() {
   /* 条件变化时回到第 1 页 */
   useEffect(() => {
     setPage(1);
-  }, [username, action, result, range, pageSize]);
+  }, [username, action, result, range, search, pageSize]);
 
-  /* 局部关键词过滤（在当前页内） */
+  /* 关键词已上移到服务端，这里只剩「被额度挡住」的本地收窄：额度拒绝的原因
+     藏在 detail JSON 的 reason 里（quota / quota_stats），后端没有这一列可筛。 */
   const items = useMemo(() => {
     const list = auditQuery.data?.items ?? [];
-    const q = search.trim().toLowerCase();
     return list.filter(
       (e) =>
-        /* 额度拒绝的原因有 quota（超额）与 quota_stats（读数取不全，按 fail-closed
-           拒绝）。两者都是「额度这一层挡的」，都该出现在这个视图里。 */
-        (!quotaOnly ||
-          auditReason(e) === 'quota' ||
-          auditReason(e) === 'quota_stats') &&
-        (q === '' ||
-        e.action.toLowerCase().includes(q) ||
-        e.target.toLowerCase().includes(q) ||
-        auditDetailText(e).toLowerCase().includes(q) ||
-        e.username.toLowerCase().includes(q)),
+        !quotaOnly ||
+        auditReason(e) === 'quota' ||
+        auditReason(e) === 'quota_stats',
     );
-  }, [auditQuery.data, search, quotaOnly]);
+  }, [auditQuery.data, quotaOnly]);
 
   const total = auditQuery.data?.total ?? 0;
 

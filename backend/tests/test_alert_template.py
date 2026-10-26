@@ -45,18 +45,125 @@ def db(clean_mysql_db):
 def test_template_is_stored_per_user(db) -> None:
     _run(
         alerting.save_alert_template(
-            {"enabled": True, "subject": "主题", "body": "正文", "feishu": "卡片"},
+            {
+                "enabled": True,
+                "subject": "主题",
+                "body": {"mem": "内存正文", "cpu": "CPU正文"},
+                "feishu": {"mem": "内存卡片", "cpu": "CPU卡片"},
+            },
             "alice",
         )
     )
-    assert _run(alerting.load_alert_template("alice")) == {
-        "enabled": True,
-        "subject": "主题",
-        "body": "正文",
-        "feishu": "卡片",
-    }
+    loaded = _run(alerting.load_alert_template("alice"))
+    assert loaded["enabled"] is True
+    assert loaded["subject"] == "主题"
+    # 按指标分页签存储；没写的页签是空串（回落内置文案），"*" 兜底页签保留
+    assert loaded["body"]["mem"] == "内存正文"
+    assert loaded["body"]["cpu"] == "CPU正文"
+    assert loaded["body"]["disk"] == ""
+    assert loaded["body"]["*"] == ""
+    assert loaded["feishu"]["mem"] == "内存卡片"
     # 别人的模板不受影响：文案是个人偏好，不是面板级配置
     assert _run(alerting.load_alert_template("bob"))["enabled"] is False
+
+
+def test_legacy_string_body_spreads_to_all_metric_tabs(db) -> None:
+    """旧格式（整段字符串）读取时平铺到每个页签，再按指标分别改写。"""
+    _run(
+        alerting.save_alert_template(
+            {"enabled": True, "subject": "", "body": "旧正文", "feishu": "旧卡片"},
+            "carol",
+        )
+    )
+    loaded = _run(alerting.load_alert_template("carol"))
+    assert loaded["body"]["mem"] == "旧正文"
+    assert loaded["body"]["cpu"] == "旧正文"
+    assert loaded["body"]["disk"] == "旧正文"
+    assert loaded["body"]["*"] == "旧正文"
+
+
+def test_saving_metric_tabs_keeps_fallback_section(db) -> None:
+    """前端只传五个指标页签时，"*" 兜底页签沿用库里现值，不被静默清空。"""
+    _run(
+        alerting.save_alert_template(
+            {"enabled": True, "subject": "", "body": "旧正文", "feishu": ""},
+            "dave",
+        )
+    )
+    _run(
+        alerting.save_alert_template(
+            {
+                "enabled": True,
+                "subject": "",
+                "body": {"mem": "新内存正文", "cpu": "", "disk": "", "offline": "", "backup": ""},
+                "feishu": {},
+            },
+            "dave",
+        )
+    )
+    loaded = _run(alerting.load_alert_template("dave"))
+    assert loaded["body"]["mem"] == "新内存正文"
+    # "*" 沿用旧值：端口 / SSH 等来源继续用它
+    assert loaded["body"]["*"] == "旧正文"
+    assert loaded["body"]["cpu"] == ""
+
+
+def test_dispatch_picks_template_section_by_metric(db, monkeypatch) -> None:
+    """CPU 告警用 CPU 页签的模板渲染，内存告警用内存页签的，互不串台。"""
+    _run(
+        alerting.save_alert_template(
+            {
+                "enabled": True,
+                "subject": "",
+                "body": {"cpu": "这是CPU模板 {value}", "mem": "这是内存模板 {value}"},
+                "feishu": {"cpu": "CPU卡片 {value}", "mem": "内存卡片 {value}"},
+            },
+            "admin",
+        )
+    )
+    sent: List[Any] = []
+
+    async def fake_mail(owner, title, text):
+        sent.append(("mail", text))
+        return True, "已发送"
+
+    async def fake_feishu(card, owner):
+        # 页签留空回落内置卡片时，首元素是字段 div（没有 text.content）
+        sent.append(
+            ("feishu", card["elements"][0].get("text", {}).get("content"))
+        )
+        return True, "已发送"
+
+    monkeypatch.setattr(alerting, "send_alert_email", fake_mail)
+    monkeypatch.setattr(alerting, "send_feishu", fake_feishu)
+    card = alerting.build_card("warning", "t", "r", [], "note")
+
+    def run_once(metric_key):
+        sent.clear()
+        _run(
+            alerting.dispatch(
+                "admin",
+                {"enabled": True},
+                {"enabled": True},
+                "t",
+                "内置正文",
+                card,
+                context={
+                    "metric_key": metric_key,
+                    "metric": "x",
+                    "value": "50.0",
+                },
+            )
+        )
+
+    # dispatch 先发飞书再发邮件，顺序按实现来
+    run_once("cpu")
+    assert sent == [("feishu", "CPU卡片 50.0"), ("mail", "这是CPU模板 50.0")]
+    run_once("mem")
+    assert sent == [("feishu", "内存卡片 50.0"), ("mail", "这是内存模板 50.0")]
+    # 没写对应页签 → 回落 "*"；"*" 也空 → 回落内置文案 / 内置卡片
+    run_once("disk")
+    assert sent == [("feishu", None), ("mail", "内置正文")]
 
 
 def test_render_keeps_unknown_placeholders() -> None:
@@ -76,7 +183,59 @@ def test_render_keeps_unknown_placeholders() -> None:
 
 
 def test_render_blank_for_empty_value() -> None:
-    assert alerting.render_alert_template("节点={node}", {"node": None}) == "节点="
+    """变量为 None 时整行省略，而不是留下「节点=」这种空心行。"""
+    assert alerting.render_alert_template("节点={node}", {"node": None}) == ""
+
+
+def test_render_drops_lines_whose_variables_are_all_empty() -> None:
+    """CPU 告警里照抄内存告警的模板：内存 / 磁盘行整行省略，其余照常渲染。
+
+    这对应自定义模板最常见的翻车现场 —— 通知里出现「内存： /」
+    「内存使用率： %（阈值 70.0%）」「状态：」一排空心字段。
+    """
+    text = (
+        "{kind}：{target}（VMID {vmid}）\n"
+        "节点：{node}\n"
+        "内存：{used} / {total}\n"
+        "{metric}：{value}%（阈值 {threshold}%）\n"
+        "状态：{status}　IP：{ip}\n"
+        "规则：{rule}\n"
+        "时间：{time}"
+    )
+    out = alerting.render_alert_template(
+        text,
+        {
+            "kind": "虚拟机",
+            "target": "test",
+            "vmid": "121",
+            "node": "pve",
+            "metric": "CPU 使用率",
+            "value": "92.3",
+            "threshold": "70",
+            "used": "",
+            "total": "",
+            "status": "",
+            "ip": "172.16.149.44",
+            "rule": "虚拟机CPU告警",
+            "time": "2026-10-25 21:26:53",
+        },
+    )
+    assert out == (
+        "虚拟机：test（VMID 121）\n"
+        "节点：pve\n"
+        "CPU 使用率：92.3%（阈值 70%）\n"
+        "状态：　IP：172.16.149.44\n"
+        "规则：虚拟机CPU告警\n"
+        "时间：2026-10-25 21:26:53"
+    )
+
+
+def test_render_keeps_line_when_only_some_variables_are_empty() -> None:
+    """「状态：{status}　IP：{ip}」里 status 空但 ip 有值：行保留，不误伤。"""
+    out = alerting.render_alert_template(
+        "状态：{status}　IP：{ip}", {"status": "", "ip": "10.0.0.5"}
+    )
+    assert out == "状态：　IP：10.0.0.5"
 
 
 def test_metric_capacity_only_for_memory_and_disk() -> None:

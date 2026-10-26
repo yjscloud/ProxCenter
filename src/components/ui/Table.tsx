@@ -2,7 +2,7 @@
    ProxCenter — Table（斑马纹、排序、选择、空状态、列宽拖拽）
    ========================================================================== */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { TableSkeleton } from './Spinner';
 import { EmptyState } from './EmptyState';
@@ -123,6 +123,14 @@ export interface TableProps<T> {
    * 面板放哪儿都行，渲染位置由调用方决定。
    */
   columnMenu?: ReactNode;
+  /**
+   * 行内展开：命中 ``isRowExpanded`` 的行下面渲染一条跨全列的展开行，
+   * 详情就地出现在这一行的正下方，而不是被推到表格外面。
+   * 展开状态由调用方持有（受控），点行切换配合 ``onRowClick`` 使用。
+   */
+  isRowExpanded?: (row: T) => boolean;
+  /** 展开行的内容（与 ``isRowExpanded`` 成对使用） */
+  renderExpanded?: (row: T) => ReactNode;
 }
 
 export function Table<T>({
@@ -144,6 +152,8 @@ export function Table<T>({
   onRowHover,
   resizable = true,
   columnMenu,
+  isRowExpanded,
+  renderExpanded,
 }: TableProps<T>) {
   const t = useT();
   const tableRef = useRef<HTMLTableElement>(null);
@@ -401,38 +411,45 @@ export function Table<T>({
           {displayRows.map((row, index) => {
             const selected = isRowSelected?.(row) ?? false;
             const clickable = Boolean(onRowClick);
+            const expanded = Boolean(isRowExpanded?.(row)) && Boolean(renderExpanded);
             return (
-              <tr
-                key={rowKey(row, index)}
-                className={`${selected ? 'is-selected' : ''} ${
-                  clickable ? 'is-clickable' : ''
-                }`}
-                onClick={onRowClick ? () => onRowClick(row) : undefined}
-                onMouseEnter={onRowHover ? () => onRowHover(row) : undefined}
-                tabIndex={clickable ? 0 : undefined}
-                onKeyDown={
-                  clickable
-                    ? (e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          onRowClick?.(row);
+              <Fragment key={rowKey(row, index)}>
+                <tr
+                  className={`${selected ? 'is-selected' : ''} ${
+                    clickable ? 'is-clickable' : ''
+                  } ${expanded ? 'is-expanded' : ''}`}
+                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                  onMouseEnter={onRowHover ? () => onRowHover(row) : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  onKeyDown={
+                    clickable
+                      ? (e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            onRowClick?.(row);
+                          }
                         }
-                      }
-                    : undefined
-                }
-                title={rowTitle?.(row)}
-              >
-                {columns.map((col) => (
-                  <td
-                    key={col.key}
-                    className={`${col.align ? `ta-${col.align}` : ''} ${
-                      col.mono ? 'mono' : ''
-                    } ${col.className ?? ''}`}
-                  >
-                    {col.render(row, index)}
-                  </td>
-                ))}
-              </tr>
+                      : undefined
+                  }
+                  title={rowTitle?.(row)}
+                >
+                  {columns.map((col) => (
+                    <td
+                      key={col.key}
+                      className={`${col.align ? `ta-${col.align}` : ''} ${
+                        col.mono ? 'mono' : ''
+                      } ${col.className ?? ''}`}
+                    >
+                      {col.render(row, index)}
+                    </td>
+                  ))}
+                </tr>
+                {expanded ? (
+                  <tr className="table-expand-row">
+                    <td colSpan={columns.length}>{renderExpanded!(row)}</td>
+                  </tr>
+                ) : null}
+              </Fragment>
             );
           })}
         </tbody>

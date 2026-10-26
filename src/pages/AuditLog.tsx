@@ -204,6 +204,58 @@ export function AuditLog() {
     });
   };
 
+  /** 行内展开的内容：与原先的独立详情卡同一份字段，就地铺开在记录正下方 */
+  const renderAuditDetail = (e: AuditEntry) => (
+    <div className="desc-list audit-detail-inline">
+      <div className="desc-item">
+        <div className="desc-label">{t('audit.dlTime')}</div>
+        <div className="desc-value mono">
+          {formatDateTime(e.timestamp)}（{formatRelative(e.timestamp)}）
+        </div>
+      </div>
+      <div className="desc-item">
+        <div className="desc-label">{t('audit.dlUser')}</div>
+        <div className="desc-value">
+          {e.username}
+          {e.ip ? (
+            <span className="fs-xs text-muted mono"> · {e.ip}</span>
+          ) : null}
+        </div>
+      </div>
+      <div className="desc-item">
+        <div className="desc-label">{t('audit.dlAction')}</div>
+        <div className="desc-value mono">{e.action}</div>
+      </div>
+      <div className="desc-item">
+        <div className="desc-label">{t('audit.dlTarget')}</div>
+        <div className="desc-value mono">{e.target || '—'}</div>
+      </div>
+      <div className="desc-item">
+        <div className="desc-label">{t('audit.dlResult')}</div>
+        <div className="desc-value">
+          <Badge
+            variant={auditResultMeta(e.result, t).variant}
+            dot
+            size="sm"
+          >
+            {auditResultMeta(e.result, t).label}
+          </Badge>
+          <span className="fs-xs text-muted mono"> {e.result}</span>
+        </div>
+      </div>
+      <div className="desc-item">
+        <div className="desc-label">{t('audit.dlDetail')}</div>
+        <div className="desc-value">
+          {e.detail ? (
+            <pre className="log-viewer">{formatDetail(e.detail)}</pre>
+          ) : (
+            <span className="text-muted">{t('audit.noDetail')}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   const resetFilters = () => {
     setUsername('');
     setAction('');
@@ -576,11 +628,13 @@ export function AuditLog() {
             }
             onRowClick={(e) => toggleExpand(e.id)}
             rowTitle={() => t('audit.rowTitle')}
+            /* 点开哪行，详情就就地展开在哪行正下方 —— 不再渲染成表格下方的
+               独立卡片把用户往下推（记录多时要滚很久才找得到刚点的那条）。 */
+            isRowExpanded={(e) => expanded.has(e.id)}
+            renderExpanded={renderAuditDetail}
           />
 
-          {/* 分页条紧跟表格 —— 它会接成这张表格卡的下沿（见 .pagination 的样式）。
-              它原先摆在展开详情与空状态**之后**，中间隔着几张详情卡，等于又被推回
-              卡片外面：翻页信息与表格分了家。 */}
+          {/* 分页条紧跟表格 —— 它会接成这张表格卡的下沿（见 .pagination 的样式）。 */}
           <Pagination
             page={page}
             pageSize={pageSize}
@@ -589,76 +643,6 @@ export function AuditLog() {
             pageSizeOptions={PAGE_SIZE_OPTIONS}
             onPageSizeChange={setPageSize}
           />
-
-          {/* 展开详情 */}
-          {items
-            .filter((e) => expanded.has(e.id))
-            .map((e) => (
-              <Card key={`detail-${e.id}`}>
-                <CardHeader
-                  title={t('audit.detailTitle', { id: e.id })}
-                  subtitle={`${actionLabel(e.action, t)} · ${e.target || t('audit.noTarget')}`}
-                  icon={<IconAudit size={17} />}
-                  actions={
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => toggleExpand(e.id)}
-                    >
-                      {t('audit.collapse')}
-                    </Button>
-                  }
-                />
-                <div className="desc-list">
-                  <div className="desc-item">
-                    <div className="desc-label">{t('audit.dlTime')}</div>
-                    <div className="desc-value mono">
-                      {formatDateTime(e.timestamp)}（{formatRelative(e.timestamp)}）
-                    </div>
-                  </div>
-                  <div className="desc-item">
-                    <div className="desc-label">{t('audit.dlUser')}</div>
-                    <div className="desc-value">
-                      {e.username}
-                      {e.ip ? (
-                        <span className="fs-xs text-muted mono"> · {e.ip}</span>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div className="desc-item">
-                    <div className="desc-label">{t('audit.dlAction')}</div>
-                    <div className="desc-value mono">{e.action}</div>
-                  </div>
-                  <div className="desc-item">
-                    <div className="desc-label">{t('audit.dlTarget')}</div>
-                    <div className="desc-value mono">{e.target || '—'}</div>
-                  </div>
-                  <div className="desc-item">
-                    <div className="desc-label">{t('audit.dlResult')}</div>
-                    <div className="desc-value">
-                      <Badge
-                        variant={auditResultMeta(e.result, t).variant}
-                        dot
-                        size="sm"
-                      >
-                        {auditResultMeta(e.result, t).label}
-                      </Badge>
-                      <span className="fs-xs text-muted mono"> {e.result}</span>
-                    </div>
-                  </div>
-                  <div className="desc-item">
-                    <div className="desc-label">{t('audit.dlDetail')}</div>
-                    <div className="desc-value">
-                      {e.detail ? (
-                        <pre className="log-viewer">{formatDetail(e.detail)}</pre>
-                      ) : (
-                        <span className="text-muted">{t('audit.noDetail')}</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            ))}
 
           {items.length === 0 && total > 0 && search ? (
             <EmptyState

@@ -3005,6 +3005,24 @@ button.kpi-card {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
+/* 行内展开行：详情就地铺开在触发行的正下方。
+   斑马纹用 :nth-child(even) 按 DOM 序数算，展开行插进来会把后续行的条纹
+   打乱 —— 所以展开行自己带浅色底，视觉上作为「这一行的延伸」而不是新的一行。 */
+.table tbody tr.table-expand-row td {
+  background: var(--bg-hover);
+  border-top: 1px dashed var(--border);
+  padding: 12px 16px;
+}
+
+.table tbody tr.table-expand-row:hover {
+  box-shadow: none;
+}
+
+/* 展开区里的字段清单压一行高：desc-list 默认的外边距是为独立卡片调的 */
+.audit-detail-inline {
+  margin: 0;
+}
+
 .table-dense tbody td,
 .table-dense thead th {
   padding: 6px 10px;

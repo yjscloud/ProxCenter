@@ -64,7 +64,7 @@ def test_vm_disk_usage_reads_guest_agent() -> None:
 
 
 def test_pseudo_filesystems_do_not_water_down_the_result() -> None:
-    """tmpfs / overlay 的 used/total 与剩余空间无关，不能参与取最大值。"""
+    """tmpfs / overlay 的 used/total 与剩余空间无关，不能参与整机总量累加。"""
     client = FakeClient(
         [
             {"mountpoint": "/run", "type": "tmpfs", "used-bytes": 99, "total-bytes": 100},
@@ -73,6 +73,22 @@ def test_pseudo_filesystems_do_not_water_down_the_result() -> None:
         ]
     )
     assert asyncio.run(alerting.vm_disk_usage(client, "pve", 1)) == pytest.approx(10.0)
+
+
+def test_disk_usage_is_the_whole_disk_total_not_the_busiest_partition() -> None:
+    """「磁盘使用率」是整机总量：多个真实分区按 used/total 累加求占比。
+
+    根分区 90/100、数据盘 0/100 —— 整机 90/200 = 45%；若只取最满的单个分区会误报成 90%。
+    """
+    client = FakeClient(
+        [
+            {"mountpoint": "/", "type": "ext4", "used-bytes": 90, "total-bytes": 100},
+            {"mountpoint": "/data", "type": "xfs", "used-bytes": 0, "total-bytes": 100},
+        ]
+    )
+    pct, used, total = asyncio.run(alerting.vm_disk_fs_usage(client, "pve", 1))
+    assert pct == pytest.approx(45.0)
+    assert (used, total) == (90.0, 200.0)
 
 
 def test_agent_failure_means_no_data_instead_of_zero() -> None:
@@ -100,7 +116,9 @@ def test_prefetch_covers_running_qemu_only_and_dedupes() -> None:
     out = asyncio.run(alerting.prefetch_vm_disk_usage(client, rules, resources))
     # 两条规则指同一台 -> 只问一次 agent；关机 / 模板 / 容器 / 节点都不问
     assert client.calls == [("pve", 103)]
-    assert out[("pve", 103)] == pytest.approx(50.0)
+    # 返回 (使用率%, 已用字节, 总字节)：容量给模板的 {used}/{total} 用
+    assert out[("pve", 103)][0] == pytest.approx(50.0)
+    assert out[("pve", 103)][1:] == (50.0, 100.0)
     assert len(out) == 1
 
 

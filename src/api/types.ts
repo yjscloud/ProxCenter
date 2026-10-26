@@ -843,10 +843,13 @@ export interface AlertTemplate {
   enabled: boolean;
   /** 邮件主题；留空 = 内置的「虚拟机：xxx」 */
   subject: string;
-  /** 邮件正文（纯文本，换行保留） */
-  body: string;
-  /** 飞书卡片正文（markdown）；留空 = 内置的字段卡片 */
-  feishu: string;
+  /** 邮件正文（纯文本，换行保留），按指标分页签：mem/cpu/disk/offline/backup，
+   * 另有 "*" 兜底（端口 / SSH / 备份核对等来源）。页签留空 = 内置文案 */
+  body: Record<string, string>;
+  /** 飞书卡片正文（markdown），与 body 同样按指标分页签 */
+  feishu: Record<string, string>;
+  /** 发送测试时按哪个指标页签渲染（不落库） */
+  metric?: string;
 }
 
 /**
@@ -2618,6 +2621,8 @@ export interface AuditQuery {
   result?: string;
   start?: string;
   end?: string;
+  /** 关键词，服务端在动作/对象/详情/用户/来源 IP 上做全量匹配 */
+  search?: string;
 }
 
 export interface Paginated<T> {

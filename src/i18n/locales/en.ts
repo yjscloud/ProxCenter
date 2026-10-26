@@ -5343,10 +5343,10 @@ export const en: Partial<Record<MessageKey, string>> = {
   'audit.fieldQuota': 'Quota denials',
   'audit.onlyQuotaDenied': 'Only blocked by quota',
   'audit.fieldRange': 'Time range',
-  'audit.fieldKeyword': 'Filter this page',
+  'audit.fieldKeyword': 'Keyword search',
   'audit.keywordHint':
-    'Text matching within the currently loaded page only; issues no new request',
-  'audit.searchPlaceholder': 'Search action, target, detail…',
+    'Full match across action, target, detail, user and source IP',
+  'audit.searchPlaceholder': 'Search action, target, detail, user, IP…',
   'audit.window': 'Query window: ',
   'audit.resultAll': 'All results',
   'audit.resultPartial': 'Partial',
@@ -6834,7 +6834,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.templateFeishu': 'Feishu card body',
   'alerts.templateFeishuHint': 'Feishu markdown is supported (**bold**, etc.)',
   'alerts.templateScopeHint':
-    'Resource alerts expose the full field set; port / SSH / backup sources only provide title and body ({title}, {text}), other variables render blank.',
+    'Resource alerts expose the full field set; port / SSH / backup sources only provide title and body ({title}, {text}). Other variables render blank and their lines are dropped automatically.',
   'alerts.templateVarsHint': 'Click a variable to insert it into the focused field:',
   'alerts.templateSaved': 'Notification template saved',
   'alerts.templateTest': 'Send test',
@@ -6843,12 +6843,33 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.templateGuideFeishuLabel': 'Feishu card example',
   'alerts.templateGuideCopy': 'Copy',
   'alerts.templateGuideCopied': 'Example copied — paste it into the field on the left',
-  'alerts.templateGuideMail':
-    'VM: {target} (VMID {vmid})\nNode: {node}\nMemory: {used} / {total}\nMemory usage: {value}% (threshold {threshold}%)\nStatus: {status}  IP: {ip}\nRule: {rule}\nTime: {time}',
-  'alerts.templateGuideFeishu':
-    '**{title}**\n**Object**: {kind} {target}\n**Node**: {node}  **Status**: {status}\n**Memory**: {used} / {total} ({value}%)\n**Rule**: {rule}\n**Time**: {time}',
+  'alerts.tplTab.mem': 'Memory',
+  'alerts.tplTab.cpu': 'CPU',
+  'alerts.tplTab.disk': 'Disk',
+  'alerts.tplTab.offline': 'Offline',
+  'alerts.tplTab.backup': 'Backup',
+  'alerts.templateGuideMail.mem':
+    '{kind}: {target} (VMID {vmid})\nNode: {node}\nMemory usage: {value}% (threshold {threshold}%)\nMemory usage: {used} / {total}\nStatus: {status}  IP: {ip}\nRule: {rule}\nTime: {time}',
+  'alerts.templateGuideMail.cpu':
+    '{kind}: {target} (VMID {vmid})\nNode: {node}\nCPU usage: {value}% (threshold {threshold}%)\nStatus: {status}  IP: {ip}\nRule: {rule}\nTime: {time}',
+  'alerts.templateGuideMail.disk':
+    '{kind}: {target} (VMID {vmid})\nNode: {node}\nDisk usage: {value}% (threshold {threshold}%)\nDisk usage: {used} / {total}\nStatus: {status}  IP: {ip}\nRule: {rule}\nTime: {time}',
+  'alerts.templateGuideMail.offline':
+    '{kind}: {target} (VMID {vmid})\nNode: {node}\nOffline alert: current status {status}\nIP: {ip}\nRule: {rule}\nTime: {time}',
+  'alerts.templateGuideMail.backup':
+    '{kind}: {target} (VMID {vmid})\nNode: {node}\nBackup failed: current status {status}\nIP: {ip}\nRule: {rule}\nTime: {time}',
+  'alerts.templateGuideFeishu.mem':
+    '**{title}**\n**Object**: {kind} {target}\n**Node**: {node}  **Status**: {status}\n**Memory usage**: {value}% (threshold {threshold}%)\n**Memory**: {used} / {total}\n**Rule**: {rule}\n**Time**: {time}',
+  'alerts.templateGuideFeishu.cpu':
+    '**{title}**\n**Object**: {kind} {target}\n**Node**: {node}  **Status**: {status}\n**CPU usage**: {value}% (threshold {threshold}%)\n**Rule**: {rule}\n**Time**: {time}',
+  'alerts.templateGuideFeishu.disk':
+    '**{title}**\n**Object**: {kind} {target}\n**Node**: {node}  **Status**: {status}\n**Disk usage**: {value}% (threshold {threshold}%)\n**Disk**: {used} / {total}\n**Rule**: {rule}\n**Time**: {time}',
+  'alerts.templateGuideFeishu.offline':
+    '**{title}**\n**Object**: {kind} {target}\n**Node**: {node}\n**Offline alert**: current status {status}\n**IP**: {ip}\n**Rule**: {rule}\n**Time**: {time}',
+  'alerts.templateGuideFeishu.backup':
+    '**{title}**\n**Object**: {kind} {target}\n**Node**: {node}\n**Backup failed**: current status {status}\n**IP**: {ip}\n**Rule**: {rule}\n**Time**: {time}',
   'alerts.templateGuideNote':
-    'Keep variables in braces as they are; {used} / {total} only carry values for memory and disk alerts and stay blank for CPU. Use “Send test” before saving to check the result.',
+    'Each metric tab has its own template and example; the tab matching the fired rule is used. Keep variables in braces as they are; lines that do not apply are dropped automatically. Use “Send test” before saving to check the result.',
   'alerts.clearTitle': 'Clear alert history',
   'alerts.clearConfirm': 'Clear',
   'alerts.clearMessage': 'This will clear the alert history: the {n} records in the list plus older muted records that are no longer shown. This cannot be undone. Objects currently alerting are unaffected and a recovery notice is still sent when the metric recovers.',

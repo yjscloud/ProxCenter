@@ -86,6 +86,51 @@ const INTERNAL_METRIC_LABELS: Record<string, MessageKey> = {
 const isStateMetric = (metric: string) => STATE_METRICS.has(metric);
 
 /**
+ * 文案模板的指标页签：邮件正文与飞书卡片各按指标分五页（顺序与后端
+ * TEMPLATE_METRICS 一致），哪条规则触发就用哪个页签渲染 —— CPU 页签的模板
+ * 不会带出内存行，离线 / 备份页签也没有百分比可写。
+ */
+const TPL_METRICS = ["mem", "cpu", "disk", "offline", "backup"] as const;
+type TplMetric = (typeof TPL_METRICS)[number];
+
+const TPL_TAB_KEYS: Record<TplMetric, MessageKey> = {
+  mem: "alerts.tplTab.mem",
+  cpu: "alerts.tplTab.cpu",
+  disk: "alerts.tplTab.disk",
+  offline: "alerts.tplTab.offline",
+  backup: "alerts.tplTab.backup",
+};
+const TPL_MAIL_GUIDE_KEYS: Record<TplMetric, MessageKey> = {
+  mem: "alerts.templateGuideMail.mem",
+  cpu: "alerts.templateGuideMail.cpu",
+  disk: "alerts.templateGuideMail.disk",
+  offline: "alerts.templateGuideMail.offline",
+  backup: "alerts.templateGuideMail.backup",
+};
+const TPL_FEISHU_GUIDE_KEYS: Record<TplMetric, MessageKey> = {
+  mem: "alerts.templateGuideFeishu.mem",
+  cpu: "alerts.templateGuideFeishu.cpu",
+  disk: "alerts.templateGuideFeishu.disk",
+  offline: "alerts.templateGuideFeishu.offline",
+  backup: "alerts.templateGuideFeishu.backup",
+};
+
+/** 后端返回按指标分页签的正文；兼容旧格式（整段字符串）与空值。 */
+function tplSections(value: unknown): Record<string, string> {
+  if (typeof value === "string") {
+    return Object.fromEntries([...TPL_METRICS, "*"].map((m) => [m, value]));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, string> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = typeof val === "string" ? val : "";
+    }
+    return out;
+  }
+  return {};
+}
+
+/**
  * 投递状态的四态：结果（送达 / 失败）× 类别（告警 / 恢复）。
  *
  * 排序也用它 —— 按「该不该先管」排：发送失败 > 恢复通知失败 > 新告警 > 已恢复。
@@ -175,6 +220,8 @@ export function Alerts() {
   }, [searchInput]);
   /* 通知文案模板：本地副本 + 显式保存，与其它通道配置同一套交互 */
   const [template, setTemplate] = useState<AlertTemplate | null>(null);
+  /* 模板当前停留在哪个指标页签：邮件正文 / 飞书卡片 / 右侧示例跟着一起切 */
+  const [tplMetric, setTplMetric] = useState<TplMetric>("mem");
   /* 变量按钮插到哪里：记住最后一个获得焦点的输入框，点变量就追加到那儿 */
   const [templateField, setTemplateField] = useState<"subject" | "body" | "feishu">(
     "body",
@@ -264,8 +311,11 @@ export function Alerts() {
       );
     }
     if (template === null) {
+      const tpl = query.data.template;
       setTemplate(
-        query.data.template ?? { enabled: false, subject: '', body: '', feishu: '' },
+        tpl
+          ? { ...tpl, body: tplSections(tpl.body), feishu: tplSections(tpl.feishu) }
+          : { enabled: false, subject: '', body: {}, feishu: {} },
       );
     }
   }, [query.data, rules, feishu, emailCfg, hook, template]);
@@ -339,13 +389,23 @@ export function Alerts() {
     );
   }
 
-  /** 把 {变量} 追加到当前正在编辑的那一格（变量名是后端注册的固定集合）。 */
+  /** 把 {变量} 追加到当前正在编辑的那一格（变量名是后端注册的固定集合）。
+   *  正文 / 飞书是按指标分页签的，插进**当前页签**那一节。 */
   function insertTemplateVar(name: string) {
-    setTemplate((prev) =>
-      prev
-        ? { ...prev, [templateField]: `${prev[templateField]}{${name}}` }
-        : prev,
-    );
+    setTemplate((prev) => {
+      if (!prev) return prev;
+      if (templateField === "subject") {
+        return { ...prev, subject: `${prev.subject}{${name}}` };
+      }
+      const sections = prev[templateField] ?? {};
+      return {
+        ...prev,
+        [templateField]: {
+          ...sections,
+          [tplMetric]: `${sections[tplMetric] ?? ""}{${name}}`,
+        },
+      };
+    });
   }
 
   /**
@@ -355,8 +415,8 @@ export function Alerts() {
   async function copyTemplateGuide(kind: "mail" | "feishu") {
     const example =
       kind === "mail"
-        ? t("alerts.templateGuideMail")
-        : t("alerts.templateGuideFeishu");
+        ? t(TPL_MAIL_GUIDE_KEYS[tplMetric])
+        : t(TPL_FEISHU_GUIDE_KEYS[tplMetric]);
     try {
       await navigator.clipboard.writeText(example);
       toast.success(t("alerts.templateGuideCopied"));
@@ -368,9 +428,10 @@ export function Alerts() {
   /** 用编辑中的模板真发一条样例通知（不保存也能测，方便边改边看）。 */
   async function testTemplate() {
     if (!template) return;
+    /* 停在哪个页签就测哪个指标：样例数据也换成那个指标的形状 */
     await run(
       "tpltest",
-      () => alertsApi.testTemplate(template),
+      () => alertsApi.testTemplate({ ...template, metric: tplMetric }),
       t("alerts.templateTestSent"),
     );
   }
@@ -1472,20 +1533,42 @@ export function Alerts() {
             </Field>
 
             {/* 正文与样例**逐行并排**：左边写、右边照着抄，两块天然等高，
-                不会有「右边短一截、底下空一块」的观感。 */}
+                不会有「右边短一截、底下空一块」的观感。指标页签横在上方，
+                邮件与飞书共用同一个当前页签（切一处，两处与示例都跟着切）。 */}
+            <div className="alert-tpl-tabs" role="tablist">
+              {TPL_METRICS.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={tplMetric === m}
+                  className={"alert-tpl-tab" + (tplMetric === m ? " is-active" : "")}
+                  onClick={() => setTplMetric(m)}
+                >
+                  {t(TPL_TAB_KEYS[m])}
+                </button>
+              ))}
+            </div>
             <div className="alert-tpl-pair">
               <Field
                 label={t("alerts.templateBody")}
                 hint={t("alerts.templateBodyHint")}
               >
                 <Textarea
-                  value={template.body}
+                  value={template.body?.[tplMetric] ?? ""}
                   rows={6}
                   onFocus={() => setTemplateField("body")}
-                  onChange={(e) => setTemplate({ ...template, body: e.target.value })}
-                  placeholder={
-                    "虚拟机：{target}\n内存：{used} / {total}\n内存使用率：{value}%\n节点：{node}"
+                  onChange={(e) =>
+                    setTemplate((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            body: { ...prev.body, [tplMetric]: e.target.value },
+                          }
+                        : prev,
+                    )
                   }
+                  placeholder={t(TPL_MAIL_GUIDE_KEYS[tplMetric])}
                 />
               </Field>
               <div className="alert-tpl-guide">
@@ -1501,7 +1584,7 @@ export function Alerts() {
                   </button>
                 </div>
                 <pre className="alert-tpl-sample">
-                  {t("alerts.templateGuideMail")}
+                  {t(TPL_MAIL_GUIDE_KEYS[tplMetric])}
                 </pre>
               </div>
             </div>
@@ -1512,13 +1595,20 @@ export function Alerts() {
                 hint={t("alerts.templateFeishuHint")}
               >
                 <Textarea
-                  value={template.feishu}
+                  value={template.feishu?.[tplMetric] ?? ""}
                   rows={5}
                   onFocus={() => setTemplateField("feishu")}
                   onChange={(e) =>
-                    setTemplate({ ...template, feishu: e.target.value })
+                    setTemplate((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            feishu: { ...prev.feishu, [tplMetric]: e.target.value },
+                          }
+                        : prev,
+                    )
                   }
-                  placeholder={"**{target}** {metric} {value}%（{used}/{total}）"}
+                  placeholder={t(TPL_FEISHU_GUIDE_KEYS[tplMetric])}
                 />
               </Field>
               <div className="alert-tpl-guide">
@@ -1534,7 +1624,7 @@ export function Alerts() {
                   </button>
                 </div>
                 <pre className="alert-tpl-sample">
-                  {t("alerts.templateGuideFeishu")}
+                  {t(TPL_FEISHU_GUIDE_KEYS[tplMetric])}
                 </pre>
               </div>
             </div>

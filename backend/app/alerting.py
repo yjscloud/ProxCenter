@@ -404,6 +404,36 @@ ALERT_TEMPLATE_PLACEHOLDERS: List[str] = [
 #: ``{name}``：允许花括号内有空格，方便手写
 _ALERT_VAR_RE = re.compile(r"\{\s*([a-z_]+)\s*\}")
 
+#: 正文 / 飞书模板按指标分页签（key 与告警规则的 metric 同名，顺序即界面顺序）。
+#: 每个页签有独立的模板与示例：CPU 告警用 CPU 页签渲染，不会带出内存、磁盘行。
+TEMPLATE_METRICS = ("mem", "cpu", "disk", "offline", "backup")
+#: 兜底页签：端口 / SSH / 备份核对等来源没有指标概念，回落到这里。
+TEMPLATE_FALLBACK_METRIC = "*"
+_TEMPLATE_SECTIONS: Tuple[str, ...] = TEMPLATE_METRICS + (TEMPLATE_FALLBACK_METRIC,)
+
+
+def _template_sections(raw: Any) -> Dict[str, str]:
+    """把 body / feishu 字段规范成「按指标一节」的字典。
+
+    旧格式是单个字符串（升级前对所有指标共用）：平铺到每个页签，界面上照常
+    显示、再按指标分别改写；新格式是 ``{页签: 文本}``。页签留空 = 该页签回落
+    内置文案（与「字段留空回落内置」同一约定）。
+    """
+    sections = {name: "" for name in _TEMPLATE_SECTIONS}
+    if isinstance(raw, dict):
+        for name, text in raw.items():
+            if str(name) in sections:
+                sections[str(name)] = str(text or "")[:4000]
+    elif isinstance(raw, str):
+        for name in _TEMPLATE_SECTIONS:
+            sections[name] = raw[:4000]
+    return sections
+
+
+def _template_section(sections: Dict[str, str], metric_key: str) -> str:
+    """按指标取正文页签；该页签没写就回落 ``*``（其它来源共用那段）。"""
+    return sections.get(metric_key) or sections.get(TEMPLATE_FALLBACK_METRIC) or ""
+
 # =============================================================== 推送来源开关
 #
 # 五个告警来源各有一个「是否发送告警」开关。它**只管推送，不管巡检**：关掉之后
@@ -1272,7 +1302,11 @@ def template_key(owner: str) -> str:
 
 
 async def load_alert_template(owner: str = "") -> Dict[str, Any]:
-    """读取某个用户的通知模板；没配过 / 存坏了都回落默认（= 内置文案）。"""
+    """读取某个用户的通知模板；没配过 / 存坏了都回落默认（= 内置文案）。
+
+    body / feishu 返回按指标分页签的字典（见 :data:`TEMPLATE_METRICS`），
+    旧格式（整段字符串）在读取时平铺到每个页签。
+    """
     cfg = dict(DEFAULT_ALERT_TEMPLATE)
     raw = await store.get_setting(template_key(owner))
     if raw:
@@ -1281,24 +1315,47 @@ async def load_alert_template(owner: str = "") -> Dict[str, Any]:
         except (TypeError, ValueError):
             parsed = None
         if isinstance(parsed, dict):
-            for key in DEFAULT_ALERT_TEMPLATE:
-                if key in parsed:
-                    cfg[key] = parsed[key]
-    cfg["enabled"] = bool(cfg.get("enabled"))
-    cfg["subject"] = str(cfg.get("subject") or "").strip()[:200]
-    cfg["body"] = str(cfg.get("body") or "")[:4000]
-    cfg["feishu"] = str(cfg.get("feishu") or "")[:4000]
-    return cfg
+            if "enabled" in parsed:
+                cfg["enabled"] = parsed["enabled"]
+            if "subject" in parsed:
+                cfg["subject"] = parsed["subject"]
+            for field in ("body", "feishu"):
+                if field in parsed:
+                    cfg[field] = parsed[field]
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "subject": str(cfg.get("subject") or "").strip()[:200],
+        "body": _template_sections(cfg.get("body")),
+        "feishu": _template_sections(cfg.get("feishu")),
+    }
 
 
 async def save_alert_template(raw: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
-    """保存模板。字段留空 = 该处仍用内置文案（不是「清空通知内容」）。"""
-    cfg = {
-        "enabled": bool((raw or {}).get("enabled")),
-        "subject": str((raw or {}).get("subject") or "").strip()[:200],
-        "body": str((raw or {}).get("body") or "")[:4000],
-        "feishu": str((raw or {}).get("feishu") or "")[:4000],
+    """保存模板。某页签留空 = 该页签仍用内置文案（不是「清空通知内容」）。
+
+    body / feishu 各按指标分五页签（见 :data:`TEMPLATE_METRICS`），另有一个
+    不出现在界面上的 ``*`` 兜底页签（端口 / SSH / 备份核对等来源没有指标）。
+    前端只传五个指标页签时 ``*`` 沿用库里现值，不会被静默清空；旧客户端整段
+    字符串上传时按升级前语义平铺到所有页签。
+    """
+    incoming = raw or {}
+    current = await load_alert_template(owner)
+    cfg: Dict[str, Any] = {
+        "enabled": bool(incoming.get("enabled")),
+        "subject": str(incoming.get("subject") or "").strip()[:200],
     }
+    for field in ("body", "feishu"):
+        value = incoming.get(field)
+        if isinstance(value, dict):
+            sections = dict(current[field])
+            for name, text in value.items():
+                if str(name) in sections:
+                    sections[str(name)] = str(text or "")[:4000]
+            cfg[field] = sections
+        elif isinstance(value, str):
+            cfg[field] = _template_sections(value)
+        else:
+            cfg[field] = dict(current[field])
     await store.set_setting(template_key(owner), json.dumps(cfg, ensure_ascii=False))
     return cfg
 
@@ -1308,6 +1365,11 @@ def render_alert_template(text: str, values: Dict[str, Any]) -> str:
 
     留着而不是抹成空串，是为了让人一眼看出「这个变量名拼错了」—— 静默变空白
     的话，邮件里只会少一行，谁也不会去查模板。
+
+    一行里引用的**已知变量全部为空**时，整行省略：模板是给内存告警写的，
+    CPU 告警也照发的话，「内存：{used} / {total}」就会渲染成「内存： /」，
+    与其留一排空心字段，不如把不适用的行整行拿掉（见 ALERT_TEMPLATE_PLACEHOLDERS
+    的取值说明 —— {used}/{total} 只有内存与磁盘告警有值）。
     """
     if not text:
         return ""
@@ -1319,7 +1381,13 @@ def render_alert_template(text: str, values: Dict[str, Any]) -> str:
         value = values.get(key)
         return "" if value is None else str(value)
 
-    return _ALERT_VAR_RE.sub(replace, str(text))
+    lines: List[str] = []
+    for line in str(text).splitlines():
+        keys = [key for key in _ALERT_VAR_RE.findall(line) if key in values]
+        if keys and all(not str(values.get(key) or "").strip() for key in keys):
+            continue
+        lines.append(_ALERT_VAR_RE.sub(replace, line))
+    return "\n".join(lines)
 
 
 def _apply_card_body(card: Dict[str, Any], body: str) -> Dict[str, Any]:
@@ -1438,7 +1506,7 @@ async def dispatch(
 
     ``context`` 同时喂给三处：Webhook 的请求体模板、以及用户自己的文案模板
     （``{变量}``）。没传 context 的来源只有 ``{title}`` / ``{text}`` / ``{time}``
-    可用，其余变量渲染成空白。
+    可用，其余变量渲染成空白（所在行会被整行省略，见 render_alert_template）。
 
     三个通道都没开时保持原提示「告警通知已停用，仅记录」，
     免得历史行为被这次改动改掉。
@@ -1471,13 +1539,25 @@ async def dispatch(
         values["title"] = values.get("title") or title
         values["text"] = values.get("text") or text
         values["time"] = values.get("time") or _now_text()
+        # 正文按指标取对应页签（见 TEMPLATE_METRICS）：CPU 告警用 CPU 页签的
+        # 模板，内存告警用内存页签的；没有指标概念的来源（端口 / SSH / 备份
+        # 核对…）与没写对应页签的，统一回落 ``*`` 兜底页签。
+        metric_key = str(values.get("metric_key") or TEMPLATE_FALLBACK_METRIC)
         if template["subject"]:
             mail_title = render_alert_template(template["subject"], values) or title
         if template["body"]:
-            mail_text = render_alert_template(template["body"], values) or text
+            mail_text = (
+                render_alert_template(
+                    _template_section(template["body"], metric_key), values
+                )
+                or text
+            )
         if template["feishu"]:
             out_card = _apply_card_body(
-                card, render_alert_template(template["feishu"], values)
+                card,
+                render_alert_template(
+                    _template_section(template["feishu"], metric_key), values
+                ),
             )
 
     channels: List[str] = []
@@ -1507,50 +1587,95 @@ async def test_template(cfg: Dict[str, Any], owner: str) -> Tuple[bool, str]:
     刻意不看通道开关：点「测试」就是想看效果，被自己的开关拦下只会让人以为
     模板没生效。没配置的通道仍会如实报「未配置收件地址 / 未配置飞书」，那正是
     用户需要知道的信息。不落库、不写站内消息 —— 这是预览，不是真告警。
+
+    ``cfg["metric"]`` 指定按哪个指标页签渲染（界面上停在哪个页签就测哪个），
+    样例数据也换成那个指标的形状：CPU 页签的样例不会带出内存行，离线 / 备份
+    页签没有百分比 —— 与真告警一致。
     """
+    metric = str((cfg or {}).get("metric") or "mem")
+    if metric not in TEMPLATE_METRICS:
+        metric = "mem"
+    state_metric = metric in STATE_METRICS
     template = {
         "enabled": bool((cfg or {}).get("enabled")),
         "subject": str((cfg or {}).get("subject") or "").strip()[:200],
-        "body": str((cfg or {}).get("body") or "")[:4000],
-        "feishu": str((cfg or {}).get("feishu") or "")[:4000],
+        "body": _template_sections((cfg or {}).get("body")),
+        "feishu": _template_sections((cfg or {}).get("feishu")),
     }
     now = time.time()
-    rule = i18n.tr("内存使用率过高")
+    rule = {
+        "mem": i18n.pick("内存使用率过高", "High memory usage"),
+        "cpu": i18n.pick("CPU 使用率过高", "High CPU usage"),
+        "disk": i18n.pick("磁盘使用率过高", "High disk usage"),
+        "offline": i18n.pick("虚拟机离线", "VM offline"),
+        "backup": i18n.pick("备份任务失败", "Backup task failed"),
+    }[metric]
+    metric_label = i18n.tr(METRIC_LABELS[metric])
     title = i18n.tr("告警测试：") + SAMPLE_TARGET
-    text = i18n.pick(
-        f"虚拟机 {SAMPLE_TARGET} 的内存使用率 88.0%（12.3 GB / 16.0 GB），超过阈值 85%。",
-        f"VM {SAMPLE_TARGET} memory usage 88.0% (12.3 GB / 16.0 GB), above the 85% threshold.",
-    )
-    card = build_card(
-        "warning",
-        title,
-        rule,
-        [
-            (i18n.tr("对象"), i18n.pick("虚拟机 ", "VM ") + SAMPLE_TARGET),
-            (i18n.tr("内存"), "12.3 GB / 16.0 GB"),
-            (i18n.tr("内存使用率"), "88.0%"),
-            (i18n.tr("节点"), "pve-1"),
-            (i18n.tr("状态"), i18n.pick("运行中", "running")),
-        ],
-        _now_text(now),
-    )
+    # 样例字段按指标给真实形状：百分比型有 value/threshold，内存磁盘另有
+    # used/total，状态型只有状态 —— 哪些行会渲染、哪些会被省略，一眼可见。
     sample = {
         "level": "alarm",
         "kind": i18n.pick("虚拟机", "VM"),
         "target": SAMPLE_TARGET,
         "target_type": "vm",
         "rule": rule,
-        "metric": i18n.tr("内存使用率"),
-        "value": "88.0",
-        "threshold": "85",
-        "used": "12.3 GB",
-        "total": "16.0 GB",
+        "metric": metric_label,
+        "metric_key": metric,
+        "value": "",
+        "threshold": "",
+        "used": "",
+        "total": "",
         "node": "pve-1",
         "vmid": "100",
-        "status": i18n.pick("运行中", "running"),
+        "status": i18n.pick("已停止", "stopped")
+        if state_metric
+        else i18n.pick("运行中", "running"),
         "ip": "172.16.149.220",
         "time": _now_text(now),
     }
+    if metric == "mem":
+        sample.update(value="88.0", threshold="85", used="12.3 GB", total="16.0 GB")
+        text = i18n.pick(
+            f"虚拟机 {SAMPLE_TARGET} 的内存使用率 88.0%（12.3 GB / 16.0 GB），超过阈值 85%。",
+            f"VM {SAMPLE_TARGET} memory usage 88.0% (12.3 GB / 16.0 GB), above the 85% threshold.",
+        )
+    elif metric == "cpu":
+        sample.update(value="92.0", threshold="70")
+        text = i18n.pick(
+            f"虚拟机 {SAMPLE_TARGET} 的 CPU 使用率 92.0%，超过阈值 70%。",
+            f"VM {SAMPLE_TARGET} CPU usage 92.0%, above the 70% threshold.",
+        )
+    elif metric == "disk":
+        sample.update(value="45.0", threshold="80", used="90.0 GB", total="200.0 GB")
+        text = i18n.pick(
+            f"虚拟机 {SAMPLE_TARGET} 的磁盘使用率 45.0%（90.0 GB / 200.0 GB），超过阈值 80%。",
+            f"VM {SAMPLE_TARGET} disk usage 45.0% (90.0 GB / 200.0 GB), above the 80% threshold.",
+        )
+    elif metric == "offline":
+        text = i18n.pick(
+            f"虚拟机 {SAMPLE_TARGET} 已离线（期望运行中，实际已停止）。",
+            f"VM {SAMPLE_TARGET} is offline (expected running, actually stopped).",
+        )
+    else:  # backup
+        text = i18n.pick(
+            f"虚拟机 {SAMPLE_TARGET} 的备份任务失败。",
+            f"Backup task for VM {SAMPLE_TARGET} failed.",
+        )
+    card_fields: List[Tuple[str, str]] = [
+        (i18n.tr("对象"), i18n.pick("虚拟机 ", "VM ") + SAMPLE_TARGET),
+        (i18n.tr("节点"), "pve-1"),
+        (i18n.tr("状态"), str(sample["status"])),
+    ]
+    if not state_metric:
+        card_fields.insert(
+            1, (metric_label, str(sample["value"]) + "%")
+        )
+        if sample["used"]:
+            card_fields.insert(
+                2, (i18n.pick("用量", "Usage"), f'{sample["used"]} / {sample["total"]}')
+            )
+    card = build_card("warning", title, rule, card_fields, _now_text(now))
     feishu = await load_feishu(owner)
     email_cfg = await load_alert_email(owner)
     return await dispatch(
@@ -2114,19 +2239,27 @@ def usage(res: Dict[str, Any], metric: str) -> Optional[float]:
 
 
 # guest agent 里那些「不是磁盘」的文件系统：内存盘、只读镜像层、容器 overlay。
-# 它们的 used/total 与用户关心的剩余空间无关，混进来会把「根分区 92%」稀释成
-# 「最高 12%」，看起来像规则坏了。
+# 它们的 used/total 与用户关心的剩余空间无关，混进整机磁盘总量会把真实占用稀释
+# （tmpfs 动辄几十 G），或者把 docker 数据重复计数（overlay 本就落在根分区里）。
 _PSEUDO_FS = frozenset(
     {"tmpfs", "devtmpfs", "ramfs", "overlay", "squashfs", "iso9660", "proc", "sysfs"}
 )
 
 
-async def vm_disk_usage(client: Any, node: str, vmid: int) -> Optional[float]:
-    """虚拟机的磁盘使用率（%），取使用率最高的真实文件系统。
+async def vm_disk_fs_usage(
+    client: Any, node: str, vmid: int
+) -> Optional[Tuple[float, float, float]]:
+    """虚拟机**整机**磁盘的 ``(使用率%, 已用字节, 总字节)``。
 
     虚拟机没有「已用 / 总量」这对现成字段：``/cluster/resources`` 里 qemu 条目的
     ``disk`` 恒为 0、``maxdisk`` 只是磁盘大小，拿它算出来永远是 0%（这正是
     「虚拟机磁盘告警不触发」的原因）。真实数据在客户机的 ``get-fsinfo`` 里。
+
+    「磁盘使用率」的语义是**整机总量**：把所有真实文件系统的已用 / 总量分别
+    累加后求占比，而不是取某个最满的分区 —— 取单个分区的话，一块几乎写满的
+    数据盘会把「根分区还有大半空间」的机器误报成高水位，反之同理。已用 / 总量
+    一并返回，供模板的 ``{used}`` / ``{total}`` 用 —— 只返回百分比的话，
+    「硬盘： / 」这种空心行还是会出现在通知里。
 
     没装 / 没起 qemu-guest-agent 的机器拿不到数据 —— 返回 None，由调用方按
     「本轮不判定」处理，**不能当成 0%**，否则规则会一直静默。
@@ -2135,7 +2268,8 @@ async def vm_disk_usage(client: Any, node: str, vmid: int) -> Optional[float]:
         entries = await client.qemu_agent_fsinfo(node, vmid)
     except Exception:
         return None
-    best: Optional[float] = None
+    used_total = 0.0
+    total_total = 0.0
     for item in entries or []:
         if not isinstance(item, dict):
             continue
@@ -2147,10 +2281,18 @@ async def vm_disk_usage(client: Any, node: str, vmid: int) -> Optional[float]:
             continue
         if str(item.get("type") or "").lower() in _PSEUDO_FS:
             continue
-        pct = max(0.0, min(100.0, float(used) / float(total) * 100))
-        if best is None or pct > best:
-            best = pct
-    return best
+        used_total += float(used)
+        total_total += float(total)
+    if total_total <= 0:
+        return None
+    pct = max(0.0, min(100.0, used_total / total_total * 100))
+    return (pct, used_total, total_total)
+
+
+async def vm_disk_usage(client: Any, node: str, vmid: int) -> Optional[float]:
+    """虚拟机的整机磁盘使用率（%）。"""
+    info = await vm_disk_fs_usage(client, node, vmid)
+    return None if info is None else info[0]
 
 
 def _match_target(rule: Dict[str, Any], res: Dict[str, Any]) -> Optional[str]:
@@ -2180,8 +2322,8 @@ def _match_target(rule: Dict[str, Any], res: Dict[str, Any]) -> Optional[str]:
 
 async def prefetch_vm_disk_usage(
     client: Any, rules: Iterable[Dict[str, Any]], resources: List[Dict[str, Any]]
-) -> Dict[Tuple[str, int], Optional[float]]:
-    """本轮需要的虚拟机磁盘使用率，一次并发取完。
+) -> Dict[Tuple[str, int], Optional[Tuple[float, float, float]]]:
+    """本轮需要的虚拟机磁盘使用率与容量，一次并发取完。
 
     每台虚拟机一次 agent 往返，串行会拖慢整轮评估（agent 无响应时更久）。
     同一个 VM 常被多条规则指到，按 (node, vmid) 去重后只取一次；并发压在 6
@@ -2210,9 +2352,9 @@ async def prefetch_vm_disk_usage(
 
     sem = asyncio.Semaphore(6)
 
-    async def one(node: str, vmid: int) -> Optional[float]:
+    async def one(node: str, vmid: int) -> Optional[Tuple[float, float, float]]:
         async with sem:
-            return await vm_disk_usage(client, node, vmid)
+            return await vm_disk_fs_usage(client, node, vmid)
 
     items = sorted(targets)
     results = await asyncio.gather(
@@ -2383,9 +2525,10 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                         # 虚拟机磁盘已用量只能来自 guest agent（cluster/resources
                         # 里 qemu 的 disk 恒为 0，算出来永远是 0%）。
                         # 容器不走这条路：它的 disk 字段就是真实已用量。
-                        value = disk_usage.get(
+                        disk_info = disk_usage.get(
                             (str(res.get("node") or ""), int(res.get("vmid") or 0))
                         )
+                        value = None if disk_info is None else disk_info[0]
                     else:
                         value = usage(res, metric)
                     if value is None:
@@ -2466,6 +2609,14 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 # 模板里的 {used}/{total}（「内存 12.3 GB / 16.0 GB」）。
                 # 只有内存与磁盘有意义，CPU 返回空串，模板里不会凭空多出 0.0 GB。
                 used, total = _metric_capacity(res, str(rule.get("metric")))
+                if metric == "disk" and res.get("type") == "qemu":
+                    # qemu 的 disk 恒为 0，容量同样要问 guest agent（上面取
+                    # 使用率用的就是这份），否则模板里「硬盘： / 」又是一行空心。
+                    disk_info = disk_usage.get(
+                        (str(res.get("node") or ""), int(res.get("vmid") or 0))
+                    )
+                    if disk_info:
+                        used, total = _capacity(disk_info[1]), _capacity(disk_info[2])
                 text = (
                     kind + i18n.tr("：") + label + chr(10)
                     + detail_text + chr(10)
@@ -2514,8 +2665,15 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                         "target": label,
                         "target_type": target_type,
                         "metric": metric_label,
-                        "value": format(value, ".1f"),
-                        "threshold": format(threshold, ".0f"),
+                        # 模板页签的选择依据（见 dispatch）；不进占位符清单
+                        "metric_key": str(rule.get("metric") or ""),
+                        # 状态型指标（离线 / 备份失败）没有百分比：置空让模板里
+                        # 「{metric}：{value}%（阈值 {threshold}%）」这行整行省略，
+                        # 而不是渲染成「离线：0.0%（阈值 0%）」。
+                        "value": "" if metric in STATE_METRICS else format(value, ".1f"),
+                        "threshold": ""
+                        if metric in STATE_METRICS
+                        else format(threshold, ".0f"),
                         "used": used,
                         "total": total,
                         "node": node,
@@ -2567,6 +2725,16 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 fired.append(entry)
 
     # ---- 恢复通知：上一轮告警中、本轮已不再超阈值的对象 ----
+    # 本轮的资源快照按可寻址的 key 建索引：恢复通知的模板变量（状态、容量）
+    # 从这里取实时值，而不是像以前那样一律留空 —— 否则用户自定义模板渲染出来
+    # 全是空心行（「内存使用率： %（阈值 70.0%）」就是这么来的）。
+    vm_resources: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    node_resources: Dict[str, Dict[str, Any]] = {}
+    for res in resources:
+        if res.get("type") in ("qemu", "lxc"):
+            vm_resources[(str(res.get("node") or ""), str(res.get("vmid") or ""))] = res
+        elif res.get("type") == "node":
+            node_resources[str(res.get("node") or "")] = res
     for key, row in list(active.items()):
         if key in alarming:
             continue
@@ -2599,6 +2767,41 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             + i18n.tr(str(METRIC_LABELS.get(row.get("metric"), row.get("metric"))))
             + i18n.pick(" 已恢复正常", " recovered")
         )
+        # 模板变量从本轮资源快照里取实时值：本轮实测值优先，测不到（典型：
+        # 状态型指标恢复后不再计量）再回落告警时记下的值。全部拿不到才留空，
+        # 让 render_alert_template 把不适用的行整行省略。
+        recovery_metric = str(row.get("metric") or "")
+        if str(row.get("target_type")) == "vm":
+            snapshot = vm_resources.get(
+                (str(row.get("node") or ""), str(row.get("vmid") or ""))
+            )
+        else:
+            snapshot = node_resources.get(str(row.get("node") or ""))
+        if snapshot:
+            recovery_status = str(snapshot.get("status") or "")
+            used, total = _metric_capacity(snapshot, recovery_metric)
+            if recovery_metric == "disk" and snapshot.get("type") == "qemu":
+                disk_info = disk_usage.get(
+                    (str(snapshot.get("node") or ""), int(snapshot.get("vmid") or 0))
+                )
+                if disk_info:
+                    used, total = _capacity(disk_info[1]), _capacity(disk_info[2])
+        else:
+            recovery_status, used, total = "", "", ""
+        if recovery_metric in STATE_METRICS:
+            # 状态型指标没有百分比，置空省掉「离线：0.0%」这种空心行
+            value_text = ""
+        elif value is None:
+            try:
+                value_text = format(float(row.get("value")), ".1f")
+            except (TypeError, ValueError):
+                value_text = ""
+        else:
+            value_text = format(float(value), ".1f")
+        try:
+            threshold_text = format(float(row.get("threshold")), ".0f")
+        except (TypeError, ValueError):
+            threshold_text = ""
         # 告警当初发给谁，恢复就发给谁（同一条链路的收尾）
         chans = await channels.of(row_owner)
         feishu = chans["feishu"]
@@ -2618,22 +2821,22 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 "title": recovery_title,
                 "text": recovery_text,
                 "rule": str(row.get("rule_name") or ""),
-                # 恢复时对象已回落，容量没有参考意义，留空让模板里那行自然消失
                 "kind": i18n.pick("虚拟机", "VM")
                 if str(row.get("target_type")) == "vm"
                 else i18n.pick("宿主机", "Node"),
                 "target": row.get("target") or "",
                 "target_type": row.get("target_type") or "",
-                "metric": METRIC_LABELS.get(
-                    row.get("metric"), str(row.get("metric") or "")
+                "metric": i18n.tr(
+                    str(METRIC_LABELS.get(row.get("metric"), row.get("metric") or ""))
                 ),
-                "value": "" if value is None else format(float(value), ".1f"),
-                "threshold": row.get("threshold") or "",
-                "used": "",
-                "total": "",
+                "metric_key": recovery_metric,
+                "value": value_text,
+                "threshold": threshold_text,
+                "used": used,
+                "total": total,
                 "node": row.get("node") or "",
                 "vmid": row.get("vmid") or "",
-                "status": "",
+                "status": recovery_status,
                 "ip": row.get("ip") or "",
                 "time": _now_text(now),
             },

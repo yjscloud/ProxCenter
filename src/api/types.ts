@@ -3654,6 +3654,10 @@ export interface HostLoginEntry {
   state?: string;
   kernel?: string;
   success?: boolean;
+  /** 这条记录的地址是从入口机还原出来的（原值见这里） */
+  forwarded_from?: string;
+  /** 还原不出来：ip 仍是入口机地址，别当成真实来源 */
+  unresolved_from?: string;
   /** 虚拟机视角下补上的所属主机 */
   host?: string;
   host_id?: string;

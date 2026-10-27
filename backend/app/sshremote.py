@@ -1333,6 +1333,19 @@ async def remote_report(row: Dict[str, Any], hours: int = 24) -> Dict[str, Any]:
     if not ok:
         return report
     events = sshguard.parse_lines(output.splitlines())
+    # 远程主机的 22 同样可能经 frp 暴露：它 sshd 日志里的来源是入口机地址，
+    # 聚合前用入口机 haproxy 日志换回真实来源（和面板本机同一套逻辑，只是
+    # frontend 不同 —— 靠「后端地址:端口」自动对出来）
+    try:
+        await sshguard.restore_real_ips(
+            events,
+            hours,
+            host_id=str(row.get("id") or ""),
+            addr=str(row.get("host") or ""),
+            port=int(row.get("port") or 22),
+        )
+    except Exception:  # noqa: BLE001 - 还原失败只影响来源显示，不能让整页 500
+        logger.warning("远程主机 %s 的真实来源解析失败", row.get("id"), exc_info=True)
     policy = await sshguard.load_policy()
     aggregated = sshguard.aggregate(
         events, since_ts, sshguard.split_ips(policy.get("ignore_ips", ""))

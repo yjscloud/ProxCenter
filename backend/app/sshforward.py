@@ -89,12 +89,19 @@ END_TOLERANCE = 10.0
 #: 成功登录：允许连接时间比登录时间略晚（两台机器的时钟差；只留很小的余量，
 #: 因为连接必然建立于认证通过之前，晚太多就不是这条会话了）
 CLOCK_SKEW = 2.0
-#: 每次回溯多久的日志（秒）
+#: 默认回溯多久的日志（秒）。调用方明确指定更早的时间点（``since``）时会加深，
+#: 但不超过 :data:`MAX_LOOKBACK`。
 LOOKBACK = 6 * 3600
-#: 单次最多读多少行
-MAX_LINES = 20000
+#: 最多回溯多久。日志解析是逐条拉回面板再比的，7 天几万行既慢又超出 journal 的
+#: 常见保留期；「SSH 登录安全」页按 24 小时统计，这里至少要对齐到 24 小时，
+#: 否则页面里 6 小时以前的记录永远显示入口机地址。
+MAX_LOOKBACK = 24 * 3600
+#: 单次最多读多少行。线上约 9000 行/24 小时，24 小时留足余量
+MAX_LINES = 50000
 
 _cache_at = 0.0
+#: 当前缓存覆盖到的最早时刻；请求更早的记录时按需重新拉取
+_loaded_since = 0.0
 _cache_items: List["Conn"] = []
 _lock = asyncio.Lock()
 
@@ -438,15 +445,17 @@ async def frontends_for(host_id: str, addr: str = "", port: int = 22) -> Set[str
     return set()
 
 
-async def _fetch() -> List[Conn]:
+async def _fetch(since: Optional[float] = None) -> List[Conn]:
     host_id = _setting("ssh_forward_log_host")
     row = await sshremote.get_host(host_id)
     if not row:
         logger.warning("SSH 入口日志主机 %s 不存在，跳过真实来源解析", host_id)
         return []
-    since = int(time.time()) - LOOKBACK
+    floor = time.time() - LOOKBACK if since is None else min(since, time.time() - LOOKBACK)
+    floor = max(floor, time.time() - MAX_LOOKBACK)
+    since_int = int(floor)
     command = (
-        f"journalctl -u haproxy --since @{since} -o cat --no-pager -n {MAX_LINES}"
+        f"journalctl -u haproxy --since @{since_int} -o cat --no-pager -n {MAX_LINES}"
     )
     ok, output = await sshremote.run_command(row, command, timeout=sshremote.LOG_TIMEOUT)
     if not ok:
@@ -476,18 +485,29 @@ async def _fetch() -> List[Conn]:
     return items
 
 
-async def _load() -> List[Conn]:
-    global _cache_at, _cache_items
+async def _load(need_since: Optional[float] = None) -> List[Conn]:
+    """取入口机最近的连接记录；``need_since`` 早于缓存覆盖范围时按需加深回溯。
+
+    缓存全局共享：一次拉取覆盖 ``[since, now]``，之后的请求只要不早于这个范围就
+    直接命中。``need_since`` 早于 :data:`MAX_LOOKBACK` 之前的部分不再拉取 ——
+    那些日志本来也不会保留，调用方按「配不上」处理即可。
+    """
+    global _cache_at, _cache_items, _loaded_since
     async with _lock:
+        now = time.time()
+        want = now - LOOKBACK if need_since is None else min(need_since, now - LOOKBACK)
+        want = max(want, now - MAX_LOOKBACK)
         ttl = CACHE_TTL if _cache_items else FAIL_TTL
-        if time.time() - _cache_at < ttl:
+        if now - _cache_at < ttl and _loaded_since <= want:
             return _cache_items
-        items = await _fetch()
+        items = await _fetch(want)
         # 空结果同样打时间戳：失败也要退避，否则每条记录都会重连一次入口机
-        _cache_at = time.time()
-        # 只接受非空结果覆盖缓存 —— 一次抖动不应该把已经拿到的记录抹掉
-        if items:
+        _cache_at = now
+        # 只接受非空结果覆盖缓存 —— 一次抖动不应该把已经拿到的记录抹掉，也不该
+        # 声称「已经回溯到那么早」，否则这一批记录会被误判成配不上
+        if items or not _cache_items:
             _cache_items = items
+            _loaded_since = want
         return _cache_items
 
 
@@ -499,6 +519,7 @@ async def resolve(
     proxy_ips: Optional[Set[str]] = None,
     addr: str = "",
     port: int = 22,
+    since: Optional[float] = None,
 ) -> Optional[str]:
     """给一条「认证失败」记录找真实 IP。
 
@@ -509,6 +530,9 @@ async def resolve(
     :param proxy_ips: 预先算好的入口机地址集合
     :param addr: 主机地址（自动发现映射时用；空 = 面板本机）
     :param port: 主机 SSH 端口
+    :param since: 需要回溯到哪个时刻（不传 = 默认 ``LOOKBACK``）。批量还原历史
+        记录时传 ``ts``，缓存就会按需加深，而不是拿 6 小时的日志去配 24 小时前
+        的记录 —— 那必然配不上，结果是入口机地址被当成真实来源。
     :return: 真实 IP；未配置 / 找不到 / 该地址不是转发机时返回 ``None``
     """
     if not enabled() or not forwarded:
@@ -521,7 +545,7 @@ async def resolve(
     if forwarded not in ips:
         return None
 
-    items = await _load()
+    items = await _load(since if since is not None else ts)
     if not items:
         return None
 
@@ -551,6 +575,7 @@ async def resolve_login(
     proxy_ips: Optional[Set[str]] = None,
     addr: str = "",
     port: int = 22,
+    since: Optional[float] = None,
 ) -> Optional[str]:
     """给一条「登录成功」记录找真实 IP。
 
@@ -565,6 +590,7 @@ async def resolve_login(
     :param proxy_ips: 预先算好的入口机地址集合
     :param addr: 主机地址（自动发现映射时用；空 = 面板本机）
     :param port: 主机 SSH 端口
+    :param since: 需要回溯到哪个时刻（不传 = 按登录开始时刻 ``ts`` 加深）
     :return: 真实 IP；未配置 / 会话未结束 / 找不到时返回 ``None``
     """
     if end is None or end <= ts:
@@ -579,7 +605,7 @@ async def resolve_login(
     if forwarded not in ips:
         return None
 
-    items = await _load()
+    items = await _load(since if since is not None else ts)
     if not items:
         return None
 

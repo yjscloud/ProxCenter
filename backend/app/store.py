@@ -979,6 +979,43 @@ def audit_filters(
     return where, params
 
 
+async def unresolved_forward_rows(
+    ips: List[str], since: float, host: str, limit: int = 200
+) -> List[Dict[str, Any]]:
+    """找出「来源是入口机、但还没换成真实地址」的登录审计记录（回填用）。
+
+    只挑这台主机的记录：``detail`` 里的 ``host`` 是写入时记下的主机名。已经还原过
+    的（``detail.forwarded_from``）不再处理，避免每轮重复跑。
+    """
+    if not ips or not host:
+        return []
+    marks = ", ".join("?" for _ in ips)
+    # 用 INSTR 而不是 LIKE：主机名里可能有 _ / %，在 LIKE 里会被当通配符（一台机
+    # 的记录串到别的机器上），而且 LIKE 的 % 还得在 SQL 文本里转义成 %%
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT id, timestamp, action, ip, detail FROM audit_log "
+            "WHERE action IN ('host.ssh_login', 'host.ssh_failed') "
+            f"AND ip IN ({marks}) AND timestamp >= ? "
+            "AND INSTR(detail, 'forwarded_from') = 0 "
+            "AND INSTR(detail, ?) > 0 "
+            "ORDER BY timestamp DESC LIMIT ?",
+            [*ips, since, f'"host": "{host}"', limit],
+        )
+        rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def update_audit_ip(row_id: int, ip: str, detail: str) -> None:
+    """把一条审计记录的来源地址换成还原出来的真实 IP（``detail`` 一并更新）。"""
+    async with database.connect() as db:
+        await db.execute(
+            "UPDATE audit_log SET ip = ?, detail = ? WHERE id = ?",
+            (ip, detail, row_id),
+        )
+        await db.commit()
+
+
 async def list_audit(
     limit: int = 100,
     offset: int = 0,

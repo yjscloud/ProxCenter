@@ -25,7 +25,7 @@ SAMPLE = (
 def _fake_load(items):
     """把「读入口机日志」换成固定样本，其余逻辑走真实实现。"""
 
-    async def loader():
+    async def loader(need_since=None):
         return items
 
     return loader
@@ -280,6 +280,7 @@ def configured(monkeypatch: pytest.MonkeyPatch):
     # 每个用例重置缓存，避免相互污染
     monkeypatch.setattr(sshforward, "_cache_items", [])
     monkeypatch.setattr(sshforward, "_cache_at", 0.0)
+    monkeypatch.setattr(sshforward, "_loaded_since", 0.0)
     return monkeypatch
 
 
@@ -295,7 +296,7 @@ def test_non_proxy_address_returns_none(configured) -> None:
 
 
 def test_nearest_connection_wins(configured) -> None:
-    async def fake_load():
+    async def fake_load(need_since=None):
         return [
             sshforward.Conn(1000.0, 20.0, "1.1.1.1"),
             sshforward.Conn(1001.5, 20.0, "2.2.2.2"),
@@ -326,7 +327,7 @@ def test_failure_maps_to_connection_still_open(configured) -> None:
 
 
 def test_outside_window_returns_none(configured) -> None:
-    async def fake_load():
+    async def fake_load(need_since=None):
         return [sshforward.Conn(1000.0, 20.0, "1.1.1.1")]
 
     configured.setattr(sshforward, "_load", fake_load)
@@ -335,7 +336,7 @@ def test_outside_window_returns_none(configured) -> None:
 
 
 def test_empty_log_returns_none(configured) -> None:
-    async def fake_load():
+    async def fake_load(need_since=None):
         return []
 
     configured.setattr(sshforward, "_load", fake_load)
@@ -349,24 +350,55 @@ def test_failed_fetch_is_cached(configured) -> None:
     """
     calls = []
 
-    async def broken_fetch():
+    async def broken_fetch(since=None):
         calls.append(1)
         return []
 
     configured.setattr(sshforward, "_fetch", broken_fetch)
     configured.setattr(sshforward, "_cache_items", [])
     configured.setattr(sshforward, "_cache_at", 0.0)
+    configured.setattr(sshforward, "_loaded_since", 0.0)
 
     for _ in range(5):
         assert asyncio.run(sshforward.resolve(1000.0, "172.16.149.3")) is None
     assert len(calls) == 1
 
 
+def test_old_record_deepens_lookback(configured) -> None:
+    """24 小时前的失败也要能配上：日志回溯要跟着请求的时间点加深。
+
+    以前只拉 ``LOOKBACK``（6 小时）的日志，页面按 24 小时统计时，6 小时以前
+    的失败一律配不上，页面上就一直显示入口机地址（线上踩过）。
+    """
+    import time
+
+    calls = []
+    now = time.time()
+
+    async def fake_fetch(since=None):
+        calls.append(since)
+        return [sshforward.Conn(now - 20 * 3600, 30.0, "5.5.5.5", fe="ssh_in")]
+
+    configured.setattr(sshforward, "_fetch", fake_fetch)
+
+    # 默认只回溯 6 小时
+    asyncio.run(sshforward._load())
+    assert calls[0] >= now - sshforward.LOOKBACK - 1
+
+    # 要 20 小时前的记录：按需加深到那个时刻
+    asyncio.run(sshforward._load(now - 20 * 3600))
+    assert calls[-1] <= now - 20 * 3600 + 1
+
+    # 范围已覆盖：再问同样的时间点不再重连入口机
+    asyncio.run(sshforward._load(now - 19 * 3600))
+    assert len(calls) == 2
+
+
 # ------------------------------------------------------------ 成功登录的配对
 
 
 def _login_load(configured, items):
-    async def fake_load():
+    async def fake_load(need_since=None):
         return items
 
     configured.setattr(sshforward, "_load", fake_load)

@@ -164,7 +164,26 @@ export function HostAudit() {
       key: 'ip',
       header: t('hostAudit.colSource'),
       render: (row) =>
-        row.ip ? <span className="mono fs-sm">{row.ip}</span> : <span className="text-muted fs-xs">{t('hostAudit.local')}</span>,
+        row.ip ? (
+          <span
+            className="mono fs-sm"
+            title={
+              row.unresolved_from
+                ? t('hostAudit.unresolvedTip', { from: row.unresolved_from })
+                : row.forwarded_from
+                  ? t('hostAudit.forwardedTip', { from: row.forwarded_from })
+                  : undefined
+            }
+          >
+            {row.ip}
+            {/* 还原不出来时说明白：这一列是入口机地址，不是真实来源 */}
+            {row.unresolved_from ? (
+              <span className="text-muted fs-xs"> · {t('hostAudit.unresolvedShort')}</span>
+            ) : null}
+          </span>
+        ) : (
+          <span className="text-muted fs-xs">{t('hostAudit.local')}</span>
+        ),
     },
     {
       key: 'start',

@@ -48,6 +48,9 @@ PENDING_FAIL_TTL = 30 * 60
 DEFER_FRESH = 15 * 60
 # 每台主机最多挂多少条待补写的记录（防止异常情况下无限堆积）
 MAX_PENDING = 50
+# 每轮导入顺带回填多少条「已写入但来源还是入口机」的记录。上限与入口机日志的
+# 回溯能力对齐：再早的记录日志已经滚出去了，改了也只是猜。
+BACKFILL_BATCH = 200
 # 保留游标多少天前的记录不再导入（首次部署只导最近的）
 IMPORT_LOOKBACK_DAYS = 7
 
@@ -392,6 +395,73 @@ async def host_rows(
     return rows
 
 
+async def _restore_last_entries(
+    host_id: str, entries: List[Dict[str, Any]], kind: str
+) -> None:
+    """把 last / lastb 里的入口机地址换成真实来源（原地改）。
+
+    「主机登录审计」页的成功 / 失败两个页签读的是原始 last / lastb，不经过审计
+    表，所以还原必须在这里再做一次 —— 否则同一批记录在审计日志里是真实 IP、
+    在这一页却还是入口机地址。
+
+    成功登录仍然要会话结束才配得上（haproxy 到连接关闭才写日志行），会话中的
+    记录保留原值；失败记录配不上时标 ``unresolved_from``，别让人当成真实来源。
+    """
+    if not entries or not sshforward.enabled():
+        return
+    proxy_ips = await sshforward.proxies_set()
+    if not proxy_ips:
+        return
+    if host_id == "local":
+        addr, port = "", 22
+    else:
+        row = await sshremote.get_host(host_id)
+        if not row:
+            return
+        addr = str(row.get("host") or "")
+        port = int(row.get("port") or 22)
+    fronts = await sshforward.frontends_for(host_id, addr, port)
+    if not fronts:
+        return
+    for entry in entries:
+        ip = str(entry.get("ip") or "")
+        if ip not in proxy_ips:
+            continue
+        ts = float(entry.get("start") or 0)
+        if not ts:
+            continue
+        if kind == "failed":
+            real = await sshforward.resolve(
+                ts,
+                ip,
+                host_id,
+                fronts=fronts,
+                proxy_ips=proxy_ips,
+                addr=addr,
+                port=port,
+                since=ts,
+            )
+        else:
+            end = entry.get("end")
+            real = await sshforward.resolve_login(
+                ts,
+                float(end) if end else None,
+                ip,
+                host_id,
+                fronts=fronts,
+                proxy_ips=proxy_ips,
+                addr=addr,
+                port=port,
+                since=ts,
+            )
+        if real and real != ip:
+            entry["forwarded_from"] = ip
+            entry["ip"] = real
+        elif kind == "failed" or entry.get("end"):
+            # 配不上（日志已滚出去 / 同一时刻连接太多）：保留原值但标出来
+            entry["unresolved_from"] = ip
+
+
 async def collect_logins(
     host_id: str, kind: str = "success", limit: int = LAST_LIMIT
 ) -> Dict[str, Any]:
@@ -414,12 +484,14 @@ async def collect_logins(
             "entries": [],
         }
     entries = parse_last_output(output, kind)
+    kept = entries[: max(1, min(1000, limit))]
+    await _restore_last_entries(host_id, kept, kind)
     return {
         "host_id": host_id,
         "name": name,
         "ok": True,
         "error": "",
-        "entries": entries[: max(1, min(1000, limit))],
+        "entries": kept,
         "generated_at": int(time.time()),
     }
 
@@ -566,6 +638,7 @@ async def import_events(
         "skipped": 0,
         "skipped_flood": 0,
         "deferred": 0,
+        "backfilled": 0,
         "details": [],
     }
     for row in rows:
@@ -616,6 +689,11 @@ async def import_events(
                 port=port,
             )
             written += settled
+            # 先补历史：之前写进去、当时没配上真实地址的记录（含还原功能上线
+            # 之前的存量），在入口机日志还没滚出去之前救回来
+            summary["backfilled"] += await _backfill_real_ips(
+                hid, name, fronts, proxy_ips, addr, port
+            )
 
             for action, entries in (
                 ("host.ssh_login", reports.get("host.ssh_login") or []),
@@ -660,6 +738,7 @@ async def import_events(
                             proxy_ips=proxy_ips,
                             addr=addr,
                             port=port,
+                            since=ts,
                         )
                         if real and real != original_ip:
                             forwarded_from = original_ip
@@ -754,6 +833,10 @@ async def import_events(
                         "state": entry.get("state"),
                         "end": entry.get("end"),
                     }
+                    if via_proxy and not forwarded_from:
+                        # 走了代理却没配上（入口机日志已滚出去、或同时刻连接太多对不上）：
+                        # 留着入口机地址，但要标出来，免得被当成真实来源
+                        unresolved_forward = True
                     if forwarded_from:
                         # 保留原始来源，方便和对账：这条记录的地址是「还原」出来的
                         detail["forwarded_from"] = forwarded_from
@@ -829,6 +912,80 @@ async def import_events(
     return summary
 
 
+async def _backfill_real_ips(
+    host_id: str,
+    name: str,
+    fronts: set,
+    proxy_ips: set,
+    addr: str = "",
+    port: int = 22,
+) -> int:
+    """把已经写进审计、来源却还是入口机的记录补成真实地址。
+
+    登录记录写进去就改不了了，而「写入那一刻」可能还配不上：会话没结束（haproxy
+    要等连接关闭才写日志行）、入口机一时连不上，或者记录是在还原功能上线之前
+    导入的。这些记录放着不管，页面上就永远是入口机地址。所以每轮导入顺带回头
+    看一眼最近 ``sshforward.MAX_LOOKBACK`` 内的记录，能配上就改过来。
+
+    只动「来源是入口机、且还没标过 ``forwarded_from``」的记录，已还原的不会重复跑。
+    """
+    if not fronts or not proxy_ips:
+        return 0
+    rows = await store.unresolved_forward_rows(
+        sorted(proxy_ips),
+        time.time() - sshforward.MAX_LOOKBACK,
+        name,
+        limit=BACKFILL_BATCH,
+    )
+    fixed = 0
+    for item in rows:
+        ts = float(item.get("timestamp") or 0)
+        ip = str(item.get("ip") or "")
+        action = str(item.get("action") or "")
+        try:
+            detail = json.loads(item.get("detail") or "{}")
+        except (TypeError, ValueError):
+            detail = {}
+        if not isinstance(detail, dict):
+            detail = {}
+        # 失败按「失败时刻」配，成功按「会话起止」配 —— 与导入新记录同一套判据
+        if action == "host.ssh_failed":
+            real = await sshforward.resolve(
+                ts,
+                ip,
+                host_id,
+                fronts=fronts,
+                proxy_ips=proxy_ips,
+                addr=addr,
+                port=port,
+                since=ts,
+            )
+        else:
+            end = detail.get("end")
+            real = await sshforward.resolve_login(
+                ts,
+                float(end) if end else None,
+                ip,
+                host_id,
+                fronts=fronts,
+                proxy_ips=proxy_ips,
+                addr=addr,
+                port=port,
+                since=ts,
+            )
+        if not real or real == ip:
+            continue
+        detail["forwarded_from"] = ip
+        detail.pop("unresolved_from", None)
+        await store.update_audit_ip(
+            int(item["id"]), real, json.dumps(detail, ensure_ascii=False)
+        )
+        fixed += 1
+    if fixed:
+        logger.info("主机 %s 补写 %d 条登录审计的真实来源", name, fixed)
+    return fixed
+
+
 async def _settle_pending(
     host_id: str,
     name: str,
@@ -882,6 +1039,7 @@ async def _settle_pending(
                     proxy_ips=proxy_ips,
                     addr=addr,
                     port=port,
+                    since=ts,
                 )
                 if end
                 else None
@@ -896,6 +1054,7 @@ async def _settle_pending(
                 proxy_ips=proxy_ips,
                 addr=addr,
                 port=port,
+                since=ts,
             )
             ttl, action, result = PENDING_FAIL_TTL, "host.ssh_failed", "failed"
 

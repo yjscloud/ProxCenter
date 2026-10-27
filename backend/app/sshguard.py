@@ -421,6 +421,52 @@ def aggregate(
     }
 
 
+async def _restore_real_ips(events: List[Dict[str, Any]]) -> None:
+    """把「入口机地址」换回真实来源（原地修改 ``events``）。
+
+    面板本机的 22 经 frp 暴露时，frpc 是从入口机回连面板 sshd 的，本机
+    auth.log / secure 里的来源只能是入口机地址 —— 和审计日志（``hostaudit``）
+    是同一个问题，走同一套 :mod:`app.sshforward` 还原：读入口机 haproxy 日志，
+    按时间找出这次连接对应的真实客户端地址。
+
+    这里读的是**本机**日志，所以固定用 ``host_id="local"``（对应 haproxy 里
+    那条 ``server panel <本机地址>:22`` 的 frontend）。没配入口机 / 解析不出来
+    时保留原值，不影响其它统计。
+    """
+    # sshforward 会连带导入 sshremote，而 sshremote 在模块级又导入了本模块 ——
+    # 顶部导入会成环，放到函数里按需导入。
+    from . import sshforward
+
+    if not events or not sshforward.enabled():
+        return
+    proxy_ips = await sshforward.proxies_set()
+    if not proxy_ips:
+        return
+    fronts = await sshforward.frontends_for("local")
+    if not fronts:
+        return
+    # 入口机日志只回溯最近 LOOKBACK 小时：更早的记录必然配不上，直接跳过，
+    # 免得 7 天窗口里几千条记录逐条空跑一遍连接表。
+    floor = time.time() - sshforward.LOOKBACK
+    for event in events:
+        ts = float(event.get("ts") or 0)
+        if ts < floor:
+            continue
+        ip = str(event.get("ip") or "")
+        if ip not in proxy_ips:
+            continue
+        real = await sshforward.resolve(
+            ts,
+            ip,
+            "local",
+            fronts=fronts,
+            proxy_ips=proxy_ips,
+        )
+        if real and real != ip:
+            event["forwarded_from"] = ip
+            event["ip"] = real
+
+
 async def collect(hours: int = 24) -> Dict[str, Any]:
     """读日志 + 聚合，返回一份可直接给前端的报告（不含告警判断）。"""
     source = log_source()
@@ -438,6 +484,8 @@ async def collect(hours: int = 24) -> Dict[str, Any]:
     policy = await load_policy()
     lines = read_lines(source, since_ts)
     events = parse_lines(lines)
+    # 聚合前先还原：失败排行 / 登录记录 / 陌生 IP 判断都要用真实地址
+    await _restore_real_ips(events)
     report = aggregate(events, since_ts, split_ips(policy.get("ignore_ips", "")))
     report["source"] = source
     report["scanned_lines"] = len(lines)

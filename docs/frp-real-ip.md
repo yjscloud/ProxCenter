@@ -107,35 +107,72 @@ haproxy 的 `bind ... accept-proxy` 表示「这个监听口收到的连接带 P
 
 ## haproxy 部署方案
 
-### 最小可用配置
+入口机上的 haproxy 只做一件事：接住 frpc 投递过来的连接、解析 PROXY protocol
+拿到真实来源、写进日志，再把 TCP 原样转给目标 sshd。它不监听公网，也不需要证书。
 
-入口机上 `/etc/haproxy/haproxy.cfg` 的完整最小版本（面板本机一条转发为例）：
+### 1. 安装
+
+Debian / Ubuntu：
+
+```bash
+apt update && apt install -y haproxy
+haproxy -v
+```
+
+RHEL / CentOS / Rocky：
+
+```bash
+dnf install -y haproxy
+```
+
+装完配置文件在 `/etc/haproxy/haproxy.cfg`，systemd 服务名 `haproxy`。
+
+### 2. 写配置（完整样例）
+
+把 `/etc/haproxy/haproxy.cfg` 写成下面这样。示例里已经有两条转发：面板本机
+（`ssh_in`）和一台 `172.16.149.8`（`ssh_in_8`），新增机器照抄后面一段即可。
 
 ```haproxy
 global
-    # 日志写到 stdout，交给 systemd 收进 journal —— 面板就是从这里读的。
-    # 写成 log /var/log/haproxy.log 面板读不到。
+    # 日志写到 stdout，systemd 会收进 journal —— 面板就是从这里读的。
+    # 千万不要只写 log /var/log/haproxy.log，那样面板读不到。
     log stdout format raw local0
     maxconn 2000
 
 defaults
     log     global
     mode    tcp
-    # 必须：TCP 日志会把 Tq/Tw/Tc（Tc = 连接总时长）写出来，
+    # 必须：TCP 日志会输出 Tq/Tw/Tc（Tc = 连接总时长，毫秒），
     # 面板靠它判断「失败发生时这条连接是否还开着」。
     option  tcplog
+
     timeout connect 5s
+    # SSH 会话可能开很久，client/server 超时给足
     timeout client  1h
     timeout server  1h
 
-# 面板本机：frpc 把 PROXY protocol v2 发到这个口
+# ── 面板本机 ─────────────────────────────────────────────
+# frpc 的 kvm-web 代理把 PROXY protocol v2 发到这个口
 frontend ssh_in
     bind 172.16.149.3:12222 accept-proxy
     default_backend ssh_panel
 
 backend ssh_panel
+    # 面板 sshd 的真实内网地址:端口（面板自动发现靠它配对）
     server panel 172.16.149.17:22
+
+# ── 172.16.149.8（个人工作台）─────────────────────────────
+# frpc 的 pve3-blog-8 代理发到这个口
+frontend ssh_in_8
+    bind 127.0.0.1:12223 accept-proxy
+    default_backend ssh_wb8
+
+backend ssh_wb8
+    server wb8 172.16.149.8:22
 ```
+
+新增一台机器就是再加一对 `frontend` / `backend`（见下文「新增一台机器的操作步骤」）。
+`bind` 选一个没被占用的本地端口，`server` 写目标 sshd 的真实内网地址和 22。
 
 ### 关键指令
 
@@ -150,13 +187,46 @@ backend ssh_panel
 > `accept-proxy` 只加在**由 frpc 投递**的监听口上。别把 haproxy 直接暴露到公网再让
 > 外部客户端连——外部客户端不会发 PROXY 协议头，连接会失败。
 
-### 校验与重载
+### 3. 启动 / 重载
 
 ```bash
-haproxy -c -f /etc/haproxy/haproxy.cfg && systemctl reload haproxy
+# 先校验配置，语法错了不要动线上
+haproxy -c -f /etc/haproxy/haproxy.cfg
+
+# 首次：开机自启 + 立即启动
+systemctl enable --now haproxy
+
+# 之后改配置（加 frontend / 改 server）只需平滑重载，已有连接不断
+systemctl reload haproxy
+
+# 看状态
+systemctl status haproxy --no-pager
+ss -ltnp | grep -E '12222|12223'
 ```
 
-`reload` 是平滑的，已有连接不断。改 `bind` 端口或新增 frontend 都只需 reload。
+`reload` 失败不会影响正在跑的旧进程；`systemctl status` 或
+`journalctl -u haproxy -n 20 --no-pager` 里会有具体报错。
+
+### 4. 确认日志能被读到
+
+```bash
+journalctl -u haproxy -n 5 -o cat --no-pager
+```
+
+正常情况下应看到类似：
+
+```
+66.132.172.214:41580 [27/Oct/2026:04:07:23.672] ssh_in ssh_panel/panel 1/0/4052 1269 -- 3/1/0/0/0 0/0
+```
+
+行首就是真实客户端 IP。如果为空：
+
+- `haproxy.cfg` 里有没有 `log stdout format raw local0`（不是写文件）；
+- 有没有 `option tcplog`；
+- 有没有连接真的进来过（先对 frps 的公网端口连一次 ssh）。
+
+日志同时可以验证「面板能不能读」：用面板配置的那个 SSH 账号登录入口机执行上面这条
+命令，读不到就是权限问题（非 root 账号需要 `systemd-journal` / `adm` 组或 sudo）。
 
 ### 日志保留
 

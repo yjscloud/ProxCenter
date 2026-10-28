@@ -241,6 +241,10 @@ export function Alerts() {
   /* 「告警按用户隔离，管理员额外能看到全部」—— 这个判断要早于下面的节点查询，
      所以放在这里。 */
   const isAdmin = !!query.data?.is_admin;
+  /* 能不能改（alert.manage）。新建账号默认角色是 viewer，只有 alert.view ——
+     以前界面不看这个标志，规则照常可编辑、可保存，点保存才拿到 403，而那份
+     没落库的规则还留在页面上，用户以为配好了，实际一条都不存在。 */
+  const canManage = !!query.data?.can_manage;
   /* 节点清单只给管理员拉：「告警对象」里的「宿主机」那一档只对管理员开放
      （普通用户的下拉里根本没有它），所以没必要替他请求一次注定用不上的列表。 */
   const nodesQuery = useQuery({
@@ -822,6 +826,8 @@ export function Alerts() {
             variant="primary"
             icon={<IconAlert size={15} />}
             loading={busy === "check"}
+            disabled={!canManage}
+            title={canManage ? undefined : t("alerts.manageForbiddenTitle")}
             onClick={() =>
               void run(
                 "check",
@@ -856,6 +862,15 @@ export function Alerts() {
           {t("alerts.mutedNotice", {
             sources: mutedSources.map((item) => item.label).join("、"),
           })}
+        </Notice>
+      ) : null}
+
+      {/* 只能看、不能改：常见于「新建的账号默认是只读角色」。必须说全
+          「配置也保存不了」并给出去处，否则用户会在页面上配一遍规则、点保存失败，
+          然后断定「告警系统坏了 / 我配的规则不生效」。 */}
+      {!canManage ? (
+        <Notice tone="info" title={t("alerts.manageForbiddenTitle")}>
+          {t("alerts.manageForbidden")}
         </Notice>
       ) : null}
 
@@ -950,6 +965,7 @@ export function Alerts() {
               variant="ghost"
               size="sm"
               loading={busy === "test"}
+              disabled={!canManage}
               onClick={() => void sendTest()}
             >
               {t("alerts.sendTest")}
@@ -959,7 +975,7 @@ export function Alerts() {
               size="sm"
               icon={<IconSave size={14} />}
               loading={busy === "fs"}
-              disabled={feishu === null}
+              disabled={feishu === null || !canManage}
               onClick={() => void saveFeishu()}
             >
               {t("common.save")}
@@ -1119,7 +1135,7 @@ export function Alerts() {
               variant="ghost"
               size="sm"
               loading={busy === "hooktest"}
-              disabled={!hook?.enabled}
+              disabled={!hook?.enabled || !canManage}
               onClick={() => void sendHookTest()}
             >
               {t("alerts.sendTest")}
@@ -1129,7 +1145,7 @@ export function Alerts() {
               size="sm"
               icon={<IconSave size={14} />}
               loading={busy === "hook"}
-              disabled={hook === null}
+              disabled={hook === null || !canManage}
               onClick={() => void saveHook()}
             >
               {t("common.save")}
@@ -1356,7 +1372,7 @@ export function Alerts() {
               size="sm"
               icon={<IconSave size={14} />}
               loading={busy === "mail"}
-              disabled={!emailCfg}
+              disabled={!emailCfg || !canManage}
               onClick={() => void saveEmail()}
             >
               {t("common.save")}
@@ -1488,7 +1504,7 @@ export function Alerts() {
               size="sm"
               icon={<IconPlug size={14} />}
               loading={busy === "tpltest"}
-              disabled={!template}
+              disabled={!template || !canManage}
               onClick={() => void testTemplate()}
             >
               {t("alerts.templateTest")}
@@ -1498,7 +1514,7 @@ export function Alerts() {
               size="sm"
               icon={<IconSave size={14} />}
               loading={busy === "tpl"}
-              disabled={!template}
+              disabled={!template || !canManage}
               onClick={() => void saveTemplate()}
             >
               {t("common.save")}
@@ -1674,6 +1690,7 @@ export function Alerts() {
                 variant="ghost"
                 size="sm"
                 icon={<IconPlus size={14} />}
+                disabled={!canManage}
                 /* 普通用户没有「宿主机」这一档，就以「虚拟机」起步；管理员仍按
                    原来的默认（宿主机），只是列表读不到时也退回「虚拟机」，免得
                    先撞一次空下拉 */
@@ -1691,19 +1708,27 @@ export function Alerts() {
                 size="sm"
                 icon={<IconSave size={14} />}
                 loading={busy === "rules"}
-                disabled={rules === null}
+                disabled={rules === null || !canManage}
                 onClick={() =>
                   rules &&
-                  void run(
-                    "rules",
-                    async () => {
-                      const res = await alertsApi.saveRules(rules);
-                      // 后端会按 id 去重、认领归属，用返回结果刷新本地列表，
-                      // 否则保存后界面仍显示旧数据（含历史重复项）
-                      setRules(res.rules ?? []);
-                    },
-                    t("alerts.rulesSaved"),
-                  )
+                  void (async () => {
+                    const ok = await run(
+                      "rules",
+                      async () => {
+                        const res = await alertsApi.saveRules(rules);
+                        // 后端会按 id 去重、认领归属，用返回结果刷新本地列表，
+                        // 否则保存后界面仍显示旧数据（含历史重复项）
+                        setRules(res.rules ?? []);
+                      },
+                      t("alerts.rulesSaved"),
+                    );
+                    if (!ok) {
+                      // 保存失败（权限不足 / 后端拒绝）：把本地那份「看起来已经
+                      // 配好了」的编辑丢掉，回到服务端的真实状态。留着它，用户会
+                      // 以为规则已经生效，实际一条都没落库。
+                      setRules(query.data?.rules ?? []);
+                    }
+                  })()
                 }
               >
                 {t("alerts.saveRules")}
@@ -1735,7 +1760,7 @@ export function Alerts() {
               </thead>
               <tbody>
                 {rules.map((r, i) => {
-                  const readonly = isForeign(r);
+                  const readonly = isForeign(r) || !canManage;
                   return (
                   <tr key={r.id}>
                     {isAdmin ? (

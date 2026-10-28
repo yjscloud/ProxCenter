@@ -6717,6 +6717,8 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.mutedSuffix': 'Delivery stopped · {desc}',
   'alerts.readonly': 'Read-only',
   'alerts.readonlyNotice': 'These are global settings (they affect the alerts every user receives); only administrators can change them.',
+  'alerts.manageForbiddenTitle': 'This account can only view alerts',
+  'alerts.manageForbidden': 'Your role lacks the alert.manage permission, so rules, notification channels and manual checks cannot be changed. New accounts default to a read-only role; if you need to configure your own alert rules, ask an administrator to switch you to the operator role or to grant alert.manage.',
   'alerts.channelsTitle': 'Alert channels',
   'alerts.channelsSubtitle': 'Alert and recovery notifications are sent through the enabled channels below; Feishu, generic webhook and email are independent, so you can enable one or several',
   'alerts.feishuBot': 'Feishu bot',

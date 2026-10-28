@@ -30,7 +30,7 @@ import pytest
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app import alerting, database, notifications, ownership, store  # noqa: E402
+from app import alerting, database, notifications, ownership, security, store  # noqa: E402
 
 PASSWORD = "Unit-Test-Pa55word"
 
@@ -50,6 +50,9 @@ def _run(coro):
 def db(clean_mysql_db):
     """只建表、不启动 app：用户 / 归属 / 告警三张表都要在。"""
     _run(store.init_db())
+    # 内置角色由 app 启动时补齐（security.load_roles）；这里不起 app，得自己补，
+    # 否则 store.create_user 会以「角色 operator 不存在」拒绝建号。
+    _run(security.load_roles())
     _run(ownership.init_table())
     _run(alerting.init_table())
     _run(notifications.init_table())
@@ -398,5 +401,6 @@ def test_legacy_state_does_not_fire_a_second_alert(db, monkeypatch) -> None:
     assert sent == [], "冷却还没到点，不该因为换了 key 就再响一次"
     rows = _run(alerting.load_active())
     assert alerting.alarm_key("admin", "r1", "vm-a") not in rows
-    moved = rows[alerting.alarm_key("alice", "r1", "vm-a")]
+    # 新 key 的对象身份是「节点 + VMID」（见 alerting.alarm_subject）
+    moved = rows[alerting.alarm_key("alice", "r1", "pve:100")]
     assert moved["username"] == "alice"

@@ -23,7 +23,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import alerting, database, store  # noqa: E402
+from app import alerting, database, security, store  # noqa: E402
 
 PASSWORD = "Unit-Test-Pa55word"
 
@@ -39,6 +39,10 @@ def _run(main) -> None:
 async def _setup(username: str, email: str) -> None:
     """建表 + 清掉同名残留，再按给定邮箱建档。"""
     await store.init_db()
+    # 内置角色由 app 启动时补齐（security.load_roles）；这里不起 app，得自己补，
+    # 否则 create_user 会以「角色 viewer 不存在」拒绝建号（取决于上一个用例
+    # 有没有恰好留下 roles 表，属于纯粹的用例顺序依赖）。
+    await security.load_roles()
     async with database.connect() as db:
         await db.execute("DELETE FROM users WHERE username = ?", (username,))
         await db.commit()

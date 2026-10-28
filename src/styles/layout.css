@@ -2834,7 +2834,18 @@
   font-size: var(--font-size-sm);
 }
 
+/* 组名让位、按钮不缩：卡片最窄只有 260px，「取消全选」比「全选」长两字，
+   不锁住的话窄列里会被挤成半个字 */
+.perm-group-head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .perm-group-toggle {
+  flex-shrink: 0;
+  white-space: nowrap;
   border: none;
   background: none;
   padding: 2px 6px;
@@ -2855,10 +2866,15 @@
   gap: 5px;
 }
 
+/* 一行一个权限：勾选框 + 中文名 + 键名。受限项的说明单独占一行
+   （flex-wrap + .perm-note 的 flex-basis:100%），否则长句会把键名挤出去，
+   两段文字叠在一起 —— 卡片宽度自适应网格，靠 nowrap 硬顶一定会溢出。 */
 .perm-item {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
+  row-gap: 2px;
   font-size: var(--font-size-xs);
   cursor: pointer;
   min-width: 0;
@@ -2876,9 +2892,48 @@
 }
 
 .perm-key {
+  min-width: 0;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 只对管理员 / 区域管理员生效的权限项：名称与键名退成次要色 + 一行说明。
+   压暗而不是隐藏 —— 管理员需要知道「有这项能力、但不在这个角色上」。
+   注意别对整行用 opacity：说明文字是这一行最该读的内容，跟着一起淡下去
+   就白解释了。 */
+.perm-item.is-restricted {
+  cursor: default;
+}
+
+.perm-item.is-restricted .perm-label,
+.perm-item.is-restricted .perm-key {
+  color: var(--text-muted);
+}
+
+.perm-item.is-restricted input {
+  cursor: default;
+}
+
+/* 说明文字的缩进对齐到中文名（勾选框 13px + gap 7px），读起来是这一行的注解 */
+.perm-note {
+  flex: 0 0 100%;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.perm-tag {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-muted);
+  background: var(--bg-subtle, transparent);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
   white-space: nowrap;
 }
 

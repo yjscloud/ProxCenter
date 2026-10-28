@@ -1787,7 +1787,14 @@ class TestUserLifecycle:
         resp = api.get("/api/users/roles", headers=auth_headers(api))
         assert resp.status_code == 200
         roles = resp.json()
-        assert {r["role"] for r in roles} == {"admin", "operator", "viewer"}
+        # region_admin 也是内置角色（见 security.ROLE_PERMISSIONS），早先这条断言
+        # 只列了三个，加区域管理员之后一直红着
+        assert {r["role"] for r in roles} == {
+            "admin",
+            "region_admin",
+            "operator",
+            "viewer",
+        }
 
     def test_create_update_delete_user(self, api) -> None:
         admin = auth_headers(api)

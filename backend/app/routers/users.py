@@ -81,6 +81,36 @@ async def list_roles(
     return items
 
 
+@router.get("/users/assignable")
+async def list_assignable_users(
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.assign", "ct.assign")
+    ),
+) -> List[Dict[str, Any]]:
+    """指派归属时可选的人：只有用户名与角色 id，且只列可登录的账号。
+
+    为什么单开一条而不是复用 ``GET /users``：那张表的门槛是 ``users.view``，
+    而区域管理员有 ``vm.assign`` / ``ct.assign``、**没有** ``users.view`` ——
+    指派弹窗的选人框会直接 403、看起来像「下拉里没有任何人」。反过来把
+    ``users.view`` 一并给出去，等于把整个账号目录（邮箱、审批状态、有效期、
+    区域、最后登录…）开放给一个只管机器的人。
+
+    给出的信息量刻意压到最低：归属在库里就是用户名字符串，能读某台机器的
+    ``/owner`` 的人本来就看得到归属人是谁，这里只是把「可选的人」列出来。
+    待审批 / 已停用的账号不列（登不进来，指派给他没有意义）。
+    """
+    users = await store.list_users()
+    return [
+        {
+            "username": str(item.get("username") or ""),
+            "role": str(item.get("role") or ""),
+        }
+        for item in users
+        if item.get("enabled", True)
+        and str(item.get("status") or store.STATUS_ACTIVE) == store.STATUS_ACTIVE
+    ]
+
+
 @router.get("/users/regions")
 async def list_regions(
     user: Dict[str, Any] = Depends(security.require_permission("users.view")),
@@ -151,10 +181,16 @@ async def create_user(
     role_id = (payload.role or "viewer").strip()
     if not await store.get_role(role_id):
         raise HTTPException(status_code=400, detail=f"角色 {role_id} 不存在")
+    # 授予链边界：不能建 / 批准一个权限高于自己的账号（含 admin 角色本身）
+    await security.ensure_can_assign_role(user, role_id)
 
     # None = 跟随角色权限；给了列表 = 用户级覆盖。两种都先过目录白名单 ——
-    # 这条路径同样是权限的写入口，拼错的键会静默失效、"*" 会凭空造超管
-    permissions = security.validate_permissions(payload.permissions)
+    # 这条路径同样是权限的写入口，拼错的键会静默失效、"*" 会凭空造超管。
+    # 覆盖也要按**这个账号的角色**校验适用角色：给 operator 单独勾上 vm.assign，
+    # 和给 operator 角色勾上是同一件不生效的事。
+    permissions = security.validate_permissions(payload.permissions, role_id=role_id)
+    # 用户级覆盖同样是「授予」，逐项比对授予者自己的权限
+    security.ensure_can_grant_permissions(user, permissions)
 
     created = await store.create_user(
         payload.username,
@@ -178,6 +214,47 @@ async def create_user(
     return created
 
 
+def _self_privilege_change(existing: Dict[str, Any], payload: Any) -> bool:
+    """这次提交是否真的在动「自己的权限面」。
+
+    只比值、不看字段是否存在：管理页把整张表单原样提交回来时，值没变就不该拦
+    （否则管理员改自己的邮箱都会被 403）。真正改变角色 / 权限 / 启用状态 /
+    账号状态 / 有效期 / 区域时才算提权尝试。
+    """
+    if payload.role is not None and payload.role != str(existing.get("role") or ""):
+        return True
+    if payload.enabled is not None and bool(payload.enabled) != bool(
+        existing.get("enabled", True)
+    ):
+        return True
+    if payload.status is not None and payload.status != str(
+        existing.get("status") or store.STATUS_ACTIVE
+    ):
+        return True
+    if payload.expires_at is not None and float(payload.expires_at or 0) != float(
+        existing.get("expires_at") or 0
+    ):
+        return True
+    if payload.set_regions:
+        current = sorted(security.user_regions(existing))
+        wanted = sorted(
+            {str(item).strip() for item in (payload.regions or []) if str(item).strip()}
+        )
+        if current != wanted:
+            return True
+    if payload.set_permissions:
+        raw = existing.get("permissions_override")
+        current = sorted({str(p) for p in raw}) if raw is not None else None
+        wanted = (
+            None
+            if payload.permissions is None
+            else sorted({str(p) for p in payload.permissions})
+        )
+        if wanted != current:
+            return True
+    return False
+
+
 @router.put("/users/{username}")
 async def update_user(
     username: str,
@@ -189,6 +266,13 @@ async def update_user(
     existing = await store.get_user(username)
     if not existing:
         raise HTTPException(status_code=404, detail=f"用户 {username} 不存在")
+
+    # 授予链的两条边界（安全审计：users.manage 曾可自我提权为 admin）：
+    #  1. 不能动权限高于自己的账号 —— 否则「重置对方密码」就是一条接管路径；
+    #  2. 不能改自己的角色 / 权限 / 状态 —— 自我提权是同一个洞的最短路径。
+    await security.ensure_can_manage_account(user, existing)
+    if _self_privilege_change(existing, payload):
+        security.ensure_not_self_elevation(user, username)
 
     # 管理员重置他人密码同样要过硬强度这一关（schema 已限长度，这里管内容）
     if payload.password:
@@ -220,6 +304,9 @@ async def update_user(
 
     if payload.role is not None and not await store.get_role(payload.role):
         raise HTTPException(status_code=400, detail=f"角色 {payload.role} 不存在")
+    # 换角色也是「授予」：目标角色不能超过授予者自己的权限
+    if payload.role is not None:
+        await security.ensure_can_assign_role(user, payload.role)
 
     if payload.status is not None and payload.status not in store.USER_STATUSES:
         raise HTTPException(
@@ -228,12 +315,17 @@ async def update_user(
         )
 
     # 只有真的要设覆盖时才校验 —— 关闭覆盖时 payload.permissions 没有意义，
-    # store 也按 permissions_provided 决定写不写
+    # store 也按 permissions_provided 决定写不写。角色按「改完之后」的那个算：
+    # 同一次请求里既换角色又给覆盖时，要按新角色判断适用角色。
     permissions = (
-        security.validate_permissions(payload.permissions)
+        security.validate_permissions(
+            payload.permissions, role_id=(payload.role or existing["role"])
+        )
         if payload.set_permissions
         else None
     )
+    # 用户级覆盖逐项比对授予者自己的权限（`*` 不在这条路径上，见 validate_permissions）
+    security.ensure_can_grant_permissions(user, permissions)
 
     updated = await store.update_user(
         username,
@@ -398,6 +490,8 @@ async def revoke_user_sessions(
     existing = await store.get_user(username)
     if not existing:
         raise HTTPException(status_code=404, detail=f"用户 {username} 不存在")
+    # 踢下线不改权限，但能让更强的账号立刻失去凭据 —— 同样受授予链限制
+    await security.ensure_can_manage_account(user, existing)
 
     revoked = await security.revoke_user_credentials(username)
     await security.audit(
@@ -440,12 +534,15 @@ async def approve_user(
     role_id = (payload.role or "viewer").strip()
     if not await store.get_role(role_id):
         raise HTTPException(status_code=400, detail=f"角色 {role_id} 不存在")
+    # 授予链边界：不能建 / 批准一个权限高于自己的账号（含 admin 角色本身）
+    await security.ensure_can_assign_role(user, role_id)
 
     permissions = (
-        security.validate_permissions(payload.permissions)
+        security.validate_permissions(payload.permissions, role_id=role_id)
         if payload.set_permissions
         else None
     )
+    security.ensure_can_grant_permissions(user, permissions)
 
     updated = await store.update_user(
         username,
@@ -488,6 +585,8 @@ async def reject_user(
         raise HTTPException(status_code=404, detail=f"用户 {username} 不存在")
     if existing.get("status", store.STATUS_ACTIVE) == store.STATUS_REJECTED:
         raise HTTPException(status_code=409, detail=f"用户 {username} 已被拒绝过")
+    # 拒绝 = 把账号按在门外，对更强的账号同样是越权
+    await security.ensure_can_manage_account(user, existing)
 
     updated = await store.update_user(username, status=store.STATUS_REJECTED)
 
@@ -511,6 +610,8 @@ async def delete_user(
     existing = await store.get_user(username)
     if not existing:
         raise HTTPException(status_code=404, detail=f"用户 {username} 不存在")
+    # 删号比改密更彻底：被委派者不能删掉比自己权限高的账号
+    await security.ensure_can_manage_account(user, existing)
 
     if existing["username"] == user["username"]:
         raise HTTPException(status_code=409, detail="不能删除当前登录的账号")

@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from .. import security, store
+from .. import guestguard, ownership, security, store
 
 router = APIRouter(prefix="/api", tags=["vm-meta"])
 META_KEY = "vm_meta"
@@ -96,6 +96,15 @@ async def save_vm_meta(
 ) -> Dict[str, Any]:
     node = payload.node.strip()
     ip = payload.ip.strip()
+    # 对象级：条目是按 (连接, 节点, vmid) 落库的，随便填一个别人的号就能改写
+    # 管理员看到的那台机器的地址（展示与部分判定都以它为准）。
+    await guestguard.require_guest_object(
+        user,
+        node,
+        payload.vmid,
+        ownership.KIND_VM,
+        connection=payload.connection_id,
+    )
     items = await _load()
     key = _entry_key(node, payload.vmid, payload.connection_id)
 

@@ -342,7 +342,7 @@ interface RowMenuProps {
   onExport: () => void;
   onDelete: () => void;
   disabled: boolean;
-  /** 是否显示「指派归属」（仅管理员可用该操作） */
+  /** 是否显示「指派归属」（需对应类型的 vm.assign / ct.assign） */
   canAssign: boolean;
   /** 是否显示「重置用户口令」（需要 vm.config） */
   canResetPassword: boolean;
@@ -622,6 +622,12 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const bulkMore = canConfig || canSnapshot || canMigrate;
   /* 导出会把整块磁盘镜像交出去，与备份同一口径（只有虚拟机有导出这件事） */
   const canExport = kind === 'qemu' && hasPermission('vm.backup');
+  /* 指派归属：按类型的权限点判，**不能按角色名**，否则区域管理员（有
+     vm.assign / ct.assign，不是 admin）永远看不到这个入口 */
+  const canAssign = hasPermission(`${permPrefix}.assign`);
+  /* 「这台归谁」这一列 / 无人认领筛选：管理员与区域管理员看得到（后端也只给
+     这两类人回填 owner，见 routers/vms.py 的列表过滤） */
+  const canSeeOwner = isAdmin || canAssign;
 
   const copyText = async (text: string) => {
     try {
@@ -1501,12 +1507,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
       width: 140,
       render: (vm) => <TagList tags={parseTags(vm.tags)} max={2} />,
     },
-      /* 「归属」列**只对管理员存在**。
+      /* 「归属」列只对**能看全量机器**的人存在：管理员与区域管理员
+         （后者有 vm.assign / ct.assign，进来就是为了改派归属）。
          普通用户看到的每一台都是自己的，这一列对他既没有信息量，又会误导：
-         后端刻意不给非管理员回填 ``owner``（少一处「哪台归谁」的暴露面），
-         所以他这一列**每行都是「无人认领」** —— 连他自己名下那台也是。
-         看起来像「我的机器全是无主的」，实际上只是这一列压根不该出现。 */
-      ...(isAdmin
+         后端刻意不给「只能看自己」的人回填 ``owner``（少一处「哪台归谁」的
+         暴露面），所以他这一列**每行都是「无人认领」** —— 连他自己名下那台
+         也是。看起来像「我的机器全是无主的」，实际上只是这一列不该出现。 */
+      ...(canSeeOwner
         ? [
             {
               key: 'owner',
@@ -1623,7 +1630,7 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               onSnapshot={() => setSnapshotTarget(vm)}
               onMigrate={() => setMigrateTarget(vm)}
               onAssign={() => setAssignTarget(vm)}
-              canAssign={isAdmin}
+              canAssign={canAssign}
               onResetPassword={() => setPasswordTarget(vm)}
               canResetPassword={canConfig}
               onExport={() => setExportTarget(vm)}
@@ -1898,10 +1905,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               ]}
               aria-label={t('guestList.statusFilterAria')}
             />
-            {/* 归属筛选只给管理员：普通用户看到的每一台都是自己的，这一档对他
-                没有意义。管理员则需要它来找出「没人认领」的机器 ——
-                那种机器在按人分配的额度里不算任何人。 */}
-            {isAdmin ? (
+            {/* 归属筛选只给能看全量机器的人（管理员 / 区域管理员）：普通用户
+                看到的每一台都是自己的，这一档对他没有意义。他们则需要它来找出
+                「没人认领」的机器 —— 那种机器在按人分配的额度里不算任何人。 */}
+            {canSeeOwner ? (
               <Select
                 value={ownerFilter}
                 onChange={(e) =>
@@ -1924,8 +1931,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
               noun={L.noun}
             />
             {/* 无人认领是个**入口**而不是统计数字：点一下就把列表筛到那几台，
-                接着逐台指派归属。没有它，这类机器在界面上完全看不见。 */}
-            {isAdmin && unownedCount > 0 ? (
+                接着逐台指派归属。没有它，这类机器在界面上完全看不见。
+                能指派的人都需要它 —— 区域管理员就是靠它找出本区域待分配的机器。 */}
+            {canSeeOwner && unownedCount > 0 ? (
               <button
                 type="button"
                 className={`unowned-chip${

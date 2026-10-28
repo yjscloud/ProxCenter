@@ -58,8 +58,13 @@ async def create_role(
         raise HTTPException(status_code=409, detail="角色标识已存在")
 
     # 权限键必须落在目录里：拼错一个以前是静默失效（勾了不生效、谁都不报错），
-    # 而 "*" 等于凭空造出第二个超管（见 security.validate_permissions）
-    permissions = security.validate_permissions(payload.permissions)
+    # 而 "*" 等于凭空造出第二个超管（见 security.validate_permissions）。
+    # 同时按新角色的 id 校验「适用角色」：vm.assign 这类只对管理员 / 区域管理员
+    # 成立的能力，自定义角色拿到也不会生效，不如当场拒绝（界面已置灰）。
+    permissions = security.validate_permissions(payload.permissions, role_id=role_id)
+    # 建角色 = 造一个可被授予的权限包。被委派的用户管理员不能借此造出
+    # 超出自己权限的角色，也不能靠它把能力搬到自己身上（自我提权另有专门拦截）。
+    security.ensure_can_grant_permissions(user, permissions)
 
     saved = await store.save_role(
         role_id,
@@ -91,9 +96,13 @@ async def update_role(
         raise HTTPException(
             status_code=400, detail="内置的「超级管理员」角色不可修改"
         )
+    # 改别人的角色 = 改所有持有者能做什么：自己都没有的权限，不许从别人身上削掉，
+    # 也不许在这个角色上加（后者由下面的 ensure_can_grant_permissions 兜住）
+    await security.ensure_can_manage_role(user, role_id)
 
-    # 同创建：权限键必须在目录里
-    permissions = security.validate_permissions(payload.permissions)
+    # 同创建：权限键必须在目录里，且适用角色要对得上（见 create_role）
+    permissions = security.validate_permissions(payload.permissions, role_id=role_id)
+    security.ensure_can_grant_permissions(user, permissions)
 
     saved = await store.save_role(
         role_id,
@@ -122,6 +131,8 @@ async def delete_role(
         raise HTTPException(status_code=404, detail="角色不存在")
     if existing.get("builtin"):
         raise HTTPException(status_code=400, detail="内置角色不可删除")
+    # 删角色同样是一次授权面变更：含自己没有的权限的角色不许由被委派者删除
+    await security.ensure_can_manage_role(user, role_id)
 
     in_use = await store.count_users_with_role(role_id)
     if in_use > 0:

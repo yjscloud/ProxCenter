@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
-from .. import pvecache, security
+from .. import guestguard, ownership, pvecache, security, store
 from ..pve import (
     ProxmoxClient,
     ProxmoxError,
@@ -194,6 +194,65 @@ async def list_storages(
 _CONTENT_TTL = 20.0
 
 
+#: 归属于某台客户机的内容类型：普通用户只能看自己名下机器的那几条。
+#: ISO / vztmpl / snippets 是共享基础设施，不参与归属过滤（否则连安装镜像都选不到）。
+_GUEST_CONTENT_TYPES = ("images", "rootdir", "backup", "import")
+
+
+async def _scope_storage_content(
+    items: List[Dict[str, Any]],
+    user: Dict[str, Any],
+    node: str,
+    storage: str,
+) -> List[Dict[str, Any]]:
+    """按归属裁剪存储内容清单。
+
+    **必须在 ``pvecache`` 之外调用**：缓存 key 里没有用户，把过滤写进被缓存的
+    lambda 会把 A 的可见集合缓存给 B（跨用户数据污染，比原来的泄露更糟）。
+
+    判定分三类：
+    * 导入文件（``import/`` 或 ``content=import``）：按 ``KIND_IMPORT`` 的 ref 判定；
+    * 带 ``vmid`` 的卷（磁盘、备份归档）：按该客户机的归属判定，无归属记录的存量
+      对普通用户不可见（与 ``/vms`` 同一套严格隔离）；
+    * 其余（ISO、容器模板、片段）：共享资源，保持可见。
+    """
+    scope = security.visible_owner(user)
+    if scope is None:
+        return items
+
+    connection_id = guestguard.call_connection()
+    if security.is_region_admin(user):
+        region = store.connection_region(connection_id)
+        return items if security.region_in_scope(user, region) else []
+
+    owners = await ownership.guest_owners_map()
+    import_owners: Optional[Dict[str, str]] = None
+    out: List[Dict[str, Any]] = []
+    for item in items or []:
+        volid = str(item.get("volid") or "")
+        ctype = str(item.get("content") or "")
+        volume = volid.split(":", 1)[-1] if ":" in volid else volid
+
+        if ctype == "import" or volume.startswith("import/"):
+            if import_owners is None:
+                import_owners = await ownership.owners_map(ownership.KIND_IMPORT)
+            ref = ownership.import_ref(connection_id, storage, volume)
+            if import_owners.get(ref) == scope:
+                out.append(item)
+            continue
+
+        vmid = item.get("vmid")
+        if ctype not in _GUEST_CONTENT_TYPES and vmid is None:
+            out.append(item)
+            continue
+        if vmid is None:
+            # 明确是客户机内容却拿不到 vmid：无法判定归属，严格隔离
+            continue
+        if ownership.vm_owner_from(owners, node, vmid, connection_id) == scope:
+            out.append(item)
+    return out
+
+
 @router.get("/storages/content")
 async def storage_content(
     node: str,
@@ -236,6 +295,8 @@ async def storage_content(
                 "notes": item.get("notes", ""),
             }
         )
+    # 归属裁剪放在缓存之后：缓存里是全量，按用户过滤只在出口做（见函数说明）
+    output = await _scope_storage_content(output, user, node, storage)
     output.sort(key=lambda i: i.get("ctime") or 0, reverse=True)
     return output
 

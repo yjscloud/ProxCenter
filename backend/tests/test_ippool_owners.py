@@ -168,3 +168,124 @@ def test_empty_owners_does_not_shadow_the_legacy_owner(api) -> None:
 
     alice = user_with_permissions(api, ["network.view"], "alice")
     assert _ids(api, alice) == ["pool-1"]
+
+
+# ------------------------------------------------------- 写侧：整表覆盖的越权面
+# ``PUT /api/ip-pools`` 曾经是无条件整表覆盖：任何持 network.manage 的人都能改
+# 别人的 owners（或填 "*"）、还能靠「提交里不含它」把别人的池删掉。下面这几条
+# 盯的就是「按 id 合并 + 归属校验」这条线。
+
+def _owners(api, headers) -> List[List[str]]:
+    resp = api.get("/api/ip-pools", headers=headers)
+    assert resp.status_code == 200, resp.text
+    return [pool["owners"] for pool in resp.json()["pools"]]
+
+
+def _writer(api, username: str) -> Dict[str, str]:
+    """只有「查看 + 管理地址池」两项权限的普通用户（模拟自定义角色）。"""
+    return user_with_permissions(api, ["network.view", "network.manage"], username)
+
+
+def test_non_admin_cannot_change_owners(api) -> None:
+    admin = auth_headers(api)
+    _put(api, admin, owners=["carol"])
+    carol = _writer(api, "carol")
+
+    resp = api.put("/api/ip-pools", headers=carol, json=[{**POOL, "owners": ["*"]}])
+    assert resp.status_code == 403, resp.text
+    assert _owners(api, admin) == [["carol"]], "越权请求不能改动归属"
+
+
+def test_non_admin_cannot_touch_other_pool(api) -> None:
+    """看不到别人的池，但可以手工构造请求 —— 必须拒绝。"""
+    admin = auth_headers(api)
+    _put(api, admin, owners=["alice"])
+    bob = _writer(api, "bob")
+
+    resp = api.put("/api/ip-pools", headers=bob, json=[{**POOL, "owners": ["alice"]}])
+    assert resp.status_code == 403, resp.text
+
+
+def test_non_admin_cannot_create_pool(api) -> None:
+    """池是管理员分配的资源：普通用户不能在整表里塞新的一行。"""
+    admin = auth_headers(api)
+    _put(api, admin, owners=["carol"])
+    carol = _writer(api, "carol")
+
+    fresh = {**POOL, "id": "pool-new"}
+    resp = api.put(
+        "/api/ip-pools",
+        headers=carol,
+        json=[{**POOL, "owners": ["carol"]}, fresh],
+    )
+    assert resp.status_code == 403, resp.text
+    assert _ids(api, admin) == ["pool-1"]
+
+
+def test_non_admin_save_keeps_pools_they_cannot_see(api) -> None:
+    """普通用户只提交自己的池：别人的池不能被整表覆盖删掉。"""
+    admin = auth_headers(api)
+    other = {
+        **POOL,
+        "id": "pool-2",
+        "name": "别的网段",
+        "subnet": "10.0.0.0/24",
+        "gateway": "10.0.0.1",
+        "start": "10.0.0.10",
+        "end": "10.0.0.20",
+        "owners": ["dave"],
+    }
+    resp = api.put(
+        "/api/ip-pools",
+        headers=admin,
+        json=[{**POOL, "owners": ["carol"]}, other],
+    )
+    assert resp.status_code == 200, resp.text
+
+    carol = _writer(api, "carol")
+    resp = api.put(
+        "/api/ip-pools",
+        headers=carol,
+        json=[{**POOL, "name": "改名", "owners": ["carol"]}],
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert set(_ids(api, admin)) == {"pool-1", "pool-2"}, "别人的池被覆盖删掉了"
+    names = {
+        pool["id"]: pool["name"]
+        for pool in api.get("/api/ip-pools", headers=admin).json()["pools"]
+    }
+    assert names["pool-1"] == "改名"
+
+
+def test_non_admin_can_delete_his_own_pool(api) -> None:
+    admin = auth_headers(api)
+    _put(api, admin, owners=["carol"])
+    carol = _writer(api, "carol")
+
+    resp = api.put("/api/ip-pools", headers=carol, json=[])
+    assert resp.status_code == 200, resp.text
+    assert _ids(api, admin) == []
+
+
+def test_legacy_row_without_id_gets_a_stable_id(api) -> None:
+    """老数据没有 id：读的时候要补一个稳定的，否则合并写会把「同一个池」当成新建。"""
+    admin = auth_headers(api)
+    legacy = {
+        key: value for key, value in POOL.items() if key not in ("owners", "id")
+    }
+    _store_raw([{**legacy, "owners": ["carol"]}])
+
+    ids = _ids(api, admin)
+    assert len(ids) == 1 and ids[0].startswith("pool-")
+    # 再读一次还是同一个 id（按内容生成，不是随机）
+    assert _ids(api, admin) == ids
+
+    carol = _writer(api, "carol")
+    resp = api.put(
+        "/api/ip-pools",
+        headers=carol,
+        json=[{**POOL, "id": ids[0], "owners": ["carol"]}],
+    )
+    assert resp.status_code == 200, resp.text
+    assert _ids(api, admin) == ids

@@ -1161,6 +1161,7 @@ function RolePermissionsCell({
 
 /** 按域分组的权限清单：只读清单与「权限说明」共用这一份渲染 */
 function PermissionGroupList({ groups }: { groups: PermissionGroup[] }) {
+  const t = useT();
   return (
     <div className="perm-help">
       {groups.map((group) => (
@@ -1171,6 +1172,11 @@ function PermissionGroupList({ groups }: { groups: PermissionGroup[] }) {
               <div className="perm-help-item" key={item.key}>
                 <div className="perm-help-head">
                   <span className="perm-help-label">{item.label}</span>
+                  {/* 适用角色写在这里（而不只写在 desc 里）：看说明的人常常
+                      只扫标签行，「勾了为什么不生效」多半就是漏了这句话 */}
+                  {item.roles?.length ? (
+                    <span className="perm-tag">{t('permPicker.roleRestricted')}</span>
+                  ) : null}
                   <span className="perm-help-key">{item.key}</span>
                 </div>
                 {item.desc ? <p className="perm-help-desc">{item.desc}</p> : null}
@@ -1827,6 +1833,8 @@ function UserEditor({
             value={perms}
             onChange={setPerms}
             disabled={!useOverride}
+            /* 覆盖权限是给「这个账号」的，能不能用指派归属取决于它所属的角色 */
+            roleId={role}
           />
         </div>
       </div>
@@ -2001,6 +2009,8 @@ function ApprovalDialog({
             value={perms}
             onChange={setPerms}
             disabled={!useOverride}
+            /* 同上：适用角色按这次要授予的角色判断（默认就是申请者原本的角色） */
+            roleId={role}
           />
         </div>
       </div>
@@ -2700,7 +2710,13 @@ function RoleEditor({
               {t('users.selectedCount', { n: perms.length })}
             </span>
           </div>
-          <PermissionPicker value={perms} onChange={setPerms} />
+          {/* roleId 用「正在编辑的角色」：指派归属这类权限只对管理员 / 区域
+              管理员成立，对普通角色置灰并说明原因（见 PermissionPicker） */}
+          <PermissionPicker
+            value={perms}
+            onChange={setPerms}
+            roleId={isEdit ? role?.id : undefined}
+          />
         </div>
       </div>
     </Modal>

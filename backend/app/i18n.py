@@ -361,6 +361,39 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "zh-CN": "保存上传文件失败：{error}",
         "en": "Failed to store the uploaded file: {error}",
     },
+    # ---------------------------------------------------------------- 证书部署
+    # 重载命令一律以 argv 形式执行、不经过 shell，所以这些校验是「保存即拒」，
+    # 目的是别让 cert.manage 变成容器内的任意命令执行。
+    "cert.reloadTooLong": {
+        "zh-CN": "重载命令不能超过 400 个字符",
+        "en": "The reload command cannot exceed 400 characters",
+    },
+    "cert.reloadBadChars": {
+        "zh-CN": "重载命令不能包含管道、重定向或多条命令（; | & $ ` > <）",
+        "en": "The reload command cannot contain pipes, redirections or "
+        "multiple commands (; | & $ ` > <)",
+    },
+    "cert.reloadParseFail": {
+        "zh-CN": "重载命令格式不正确：{error}",
+        "en": "The reload command is malformed: {error}",
+    },
+    "cert.reloadEmpty": {
+        "zh-CN": "重载命令不能为空",
+        "en": "The reload command cannot be empty",
+    },
+    "cert.reloadNotAllowed": {
+        "zh-CN": "重载命令只支持：{allowed}（可加 sudo 前缀）",
+        "en": "The reload command must be one of: {allowed} (a sudo prefix is allowed)",
+    },
+    "cert.localDeployInContainer": {
+        "zh-CN": "面板运行在容器内：本机目录部署只写入容器文件系统，宿主机上的 "
+        "Nginx 读不到证书，而且重载命令也在容器内执行。请改用 SSH 远程或 "
+        "Proxmox 虚拟机部署。",
+        "en": "The panel is running in a container: a local-directory deployment "
+        "only writes to the container filesystem, so Nginx on the host cannot read "
+        "the certificate, and the reload command runs inside the container too. "
+        "Use SSH or Proxmox VM deployment instead.",
+    },
 }
 
 

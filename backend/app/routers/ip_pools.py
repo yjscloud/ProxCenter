@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import security, store
 from ..pve import ProxmoxError, all_connection_clients, get_client, parallel
@@ -77,6 +78,19 @@ def _visible_to(pool: Dict[str, Any], username: str) -> bool:
     return ALL_USERS in owners or username in owners
 
 
+def _legacy_pool_id(pool: Dict[str, Any]) -> str:
+    """给没有 ``id`` 的老数据生成一个稳定 id。
+
+    保存改成「按 id 合并」之后，没有 id 的行必须能认出「还是同一个池」。按内容
+    生成而不是按下标：池的顺序会变（页面上可增删），下标一变就会被当成两个池，
+    合并时旧的那个会被当成「没提交」而非「已更新」。
+    """
+    raw = "|".join(
+        str(pool.get(k) or "") for k in ("bridge", "subnet", "start", "end", "vlan")
+    )
+    return "pool-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
 async def _load() -> List[Dict[str, Any]]:
     raw = await store.get_setting(POOLS_KEY)
     if not raw:
@@ -87,7 +101,15 @@ async def _load() -> List[Dict[str, Any]]:
         return []
     if not isinstance(data, list):
         return []
-    return [d for d in data if isinstance(d, dict)]
+    out: List[Dict[str, Any]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        # 老数据没有 id：读的时候就补上（不落盘，下次保存时自然带回去）
+        if not str(row.get("id") or "").strip():
+            row = {**row, "id": _legacy_pool_id(row)}
+        out.append(row)
+    return out
 
 
 def _ip_only(value: str) -> str:
@@ -262,13 +284,61 @@ async def get_ip_pools(
     return {"pools": out, "used": sorted(used.keys())}
 
 
+def _merge_for_scope(
+    submitted: List[Dict[str, Any]], existing: List[Dict[str, Any]], scope: str
+) -> List[Dict[str, Any]]:
+    """普通用户的保存：按 id 合并，只允许改「分配给自己的」那几行。
+
+    * 提交的行必须已存在且原本就分给自己（新增一律拒绝 —— 池是管理员分配的资源）；
+    * ``owners`` 必须与旧值完全一致（能用，不能转赠）；
+    * 没提交的池：自己可见的视为删除，**看不见的原样保留** —— 否则一次保存就会把
+      别人的池整片覆盖掉。
+
+    管理员不走这里（整表覆盖，行为与改造前一致）。
+    """
+    by_id = {str(p.get("id") or ""): p for p in existing}
+    visible = {pid for pid, p in by_id.items() if _visible_to(p, scope)}
+    seen: Set[str] = set()
+    merged: List[Dict[str, Any]] = []
+    for item in submitted:
+        pid = str(item.get("id") or "")
+        old = by_id.get(pid)
+        if old is None:
+            raise HTTPException(
+                status_code=403, detail="只能修改分配给自己的地址池，不能新建"
+            )
+        if pid not in visible:
+            raise HTTPException(status_code=403, detail="该地址池不属于当前用户")
+        if _owners_of(old) != item["owners"]:
+            raise HTTPException(status_code=403, detail="不能修改地址池的归属用户")
+        seen.add(pid)
+        merged.append(item)
+    merged.extend(
+        p for pid, p in by_id.items() if pid not in seen and pid not in visible
+    )
+    return merged
+
+
 @router.put("/ip-pools")
 async def save_ip_pools(
     payload: List[IpPool],
     request: Request,
     user: Dict[str, Any] = Depends(security.require_permission("network.manage")),
 ) -> Dict[str, Any]:
-    data = []
+    """保存地址池。管理员整表覆盖；其他人只能改「分配给自己的」那几行。
+
+    为什么非管理员不能整表覆盖：这个接口以前是无条件 ``set_setting``，任何拿到
+    ``network.manage`` 的人都能改别人的 ``owners``（或填 ``["*"]``）、还能靠
+    「提交里不含它」把别人的池删掉 —— 一条完整的横向提权链。现在按 id 合并：
+
+    * 提交的行必须已存在、且原本就分给自己（新增一律拒绝，池是管理员分配的资源）；
+    * ``owners`` 必须与旧值完全一致（能用，不能转赠）；
+    * 没提交的池：自己可见的视为删除，**看不见的原样保留** —— 否则普通用户一保存
+      就会把别人的池整片覆盖掉。
+
+    管理员路径保持整表覆盖，行为与以前完全一致。
+    """
+    submitted: List[Dict[str, Any]] = []
     for pool in payload:
         item = pool.model_dump()
         # 归属用户按用户名存，顺手去掉界面可能带进来的空白与重复项，免得出现
@@ -277,10 +347,19 @@ async def save_ip_pools(
         # 忽略它就等于把池改回公共池（普通用户那边这些池会直接消失）。
         item["owners"] = _clean_owners(item.get("owners") or item.get("owner"))
         item.pop("owner", None)
-        data.append(item)
+        if not str(item.get("id") or "").strip():
+            item["id"] = _legacy_pool_id(item)
+        submitted.append(item)
+
+    scope = security.visible_owner(user)
+    if scope is None:
+        data = submitted
+    else:
+        data = _merge_for_scope(submitted, await _load(), scope)
+
     await store.set_setting(POOLS_KEY, json.dumps(data, ensure_ascii=False))
     await security.audit(
         request, user, "ip_pools.save", target="ip_pools",
-        detail={"count": len(data)},
+        detail={"count": len(data), "scope": scope or "*"},
     )
     return {"pools": data}

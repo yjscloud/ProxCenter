@@ -25,6 +25,8 @@ import logging
 import os
 import re
 import secrets
+import shlex
+import signal
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,6 +73,26 @@ DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-
 FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # 部署目录：绝对路径，禁止 .. 与 shell 元字符（路径会被拼进远程命令）
 DEPLOY_DIR_RE = re.compile(r"^/[A-Za-z0-9._/@+-]*(/[A-Za-z0-9._@+-]+)*$")
+
+# 部署后重载命令只允许这些程序（比对 argv[0] 的 basename）。命令一律以 argv
+# 形式执行、不经过 shell，所以管道 / 重定向 / 命令串联在保存时就会被拒绝 ——
+# 否则拿到 cert.manage 就等于拿到容器内的任意命令执行。
+RELOAD_ALLOWED = frozenset(
+    {
+        "nginx",
+        "openresty",
+        "systemctl",
+        "service",
+        "apachectl",
+        "apache2ctl",
+        "httpd",
+        "caddy",
+        "traefik",
+    }
+)
+# sudo / doas / env 只是前缀：真正执行的是它们后面的那条命令，仍需过白名单
+RELOAD_PREFIX = frozenset({"sudo", "doas", "env"})
+RELOAD_BAD_CHARS = (";", "|", "&", "$", "`", ">", "<", "\n", "\r")
 
 # 支持三种部署方式
 DEPLOY_METHODS = ("local", "ssh", "agent")
@@ -192,6 +214,42 @@ def _safe_filename(raw: Any, default: str) -> str:
     return text
 
 
+def reload_argv(command: Any) -> List[str]:
+    """把重载命令解析成 argv 并做白名单校验；空命令返回 ``[]``。
+
+    所有部署通道（本机 / SSH / Guest Agent）都用这里的结果执行，差别只在于
+    本机与虚拟机直接以 argv 启动、SSH 用 :func:`shlex.quote` 拼成远端命令行。
+    因此「管道、重定向、多条命令」在保存阶段就被拒掉，``cert.manage`` 不再
+    等价于任意命令执行。
+    """
+    text = str(command or "").strip()
+    if not text:
+        return []
+    if len(text) > 400:
+        raise CertError(i18n.t("cert.reloadTooLong"))
+    if any(ch in text for ch in RELOAD_BAD_CHARS):
+        raise CertError(i18n.t("cert.reloadBadChars"))
+    try:
+        argv = shlex.split(text)
+    except ValueError as exc:
+        raise CertError(i18n.t("cert.reloadParseFail", error=str(exc))) from exc
+    if not argv:
+        raise CertError(i18n.t("cert.reloadEmpty"))
+
+    # sudo / doas / env 只是前缀：跳过它们的选项与 VAR=VAL，校验真正的目标命令
+    idx = 0
+    if os.path.basename(argv[0]) in RELOAD_PREFIX:
+        idx = 1
+        while idx < len(argv) and (argv[idx].startswith("-") or "=" in argv[idx]):
+            idx += 1
+    target = os.path.basename(argv[idx]) if idx < len(argv) else ""
+    if target not in RELOAD_ALLOWED:
+        raise CertError(
+            i18n.t("cert.reloadNotAllowed", allowed=" / ".join(sorted(RELOAD_ALLOWED)))
+        )
+    return argv
+
+
 def normalise_site(raw: Dict[str, Any], existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     item = raw if isinstance(raw, dict) else {}
     site = dict(DEFAULT_SITE)
@@ -237,7 +295,10 @@ def normalise_site(raw: Dict[str, Any], existing: Optional[Dict[str, Any]] = Non
     if site["cert_filename"] == site["key_filename"]:
         raise CertError("证书文件名与私钥文件名不能相同")
 
-    site["reload_command"] = str(item.get("reload_command", site.get("reload_command")) or "").strip()[:400]
+    # 保存时就校验白名单，并把命令规范化成 argv 拼接（前端拿到的就是最终执行形式）
+    site["reload_command"] = " ".join(
+        reload_argv(item.get("reload_command", site.get("reload_command")))
+    )
     site["auto_renew"] = bool(item.get("auto_renew", site.get("auto_renew", True)))
     site["enabled"] = bool(item.get("enabled", site.get("enabled", True)))
     site["notes"] = str(item.get("notes", site.get("notes")) or "").strip()[:200]
@@ -512,6 +573,22 @@ async def clear_logs(owner: Optional[str] = None) -> int:
 
 
 # ------------------------------------------------------------------ 文件写入
+def _in_container() -> bool:
+    """面板是否跑在容器里（Docker / Podman）。"""
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
+def local_deploy_hint() -> str:
+    """容器内运行时「本机目录」写的是容器文件系统，宿主机 Web 服务器读不到。
+
+    这里只负责给页面一句提示：面板直接跑在宿主机上时 ``local`` 方式完全有效，
+    所以不能在后端拦截，只能在 UI 上说清楚。
+    """
+    if _in_container():
+        return i18n.t("cert.localDeployInContainer")
+    return ""
+
+
 def deploy_target_text(site: Dict[str, Any]) -> str:
     """部署目标的简短描述，用于日志与页面展示。"""
     directory = str(site.get("deploy_dir") or "")
@@ -553,23 +630,53 @@ def _atomic_write(path: Path, text: str, mode: int) -> None:
         raise
 
 
+def _reload_argv_checked(command: str) -> List[str]:
+    """取重载命令的 argv；旧数据里不合规的命令按「重载失败」处理。
+
+    走到部署这一步时证书文件已经写好了，命令不合规不该让整个接口 400，
+    否则用户会以为证书没部署。转成 :class:`ReloadError` 后由 ``deploy_site``
+    记成「已写入、但重载失败」，用户改完命令重试即可。
+    """
+    try:
+        return reload_argv(command)
+    except CertError as exc:
+        raise ReloadError(str(exc)) from exc
+
+
+def _kill_tree(proc: Any) -> None:
+    """超时后连同子进程一起杀掉。
+
+    ``start_new_session=True`` 让子进程自成一个进程组，只 kill 主进程会留下
+    孙进程（例如命令里再起的辅助脚本），所以整组 SIGKILL。
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 async def _run_reload(command: str) -> str:
     """在本机执行重载命令，返回输出摘要；失败抛 :class:`ReloadError`。"""
+    # 不经过 shell：命令在保存时已过白名单，这里再解析一次做纵深防御
+    argv = _reload_argv_checked(command)
+    if not argv:
+        return ""
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
     except OSError as exc:
         raise ReloadError(i18n.tr("无法执行重载命令：") + str(exc)) from exc
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=RELOAD_TIMEOUT)
     except asyncio.TimeoutError as exc:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+        _kill_tree(proc)
         raise ReloadError(
             i18n.pick("重载命令执行超时（", "Reload command timed out (")
             + str(RELOAD_TIMEOUT)
@@ -773,7 +880,11 @@ def _ssh_deploy_sync(
     command = str(site.get("reload_command") or "").strip()
     try:
         if command:
-            _, stdout, stderr = client.exec_command(command, timeout=RELOAD_TIMEOUT)
+            # 远端一定经过 shell，所以逐段 quote；命令本身已过白名单
+            remote_cmd = " ".join(
+                shlex.quote(part) for part in _reload_argv_checked(command)
+            )
+            _, stdout, stderr = client.exec_command(remote_cmd, timeout=RELOAD_TIMEOUT)
             out = stdout.read().decode("utf-8", "replace")
             err = stderr.read().decode("utf-8", "replace")
             code = stdout.channel.recv_exit_status()
@@ -903,8 +1014,10 @@ async def _push_guest_agent(
         + i18n.pick("）", ")")
     )
     command = str(site.get("reload_command") or "").strip()
-    if command:
-        output = await _agent_exec(client, node, vmid, ["/bin/sh", "-c", command])
+    argv = _reload_argv_checked(command)
+    if argv:
+        # Guest Agent 支持直接传 argv，不需要 /bin/sh -c
+        output = await _agent_exec(client, node, vmid, argv)
         detail += i18n.tr("，虚拟机内重载命令已执行") + (
             i18n.tr("：") + output[-200:] if output else ""
         )

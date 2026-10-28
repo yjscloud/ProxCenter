@@ -13,7 +13,6 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { guestsApi } from '../api/guests';
 import { nodesApi, vmsApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { useAuth } from '../hooks/useAuth';
@@ -26,7 +25,7 @@ import { Modal } from './ui/Modal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { Field, Input, Select, Switch } from './ui/Input';
 import { Notice } from './ui/EmptyState';
-import { UserSelect } from './ui/UserSelect';
+import { OwnerAssignDialog } from './OwnerAssignDialog';
 import { ResetGuestPasswordDialog } from './ResetGuestPasswordDialog';
 import { VmExportDialog } from './VmExportDialog';
 import { formatBytes } from '../utils/format';
@@ -65,7 +64,7 @@ type Dialog =
 export function VmMoreMenu({ vm, onDelete, onChanged }: VmMoreMenuProps) {
   const t = useT();
   const toast = useToast();
-  const { isAdmin, hasPermission } = useAuth();
+  const { hasPermission } = useAuth();
   /* 菜单里每一项要的后端权限都不同，逐项判（原先统一用 canWrite 这个角色粗判，
      自定义角色即使勾了也点不动）：
        克隆 → vm.clone；转模板 → template.manage；迁移 → vm.config；删除 → vm.delete */
@@ -143,7 +142,9 @@ export function VmMoreMenu({ vm, onDelete, onChanged }: VmMoreMenuProps) {
   );
 
   const showExport = hasPermission('vm.backup');
-  const showOwner = isAdmin;
+  /* 指派归属按权限点判，不能按角色名：区域管理员有 vm.assign、不是 admin，
+     用 isAdmin 会让他既看不到菜单项、也进不了改派弹窗 */
+  const showOwner = hasPermission('vm.assign');
   const showReset = hasPermission('vm.config');
   const showReinstall = hasPermission('vm.reinstall');
   const isTemplate = Boolean(vm?.template);
@@ -212,8 +213,12 @@ export function VmMoreMenu({ vm, onDelete, onChanged }: VmMoreMenuProps) {
           onChanged();
         }}
       />
-      <OwnerMiniDialog
-        vm={dialog === 'owner' ? vm : null}
+      {/* 与容器详情页共用同一个弹窗（见 OwnerAssignDialog）：归属的读写规则里
+          「读失败不许保存」「没动过下拉不算清除」这两条复制一份就会走偏 */}
+      <OwnerAssignDialog
+        guest={dialog === 'owner' ? vm : null}
+        label={vm ? vm.name || String(vm.vmid) : ''}
+        noun={t('vmMore.noun')}
         onClose={() => setDialog(null)}
         onDone={() => {
           setDialog(null);
@@ -514,131 +519,3 @@ function MigrateMiniDialog({
   );
 }
 
-/* ------------------------------------------------------------------ 归属 */
-
-function OwnerMiniDialog({
-  vm,
-  onClose,
-  onDone,
-}: {
-  vm: VmSummary | null;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const t = useT();
-  const toast = useToast();
-  const [owner, setOwner] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
-  /** 读失败时禁止保存：见 submit 里的说明 */
-  const [loadError, setLoadError] = useState('');
-  /** 管理员是否动过下拉 —— 「清除」与「还没选」的唯一区别 */
-  const [touched, setTouched] = useState(false);
-
-  useEffect(() => {
-    if (!vm) return;
-    setBusy(false);
-    setTouched(false);
-    setLoadError('');
-    setLoading(true);
-    /* ``type`` 必须带上：guestsApi 靠它决定打 /vms 还是 /lxc 那个端点。
-       漏了会回落成 qemu，于是**容器**的归属被写进 KIND_VM 桶 —— 列表因为
-       有 legacy 回落还看得出归属，但额度会把它同时算进虚拟机与容器两组
-       （见 backend/app/quota.py 里 refs 的构造）。 */
-    guestsApi
-      .getOwner({ node: vm.node, vmid: vm.vmid, type: vm.type }, vm.connection_id)
-      .then((res) => setOwner(res.owner ?? ''))
-      .catch((err) => {
-        setOwner('');
-        setLoadError(errorMessage(err));
-      })
-      .finally(() => setLoading(false));
-  }, [vm?.node, vm?.vmid, vm?.type]);
-
-  const submit = async () => {
-    if (!vm || loading) return;
-    if (loadError) {
-      toast.error(t('guestList.assignLoadFailed'), loadError);
-      return;
-    }
-    /* 空值 = 清除归属。没动过下拉时空值只说明「还没选人」，不能当成清除 ——
-       否则在输完用户名直接点保存（点外面会收起并丢掉搜索词）时，
-       一次保存就把归属抹了，而且全程不报错。 */
-    if (!owner.trim() && !touched) {
-      toast.error(t('guestList.assignPickFirst'));
-      return;
-    }
-    setBusy(true);
-    try {
-      const res = await guestsApi.assignOwner(
-        { node: vm.node, vmid: vm.vmid, type: vm.type },
-        owner.trim() || null,
-        vm.connection_id,
-      );
-      toast.success(
-        res.owner ? t('guestList.assignDone', { noun: t('vmMore.noun') }) : t('guestList.assignCleared'),
-        res.owner || vmsLabel(vm),
-      );
-      onDone();
-    } catch (err) {
-      toast.error(t('guestList.assignFailed'), errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal
-      open={Boolean(vm)}
-      onClose={busy ? () => undefined : onClose}
-      title={t('guestList.assignTitle', { noun: t('vmMore.noun') })}
-      description={t('guestList.assignDesc', { noun: t('vmMore.noun') })}
-      size="sm"
-      closeOnOverlay={!busy}
-      hideClose={busy}
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            {t('common.cancel')}
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => void submit()}
-            loading={busy}
-            disabled={loading || Boolean(loadError)}
-          >
-            {t('common.save')}
-          </Button>
-        </>
-      }
-    >
-      <UserSelect
-        label={t('guestList.assignField')}
-        hint={
-          loading
-            ? t('guestList.assignLoading')
-            : owner.trim()
-              ? t('guestList.assignCurrent', { name: owner.trim() })
-              : undefined
-        }
-        /* 空项的含义要说清：它不是「不填」，而是「让这台机器变回无人认领」 */
-        emptyLabel={t('guestList.assignEmpty')}
-        value={owner}
-        onChange={(next) => {
-          setOwner(next);
-          setTouched(true);
-        }}
-        disabled={loading || Boolean(loadError)}
-      />
-      {loadError ? (
-        <Notice tone="danger" title={t('guestList.assignLoadFailed')}>
-          {loadError}
-        </Notice>
-      ) : null}
-    </Modal>
-  );
-}
-
-function vmsLabel(vm: VmSummary): string {
-  return vm.name || `${vm.vmid}`;
-}

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 from . import database
@@ -205,19 +205,52 @@ async def get_owner(kind: str, ref: str) -> Optional[str]:
 
 
 async def find_refs_by_vm(
-    node: str, vmid: Any, kind: Optional[str] = None
+    node: str,
+    vmid: Any,
+    kind: Optional[str] = None,
+    connection_ids: Optional[Iterable[str]] = None,
 ) -> List[Tuple[str, str]]:
     """按「节点 + VMID」反查归属记录，返回 ``[(connection_id, username)]``。
 
     ref 形如 ``<connection>:<node>:<vmid>``；节点名与连接 id 都不含 ``:``，
-    所以从右侧按后缀匹配即可安全还原。表很小，直接在内存里筛选，避免给
-    LIKE 通配符做转义。
+    所以从右侧按后缀匹配即可安全还原。
 
     ``kind`` 留空表示**两类客户机都查** —— 连接绑定（:mod:`app.vm_scope`）只知道
     节点与 VMID、拿不到类型，必须两边都看才定位得到容器的连接。
+
+    ``connection_ids`` 给定时只查这些连接对应的 ref（走 ``(kind, ref)`` 主键，
+    每台机器几条记录），这是单机请求的热路径：调用方本来就知道当前存在哪些
+    连接。不给时退回「整表读回来在内存里 endswith 过滤」——那条路每条记录都要
+    过一遍 Python，机器上万时单次请求要搬几万行，批量指派会退化成平方级。
     """
     suffix = f":{node}:{vmid}"
     kinds: Tuple[str, ...] = (kind,) if kind else GUEST_KINDS
+
+    if connection_ids is not None:
+        # 候选 ref 与连接 id 一一对应，命中的行可以直接反推回连接 id，
+        # 不必再从字符串前缀里切。"-" 是空连接的历史写法，先折成空串，
+        # 否则 vm_ref 会拼出 "--:node:vmid" 这种不存在的 ref。
+        wanted = {
+            vm_ref("" if str(cid) in ("", "-") else str(cid), node, vmid): cid
+            for cid in connection_ids
+        }
+        if not wanted:
+            return []
+        kind_slots = ", ".join("?" for _ in kinds)
+        ref_slots = ", ".join("?" for _ in wanted)
+        async with database.connect() as db:
+            cursor = await db.execute(
+                "SELECT ref, username FROM resource_owner "
+                f"WHERE kind IN ({kind_slots}) AND ref IN ({ref_slots})",
+                (*kinds, *wanted.keys()),
+            )
+            rows = await cursor.fetchall()
+        return [
+            (wanted[str(ref)] or "-", str(username or ""))
+            for ref, username in rows
+            if str(ref) in wanted
+        ]
+
     async with database.connect() as db:
         placeholders = ", ".join("?" for _ in kinds)
         cursor = await db.execute(

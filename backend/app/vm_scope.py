@@ -22,11 +22,12 @@ VMID（或直接按 UPID 探测）定位主机，见 :func:`bind_task_connection
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from fastapi import Depends
+from fastapi import Depends, Request
 
 from . import ownership, security
 from .pve import (
@@ -45,9 +46,17 @@ _NODE_OWNER_TTL = 60.0
 _node_owner_cache: Dict[str, Tuple[float, str]] = {}
 
 _PROBE_TTL = 60.0
+# 「没探到」也要缓存：批量指派 / 连续打开多台无归属机器的详情时，命中不了任何
+# 连接是**常态**（存量机器没有归属记录），不缓存就等于每台都把所有 PVE 再问一遍，
+# 而且探测是串行的 HTTPS 请求，机器一多就是肉眼可见的卡顿。TTL 比命中短得多：
+# 机器可能是刚建的、探测那一刻恰好不可达。
+_PROBE_MISS_TTL = 15.0
 _TASK_TTL = 300.0
-# (node, vmid) -> (命中时间, 连接 id)；只缓存成功结果
+# (node, vmid) -> (命中时间, 连接 id)；id 为空串表示「探过了，没找到」
 _probe_cache: Dict[Tuple[str, int], Tuple[float, str]] = {}
+# (node, vmid) -> 该键的在途探测锁：页面同时发十几个请求时只让第一个去探测，
+# 其余等它出结果（否则并发请求会各自把全部连接问一遍，把延迟叠加成 N 倍）
+_probe_locks: Dict[Tuple[str, int], asyncio.Lock] = {}
 # upid -> (命中时间, 连接 id)；任务归属不会变，可以缓存久一点
 _task_cache: Dict[str, Tuple[float, str]] = {}
 
@@ -57,48 +66,80 @@ def _normalize(conn_id: str) -> str:
     return "" if conn_id in ("", "-") else conn_id
 
 
+def _probe_cached(key: Tuple[str, int]) -> Optional[str]:
+    """读探测缓存；命中返回连接 id（空串 = 已知探不到），未命中返回 None。"""
+    cached = _probe_cache.get(key)
+    if not cached:
+        return None
+    ttl = _PROBE_TTL if cached[1] else _PROBE_MISS_TTL
+    if time.time() - cached[0] < ttl:
+        return cached[1]
+    return None
+
+
 async def _probe_connection(node: str, vmid: int) -> str:
     key = (node, vmid)
-    cached = _probe_cache.get(key)
-    if cached and time.time() - cached[0] < _PROBE_TTL:
-        return cached[1]
+    hit = _probe_cached(key)
+    if hit is not None:
+        return hit
 
-    # 先按虚拟机探，再按容器探：VMID 在集群内唯一，两条路径不会同时命中，
-    # 但少了 lxc 这一轮，在 PVE 上直接建的容器会一直定位不到连接
-    # （表现为详情 404、电源操作打到另一台主机的同名机器上）。
-    for family in ("qemu", "lxc"):
-        for profile, client in all_connection_clients():
-            try:
-                await client.get(f"/nodes/{node}/{family}/{vmid}/status/current")
-            except ProxmoxError:
-                continue
-            except Exception:  # noqa: BLE001 - 单台异常不影响其它连接的探测
-                logger.debug("探测 %s/%s 归属连接失败", node, vmid, exc_info=True)
-                continue
-            conn_id = str(profile.get("id") or "")
-            _probe_cache[key] = (time.time(), conn_id)
-            return conn_id
-    return ""
+    # 同一台机器的并发请求只探测一次：单飞失败时其余请求照旧各自重试，
+    # 不会把一次 PVE 抖动放大成「全都失败」。
+    lock = _probe_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        hit = _probe_cached(key)
+        if hit is not None:
+            return hit
+
+        # 先按虚拟机探，再按容器探：VMID 在集群内唯一，两条路径不会同时命中，
+        # 但少了 lxc 这一轮，在 PVE 上直接建的容器会一直定位不到连接
+        # （表现为详情 404、电源操作打到另一台主机的同名机器上）。
+        answered = False
+        for family in ("qemu", "lxc"):
+            for profile, client in all_connection_clients():
+                try:
+                    await client.get(f"/nodes/{node}/{family}/{vmid}/status/current")
+                except ProxmoxError:
+                    # PVE 应答了（404 / 无权限 / 节点不存在）——算「问过了，没有」
+                    answered = True
+                    continue
+                except Exception:  # noqa: BLE001 - 单台异常不影响其它连接的探测
+                    logger.debug("探测 %s/%s 归属连接失败", node, vmid, exc_info=True)
+                    continue
+                conn_id = str(profile.get("id") or "")
+                _probe_cache[key] = (time.time(), conn_id)
+                return conn_id
+
+        # 一台都没命中：记下来，别让同一批指派 / 同一页的后续请求再问一遍。
+        # 只有「至少一台 PVE 应答过」才记 —— 全都连不上（网络抖动、PVE 重启）
+        # 时缓存空结果，会把接下来十几秒的正常请求也判成「定位不到」。
+        if answered:
+            _probe_cache[key] = (time.time(), "")
+        return ""
 
 
 async def resolve_vm_connection(node: str, vmid: Any, owner: Optional[str]) -> str:
     """推断虚拟机所在连接的 id；无法确定时返回空串（表示沿用当前连接）。"""
-    refs = await ownership.find_refs_by_vm(node, vmid)
+    # 归属表记的是「创建时的那条连接」。那条连接被删掉之后，这些记录就变成
+    # 指向一个不存在的 id —— 照它绑定，每个单机接口都会回
+    # 「目标 PVE 连接不存在或已被删除」，表现是详情页整页打不开（电源、快照、
+    # 改配全都连带失效）。所以只在**当前还存在**的连接里找，指向已消失连接的
+    # 记录自然查不出来，落到下面的探测，由探测重新定位到真正托管它的那台 PVE。
+    #
+    # 查询用「候选 ref 点查」而不是把整张归属表捞回来再在内存里 endswith 过滤：
+    # 后者是每次单机请求都把全表（随机器数线性增长）读进进程，批量指派时是
+    # O(机器数²)；点查走 (kind, ref) 主键，只有几条记录。
+    known = _known_connection_ids()
+    refs = await ownership.find_refs_by_vm(node, vmid, connection_ids=known)
     if refs:
-        # 归属表记的是「创建时的那条连接」。那条连接被删掉之后，这些记录就变成
-        # 指向一个不存在的 id —— 照它绑定，每个单机接口都会回
-        # 「目标 PVE 连接不存在或已被删除」，表现是详情页整页打不开（电源、快照、
-        # 改配全都连带失效）。所以先剔掉指向已消失连接的记录，再按原规则选；
-        # 全被剔掉时自然落到下面的探测，由探测重新定位到真正托管它的那台 PVE。
-        known = _known_connection_ids()
-        refs = [r for r in refs if _normalize(r[0]) in known]
-        if refs:
-            if owner:
-                for conn_id, username in refs:
-                    if username == owner:
-                        return _normalize(conn_id)
-            if len(refs) == 1:
-                return _normalize(refs[0][0])
+        # 同名的机器可能同时存在于多条连接上（各自有归属记录），本人名下的那条
+        # 优先，其次才是「只有一条记录」这种能确定的情况。
+        if owner:
+            for conn_id, username in refs:
+                if username == owner:
+                    return _normalize(conn_id)
+        if len(refs) == 1:
+            return _normalize(refs[0][0])
     return await _probe_connection(node, vmid)
 
 
@@ -181,6 +222,7 @@ async def bind_vm_connection(
     node: Optional[str] = None,
     vmid: Optional[int] = None,
     user: Dict[str, Any] = Depends(security.get_current_user),
+    request: Request = None,
 ) -> None:
     """路由级依赖：请求未显式指定连接时，自动绑定到该虚拟机所在的 PVE。
 
@@ -188,8 +230,19 @@ async def bind_vm_connection(
     同一套路）；没有这两个参数的接口取到 None，直接放行。
 
     只看**硬指定**：顶栏集群作用域不该拦住这次纠正（见 :func:`bind_node_connection`）。
+
+    ``?connection_id=`` 与 ``X-PVE-Connection`` 头同义 —— 调用方已经把「这台机器
+    在哪条连接上」写进请求了（归属读写接口就是这样），此时再按节点 / VMID 去
+    推断纯属浪费：推断要么查一遍归属表，要么逐台 PVE 探测，批量指派时每台都要
+    付这份代价。``request`` 有默认值是为了让直接调用（单测）不必构造 Request。
     """
     if not node or vmid is None or bound_connection():
+        return
+    hinted = ""
+    if request is not None:
+        hinted = str(request.query_params.get("connection_id") or "").strip()
+    if hinted:
+        set_request_connection(hinted)
         return
     conn_id = await resolve_vm_connection(node, vmid, security.visible_owner(user))
     if conn_id:

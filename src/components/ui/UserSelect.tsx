@@ -18,6 +18,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { usersApi } from '../../api/endpoints';
+import { useAuth } from '../../hooks/useAuth';
 import { useT } from '../../i18n';
 import { Field } from './Input';
 
@@ -39,6 +40,20 @@ export interface UserSelectProps {
   placeholder?: string;
   disabled?: boolean;
   id?: string;
+}
+
+/**
+ * 候选账号的最小形状。
+ *
+ * 两个来源共用：`/users`（完整清单，管理面）与 `/users/assignable`
+ * （只有 username / role，指派专用）。后者缺的字段一律按「可登录」处理。
+ */
+interface Candidate {
+  username: string;
+  role?: string;
+  email?: string;
+  enabled?: boolean;
+  status?: string;
 }
 
 interface Option {
@@ -70,19 +85,25 @@ export function UserSelect({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  /* 与 GuestList 用同一个缓存键：两处选人共用一份用户列表，不重复请求 */
+  /* 能读账号目录就用完整清单，否则退到指派专用的极简清单。
+     区域管理员有 vm.assign 却没有 users.view：直接打 /users 是 403，选人框
+     看起来会是空的（见 /users/assignable 的说明）。两个清单形状不同，所以
+     缓存键也分开，免得同一个 key 下混进两种数据。 */
+  const { hasPermission } = useAuth();
+  const canListUsers = hasPermission('users.view');
   const usersQuery = useQuery({
-    queryKey: ['users'],
-    queryFn: () => usersApi.list(),
+    queryKey: ['users', canListUsers ? 'all' : 'assignable'],
+    queryFn: () => (canListUsers ? usersApi.list() : usersApi.assignable()),
     staleTime: 60_000,
     retry: false,
   });
 
   /* 候选账号：待审批 / 已停用的还登不进来，指派给他没有意义。
      但**当前归属那一行无论状态如何都要留下** —— 否则打开弹窗看到的是空的，
-     用户会以为自己没设过归属，顺手一存就把归属抹掉了。 */
-  const users = useMemo(() => {
-    const all = usersQuery.data ?? [];
+     用户会以为自己没设过归属，顺手一存就把归属抹掉了。
+     极简清单只有 username / role，缺的字段按「可登录」处理（后端已经筛过）。 */
+  const users = useMemo<Candidate[]>(() => {
+    const all = (usersQuery.data ?? []) as Candidate[];
     const usable = all.filter(
       (u) => u.enabled !== false && (u.status ?? 'active') === 'active',
     );

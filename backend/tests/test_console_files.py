@@ -16,6 +16,7 @@ import io
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -124,3 +125,59 @@ def test_purge_expired_leaves_fresh_files_alone(store: Path) -> None:
         assert await console_files.load(meta["token"]) is not None
 
     asyncio.run(run())
+
+
+# ----------------------------------------------------------------- 归属（写侧）
+# 下载侧只凭 token（客户机没有面板凭据），但作废是面板内的写操作：任何持 console
+# 权限的人只要拿到别人的链接就能掐断它，所以这一侧必须校验上传者。
+
+
+def test_save_records_uploader_and_target(store: Path) -> None:
+    async def run() -> None:
+        meta = await console_files.save(_upload(b"x", "a.sh"), "alice", "pve/105")
+        _, loaded = await console_files.load(meta["token"])
+        assert loaded["uploader"] == "alice"
+        assert loaded["target"] == "pve/105"
+
+    asyncio.run(run())
+
+
+def test_only_uploader_can_revoke(store: Path) -> None:
+    async def run() -> None:
+        meta = await console_files.save(_upload(b"x", "a.sh"), "alice")
+        token = meta["token"]
+        assert await console_files.revoke(token, "bob") is False
+        assert await console_files.load(token) is not None
+        assert await console_files.revoke(token, "alice") is True
+        assert await console_files.load(token) is None
+
+    asyncio.run(run())
+
+
+def test_admin_can_revoke_any(store: Path) -> None:
+    async def run() -> None:
+        meta = await console_files.save(_upload(b"x", "a.sh"), "alice")
+        assert await console_files.revoke(meta["token"], None) is True
+
+    asyncio.run(run())
+
+
+def test_legacy_meta_without_uploader_is_admin_only(store: Path) -> None:
+    """早期落盘的 meta 没有 uploader：无主记录只允许管理员回收。"""
+    console_files.STORE_DIR.mkdir(parents=True, exist_ok=True)
+    token = "a" * 32
+    console_files.file_path(token).write_bytes(b"x")
+    console_files._meta_path(token).write_text(
+        json.dumps(
+            {
+                "token": token,
+                "name": "x.bin",
+                "size": 1,
+                "created_at": 1,
+                "expires_at": time.time() + 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert asyncio.run(console_files.revoke(token, "alice")) is False
+    assert asyncio.run(console_files.revoke(token, None)) is True

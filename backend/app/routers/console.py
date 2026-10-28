@@ -39,7 +39,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
-from .. import console_files, i18n, panel_url, security, store
+from .. import console_files, guestguard, i18n, ownership, panel_url, security, store
 from ..pve import (
     ProxmoxError,
     ProxmoxClient,
@@ -143,6 +143,11 @@ async def create_vnc_session(
     user: Dict[str, Any] = Depends(security.require_permission("vm.console")),
 ) -> Dict[str, Any]:
     """Create a Proxmox VNC session and hand the browser what it needs."""
+    # 对象级鉴权：有控制台权限 ≠ 有资格连**这一台**。放在处理函数里而不是路由
+    # 依赖上，是为了让「没权限」先报 403、「不是你的」才报 404（顺序反过来会
+    # 让 viewer 也收到 404，跟接口约定不一致）。此时 bind_vm_connection 已经跑过，
+    # 归属 ref 用的连接与下面 get_client() 拿到的是同一条。
+    await guestguard.require_guest_object(user, node, vmid, ownership.KIND_VM)
     _require_console_account()
     client = get_client()
     try:
@@ -179,6 +184,8 @@ async def create_xterm_session(
     user: Dict[str, Any] = Depends(security.require_permission("vm.console")),
 ) -> Dict[str, Any]:
     """Create a serial console session for xterm.js."""
+    # 对象级鉴权（见 create_vnc_session 的说明）
+    await guestguard.require_guest_object(user, node, vmid, ownership.KIND_VM)
     _require_console_account()
     client = get_client()
     try:
@@ -222,6 +229,8 @@ async def create_lxc_vnc_session(
     ServerInit 是 744x400 的终端），noVNC 能直接显示，不需要另做一个
     xterm 终端。
     """
+    # 对象级鉴权（见 create_vnc_session 的说明），容器用 KIND_CT
+    await guestguard.require_guest_object(user, node, vmid, ownership.KIND_CT)
     _require_console_account()
     client = get_client()
     try:
@@ -266,6 +275,8 @@ async def create_lxc_xterm_session(
     user: Dict[str, Any] = Depends(security.require_permission("ct.console")),
 ) -> Dict[str, Any]:
     """Create a terminal session for a container (the normal case)."""
+    # 对象级鉴权（见 create_vnc_session 的说明）
+    await guestguard.require_guest_object(user, node, vmid, ownership.KIND_CT)
     _require_console_account()
     client = get_client()
     try:
@@ -323,7 +334,9 @@ async def upload_console_file(
 
     target = f"{node}/{vmid}" if node and vmid else str(file.filename or "")
     try:
-        meta = await console_files.save(file, str(user.get("username") or ""))
+        meta = await console_files.save(
+            file, str(user.get("username") or ""), target
+        )
     except console_files.FileTooLarge:
         detail = i18n.t("console.fileTooLarge", limit=_limit_label())
         await security.audit(
@@ -400,8 +413,13 @@ async def revoke_console_file(
         security.require_any_permission("vm.console", "ct.console")
     ),
 ) -> Dict[str, Any]:
-    """作废下载链接（上传者发现地址贴错地方时用）。"""
-    ok = await console_files.revoke(token)
+    """作废下载链接（上传者发现地址贴错地方时用）。
+
+    只能作废自己上传的那条：token 是能力凭据，但作废是面板内的写操作，此前任何
+    持 console 权限的人只要拿到链接就能掐断别人的中转。不存在 / 不是本人的一律
+    404 —— 403 等于承认这枚 token 有效。
+    """
+    ok = await console_files.revoke(token, security.visible_owner(user))
     if not ok:
         raise HTTPException(status_code=404, detail=i18n.t("console.fileMissing"))
     await security.audit(request, user, "console.file_revoke", target=token)
@@ -527,17 +545,48 @@ async def _proxy_console(
         await _reject(websocket, 4401, str(exc))
         return
 
+    # 权限要按**账号**算，不能只看 JWT 里的 role：用户级覆盖
+    # （permissions_override）可能已经把控制台收走了，而角色模板上仍然"有"。
+    # 顺带复核账号状态 —— 已停用 / 待审批的账号即便 token 还没过期，也不该
+    # 还能开一路控制台进去。
+    account = await store.get_user(identity["username"])
+    if not account:
+        await _reject(websocket, 4401, i18n.tr("账号不存在"))
+        return
+    if str(account.get("status") or store.STATUS_ACTIVE) != store.STATUS_ACTIVE:
+        await _reject(websocket, 4401, i18n.tr("账号不可用"))
+        return
+
     # 容器的控制台是独立权限（ct.console），与虚拟机（vm.console）分开
     permission = "ct.console" if guest == "lxc" else "vm.console"
-    if not security.has_permission(identity["role"], permission):
+    if not security.has_user_permission(account, permission):
         await _reject(websocket, 4403, i18n.tr("权限不足：需要控制台访问权限"))
         return
 
     # WebSocket 走不到 HTTP 中间件，这里按节点/VMID 自行定位主机，
     # 否则控制台会连到「当前连接」上恰好同名的另一台虚拟机。
-    conn_id = await resolve_vm_connection(node, vmid, security.visible_owner(identity))
+    conn_id = await resolve_vm_connection(node, vmid, security.visible_owner(account))
     if conn_id:
         set_request_connection(conn_id)
+
+    # 对象级鉴权：有控制台权限 ≠ 有资格连**这一台**。此前这条链路上完全没有
+    # 这层判断 —— 拿到任意 vmid 就能连别人的机器（HTTP 侧建会话、WS 侧转发）。
+    # 用刚解析出的连接构造归属 ref，与 HTTP 端点同一口径。
+    try:
+        await guestguard.require_guest_object(
+            account,
+            node,
+            vmid,
+            ownership.KIND_CT if guest == "lxc" else ownership.KIND_VM,
+            connection=conn_id,
+        )
+    except HTTPException:
+        await _reject(
+            websocket,
+            guestguard.WS_NOT_FOUND_CODE,
+            i18n.tr(guestguard.NOT_FOUND_DETAIL),
+        )
+        return
 
     client = get_client()
     if not client.conn.configured:

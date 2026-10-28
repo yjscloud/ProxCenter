@@ -17,7 +17,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .. import reinstall, security, store
+from .. import guestguard, ownership, reinstall, security, store
 from ..vm_scope import bind_node_connection
 from ..pve import ProxmoxError, get_client, requested_connection
 from ..schemas import VmReinstallRequest
@@ -68,6 +68,9 @@ async def reinstall_network(
     只读；读不到时 ``mode`` 返回空串，界面按「没配过」处理，不报错。
     """
     await bind_node_connection(node)
+    # 对象级鉴权：这台机器是不是他的。必须在 bind 之后判 —— 归属 ref 的前缀是
+    # 连接 id，绑错连接会把「别人机器上的同名 vmid」当成自己的（或反过来）。
+    await guestguard.require_guest_object(user, node, vmid, ownership.KIND_VM)
     client = get_client()
     try:
         cfg = await client.get(f"/nodes/{node}/qemu/{vmid}/config") or {}
@@ -100,6 +103,9 @@ async def reinstall_vm(
     上面的系统与数据不可恢复，界面上必须让用户明确知道这一点。
     """
     await bind_node_connection(node)
+    # 重装会**连卷删掉**旧系统盘，是这批接口里破坏性最强的一个：此前只校验了
+    # ``vm.reinstall`` 权限点，把 vmid 换成别人的就能把别人的机器重装掉。
+    await guestguard.require_guest_object(user, node, vmid, ownership.KIND_VM)
     client = get_client()
     try:
         job = await reinstall.start_reinstall(

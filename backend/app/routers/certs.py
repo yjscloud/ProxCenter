@@ -96,6 +96,8 @@ async def get_certs(
         "logs": await certs.logs(60, owner=scope),
         "own_username": own,
         "is_admin": scope is None,
+        # 容器内运行时「本机目录」写的是容器文件系统，页面据这条提示引导改用 SSH / 虚拟机
+        "local_deploy_hint": certs.local_deploy_hint(),
         "options": {
             "dv_auth_methods": [
                 {

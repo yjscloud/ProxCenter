@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import defaults, ownership, quota, security, store, vmconfig
+from .. import defaults, guestguard, ownership, quota, security, store, vmconfig
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -526,6 +526,12 @@ async def convert_vm_to_template(
 ) -> Dict[str, Any]:
     """Convert an existing VM into a template, optionally shutting it down."""
     await _bind_source_connection(user, payload.node, payload.vmid)
+    # 对象级鉴权：源必须是自己的机器。这条路径还会**强制关机**（payload.shutdown），
+    # 以前只校验 template.manage，把别人的 vmid 填进来就能把别人的机器关掉并
+    # 变成模板。模板本身没有归属概念，所以只要求「源 VM 有归属就得是自己」。
+    await guestguard.require_guest_object_if_owned(
+        user, payload.node, payload.vmid, ownership.KIND_VM
+    )
     client = get_client()
 
     try:
@@ -599,6 +605,11 @@ async def clone_template(
 ) -> Dict[str, Any]:
     """Deploy a new VM from a template with cloud-init personalisation."""
     await _bind_source_connection(user, payload.source_node, payload.source_vmid)
+    # 源标识来自请求体，路由级依赖帮不上忙。模板是共享资源（多数没有归属记录），
+    # 所以只拦「明确属于别人的源」—— 否则普通用户部署公共模板会被打成 404。
+    await guestguard.require_guest_object_if_owned(
+        user, payload.source_node, payload.source_vmid, ownership.KIND_VM
+    )
     # 从模板部署同样是「新增一台虚拟机」，额度必须跟着算。
     # 规格照抄模板，模板本身在读数里（模板计入用量，这里取的是它的分配值）。
     await quota.enforce_create(

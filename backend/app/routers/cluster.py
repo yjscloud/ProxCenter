@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import fleetstatus, pvecache, security
+from .. import fleetstatus, guestguard, ownership, pvecache, security, store
 from ..formatters import pve_flag
 from ..nodeaccess import require_node_visible
 from ..pve import (
@@ -16,6 +16,7 @@ from ..pve import (
     get_client,
     requested_connection,
 )
+from ..task_scope import build_scope
 
 router = APIRouter(prefix="/api", tags=["cluster"])
 
@@ -81,6 +82,61 @@ async def cluster_status(
     }
 
 
+#: 资源清单里属于「基础设施」的条目：它们不是谁的机器，可见性由各自的权限点
+#: （``node.view`` / ``storage.view``）决定，不参与用户归属过滤。
+_INFRA_RESOURCE_TYPES = ("node", "storage", "sdn")
+
+#: 客户机条目。PVE 用 ``qemu`` / ``lxc``，个别版本对虚拟机给 ``vm``。
+_GUEST_RESOURCE_TYPES = ("qemu", "lxc", "vm")
+
+
+async def _scope_resources(
+    items: List[Dict[str, Any]], user: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """按归属裁剪 ``/cluster/resources``。
+
+    这份清单此前是原样透传的：只有 ``vm.view`` / ``ct.view`` 的普通用户能读到全集群
+    的机器名与 VMID，与 ``GET /api/vms`` 的隔离承诺相悖。裁剪规则与客户机列表同源：
+
+    * 管理员：不限制；
+    * 区域管理员：本区域连接全放行，区域外只留基础设施条目；
+    * 其余角色：客户机条目必须是自己名下的（严格隔离，无归属记录的存量机器不发）；
+    * 基础设施条目（节点 / 存储 / SDN）：不裁剪 —— 它们本来就由各自的权限点管控，
+      一刀切会让「存储页看得到、资源接口看不到」。
+    * 模板（``template=1``）：保留 —— 模板库是共享资源，与 ``/templates`` 一致。
+    """
+    scope = security.visible_owner(user)
+    if scope is None:
+        return items
+
+    connection_id = guestguard.call_connection()
+    if security.is_region_admin(user):
+        if security.region_in_scope(user, store.connection_region(connection_id)):
+            return items
+        return [
+            i for i in items if str(i.get("type") or "") in _INFRA_RESOURCE_TYPES
+        ]
+
+    owners = await ownership.guest_owners_map()
+    out: List[Dict[str, Any]] = []
+    for item in items or []:
+        kind = str(item.get("type") or "")
+        if kind in _INFRA_RESOURCE_TYPES:
+            out.append(item)
+            continue
+        if kind not in _GUEST_RESOURCE_TYPES:
+            continue  # 认不出的类型宁可不发
+        if str(item.get("template") or "0") in ("1", "True", "true"):
+            out.append(item)
+            continue
+        ref = ownership.vm_ref(
+            connection_id, str(item.get("node") or ""), item.get("vmid")
+        )
+        if owners.get(ref) == scope:
+            out.append(item)
+    return out
+
+
 @router.get("/cluster/resources")
 async def cluster_resources(
     type: Optional[str] = Query(default=None, description="vm | node | storage | sdn"),
@@ -91,9 +147,10 @@ async def cluster_resources(
 ) -> List[Dict[str, Any]]:
     client = get_client()
     try:
-        return await client.cluster_resources(type) or []
+        items = await client.cluster_resources(type) or []
     except ProxmoxError as exc:
         _raise(exc)
+    return await _scope_resources(items, user)
 
 
 @router.get("/cluster/nextid")
@@ -159,18 +216,29 @@ async def cluster_tasks(
     永远不会出现在列表里（与 ``/nodes``、``/vms`` 的「同级合并」同一套口径）。
     指定了作用域时只查那一条 —— 这也是列表页里「只看这套集群」的落点。
     """
+    # 归属过滤与 ``GET /api/tasks``、``/ws/tasks`` 共用 ``app.task_scope``：
+    # 此前这个入口是原样透传，普通用户能读到全平台 UPID（节点名 + VMID +
+    # 发起者身份 + 起止时间）。
+    scope = await build_scope(user)
     pairs = all_connection_clients()
     if requested_connection() or not pairs:
         try:
-            return await get_client().tasks(node=node, limit=limit)
+            items = await get_client().tasks(node=node, limit=limit) or []
         except ProxmoxError as exc:
             _raise(exc)
+        if scope is not None:
+            items = scope.filter(items, guestguard.call_connection())
+        return items
 
     # client.tasks 内部已按 starttime 倒序并各自截断，这里合并后再排一次、
     # 再截断一次，得到的才是「全体连接里最近的 limit 条」
     merged = _flatten_scoped(
         await _fan_out(pairs, lambda c: c.tasks(node=node, limit=limit))
     )
+    if scope is not None:
+        # 每条任务自带 connection_id（_flatten_scoped 打的标），用它判定才不会
+        # 把 B 连接上同 node + 同 vmid 的任务误认成 A 连接里自己的机器
+        merged = scope.filter(merged)
     merged.sort(key=lambda t: t.get("starttime") or 0, reverse=True)
     return merged[:limit]
 

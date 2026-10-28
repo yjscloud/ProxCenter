@@ -8,7 +8,7 @@ import secrets
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
 import jwt
@@ -172,7 +172,17 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
             {"key": "vm.view", "label": "查看", "desc": "查看自己名下的虚拟机"},
             {"key": "vm.create", "label": "创建", "desc": "新建虚拟机"},
             {"key": "vm.delete", "label": "删除", "desc": "删除自己创建的虚拟机"},
-            {"key": "vm.assign", "label": "指派归属", "desc": "把虚拟机指派给指定用户（含存量无主机）"},
+            # 指派归属决定「别人能看到哪台机器」，只有管理员与区域管理员有这个
+            # 视角：普通用户的世界就是「自己名下」，改派给自己以外的人没有意义，
+            # 改了也只会把机器从自己眼前挪走。所以这一项标注适用角色，界面据此
+            # 置灰、写入时拒绝授予（见 validate_permissions / PERMISSION_ROLES）。
+            {
+                "key": "vm.assign",
+                "label": "指派归属",
+                "desc": "把虚拟机指派给指定用户（含存量无主机）。仅对「超级管理员」与"
+                "「区域管理员」生效：归属改派是管理动作，普通角色勾选后不会生效。",
+                "roles": ["admin", "region_admin"],
+            },
             {"key": "vm.power", "label": "电源操作", "desc": "开机 / 关机 / 重启 / 挂起"},
             {"key": "vm.console", "label": "控制台", "desc": "打开 VNC 控制台"},
             {"key": "vm.config", "label": "修改配置", "desc": "改 CPU / 内存 / 磁盘 / 网卡等配置"},
@@ -207,7 +217,15 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
             {"key": "ct.view", "label": "查看", "desc": "查看自己名下的容器"},
             {"key": "ct.create", "label": "创建", "desc": "新建容器"},
             {"key": "ct.delete", "label": "删除", "desc": "删除自己创建的容器"},
-            {"key": "ct.assign", "label": "指派归属", "desc": "把容器指派给指定用户（含存量无主机）"},
+            # 与 vm.assign 同一件事（见上面的说明）：容器侧也要标注，否则同一个
+            # 勾选界面里虚拟机那项是灰的、容器那项能勾，看起来像两套规则。
+            {
+                "key": "ct.assign",
+                "label": "指派归属",
+                "desc": "把容器指派给指定用户（含存量无主机）。仅对「超级管理员」与"
+                "「区域管理员」生效：归属改派是管理动作，普通角色勾选后不会生效。",
+                "roles": ["admin", "region_admin"],
+            },
             {"key": "ct.power", "label": "电源操作", "desc": "开机 / 关机 / 重启 / 挂起"},
             {"key": "ct.console", "label": "控制台", "desc": "打开容器控制台（VNC / 终端）"},
             {"key": "ct.config", "label": "修改配置", "desc": "改 CPU / 内存 / 磁盘 / 网卡 / 挂载点等配置"},
@@ -405,12 +423,63 @@ PERMISSION_CATALOG: List[Dict[str, Any]] = [
 ]
 
 
+#: 权限点 -> 只对哪些角色生效。由目录里的 ``roles`` 字段派生，**不另写一份表**：
+#: 两处各写一份的结果是界面按一份判断、写入按另一份校验，又回到「勾了不生效」。
+PERMISSION_ROLES: Dict[str, Tuple[str, ...]] = {
+    item["key"]: tuple(item["roles"])
+    for group in PERMISSION_CATALOG
+    for item in group.get("permissions", [])
+    if item.get("roles")
+}
+
+#: 权限点 -> 中文名。目录里的 ``label`` 是中文原文（英文在 API 层由
+#: :func:`i18n.localize_permission_catalog` 现翻），这里只用于 400 / 403 文案。
+PERMISSION_LABELS: Dict[str, str] = {
+    item["key"]: str(item.get("label") or item["key"])
+    for group in PERMISSION_CATALOG
+    for item in group.get("permissions", [])
+}
+
+
 BUILTIN_ROLE_NAMES = {
     "admin": "超级管理员",
     "region_admin": "区域管理员",
     "operator": "普通用户",
     "viewer": "只读用户",
 }
+
+
+def permission_roles(key: str) -> Tuple[str, ...]:
+    """该权限点只对哪些角色生效；空元组 = 对所有角色生效。"""
+    return PERMISSION_ROLES.get(str(key), ())
+
+
+def role_can_grant(key: str, role_id: Optional[str]) -> bool:
+    """``role_id`` 这个角色有没有资格持有 ``key``。
+
+    ``role_id`` 为空（新建角色还没生成 id、调用方也没给上下文）按「不适用」
+    处理 —— 受限权限宁可不给，也不能在不知道角色时默认放行。
+    """
+    allowed = permission_roles(key)
+    return not allowed or str(role_id or "") in allowed
+
+
+def ensure_permission_role(user: Dict[str, Any], key: str) -> None:
+    """请求入口用：受限权限点落到不适用的角色上时明确拒绝。
+
+    光靠目录标注 + 界面置灰挡不住历史数据（库里的自定义角色可能早就存了
+    ``vm.assign``），而「勾了却不生效」是最难查的一类问题 —— 这里让它直接报错，
+    而不是静默地少一块能力。
+    """
+    if role_can_grant(key, str((user or {}).get("role") or "")):
+        return
+    label = PERMISSION_LABELS.get(str(key), str(key))
+    names = " / ".join(BUILTIN_ROLE_NAMES.get(role, role) for role in permission_roles(key))
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"「{label}」仅对{names}生效",
+    )
+
 
 # 角色权限的进程内缓存。
 # 角色定义放在数据库（roles 表，admin 可自定义），但权限校验散落在同步依赖里，
@@ -557,7 +626,9 @@ def permission_keys() -> set:
     }
 
 
-def validate_permissions(perms: Optional[List[str]]) -> Optional[List[str]]:
+def validate_permissions(
+    perms: Optional[List[str]], role_id: Optional[str] = None
+) -> Optional[List[str]]:
     """校验并规范化管理员提交的一组权限键；有未知项就报 400。
 
     ``None`` 原样返回 —— 它的语义是「不设用户级覆盖，跟随角色」，与 ``[]``
@@ -570,6 +641,10 @@ def validate_permissions(perms: Optional[List[str]]) -> Optional[List[str]]:
     内置超管角色的 ``["*"]`` 是**写死在常量表里**、由 :func:`load_roles` 直接入库的，
     不经过这条路径；一旦让它从 ``POST /roles`` 或用户级覆盖进来，就等于凭空造了
     第二个超管 —— 而且那个角色在前端还看不到菜单（前端只认 ``role == 'admin'``）。
+
+    ``role_id`` 给了就顺带校验**适用角色**：``vm.assign`` / ``ct.assign`` 这类只在
+    管理视角下成立的权限，授予普通角色就是「勾了不生效」。界面已经置灰，但接口
+    是公开的，历史数据也可能存着 —— 所以这里也挡，并且说清楚为什么。
     """
     if perms is None:
         return None
@@ -580,7 +655,161 @@ def validate_permissions(perms: Optional[List[str]]) -> Optional[List[str]]:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"未知的权限项：{'、'.join(unknown)}",
         )
+    # 没给 role_id 也照查：``role_can_grant(key, None)`` 是 False（受限权限宁可
+    # 不给，见它的说明）。fail-closed 是有意的 —— 漏传上下文时宁可报错，也不要
+    # 静默地放一份不生效的权限进去。
+    blocked = sorted(key for key in submitted if not role_can_grant(key, role_id))
+    if blocked:
+        labels = "、".join(f"「{PERMISSION_LABELS.get(k, k)}」" for k in blocked)
+        roles = sorted({role for key in blocked for role in permission_roles(key)})
+        names = " / ".join(BUILTIN_ROLE_NAMES.get(role, role) for role in roles)
+        if role_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{labels}仅对{names}生效",
+            )
+        role_name = BUILTIN_ROLE_NAMES.get(str(role_id), str(role_id))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{labels}仅对{names}生效，不能授予「{role_name}」角色",
+        )
     return sorted(submitted)
+
+
+# ------------------------------------------------------------- 授权边界（授予链）
+# 权限模型此前只回答「这个权限点对哪种角色有意义」（:func:`role_can_grant`），
+# 从来不回答「这个人能把什么授予出去」。于是任何拿到 ``users.manage`` 的账号都能
+# ``PUT /api/users/{自己} {"role": "admin"}`` 一步登天，或者先建一个 admin 小号 ——
+# 授予者与被授予者之间没有任何上限约束。下面这组函数补上这条链：
+#
+#   * 能授予的权限 ⊆ 自己实际拥有的权限（``*`` 只属于超管）；
+#   * ``admin`` 角色只有 ``admin`` 能发 —— ``is_admin()`` 只看角色字符串，
+#     把角色发出去等于给了一份「不受归属隔离」的视角，哪怕同时把权限覆盖清空；
+#   * 不能改动权限高于自己的账号（否则「重置对方密码」就是一条接管路径）。
+
+ADMIN_ROLE = "admin"
+
+
+def own_permissions(user: Dict[str, Any]) -> Set[str]:
+    """该账号实际握着、且可转授的权限集合。
+
+    ``*`` 展开成整个目录 —— 判「能不能授予」时用字符串比较 ``"*"`` 会得出
+    「超管一个权限都没有」这种反向结论，所以这里统一展开。目录外的历史键
+    （自定义角色里存过的旧权限）不进集合：它们不生效，也不该被转授。
+    """
+    perms = effective_permissions(user or {})
+    if "*" in perms:
+        return permission_keys()
+    return {str(p) for p in perms if str(p) in permission_keys()}
+
+
+def _permission_labels(keys: Any) -> str:
+    """把权限键渲染成「中文名（键）」。
+
+    只给中文名不够用：目录里的 ``label`` 是组内名称（``settings.manage`` 与
+    ``users.manage`` 都叫「管理」），报错时分不清是哪一项，所以把键一并带上。
+    """
+    parts = []
+    for key in keys:
+        text = str(key)
+        label = PERMISSION_LABELS.get(text, text)
+        parts.append(f"「{label}」" if label == text else f"「{label}」({text})")
+    return "、".join(parts)
+
+
+def ensure_can_grant_permissions(
+    actor: Dict[str, Any], perms: Optional[List[str]]
+) -> None:
+    """授予的每一项权限都必须是授予者自己有的（越界即 403）。"""
+    if not perms:
+        return
+    excess = sorted({str(p) for p in perms} - own_permissions(actor))
+    if excess:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="不能授予自己没有的权限：" + _permission_labels(excess),
+        )
+
+
+async def ensure_can_assign_role(actor: Dict[str, Any], role_id: str) -> None:
+    """角色必须落在授予者的权限范围内；``admin`` 角色只有超管能发。"""
+    role_id = str(role_id or "")
+    if is_admin(actor):
+        return
+    if role_id == ADMIN_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有超级管理员可以授予「超级管理员」角色",
+        )
+    role = await store.get_role(role_id)
+    perms = {str(p) for p in (role or {}).get("permissions") or []}
+    if "*" in perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有超级管理员可以授予带通配权限的角色",
+        )
+    excess = sorted(perms - own_permissions(actor))
+    if excess:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="该角色包含你不能授予的权限：" + _permission_labels(excess),
+        )
+
+
+async def ensure_can_manage_account(
+    actor: Dict[str, Any], target: Dict[str, Any]
+) -> None:
+    """不能改动权限高于自己的账号。
+
+    这条挡的是「降维打击」：被委派者不能给管理员改密码 / 换邮箱 / 踢下线 /
+    删号 —— 那几条都不是提权，但都能拿到更强的凭据。
+    """
+    if is_admin(actor):
+        return
+    if str((target or {}).get("role") or "") == ADMIN_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有超级管理员可以修改超级管理员账号",
+        )
+    excess = sorted(own_permissions(target) - own_permissions(actor))
+    if excess:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="不能修改权限高于自己的账号：" + _permission_labels(excess),
+        )
+
+
+async def ensure_can_manage_role(actor: Dict[str, Any], role_id: str) -> None:
+    """不能改动「含有自己没有的权限」的角色（否则可以削别人的权限）。"""
+    if is_admin(actor):
+        return
+    role = await store.get_role(role_id)
+    perms = {str(p) for p in (role or {}).get("permissions") or []}
+    if "*" in perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有超级管理员可以修改带通配权限的角色",
+        )
+    excess = sorted(perms - own_permissions(actor))
+    if excess:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="该角色包含你没有的权限，不能修改：" + _permission_labels(excess),
+        )
+
+
+def ensure_not_self_elevation(actor: Dict[str, Any], target_username: str) -> None:
+    """禁止改自己的角色 / 权限 / 状态（改密走 ``POST /api/password``）。
+
+    调用方只在「这次提交真的改变了这些字段」时才调它：把表单原样提交回来
+    （值没变）不该被拦，否则管理员编辑自己的邮箱都会被卡住。
+    """
+    if str((actor or {}).get("username") or "") != str(target_username or ""):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="不能修改自己的角色、权限或账号状态，请由其他管理员操作",
+    )
 
 
 def is_admin(user: Dict[str, Any]) -> bool:

@@ -4199,7 +4199,9 @@ body.is-col-resizing * {
 .perm-help-head {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 10px;
+  row-gap: 4px;
 }
 
 .perm-help-label {

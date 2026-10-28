@@ -450,6 +450,11 @@ async def save_role(
     permissions: List[str],
     builtin: bool = False,
 ) -> Dict[str, Any]:
+    # 通配符只属于内置超管角色（``_seed_roles`` 用 builtin=True 写入）。
+    # 路由层已经拒过 ``*``（security.validate_permissions），这里是落库前的兜底：
+    # 一旦让 ``*`` 从别的路径进来，等于凭空多出一个超管。
+    if not builtin and "*" in {str(item) for item in permissions or []}:
+        raise ValueError("自定义角色不能包含通配符 *")
     async with database.connect() as db:
         await db.execute(
             database.upsert_sql(
@@ -566,6 +571,14 @@ async def create_user(
         status = STATUS_ACTIVE
     expires = max(float(expires_at or 0), 0.0)
     clean_regions = _clean_regions(regions)
+    # 落库前的最后一道不变量：角色必须存在、权限覆盖里不能出现通配符。
+    # 路由层已经校验过（routers/users.py），但 store 是唯一的写入口 —— 脚本、
+    # 迁移、以后新增的调用方都不该能绕过。写进一个不存在的角色会让
+    # security.role_permissions() 静默退回 viewer 权限，排错时完全看不出来。
+    if not await get_role(str(role or "")):
+        raise ValueError(f"角色 {role} 不存在")
+    if permissions is not None and any(str(item) == "*" for item in permissions):
+        raise ValueError("用户级权限覆盖不能包含通配符 *")
     async with database.connect() as db:
         cursor = await db.execute(
             "INSERT INTO users (username, password_hash, role, email, enabled,"
@@ -641,6 +654,11 @@ async def update_user(
             json.dumps(sorted(set(permissions))) if permissions is not None else None
         )
     if role is not None:
+        # 角色必须在库里存在：写进一个不存在的角色会静默退化成 viewer 权限
+        # （security.role_permissions 的兜底），而这条 SQL 是唯一的角色写入口，
+        # 所以不变量放在这里，而不是只依赖路由层的校验。
+        if not await get_role(str(role)):
+            raise ValueError(f"角色 {role} 不存在")
         fields.append("role = ?")
         values.append(role)
     if email is not None:

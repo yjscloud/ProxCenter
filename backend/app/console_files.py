@@ -151,10 +151,17 @@ def purge_expired(now: Optional[float] = None) -> int:
     return removed
 
 
-async def save(upload: UploadFile, username: str = "") -> Dict[str, Any]:
+async def save(
+    upload: UploadFile, username: str = "", guest: str = ""
+) -> Dict[str, Any]:
     """把上传内容流式写盘，返回可直接回给前端的元数据。
 
     刻意不 ``await upload.read()`` 一次性读完：几百 MB 的文件那样会整块进内存。
+
+    ``guest`` 是上传时选中的客户机（``node/vmid``）：它不影响下载鉴权（客户机
+    没有面板凭据），但落在 meta 里才能回答「这枚 token 是往哪台机器送的」，
+    出事时不必翻审计日志。参数名不能叫 ``target`` —— 下面盘上路径的局部变量就是
+    这个名字，会把它覆盖掉。
     """
     token = secrets.token_hex(16)
     target = file_path(token)
@@ -189,6 +196,7 @@ async def save(upload: UploadFile, username: str = "") -> Dict[str, Any]:
         "created_at": now,
         "expires_at": now + TTL_SECONDS,
         "uploader": username or "",
+        "target": str(guest or ""),
     }
     await asyncio.to_thread(_write_meta, meta)
     # 上传是最自然的清理时机：没有额外的后台任务，也不会拖慢下载
@@ -215,12 +223,24 @@ async def load(token: str) -> Optional[Tuple[Path, Dict[str, Any]]]:
     return path, meta
 
 
-async def revoke(token: str) -> bool:
-    """手动作废一个下载链接。"""
+async def revoke(token: str, username: Optional[str] = None) -> bool:
+    """手动作废一个下载链接。
+
+    ``username`` 给 ``None`` 表示不校验（管理员）；否则只允许作废**自己上传的**那条。
+    下载侧仍然只凭 token（客户机没有面板凭据），但作废是面板内的写操作，没有理由
+    让任何持 console 权限的人都能掐断别人的中转链接。
+
+    早期落盘的 meta 可能没有 ``uploader``：这类「无主」记录只允许管理员回收，
+    与「无归属记录的存量资源对普通用户不可见」同一套严格口径。
+    """
     if not TOKEN_RE.match(token or ""):
         return False
     found = await load(token)
     if found is None:
         return False
+    if username is not None:
+        uploader = str(found[1].get("uploader") or "")
+        if not uploader or uploader != username:
+            return False
     await asyncio.to_thread(_drop, token)
     return True

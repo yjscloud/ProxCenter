@@ -107,8 +107,16 @@ def connect(database_name: str | None = None):
     )
 
 
+#: 进程启动时的库名。``mysql_test_db`` 会把 ``settings.db_name`` 改写成测试库，
+#: 之后再调 :func:`test_database_name` 拿到的就是改过的值，默认名会拼成
+#: ``<库名>_test_test`` —— 与 ``_assert_is_test_database`` 的期望永远对不上，
+#: 于是没设 ``TEST_DB_NAME`` 的机器上所有要库的用例都在 fixture 阶段报错。
+#: 因此「原始库名」在 import 时就固定下来。
+_BASE_DB_NAME = str(settings.db_name or "")
+
+
 def test_database_name() -> str:
-    return os.environ.get("TEST_DB_NAME", "").strip() or f"{settings.db_name}_test"
+    return os.environ.get("TEST_DB_NAME", "").strip() or f"{_BASE_DB_NAME}_test"
 
 
 def _assert_is_test_database(name: str) -> None:

@@ -198,8 +198,9 @@ async def list_containers(
             or ""
         )
 
+    region_admin = security.is_region_admin(user)
     if owner is not None:
-        if security.is_region_admin(user):
+        if region_admin:
             # 区域管理员看本区域全部容器（与 /vms 同口径）
             result = [
                 c
@@ -208,7 +209,8 @@ async def list_containers(
             ]
         else:
             result = [c for c in result if _owner_of(c) == owner]
-    else:
+    if owner is None or region_admin:
+        # 区域管理员同样要看得到归属人（理由见 /vms 那段）
         for item in result:
             item["owner"] = _owner_of(item) or None
     for item in result:
@@ -567,6 +569,9 @@ async def get_container_owner(
     connection_id: Optional[str] = Query(default=None),
     user: Dict[str, Any] = Depends(security.require_permission("ct.assign")),
 ) -> Dict[str, Any]:
+    # 目录里标注了「仅管理员 / 区域管理员」（见 security.PERMISSION_ROLES）：
+    # 库里可能还存着授予过普通角色的历史角色，光靠界面置灰挡不住这里
+    security.ensure_permission_role(user, "ct.assign")
     ref = ownership.vm_ref(connection_id or _op_connection(), node, vmid)
     return {
         "node": node,
@@ -584,6 +589,7 @@ async def set_container_owner(
     user: Dict[str, Any] = Depends(security.require_permission("ct.assign")),
 ) -> Dict[str, Any]:
     """把容器指派给某个用户；``username`` 为空表示清除归属。"""
+    security.ensure_permission_role(user, "ct.assign")
     username = str(payload.get("username") or "").strip()
     if username:
         target = await store.get_user(username)

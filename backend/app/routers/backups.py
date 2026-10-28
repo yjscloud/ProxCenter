@@ -28,7 +28,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .. import backupguard, guest_created, ownership, quota, security, sshremote, store
+from .. import backupguard, guest_created, guestguard, ownership, quota, security, sshremote, store
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -75,6 +75,30 @@ async def backup_stats(
     running = 0
     failures: List[Dict[str, Any]] = []
 
+    # 归属裁剪：vzdump 任务的 ``id`` 就是 vmid，按「这台机器归谁」判定。
+    # 此前统计与失败明细都是全平台口径，普通用户能读到别人机器的 vmid、节点名与
+    # 发起备份的 PVE 身份。规则与客户机列表同源：管理员不限制、区域管理员按连接
+    # 区域、其余人只看自己名下（无归属记录的存量机器不算）。
+    scope = security.visible_owner(user)
+    region_admin = security.is_region_admin(user)
+    owners = (
+        await ownership.guest_owners_map()
+        if scope is not None and not region_admin
+        else {}
+    )
+    region_of: Dict[str, str] = {}
+
+    def _visible(connection_id: str, node: str, vmid: Any) -> bool:
+        if scope is None:
+            return True
+        if region_admin:
+            if connection_id not in region_of:
+                region_of[connection_id] = store.connection_region(connection_id)
+            return security.region_in_scope(user, region_of[connection_id])
+        return (
+            ownership.vm_owner_from(owners, node, vmid, connection_id) == scope
+        )
+
     pairs = all_connection_clients() or [({}, get_client())]
     for profile, client in pairs:
         cid = str((profile or {}).get("id") or "")
@@ -95,6 +119,8 @@ async def backup_stats(
                 continue
             for task in tasks or []:
                 if not isinstance(task, dict) or task.get("type") != "vzdump":
+                    continue
+                if not _visible(cid, str(node), task.get("id")):
                     continue
                 start = int(task.get("starttime") or 0)
                 if start < cutoff:
@@ -165,6 +191,74 @@ def _vmid_from_volid(volid: str) -> Optional[int]:
 def _connection_scope() -> str:
     """本次操作作用在哪条连接上（与 vms 路由的 ``_op_connection`` 一致）。"""
     return requested_connection() or str(store.get_active_connection_id() or "")
+
+
+async def _require_backup_targets(
+    user: Dict[str, Any],
+    node: Optional[str],
+    vmids: Any,
+    all_guests: bool,
+) -> None:
+    """备份的**对象级**校验：备份谁，就必须是谁的。
+
+    为什么这条以前最危险：创建备份时会把发起人写进归档的 notes 标记，而
+    ``assert_backup_access`` 正是按这个标记放行的。也就是说，只要能让 PVE 给你
+    备份别人的机器（``vmid=别人的号`` 或 ``all=1``），产物就会被认成你的，
+    随后 ``/backups/download`` 把你整盘取走 —— 一条完整的越权外带链。
+
+    规则：
+    * ``all=1``（整集群）只给管理员；
+    * 指定的 vmid 必须属于自己（没有归属记录的存量机器按「无主」放行，与
+      严格隔离的列表口径不同：这里拿不到记录就无法判定，按无主处理只影响
+      旧机器，不会放开任何**已登记**的租户机器）。
+    * 节点未知（计划任务可以不写 node）时按「任一连接名下」判定。
+    """
+    if all_guests:
+        if not security.is_admin(user):
+            raise HTTPException(
+                status_code=403,
+                detail="只有管理员可以备份全部客户机",
+            )
+        return
+
+    owner = security.visible_owner(user)
+    if owner is None:
+        return
+
+    ids: List[int] = []
+    for raw in str(vmids if vmids is not None else "").replace(";", ",").split(","):
+        text = raw.strip()
+        if text.isdigit():
+            ids.append(int(text))
+    if not ids:
+        return
+
+    node_text = str(node or "").strip()
+    if node_text:
+        for vmid in ids:
+            for kind in ownership.GUEST_KINDS:
+                await guestguard.require_guest_object_if_owned(user, node_text, vmid, kind)
+        return
+
+    # 计划任务可以不带 node：此时按「这个 vmid 在**任何**连接上登记给了谁」判定，
+    # 避免 node 为空就把整段降级成放行。与有 node 的分支同一口径：**完全没有记录**
+    # 的存量机器按无主处理（放行），有记录但不是自己的才拒绝。
+    try:
+        owners = await ownership.guest_owners_map()
+    except Exception:  # noqa: BLE001 - 读不到归属时按无主处理，只放行管理员
+        owners = {}
+    known = {ref.rsplit(":", 1)[-1] for ref in owners}
+    mine = {
+        ref.rsplit(":", 1)[-1]
+        for ref, recorded in owners.items()
+        if recorded == owner
+    }
+    intruding = [vmid for vmid in ids if str(vmid) in known and str(vmid) not in mine]
+    if intruding:
+        raise HTTPException(
+            status_code=404,
+            detail=f"虚拟机不存在：{intruding[0]}",
+        )
 
 
 async def _archive_at(
@@ -416,6 +510,10 @@ async def create_backup(
             status_code=400, detail="请指定要备份的虚拟机，或启用“备份全部”"
         )
 
+    # 对象级：备份谁就得是谁的（整集群备份只给管理员）。缺了这一层，产物会因为
+    # notes 里被写成「我是创建者」而变成可下载的别人的整机镜像。
+    await _require_backup_targets(user, payload.node, payload.vmid, payload.all)
+
     # 在 notes 里写入创建者标记，供列表过滤与恢复/删除校验使用
     notes = _mark_owner(payload.notes, str(user.get("username") or ""))
     try:
@@ -452,6 +550,12 @@ async def restore_backup(
 ) -> Dict[str, Any]:
     storage = payload.storage or payload.volid.split(":", 1)[0]
     await assert_backup_access(user, payload.node, storage, payload.volid)
+    # 归档归属校验只说明「这个备份是你能读的」，不代表「你可以往这个 vmid 里恢复」：
+    # force 默认开着，指向别人的机器就是把人家系统盘覆盖掉。
+    for _kind in ownership.GUEST_KINDS:
+        await guestguard.require_guest_object_if_owned(
+            user, payload.node, payload.vmid, _kind
+        )
     # 恢复备份同样是「多出一台机器」。归档里的核数 / 内存 / 磁盘在开工前读不出来
     # （PVE 的备份索引不给客户机配置），所以这一维只能把住**台数**；核数 / 内存 /
     # 磁盘会在机器出现后的下一次统计里如实反映（读数会显示超额），但拦不住这一次。
@@ -938,6 +1042,10 @@ async def create_backup_job(
             status_code=400, detail="请指定备份的虚拟机列表，或启用“备份全部”"
         )
 
+    # 计划任务同样要按对象校验：它会在后台替你把列表里的机器全备一遍，产物
+    # 仍带你的创建者标记（= 可下载）。
+    await _require_backup_targets(user, payload.node, payload.vmid, payload.all)
+
     if payload.notes:
         data["notes-template"] = payload.notes
     # comment 里写创建者标记，列表据此做用户隔离
@@ -1014,6 +1122,14 @@ async def update_backup_job(
     original_job = await _find_job(job_id)
     if original_job is not None:
         await _require_job_access(user, job_id, original_job)
+    # 计划本身是你的，不代表可以把**要备份的机器**改成别人的：comment 里的创建者
+    # 标记不会跟着变，产物仍会被认成你的。所以改目标时也要按对象校验一次。
+    await _require_backup_targets(
+        user,
+        payload.node or str((original_job or {}).get("node") or "") or None,
+        payload.vmid,
+        payload.all,
+    )
     data = payload.model_dump(exclude_none=True)
 
     # PVE uses these parameter names verbatim.

@@ -8,12 +8,13 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from .. import i18n, ownership, security
-
-logger = logging.getLogger(__name__)
+from .. import guestguard, i18n, security, store
 from ..formatters import normalize_task
 from ..pve import ProxmoxError, get_client, node_from_upid
+from ..task_scope import build_scope
 from ..vm_scope import bind_task_connection
+
+logger = logging.getLogger(__name__)
 
 # 注意：这里的定位依赖只加在 HTTP 任务接口上，不能用路由级依赖 ——
 # 本路由还挂着 /ws/tasks（用 query token 自行鉴权），路由级依赖会要求
@@ -28,42 +29,8 @@ def _raise(exc: ProxmoxError) -> None:
     )
 
 
-def _task_guest(upid: str) -> Optional[tuple]:
-    """从 UPID 里解析出 (node, vmid)；非客户机级任务返回 None。
-
-    UPID 形如 ``UPID:node:pid:pstart:starttime:type:id:user@realm:``。只有
-    ``qm*``（虚拟机）与 ``vz*``（容器）开头的任务带客户机 id；节点级、存储级、
-    集群级的任务（``vzdump`` 之外的 ``aptupdate``、``ceph`` 等）没有归属可判，
-    一律不对外暴露。
-    """
-    parts = (upid or "").split(":")
-    if len(parts) < 7:
-        return None
-    if not (parts[5].startswith("qm") or parts[5].startswith("vz")):
-        return None
-    return parts[1], parts[6]
-
-
-async def _owned_guests(user: Dict[str, Any]) -> Optional[set]:
-    """当前用户名下的 (node, vmid) 集合；管理员返回 None（不限制）。
-
-    安全审计 M-1：任务面此前完全没做归属过滤，operator 能读到全平台的任务
-    列表（含 root@pam!master 身份、他人 VMID、开关机时间），与「只能看到自己
-    名下的机器」的承诺相悖，而同一用户的 ``GET /api/vms/{node}/{vmid}``
-    却是拒绝的。这里补上与客户机同源的隔离规则。
-    """
-    owner = security.visible_owner(user)
-    if owner is None:
-        return None
-    owned: set = set()
-    for kind in (ownership.KIND_VM, ownership.KIND_CT):
-        for ref in await ownership.list_owned(kind, owner):
-            # ref 形如 "<connection_id>:<node>:<vmid>"，只取后两段比对，
-            # 免得把连接 id 的解析规则复制一份到这里
-            parts = ref.rsplit(":", 2)
-            if len(parts) == 3:
-                owned.add((parts[1], parts[2]))
-    return owned
+# 任务归属判定集中在 ``app.task_scope``：单连接 HTTP、多连接合并 HTTP 与
+# WebSocket 推送三条出口共用同一套规则，避免只收紧其中一条（安全审计 M-1）。
 
 
 @router.get("/tasks")
@@ -83,14 +50,23 @@ async def list_tasks(
     if running_only:
         output = [t for t in output if t["running"]]
 
-    owned = await _owned_guests(user)
-    if owned is not None:
-        output = [
-            t
-            for t in output
-            if (guest := _task_guest(t.get("upid", ""))) is not None and guest in owned
-        ]
+    scope = await build_scope(user)
+    if scope is not None:
+        output = scope.filter(output, guestguard.call_connection())
     return output
+
+
+async def _require_task_guest(user: Dict[str, Any], upid: str) -> None:
+    """对象级鉴权：UPID 指向的客户机必须是自己的。
+
+    与列表同源隔离，用 404 而不是 403 —— UPID 里就写着 vmid，403 等于确认
+    「这个号确实有任务在跑」，可以拿号段扫出全平台在用的机器。
+    """
+    scope = await build_scope(user)
+    if scope is None:
+        return
+    if not scope.allows(guestguard.call_connection(), upid):
+        raise HTTPException(status_code=404, detail="任务不存在")
 
 
 @router.get("/tasks/{upid}", dependencies=[Depends(bind_task_connection)])
@@ -112,13 +88,8 @@ async def get_task(
             detail=i18n.tr("无法从 UPID 解析节点，请显式提供 node 参数"),
         )
 
-    # 与列表同源隔离：拿到别人的 UPID 也读不到任务详情与执行日志（M-1）。
-    # 用 404 而不是 403，免得 UPID 变成「存在性探针」。
-    owned = await _owned_guests(user)
-    if owned is not None:
-        guest = _task_guest(upid)
-        if guest is None or guest not in owned:
-            raise HTTPException(status_code=404, detail="任务不存在")
+    # 与列表同源隔离：拿到别人的 UPID 也读不到任务详情与执行日志（M-1）
+    await _require_task_guest(user, upid)
 
     try:
         status = await client.task_status(upid, resolved)
@@ -145,7 +116,7 @@ async def get_task(
     }
 
 
-@router.get("/tasks/{upid}/log")
+@router.get("/tasks/{upid}/log", dependencies=[Depends(bind_task_connection)])
 async def get_task_log(
     upid: str,
     node: Optional[str] = None,
@@ -153,6 +124,9 @@ async def get_task_log(
     limit: int = Query(default=500, ge=1, le=5000),
     user: Dict[str, Any] = Depends(security.require_permission("task.view")),
 ) -> List[Dict[str, Any]]:
+    # 这条以前既没有归属过滤、也没有绑定连接：任意 UPID 就能读到别人备份/迁移
+    # 任务的完整日志（里面带着卷路径、目标节点、命令行）。
+    await _require_task_guest(user, upid)
     client = get_client()
     resolved = node or node_from_upid(upid)
     try:
@@ -173,6 +147,8 @@ async def delete_task(
     if not resolved:
         raise HTTPException(status_code=400, detail=i18n.tr("无法从 UPID 解析节点"))
 
+    # 对象级：删任务记录同样要确认这台机器是自己的
+    await _require_task_guest(user, upid)
     try:
         await client.delete(f"/nodes/{resolved}/tasks/{upid}")
     except ProxmoxError as exc:
@@ -191,6 +167,8 @@ async def stop_task(
 ) -> Dict[str, Any]:
     client = get_client()
     resolved = node or node_from_upid(upid)
+    # 中止别人的任务 = 把别人正在跑的备份/迁移掐断，同样要按对象判
+    await _require_task_guest(user, upid)
     try:
         await client.delete(f"/nodes/{resolved}/tasks/{upid}")
     except ProxmoxError as exc:
@@ -258,9 +236,19 @@ async def tasks_websocket(
     await websocket.accept()
 
     # 推送流同样要按归属过滤，否则 HTTP 收紧了、WebSocket 还是全量（M-1）
-    owned = await _owned_guests(
-        {"username": payload.get("username") or payload.get("sub"), "role": role}
-    )
+    ws_user: Dict[str, Any] = {
+        "username": payload.get("username") or payload.get("sub"),
+        "role": role,
+    }
+    if role == "region_admin":
+        # 区域管理员的可见范围在 users.regions 里，JWT 载荷没带，按用户名补一次
+        try:
+            row = await store.get_user(str(ws_user.get("username") or ""))
+        except Exception:  # noqa: BLE001 - 读不到就按无区域处理（一律不可见）
+            row = None
+        if row:
+            ws_user = row
+    scope = await build_scope(ws_user)
 
     last_signature = ""
     try:
@@ -268,13 +256,10 @@ async def tasks_websocket(
             try:
                 tasks = await client.tasks(limit=limit)
                 normalized = [normalize_task(t) for t in (tasks or [])]
-                if owned is not None:
-                    normalized = [
-                        t
-                        for t in normalized
-                        if (guest := _task_guest(t.get("upid", ""))) is not None
-                        and guest in owned
-                    ]
+                if scope is not None:
+                    normalized = scope.filter(
+                        normalized, guestguard.call_connection()
+                    )
             except ProxmoxError as exc:
                 await websocket.send_json(
                     {"type": "error", "message": exc.message}

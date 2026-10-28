@@ -847,7 +847,10 @@ export const vmsApi = {
   getOwner: (node: string, vmid: number, connectionId?: string) =>
     get<{ node: string; vmid: number; owner: string | null }>(
       `/vms/${node}/${vmid}/owner`,
-      { params: connectionId ? { connection_id: connectionId } : {} },
+      {
+        ...scoped(connectionId),
+        params: connectionId ? { connection_id: connectionId } : {},
+      },
     ),
   assignOwner: (
     node: string,
@@ -864,6 +867,10 @@ export const vmsApi = {
         connection_id: connectionId || null,
         guest_type: guestType ?? null,
       },
+      /* 归属读写都在「已知在哪条连接上」的场景里发生：把连接一并声明出去，
+         后端就不用再按节点 / VMID 推断（那一步要么查归属表、要么逐台 PVE
+         探测，批量指派时每台都要付一次代价）。 */
+      scoped(connectionId),
     ),
 
   /* 快照 */
@@ -1067,7 +1074,10 @@ export const lxcApi = {
   getOwner: (node: string, vmid: number, connectionId?: string) =>
     get<{ node: string; vmid: number; owner: string | null }>(
       `/lxc/${node}/${vmid}/owner`,
-      { params: connectionId ? { connection_id: connectionId } : {} },
+      {
+        ...scoped(connectionId),
+        params: connectionId ? { connection_id: connectionId } : {},
+      },
     ),
   assignOwner: (
     node: string,
@@ -1078,6 +1088,7 @@ export const lxcApi = {
     put<{ node: string; vmid: number; owner: string | null }>(
       `/lxc/${node}/${vmid}/owner`,
       { username, connection_id: connectionId || null },
+      scoped(connectionId),
     ),
 };
 
@@ -1335,6 +1346,14 @@ export const usersApi = {
   /** status 给定时只返回该审批状态的账号（审批队列用） */
   list: (status?: UserAccountStatus) =>
     get<UserOut[]>('/users', status ? { params: { status } } : undefined),
+  /**
+   * 指派归属时的候选人：只有用户名与角色 id。
+   *
+   * 单独一条而不是复用 list() —— 列表要 `users.view`，区域管理员有
+   * `vm.assign` 却没有它，直接调 list() 会 403（选人框看起来是空的）。
+   */
+  assignable: () =>
+    get<Array<{ username: string; role?: string }>>('/users/assignable'),
   create: (body: {
     username: string;
     password: string;
@@ -1801,6 +1820,8 @@ export interface CertsOverview {
   own_username?: string;
   /** 是否管理员：管理员可见全部用户的站点与日志 */
   is_admin?: boolean;
+  /** 容器内运行时非空：本机目录部署写不到宿主机，提示改用 SSH / 虚拟机 */
+  local_deploy_hint?: string;
 }
 
 export const certsApi = {

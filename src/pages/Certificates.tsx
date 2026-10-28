@@ -736,6 +736,11 @@ export function Certificates() {
                 setForm({ ...form, deploy_method: e.target.value as CertSite["deploy_method"] })
               }
             />
+            {form.deploy_method === "local" && query.data?.local_deploy_hint ? (
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Notice tone="warning">{query.data.local_deploy_hint}</Notice>
+              </div>
+            ) : null}
             {form.deploy_method === "ssh" ? (
               <>
                 <Input

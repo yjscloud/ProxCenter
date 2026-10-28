@@ -26,7 +26,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from .. import ownership, quota, security, sshremote, store, vmtransfer
+from .. import guestguard, ownership, quota, security, sshremote, store, vmtransfer
 from ..pve import (
     ProxmoxError,
     get_client,
@@ -34,6 +34,7 @@ from ..pve import (
     set_request_connection,
 )
 from ..schemas import VmExportRequest, VmImportRequest
+from ..task_scope import task_guest
 from ..vm_scope import bind_node_connection, resolve_node_connection
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,8 @@ async def inspect_import(
 ) -> Dict[str, Any]:
     """读导入文件的元数据（内存 / 核数 / 磁盘清单 / 警告）。"""
     await bind_node_connection(payload.node)
+    # 导入目录是共用的一格存储：没有这层判断就能把别人的镜像读一遍
+    await guestguard.require_import_object(user, payload.storage, payload.volume)
     client = get_client()
     try:
         return await vmtransfer.import_metadata(
@@ -267,6 +270,8 @@ async def create_imported_vm(
 ) -> Dict[str, Any]:
     """按 OVF/OVA 的元数据建一台新虚拟机（磁盘用 import-from 拉进来）。"""
     await bind_node_connection(payload.node)
+    # 同上：源文件必须是自己上传的，否则等于拿别人的镜像建自己的机器
+    await guestguard.require_import_object(user, payload.storage, payload.volume)
     client = get_client()
     try:
         meta = await vmtransfer.import_metadata(
@@ -383,6 +388,10 @@ async def start_export(
     产物落在所选 dir 存储的 dump 目录下，随后由前端轮询 + 流式下载取走。
     """
     await bind_node_connection(node)
+    # 对象级鉴权：导出会把**整块磁盘**读出来交给人。此前只校验 vm.backup
+    # 权限点，普通的「备份员」角色把 vmid 换成别人的号段就能整盘外带；而且作业
+    # 的 owner 记成发起人，后续 /exports/{id}/download 的 owner 校验反而会放行。
+    await guestguard.require_guest_object(user, node, vmid, ownership.KIND_VM)
     client = get_client()
     try:
         vm = await client.get(f"/nodes/{node}/qemu/{vmid}/config")
@@ -484,6 +493,13 @@ async def import_progress(
     随后瞬间跳到结束 —— 这是 PVE 的算法，不是我们能改的。
     """
     await bind_node_connection(node)
+    # 任务日志里带着导入源的路径与容量，不能凭一个 UPID 就读别人的。
+    # 用「有归属就拦」的软校验：导入过程中新机器还没落归属，严格版会把发起人
+    # 自己的轮询打成 404（这条接口正是用来轮询那个窗口的）。
+    guest_node, guest_vmid = task_guest(upid) or (None, None)
+    await guestguard.require_guest_object_if_owned(
+        user, guest_node, int(guest_vmid or 0) or None, ownership.KIND_VM
+    )
     client = get_client()
     try:
         lines = await client.task_log(upid, node=node, limit=400)

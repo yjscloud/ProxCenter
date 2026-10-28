@@ -8,12 +8,15 @@
 
    **刻意不做成 VmMoreMenu 的 kind 参数**：两者能做的事并不重合 —— 容器没有
    重装系统（换系统盘就是换模板，没有对应端点）、没有导出镜像（那套走的是虚拟机
-   备份链）、归属与口令重置的权限键也不同（ct.assign / ct.password.reset 是
-   另一套服务端守卫，默认只有管理员有）。硬塞进一个组件会到处是
-   `kind === 'lxc' ? … : …`，反而更容易漏改某一侧。
+   备份链）、口令重置的权限键也不同（ct.password.reset 是另一套服务端守卫）。
+   硬塞进一个组件会到处是 `kind === 'lxc' ? … : …`，反而更容易漏改某一侧。
 
    菜单只做「入口 + 各自的确认」：动作全走既有接口（lxcApi.clone / toTemplate /
    migrate），权限按后端真正用的那个键逐项判断。
+
+   指派归属与虚拟机详情页共用 `OwnerAssignDialog`（这里是 ct.assign）——
+   以前这一页**没有**这个入口：列表行菜单里有、点进详情页反而没有，区域管理员
+   改派容器时只能退回列表去找。
    ========================================================================== */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -30,6 +33,7 @@ import { Modal } from './ui/Modal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { Field, Input, Select, Switch } from './ui/Input';
 import { Notice } from './ui/EmptyState';
+import { OwnerAssignDialog } from './OwnerAssignDialog';
 import { formatBytes } from '../utils/format';
 import {
   IconCopy,
@@ -37,6 +41,7 @@ import {
   IconMore,
   IconTemplate,
   IconTrash,
+  IconUser,
 } from './Icons';
 import type { LxcDetail } from '../api/types';
 
@@ -55,7 +60,7 @@ export interface LxcMoreMenuProps {
   onChanged: () => void;
 }
 
-type Dialog = 'clone' | 'migrate' | null;
+type Dialog = 'clone' | 'migrate' | 'owner' | null;
 
 export function LxcMoreMenu({
   ct,
@@ -72,6 +77,9 @@ export function LxcMoreMenu({
   const canConvert = hasPermission('template.manage');
   const canMigrate = hasPermission('ct.migrate');
   const canDelete = hasPermission('ct.delete');
+  /* 归属改派：按权限点判（区域管理员有 ct.assign、不是 admin）。
+     与列表行菜单同一口径，两处都能进。 */
+  const canAssign = hasPermission('ct.assign');
 
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -168,6 +176,13 @@ export function LxcMoreMenu({
             {canMigrate
               ? item(t('lxcMore.migrate'), <IconLayers size={15} />, () => setDialog('migrate'))
               : null}
+            {/* 与虚拟机详情页 / 列表行菜单同一口径：有 ct.assign 就显示，
+                不按模板与否分叉（列表那边也是照常显示的） */}
+            {canAssign
+              ? item(t('lxcMore.assignOwner'), <IconUser size={15} />, () =>
+                  setDialog('owner'),
+                )
+              : null}
             {canDelete ? (
               <>
                 <div className="user-dropdown-divider" />
@@ -189,6 +204,27 @@ export function LxcMoreMenu({
       />
       <MigrateMiniDialog
         ct={dialog === 'migrate' ? ct : null}
+        onClose={() => setDialog(null)}
+        onDone={() => {
+          setDialog(null);
+          onChanged();
+        }}
+      />
+      {/* type 必须是 'lxc'：漏了会按 qemu 处理，归属落进 vm 桶，额度会同时
+          算进虚拟机与容器两组（见 guests.ts 里 assignOwner 的说明） */}
+      <OwnerAssignDialog
+        guest={
+          dialog === 'owner'
+            ? {
+                node: ct.node,
+                vmid: ct.vmid,
+                type: 'lxc',
+                connection_id: connectionId,
+              }
+            : null
+        }
+        label={ct.name || String(ct.vmid)}
+        noun={t('lxcMore.noun')}
         onClose={() => setDialog(null)}
         onDone={() => {
           setDialog(null);

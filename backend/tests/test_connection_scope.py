@@ -18,8 +18,9 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -28,11 +29,26 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
 from app import store, vm_scope  # noqa: E402
 from app.pve import (  # noqa: E402
+    ProxmoxError,
     bound_connection,
     requested_connection,
     set_request_connection,
     set_request_scope,
 )
+from starlette.requests import Request  # noqa: E402
+
+
+def _request(query: str = "") -> Request:
+    """最小可用的 Request：只需要 query_params，别的字段这里用不到。"""
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/vms/pve1/100/owner",
+            "query_string": query.encode(),
+            "headers": [],
+        }
+    )
 
 
 class TestRequestConnectionScope:
@@ -204,6 +220,48 @@ class TestBindingOverridesSoftScope:
 
         assert asyncio.run(_scenario()) == "conn-a"
 
+    def test_query_connection_hint_skips_inference(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``?connection_id=`` 与硬指定同义：调用方已知机器在哪，别再推断。
+
+        归属读写接口就是这样发请求的。以前这里会忽略查询参数、照样按节点 /
+        VMID 推断 —— 而存量机器没有归属记录，推断必然落到「逐台 PVE 探测」，
+        批量指派时每台都要把所有连接串行问一遍，是明显卡顿的来源。
+        """
+
+        async def _never(node: str, vmid: Any, owner: Optional[str]) -> str:
+            raise AssertionError("请求已经带了 connection_id，不该再去推断")
+
+        monkeypatch.setattr(vm_scope, "resolve_vm_connection", _never)
+
+        async def _scenario() -> str:
+            set_request_scope("conn-a")
+            await vm_scope.bind_vm_connection(
+                node="pve1", vmid=100, user={}, request=_request("connection_id=conn-b")
+            )
+            return bound_connection()
+
+        assert asyncio.run(_scenario()) == "conn-b"
+
+    def test_blank_connection_hint_falls_back_to_inference(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """空的 ``?connection_id=`` 不算指定（与 ``X-PVE-Connection`` 的空串同义）。"""
+
+        async def _resolve(node: str, vmid: Any, owner: Optional[str]) -> str:
+            return "conn-b"
+
+        monkeypatch.setattr(vm_scope, "resolve_vm_connection", _resolve)
+
+        async def _scenario() -> str:
+            await vm_scope.bind_vm_connection(
+                node="pve1", vmid=100, user={}, request=_request("connection_id=")
+            )
+            return bound_connection()
+
+        assert asyncio.run(_scenario()) == "conn-b"
+
     def test_unresolvable_connection_keeps_the_scope(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -220,3 +278,125 @@ class TestBindingOverridesSoftScope:
             return bound_connection(), requested_connection()
 
         assert asyncio.run(_scenario()) == ("", "conn-a")
+
+
+class _ProbeClient:
+    """假的 PVE 客户端：``answer`` 决定「有这台机器 / 没有 / 连不上」。
+
+    三种应答的语义差别正是探测缓存的判据 —— ProxmoxError 表示 PVE 应答过
+    （问过了，没有），其它异常表示根本没问成（网络问题），后者不能拿来当结论。
+    """
+
+    def __init__(self, answer: Any, calls: List[str], delay: float = 0.0) -> None:
+        self._answer = answer
+        self._calls = calls
+        self._delay = delay
+
+    async def get(self, path: str) -> Any:
+        self._calls.append(path)
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._answer == "down":
+            raise RuntimeError("connection refused")
+        if self._answer:
+            return {"status": "running"}
+        raise ProxmoxError("不存在", status_code=404, pve_status=404)
+
+
+class TestProbeCaching:
+    """逐台 PVE 探测的缓存与去重。
+
+    存量机器没有归属记录，探测是「定位连接」的唯一手段；它要发几轮串行 HTTPS 请求。
+    所以这里有两条硬要求：
+
+    * 探过的结论要记住 —— 命中与「确实没有」都一样，否则批量指派 / 详情页的每个
+      请求都要把全部连接重问一遍；
+    * 同一台机器的并发请求只探一轮 —— 详情页挂载时十几个请求同时到，各探各的会把
+      延迟叠加成 N 倍。
+
+    但「全都连不上」不能记成「没有」：那会把 PVE 抖动放大成十几秒的全面 404。
+    """
+
+    def teardown_method(self) -> None:
+        # 缓存与锁是模块级的：跨用例留存会让「这次探了几轮」的断言失去意义，
+        # 锁还会绑在上一个（已关闭的）事件循环上。
+        vm_scope._probe_cache.clear()
+        vm_scope._probe_locks.clear()
+
+    @staticmethod
+    def _fake_clients(
+        monkeypatch: pytest.MonkeyPatch, *answers: Any, delay: float = 0.0
+    ) -> List[str]:
+        calls: List[str] = []
+        profiles = [
+            ({"id": f"conn-{chr(ord('a') + i)}"}, _ProbeClient(answer, calls, delay))
+            for i, answer in enumerate(answers)
+        ]
+        monkeypatch.setattr(vm_scope, "all_connection_clients", lambda: profiles)
+        return calls
+
+    def test_hit_is_cached_and_skips_the_second_round(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._fake_clients(monkeypatch, False, True)
+
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == "conn-b"
+        probed = len(calls)
+        assert probed == 2  # conn-a 回 404，conn-b 命中
+
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == "conn-b"
+        assert len(calls) == probed, "命中的结论没有再走一遍探测"
+
+    def test_miss_is_cached_but_for_a_shorter_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._fake_clients(monkeypatch, False, False)
+
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == ""
+        audited = len(calls)
+        assert audited == 4  # 两条连接 × qemu / lxc
+
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == ""
+        assert len(calls) == audited, "「确实没有」也要缓存，否则批量指派退化成平方级"
+
+        # 机器可能是刚建的：过期时间比命中短，但仍然会过期
+        vm_scope._probe_cache[("pve1", 100)] = (
+            time.time() - vm_scope._PROBE_MISS_TTL - 1,
+            "",
+        )
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == ""
+        assert len(calls) == audited + 4, "过期的空结论要重新探"
+
+    def test_unreachable_connections_are_not_recorded_as_a_miss(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._fake_clients(monkeypatch, "down", "down")
+
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == ""
+        assert vm_scope._probe_cache == {}, "一台都没应答，不能缓存「没有」"
+
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == ""
+        assert len(calls) == 8, "下次请求要重新探（PVE 恢复后应当立刻能定位到）"
+
+    def test_one_unanswered_connection_still_proves_a_miss(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """只要有一条连接应答过 404，就足以断定「这台机器不在这里」。"""
+
+        self._fake_clients(monkeypatch, "down", False)
+
+        assert asyncio.run(vm_scope._probe_connection("pve1", 100)) == ""
+        assert vm_scope._probe_cache.get(("pve1", 100), ("", "x"))[1] == ""
+
+    def test_concurrent_requests_share_one_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._fake_clients(monkeypatch, True, delay=0.02)
+
+        async def _scenario() -> List[str]:
+            return await asyncio.gather(
+                *(vm_scope._probe_connection("pve1", 100) for _ in range(6))
+            )
+
+        assert asyncio.run(_scenario()) == ["conn-a"] * 6
+        assert len(calls) == 1, f"6 个并发请求探了 {len(calls)} 轮"

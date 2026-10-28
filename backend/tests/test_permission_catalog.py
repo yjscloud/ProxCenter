@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app import security
 
@@ -77,3 +78,67 @@ def test_frontend_keys_match_catalog():
         "前端清单与后端目录不一致 —— "
         f"前端少了：{sorted(catalog - declared)}；前端多了：{sorted(declared - catalog)}"
     )
+
+
+# ------------------------------------------------------------------ 适用角色
+# 「勾了却不生效」的第二种来源：权限点本身只在管理视角下成立。这类项在目录里
+# 标注 ``roles``，界面对不适用的角色置灰，写入时拒绝 —— 三处必须同源，否则
+# 又会出现「界面能勾、保存报错」或「保存成功、用起来没反应」。
+
+
+def test_restricted_permissions_name_real_roles():
+    """``roles`` 标注的角色必须真实存在，且内置角色里真的给了这项权限。"""
+    assert security.PERMISSION_ROLES, (
+        "目录里一条 roles 标注都没有 —— vm.assign / ct.assign 的标注被改回去了？"
+    )
+    for key, roles in security.PERMISSION_ROLES.items():
+        assert key in security.permission_keys(), key
+        assert roles, key
+        for role in roles:
+            assert role in security.BUILTIN_ROLE_NAMES, f"{key} 标注了不存在的角色 {role}"
+            if role == "admin":
+                continue  # 超管是 "*"，不在逐条清单里
+            assert key in security.ROLE_PERMISSIONS.get(role, ()), (
+                f"{key} 标注「仅 {role} 生效」，但内置的 {role} 其实没有这项权限"
+            )
+
+
+def test_assign_is_reserved_for_admin_roles():
+    """指派归属：管理员 / 区域管理员放行，普通角色连写入都拒绝。"""
+    for key in ("vm.assign", "ct.assign"):
+        assert security.role_can_grant(key, "admin")
+        assert security.role_can_grant(key, "region_admin")
+        for role in ("operator", "viewer", None):
+            assert not security.role_can_grant(key, role), role
+            with pytest.raises(HTTPException) as rejected:
+                security.validate_permissions([key], role_id=role)
+            assert rejected.value.status_code == 400
+            # 文案要说清「谁能用」，而不是丢一句「权限非法」
+            assert "区域管理员生效" in str(rejected.value.detail)
+
+
+def test_assignment_endpoint_guard_rejects_legacy_grants():
+    """历史角色里存着 vm.assign 时，入口要报 403 而不是静默失效。"""
+    security.ensure_permission_role({"role": "admin", "username": "root"}, "vm.assign")
+    security.ensure_permission_role({"role": "region_admin"}, "vm.assign")
+    with pytest.raises(HTTPException) as rejected:
+        security.ensure_permission_role({"role": "operator"}, "vm.assign")
+    assert rejected.value.status_code == 403
+    # 文案要能直接看懂是哪一项、谁能用
+    assert "指派归属" in str(rejected.value.detail)
+    assert "超级管理员" in str(rejected.value.detail)
+
+    # 不受限的权限点不该被这道闸门误伤
+    security.ensure_permission_role({"role": "viewer"}, "vm.view")
+
+
+def test_catalog_desc_states_the_restriction():
+    """说明文案里要写明「仅对谁生效」—— 勾选界面把它当 tooltip 显示。"""
+    entries = {
+        item["key"]: item
+        for group in security.PERMISSION_CATALOG
+        for item in group["permissions"]
+    }
+    for key in security.PERMISSION_ROLES:
+        desc = str(entries[key].get("desc") or "")
+        assert "区域管理员" in desc, f"{key} 的说明没写清适用角色：{desc}"

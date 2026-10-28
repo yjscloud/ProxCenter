@@ -21,6 +21,15 @@ export interface PermissionEntry {
   key: string;
   label: string;
   desc?: string;
+  /**
+   * 只对这些角色生效；缺省 = 所有角色都能持有。
+   *
+   * 用来标注「勾了却不生效」的那几项：`vm.assign` / `ct.assign` 是管理动作
+   * （改派归属），普通角色即使勾上也做不成事，所以目录里写明适用角色，勾选
+   * 界面对其它角色置灰并说明原因。后端写入时同样会拒绝（见
+   * `security.validate_permissions` 的 `role_id` 参数）。
+   */
+  roles?: string[];
 }
 
 /** 权限目录的一个分组 */

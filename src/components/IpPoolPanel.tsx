@@ -538,8 +538,12 @@ export function IpPoolPanel() {
   const toast = useToast();
   const qc = useQueryClient();
   /* 地址池保存在后端、写入走 network.manage（仅管理员），界面沿用同一判定 */
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const canManageNet = hasPermission('network.manage');
+  /* 新增 / 删除「别人也能看到」的池、改归属用户，只有管理员能做：后端按归属合并写
+     （见 routers/ip_pools.py 的 _merge_for_scope），普通用户即使被授予
+     network.manage 也只能改分给自己的那几行。 */
+  const canAssign = canManageNet && user?.role === 'admin';
   // 直接用数组而不是 null，避免接口暂时不可用时连「添加池」都点不了。
   const [pools, setPools] = useState<IpPool[]>([]);
   const [busy, setBusy] = useState(false);
@@ -748,7 +752,7 @@ export function IpPoolPanel() {
               variant="ghost"
               size="sm"
               icon={<IconPlus size={14} />}
-              disabled={!canManageNet}
+              disabled={!canAssign}
               onClick={addPool}
             >
               {t('ippool.addPool')}
@@ -770,6 +774,12 @@ export function IpPoolPanel() {
       {!canManageNet ? (
         <Notice tone="info" title={t('ippool.readonlyTitle')}>
           {t('ippool.readonlyBody')}
+        </Notice>
+      ) : null}
+
+      {canManageNet && !canAssign ? (
+        <Notice tone="info" title={t('ippool.limitedTitle')}>
+          {t('ippool.limitedBody')}
         </Notice>
       ) : null}
 
@@ -845,7 +855,7 @@ export function IpPoolPanel() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        disabled={!canManageNet}
+                        disabled={!canAssign}
                         onClick={() => setOwnerEdit(p.id)}
                         title={ownerTooltip(p) || t('ippool.ownerPickHint')}
                       >

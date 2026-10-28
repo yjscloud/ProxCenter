@@ -13,6 +13,7 @@ from .. import (
     bulk,
     defaults,
     guest_created,
+    guestguard,
     guestip,
     guestnotify,
     guestpasswd,
@@ -100,27 +101,11 @@ async def _require_guest_access(
 ) -> None:
     """按归属校验单台客户机（虚拟机 / 容器）的访问权限；列表接口自行过滤。
 
-    管理员是超管视角，不受限制；普通用户只允许操作自己名下的机器，没有归属
-    记录的存量机器同样拒绝（严格隔离）。容器使用 :data:`ownership.KIND_CT`，
-    与虚拟机的 :data:`ownership.KIND_VM` 相互独立。
+    实现已收敛到 :func:`guestguard.require_guest_object` —— 路由级依赖只是它
+    的一个调用点，控制台 / 导出 / 重装 / 备份 / vm-meta 等「不在这个 router
+    上」的端点也调同一个函数（以前它们完全没有这道判断）。
     """
-    if not node or vmid is None:
-        return
-    owner = security.visible_owner(user)
-    if owner is None:
-        return
-    if security.is_region_admin(user):
-        # 区域管理员管的是「区域内的全部机器」，不再逐台看归属；区域外按不存在
-        # 处理（与归属不匹配同口径，避免用 403 探出哪些 VMID 属于别的区域）。
-        if security.region_in_scope(user, store.connection_region(_op_connection())):
-            return
-        raise HTTPException(status_code=404, detail="资源不存在")
-    ref = ownership.vm_ref(_op_connection(), node, vmid)
-    if await ownership.get_owner_for(kind, ref) != owner:
-        # 404 而不是 403（安全审计 L-2）：403 等于承认「这台机器存在，只是不
-        # 属于你」，拿 100~200 号段批量打一遍就能把全平台在用的 VMID 摸出来。
-        # 文案也不能带 node/vmid —— 否则等于换个字段继续泄露存在性。
-        raise HTTPException(status_code=404, detail="资源不存在")
+    await guestguard.require_guest_object(user, node, vmid, kind)
 
 
 async def require_vm_access(
@@ -318,8 +303,9 @@ async def collect_vms(
             or ""
         )
 
+    region_admin = security.is_region_admin(user)
     if owner is not None:
-        if security.is_region_admin(user):
+        if region_admin:
             # 区域管理员：本区域内的机器全部可见（不看归属），区域外一条不给
             result = [
                 v
@@ -328,9 +314,12 @@ async def collect_vms(
             ]
         else:
             result = [v for v in result if _owner_of(v) == owner]
-    else:
+    if owner is None or region_admin:
         # 只看得见自己机器的人不需要这个字段（回填也只是把他自己重复一遍），
         # 所以只给能看全量的人 —— 少一处「哪台归谁」的暴露面。
+        # 区域管理员也算「能看全量」：他进这一页就是为了改派归属，列表里没有
+        # 归属人只能凭记忆操作；单台的 /owner 接口本来就允许他读，可见范围也已
+        # 按区域收窄，回填不算额外的信息面。
         for item in result:
             item["owner"] = _owner_of(item) or None
     # connection_region 只用于上面的范围判定，不返回给前端
@@ -1520,6 +1509,9 @@ async def get_vm_owner(
     user: Dict[str, Any] = Depends(security.require_permission("vm.assign")),
 ) -> Dict[str, Any]:
     """查看某台虚拟机的归属（None 表示无归属，普通用户不可见）。"""
+    # 目录里标注了「仅管理员 / 区域管理员」（见 security.PERMISSION_ROLES）：
+    # 库里可能还存着授予过普通角色的历史角色，光靠界面置灰挡不住这里
+    security.ensure_permission_role(user, "vm.assign")
     ref = ownership.vm_ref(connection_id or _op_connection(), node, vmid)
     return {
         "node": node,
@@ -1541,6 +1533,7 @@ async def set_vm_owner(
     用途：存量虚拟机在创建时没有记录归属，严格隔离下普通用户看不到它们，
     管理员可以用这个操作把某台机器交给某个用户。
     """
+    security.ensure_permission_role(user, "vm.assign")
     username = (payload.username or "").strip()
     if username:
         target = await store.get_user(username)

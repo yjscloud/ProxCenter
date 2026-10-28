@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -170,14 +171,23 @@ class RecipientBook:
     已经不存在的账号（用户被删掉时归属表不级联清理）时，回落给配规则的人。宁可
     发给「不该收的人」，也不能让一条告警谁都不收到。
 
+    **普通用户配的规则不走这条路**：他没有「别人的机器」可管，规则就该落到他自己
+    名下（见 :meth:`is_supervisor`）。否则新建的普通账号配完规则，告警全被投到机器
+    归属者那里，自己一条也收不到 —— 使用者的结论必然是「我给新账号配的规则不生效」。
+
     一轮巡检里同一个收件人会命中很多条规则，所以归属表与账号清单各读一次、
     之后都在内存里判断 —— 不按每台机器查库。
     """
+
+    #: 能看到「全局机器」的角色：只有他们配的规则才按机器归属分散投递
+    SUPERVISOR_ROLES = ("admin", "region_admin")
 
     def __init__(self) -> None:
         self._guests: Optional[Dict[str, str]] = None
         self._hosts: Optional[Dict[str, str]] = None
         self._users: Optional[set] = None
+        self._roles: Optional[Dict[str, str]] = None
+        self._supervisors: Dict[str, bool] = {}
         self._connection: Optional[str] = None
 
     async def _guest_owners(self) -> Dict[str, str]:
@@ -211,15 +221,53 @@ class RecipientBook:
                 self._connection = ""
         return self._connection
 
+    async def _load_users(self) -> None:
+        if self._users is not None:
+            return
+        try:
+            users = await store.list_users()
+        except Exception:  # noqa: BLE001
+            users = []
+        self._users = {str(item.get("username") or "") for item in users}
+        self._roles = {
+            str(item.get("username") or ""): str(item.get("role") or "") for item in users
+        }
+
     async def _known(self, username: str) -> bool:
-        if self._users is None:
-            try:
-                self._users = {
-                    str(item.get("username") or "") for item in await store.list_users()
-                }
-            except Exception:  # noqa: BLE001
-                self._users = set()
+        await self._load_users()
         return username in self._users
+
+    async def is_supervisor(self, username: str) -> bool:
+        """这个人配的规则要不要按「机器归属」投递（管理员 / 区域管理员：要）。
+
+        普通用户看不到别人的机器，他配的规则只该影响自己：``*`` 只覆盖自己名下的
+        机器，告警也只发给自己。返回 False 表示这条规则按规则归属投递。
+        """
+        name = str(username or "")
+        if name not in self._supervisors:
+            await self._load_users()
+            role = (self._roles or {}).get(name)
+            if role is None:
+                # 账号已不存在（规则的主人被删了）：保持旧口径 —— 按机器归属投递，
+                # 不能因为查不到角色就把这批规则改成「发给自己」而没人收到。
+                self._supervisors[name] = True
+            else:
+                self._supervisors[name] = role in self.SUPERVISOR_ROLES
+        return self._supervisors[name]
+
+    async def guest_owner(self, res: Dict[str, Any]) -> str:
+        """这台虚拟机 / 容器的归属者（没有归属时是空串，不做兜底）。"""
+        if str(res.get("type") or "") not in ("qemu", "lxc"):
+            return ""
+        vmid = res.get("vmid")
+        if vmid is None or not str(vmid):
+            return ""
+        return ownership.vm_owner_from(
+            await self._guest_owners(),
+            str(res.get("node") or ""),
+            vmid,
+            self._connection_id(),
+        )
 
     async def recipient(self, fallback: str, machine_owner: Optional[str]) -> str:
         """合成收件人：机器归属者优先，不可用时回落给 ``fallback``（配规则的人）。"""
@@ -243,13 +291,7 @@ class RecipientBook:
         vmid = res.get("vmid")
         if vmid is None or not str(vmid):
             return fallback
-        owner = ownership.vm_owner_from(
-            await self._guest_owners(),
-            str(res.get("node") or ""),
-            vmid,
-            self._connection_id(),
-        )
-        return await self.recipient(fallback, owner)
+        return await self.recipient(fallback, await self.guest_owner(res))
 
     async def host_recipient(self, fallback: str, host_id: Any) -> str:
         """一台受管主机的告警该找谁。
@@ -742,6 +784,18 @@ async def load_rules() -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def new_rule_id() -> str:
+    """新规则的 id。
+
+    必须**无条件唯一**：id 是「一条规则」的身份，而保存时同 id 的条目会被合并成
+    一条（见 :func:`_dedupe_by_id` 与 :func:`save_rules_for`）。这里的实现曾经是
+    ``int(time.time() * 1000)`` —— 毫秒级时间戳，同一个请求里循环生成的多条规则
+    几乎必然落在同一毫秒，于是「为三台虚拟机各配一条规则」保存后只剩一条，
+    最终只触发一个告警。随机 id 没有这个问题。
+    """
+    return uuid.uuid4().hex
+
+
 def normalise_rule(raw: Any, username: Optional[str] = None) -> Dict[str, Any]:
     item = raw if isinstance(raw, dict) else {}
     try:
@@ -750,7 +804,7 @@ def normalise_rule(raw: Any, username: Optional[str] = None) -> Dict[str, Any]:
         threshold = 80.0
     metric = item.get("metric")
     return {
-        "id": str(item.get("id") or str(int(time.time() * 1000))),
+        "id": str(item.get("id") or "").strip() or new_rule_id(),
         "name": str(item.get("name") or i18n.tr("告警规则")).strip(),
         "target_type": "vm" if item.get("target_type") == "vm" else "node",
         "target": str(item.get("target") or "*").strip() or "*",
@@ -767,27 +821,30 @@ async def save_rules(rules: List[Dict[str, Any]]) -> None:
 
 
 def _dedupe_by_id(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """按 id 合并重复条目，同一 id 只保留一份。
+    """按「归属 + id」合并重复条目，同一个人的同一条规则只保留一份。
 
     历史数据里同一条规则可能存了多份（升级前没有归属的旧条目 + 认领后的副本），
     直接拼接会让规则数每保存一次就增长一批。合并时字段取靠后提交的那份，
     ``enabled`` 取「都启用才启用」：只要有一份是停用的，结果就是停用，
     避免规则被意外重新启用。
+
+    **归属要一起参与**：两个人各自的规则碰巧 id 相同（旧版本用毫秒时间戳当默认
+    id，很容易撞）时，那是两条不同的规则，合并掉就等于悄悄删掉别人的规则。
     """
-    merged: Dict[str, Dict[str, Any]] = {}
-    order: List[str] = []
+    merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    order: List[Tuple[str, str]] = []
     for rule in rules:
-        rid = str(rule.get("id"))
-        if rid in merged:
-            previous = merged[rid]
+        key = (owner_of(rule), str(rule.get("id")))
+        if key in merged:
+            previous = merged[key]
             rule = {
                 **rule,
                 "enabled": bool(previous.get("enabled")) and bool(rule.get("enabled")),
             }
         else:
-            order.append(rid)
-        merged[rid] = rule
-    return [merged[rid] for rid in order]
+            order.append(key)
+        merged[key] = rule
+    return [merged[key] for key in order]
 
 
 async def save_rules_for(rules: Any, username: str) -> List[Dict[str, Any]]:
@@ -800,15 +857,38 @@ async def save_rules_for(rules: Any, username: str) -> List[Dict[str, Any]]:
     提交时会被认领到当前用户名下，若库里的无主副本继续保留，每保存一次就会多出
     一批同名规则（且副本不受停用影响，照样参与检测）。最后按 id 兜底去重，
     顺带清掉历史遗留的重复份。
+
+    **一次提交里的 id 必须互不相同**：id 是「一条规则」的身份，两条内容不同、
+    id 相同的规则（老客户端 / 脚本不带 id 时由毫秒时间戳生成，参见
+    :func:`new_rule_id`）如果原样落库，会被上面的去重逻辑合并成一条 ——
+    表现就是「给多台虚拟机各配一条规则，只有一台会告警」。这里给撞 id 的那条
+    补一个新 id（是两条不同的规则，不是同一条的副本），并且不碰别人的同名 id。
     """
     items = [item for item in rules if isinstance(item, dict)] if isinstance(rules, list) else []
-    incoming = [normalise_rule(item, username) for item in items]
+    existing = await load_rules()
+    # 别人的规则占用的 id。升级前无主的条目算「我的」：它本来就是这条规则的旧副本，
+    # 本次提交要取代它（见下面的 others 过滤），不能因此给规则换一个新 id。
+    foreign_ids = {
+        str(rule.get("id"))
+        for rule in existing
+        if owner_of(rule) and owner_of(rule) != username
+    }
+    used: set = set()
+    incoming: List[Dict[str, Any]] = []
+    for item in items:
+        rule = normalise_rule(item, username)
+        rid = str(rule.get("id"))
+        if rid in used or rid in foreign_ids:
+            rule["id"] = new_rule_id()
+        used.add(str(rule["id"]))
+        incoming.append(rule)
     own = [{**rule, "username": username} for rule in incoming if owner_of(rule) == username]
     own_ids = {str(rule.get("id")) for rule in own}
     others = [
         rule
-        for rule in await load_rules()
-        if owner_of(rule) != username and str(rule.get("id")) not in own_ids
+        for rule in existing
+        if owner_of(rule) != username
+        and not (owner_of(rule) == "" and str(rule.get("id")) in own_ids)
     ]
     merged = _dedupe_by_id(others + own)
     await save_rules(merged)
@@ -2372,6 +2452,38 @@ def _label(res: Dict[str, Any], target_type: str) -> str:
     return str(res.get("name") or res.get("vmid") or "")
 
 
+def alarm_subject(res: Dict[str, Any], target_type: str) -> str:
+    """告警状态的「对象身份」：告警 key 里用的那一截。
+
+    必须**集群内唯一**，所以虚拟机用「节点 + VMID」而不是名字：Proxmox 的虚拟机
+    名字不要求唯一，一个集群里同时存在两台 ``web`` 很常见。用名字的话两台机器会
+    共用一个 alarm_key —— 后一台命中的是前一台的告警状态，冷却窗口里直接被当成
+    「同一告警的重复轮次」跳过，于是「多台虚拟机只有一台会告警」。
+    展示名（``_label``）仍然只用于界面与通知正文，两者不要混用。
+    """
+    if target_type == "node":
+        return str(res.get("node") or "")
+    vmid = str(res.get("vmid") or "")
+    node = str(res.get("node") or "")
+    if vmid:
+        return node + ":" + vmid
+    return _label(res, target_type)
+
+
+def alarm_subject_of_row(row: Dict[str, Any]) -> str:
+    """从 ``alert_active`` 的一行还原对象身份（恢复判定时用）。
+
+    升级前的行是按展示名建的 key，这里对不上就由调用方回退到旧口径（见
+    :func:`evaluate` 的恢复分支），不能让存量告警因为换了 key 就「消失」。
+    """
+    if str(row.get("target_type") or "") == "vm":
+        vmid = str(row.get("vmid") or "")
+        node = str(row.get("node") or "")
+        if vmid:
+            return node + ":" + vmid
+    return str(row.get("target") or "")
+
+
 def host_address(client: Any) -> str:
     """面板访问该宿主机所用的 PVE 地址。"""
     return str(getattr(getattr(client, "conn", None), "host", "") or "")
@@ -2383,6 +2495,7 @@ async def adopt_active(
     recipient: str,
     rule_id: Any,
     label: str,
+    legacy_label: str = "",
 ) -> Dict[str, Any]:
     """把记在旧收件人名下的活动告警改挂到新收件人，返回那一行（可能为空）。
 
@@ -2393,28 +2506,43 @@ async def adopt_active(
 
     不搬会怎样：新 key 在库里查不到，于是这台机器同时产生一条新告警（给机器主人）
     和一条「已恢复」（给旧归属），后者的时间戳还更新 —— 看着像告警刚响就自己好了。
+
+    ``legacy_label`` 是升级前写下的「按展示名」的 key 尾巴：告警 key 后来改成了
+    「节点 + VMID」（见 :func:`alarm_subject`），存量行如果不同时认一下旧写法，升级
+    那一刻正在告警的机器会被重复告警一遍、再补一条恢复通知。
     """
-    if not old_owner or old_owner == recipient:
+    if not old_owner:
         return {}
-    old_key = alarm_key(old_owner, rule_id, label)
     new_key = alarm_key(recipient, rule_id, label)
-    row = active.pop(old_key, None)
-    if row is None:
-        return {}
-    moved = dict(row, username=recipient)
-    await mark_active(new_key, moved)
-    # 邮件计数走单独的列（不在 ACTIVE_COLUMNS 里，见 mark_mail_sent）：
-    # 不搬的话新行会从「没发过邮件」重新开始，下一轮立刻补一封 —— 换个人收
-    # 一条旧告警的副本，没有任何意义。
-    mail_ts = int(row.get("mail_ts") or 0)
-    mail_count = int(row.get("mail_count") or 0)
-    if mail_ts or mail_count:
-        await mark_mail_sent(new_key, mail_ts, mail_count)
-        moved["mail_ts"] = mail_ts
-        moved["mail_count"] = mail_count
-    await clear_active(old_key)
-    active[new_key] = dict(moved, alarm_key=new_key)
-    return moved
+    tails = [label]
+    if legacy_label and legacy_label != label:
+        tails.append(legacy_label)
+    # 收件人没变时旧行也在自己名下（换的只是 key 尾巴），两个名字都要认
+    owners = [old_owner] if old_owner == recipient else [old_owner, recipient]
+    for tail in tails:
+        for owner in owners:
+            key = alarm_key(owner, rule_id, tail)
+            if key == new_key:
+                # 已经在目标位置了：没有可搬的东西（第二次调用是空操作）
+                continue
+            row = active.pop(key, None)
+            if row is None:
+                continue
+            moved = dict(row, username=recipient)
+            await mark_active(new_key, moved)
+            # 邮件计数走单独的列（不在 ACTIVE_COLUMNS 里，见 mark_mail_sent）：
+            # 不搬的话新行会从「没发过邮件」重新开始，下一轮立刻补一封 —— 换个人收
+            # 一条旧告警的副本，没有任何意义。
+            mail_ts = int(row.get("mail_ts") or 0)
+            mail_count = int(row.get("mail_count") or 0)
+            if mail_ts or mail_count:
+                await mark_mail_sent(new_key, mail_ts, mail_count)
+                moved["mail_ts"] = mail_ts
+                moved["mail_count"] = mail_count
+            await clear_active(key)
+            active[new_key] = dict(moved, alarm_key=new_key)
+            return moved
+    return {}
 
 
 async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -2425,7 +2553,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
 
     **收件人跟着机器归属走，不跟规则归属走**（见 :class:`RecipientBook`）：管理员
     给全部虚拟机配一条规则，告警照样落到每台机器的主人手上；宿主机与没有归属的
-    机器才回落到配规则的人。
+    机器才回落到配规则的人。普通用户（没有全局视野的角色）配的规则是**自己的**：
+    ``*`` 只覆盖自己名下的机器，告警也只发给自己 —— 否则新账号配完规则，告警全被
+    投到机器归属者那里，他一条也收不到。
     """
     await init_table()
     all_rules = await load_rules()
@@ -2483,6 +2613,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     book = RecipientBook()
 
     for rule_owner, owner_rules in groups.items():
+        # 规则的主人是不是「能看到全局机器」的角色（管理员 / 区域管理员）：
+        # 决定这条规则按机器归属投递，还是只在自己名下生效、发给自己。
+        supervisor = await book.is_supervisor(rule_owner)
         for rule in owner_rules:
             target_type = rule.get("target_type")
             metric = rule.get("metric")
@@ -2492,9 +2625,27 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 label = _match_target(rule, res)
                 if label is None:
                     continue
-                # 规则是人配的，机器是有主的：该处理这条告警的是机器归属者。
-                # 宿主机 / 没有归属的机器回落到配规则的人（见 RecipientBook）。
-                recipient = await book.guest_recipient(rule_owner, res)
+                # 告警状态的 key 用「节点 + VMID」而不是展示名：两台同名虚拟机
+                # 不能共用一个 key（见 alarm_subject）。
+                subject = alarm_subject(res, target_type)
+                if not supervisor:
+                    # 普通用户没有全局视野：``*`` 只覆盖**不属于别人**的机器。
+                    # 不做这一步的话，新账号一条 ``*`` 规则会把别人的机器也算进来，
+                    # 而告警又按机器归属投给了别人 —— 他自己什么也看不到。
+                    # 没有归属记录的机器仍然算进来：面板之外建的/对账清掉的机器
+                    # 不属于任何人，把它排除只会让规则静默失效（与 RecipientBook
+                    # 「宁可发给不该收的人，也不能谁都不收到」同一口径）。
+                    if target_type == "vm" and str(rule.get("target") or "*") == "*":
+                        machine_owner = await book.guest_owner(res)
+                        if machine_owner and machine_owner != rule_owner:
+                            continue
+                # 管理员 / 区域管理员配的规则是「全局规则」：规则是人配的，机器是
+                # 有主的，该处理这条告警的是机器归属者。宿主机 / 没有归属的机器
+                # 回落到配规则的人（见 RecipientBook）。普通用户配的规则发给自己。
+                if supervisor:
+                    recipient = await book.guest_recipient(rule_owner, res)
+                else:
+                    recipient = rule_owner
                 # 按收件人的语言渲染：巡检是后台跑的，没有请求上下文，
                 # 不钉住的话整轮都会按面板默认语言发出去（见 resolve_language）。
                 chans = await channels.of(recipient)
@@ -2534,7 +2685,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     if value is None:
                         # 数据缺失（典型：没装 qemu-guest-agent）—— 本轮不判定，
                         # 但要让恢复逻辑知道「没测到」，别把静默当成已恢复。
-                        unmeasured.add(alarm_key(recipient, rule.get("id"), label))
+                        unmeasured.add(alarm_key(recipient, rule.get("id"), subject))
                         continue
                     threshold = float(rule.get("threshold") or 80)
                     if value < threshold:
@@ -2542,7 +2693,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
 
                 # key 带上收件人：同一对象对不同人（同一台机器被多人关注过）各自
                 # 独立计数与冷却，不会因为谁先触发就把别人的冷却一起推后
-                key = alarm_key(recipient, rule.get("id"), label)
+                key = alarm_key(recipient, rule.get("id"), subject)
                 measured[key] = value
                 alarming.add(key)
                 # 冷却时间以库里的告警状态为准，重启后不会重复轰炸
@@ -2554,7 +2705,12 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     # （冷却与邮件计数一并带过去）。不接的话同一台机器会同时收到
                     # 一条新告警和一条发给旧归属的「恢复」，后者纯属噪声。
                     prev = await adopt_active(
-                        active, rule_owner, recipient, rule.get("id"), label
+                        active,
+                        rule_owner,
+                        recipient,
+                        rule.get("id"),
+                        subject,
+                        legacy_label=label,
                     )
                 last = float(prev.get("ts") or 0)
                 base_due = now - last >= cooldown
@@ -2745,7 +2901,14 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         row_owner = str(row.get("username") or "") or fallback
         # 恢复通知同样按收件人语言，且每行可能属于不同用户，逐行钉
         i18n.pin_language(await resolve_language(row_owner))
-        if key != alarm_key(row_owner, row.get("rule_id"), row.get("target")):
+        # key 的尾巴现在有两种写法：新版「节点 + VMID」（alarm_subject）与升级前
+        # 的展示名。两种都认，否则升级那一刻正在告警的行会被当成「不属于任何人」
+        # 静默清掉 —— 用户看到的是告警凭空消失、也收不到恢复通知。
+        expected = {
+            alarm_key(row_owner, row.get("rule_id"), alarm_subject_of_row(row)),
+            alarm_key(row_owner, row.get("rule_id"), str(row.get("target") or "")),
+        }
+        if key not in expected:
             # 旧版（未按用户拆分）遗留的状态：静默清理，不误报恢复
             await clear_active(key)
             continue

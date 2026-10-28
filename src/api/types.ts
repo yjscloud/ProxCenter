@@ -2991,6 +2991,12 @@ export interface AlertsOverview {
   own_username: string;
   /** 是否管理员：管理员可见全部用户的规则与历史 */
   is_admin: boolean;
+  /**
+   * 能否修改告警配置（规则 / 通道 / 模板 / 立即检测），即 alert.manage。
+   * 新建账号默认是 viewer，只有 alert.view：界面必须据此置为只读，否则用户
+   * 配完规则点保存才拿到 403，页面上却还留着那份「看起来配好了」的规则。
+   */
+  can_manage: boolean;
 }
 
 /** 一个可开关的告警来源（资源规则 / 端口 / SSH / 远程主机 / 备份） */

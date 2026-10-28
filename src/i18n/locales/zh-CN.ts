@@ -6576,6 +6576,8 @@ export const zhCN = {
   'alerts.mutedSuffix': '已停止推送 · {desc}',
   'alerts.readonly': '只读',
   'alerts.readonlyNotice': '这些开关是全局设置（影响所有用户会收到的告警），只有管理员可以修改。',
+  'alerts.manageForbiddenTitle': '当前账号只能查看告警',
+  'alerts.manageForbidden': '当前角色没有「配置告警」的权限（alert.manage），规则、通知渠道与手动检测都不可修改。新建账号默认是只读角色；需要自己配告警规则时，请让管理员把角色调整为「运维」或在角色权限里勾上 alert.manage。',
   'alerts.channelsTitle': '告警通知渠道',
   'alerts.channelsSubtitle': '告警与恢复通知通过下面已启用的渠道发出；飞书、通用 Webhook 与邮件互相独立，可以只开一个，也可以几个都开',
   'alerts.feishuBot': '飞书机器人',

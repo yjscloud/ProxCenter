@@ -136,6 +136,11 @@ async def get_alerts(
         "notify_enabled": await alerting.load_notify_sources(),
         "own_username": _own(user),
         "is_admin": scope is None,
+        # 能不能改（规则 / 通道 / 模板 / 手动检测）。界面上必须据此决定「配不配
+        # 得动」：新建账号的默认角色是 viewer，只有 alert.view。以前前端不看这个
+        # 标志，规则编辑器照样可以点、可以加行，但保存时后端 403 —— 用户以为规则
+        # 配好了，实际一条都没落库，于是「给新账号配的告警规则不生效」。
+        "can_manage": security.has_user_permission(user, "alert.manage"),
     }
 
 

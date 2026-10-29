@@ -639,11 +639,32 @@ async def test_connection(
 
     An empty ``token_secret`` means "use the stored one", which lets the user
     re-test a saved config without retyping the secret.
+
+    **「存的那一份」必须是这条连接的**：多连接部署里不能再无条件读
+    ``store.get_connection_config()``（那是「兜底连接」，通常是第一条保存的
+    连接）。编辑第二条连接时留空 secret，拿到的会是第一条的密钥，于是报
+    「Proxmox 拒绝了该凭据」—— 而凭据其实是好的。连接取自
+    ``connection_id``（请求体）或 ``X-PVE-Connection`` 头，两者都没有时才
+    回落到兜底连接（旧行为，供单连接部署与脚本使用）。
     """
     secret = payload.token_secret
     if not secret:
-        existing = store.get_connection_config()
-        secret = existing.get("token_secret", "")
+        conn_id = (payload.connection_id or "").strip() or requested_connection()
+        if conn_id:
+            profile: Optional[Dict[str, Any]] = next(
+                (
+                    c
+                    for c in store.get_connections()
+                    if str(c.get("id") or "") == conn_id
+                ),
+                None,
+            )
+            # 指向已删除的连接：说清楚，别退化成「凭据被拒绝」
+            if profile is None:
+                raise HTTPException(status_code=404, detail="连接不存在")
+        else:
+            profile = store.get_connection_config()
+        secret = str((profile or {}).get("token_secret") or "")
 
     if not secret:
         raise HTTPException(status_code=400, detail="缺少 API Token Secret")

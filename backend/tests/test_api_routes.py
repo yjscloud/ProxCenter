@@ -2804,6 +2804,76 @@ class TestConnectionConfig:
         assert cfg["host"] == "pve2.example.com"
         assert cfg["token_secret"] == "super-secret-value"
 
+    def test_test_connection_reuses_the_requested_connections_secret(
+        self, api, monkeypatch
+    ) -> None:
+        """测试连接留空 secret 时，必须复用**这条连接**的密钥。
+
+        回归用例：多连接部署里编辑第二条连接，「测试连接」曾无条件读「兜底
+        连接」（保存的第一条）的 secret，于是拿别人的密钥去认证，报
+        「Proxmox 拒绝了该凭据」—— 而凭据其实是好的。
+        """
+        # 自己起一个 mock PVE：不能拿 pve_module._client，它在用例之间可能已被
+        # 重建成库里的（空）连接，用它取地址会让本用例随执行顺序飘。
+        with MockPveServer() as server:
+            host = f"http://127.0.0.1:{server.port}"
+            profiles = [
+                {
+                    "id": "old",
+                    "name": "旧节点",
+                    "host": host,
+                    "port": server.port,
+                    "token_id": TOKEN_ID,
+                    "token_secret": "not-the-right-secret",
+                    "verify_ssl": False,
+                },
+                {
+                    "id": "new",
+                    "name": "新节点",
+                    "host": host,
+                    "port": server.port,
+                    "token_id": TOKEN_ID,
+                    "token_secret": TOKEN_SECRET,
+                    "verify_ssl": False,
+                },
+            ]
+            monkeypatch.setattr(
+                store, "get_connections", lambda: [dict(p) for p in profiles]
+            )
+            monkeypatch.setattr(store, "get_active_connection_id", lambda: "old")
+
+            headers = auth_headers(api)
+            candidate = {
+                "host": host,
+                "port": server.port,
+                "token_id": TOKEN_ID,
+                "token_secret": "",
+                "verify_ssl": False,
+            }
+
+            # 指名连接：secret 取自 "new"，认证通过
+            ok = api.post(
+                "/api/config/connection/test",
+                json={**candidate, "connection_id": "new"},
+                headers=headers,
+            )
+            assert ok.status_code == 200, ok.text
+            assert ok.json()["ok"] is True
+
+            # 不指名：沿用兜底连接 "old" 的密钥，被 PVE 拒绝（旧行为，单连接场景）
+            rejected = api.post(
+                "/api/config/connection/test", json=candidate, headers=headers
+            )
+            assert rejected.status_code == 400
+
+            # 指向已删除的连接：说清楚，而不是「凭据被拒绝」
+            missing = api.post(
+                "/api/config/connection/test",
+                json={**candidate, "connection_id": "gone"},
+                headers=headers,
+            )
+            assert missing.status_code == 404
+
     def test_secrets_are_encrypted_in_the_database(self, api) -> None:
         """PVE 密钥落库必须是密文。
 

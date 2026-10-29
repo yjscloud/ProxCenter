@@ -380,8 +380,15 @@ export const configApi = {
   getConnection: () => get<ConnectionConfig>('/config/connection'),
   updateConnection: (body: ConnectionConfigInput) =>
     put<ConnectionConfig | { ok: boolean }>('/config/connection', body),
-  testConnection: (body: Omit<ConnectionConfigInput, 'node_default'>) =>
-    post<ConnectionTestResult>('/config/connection/test', body),
+  /**
+   * 测试连接（不落库）。传 connectionId：``token_secret`` 留空时后端复用
+   * **这条连接**已存的密钥 —— 不传就会回落到「兜底连接」，编辑第二条连接时
+   * 拿第一条的 secret 去测，结果报「Proxmox 拒绝了该凭据」，而凭据其实是好的。
+   */
+  testConnection: (
+    body: Omit<ConnectionConfigInput, 'node_default'>,
+    connectionId?: string,
+  ) => post<ConnectionTestResult>('/config/connection/test', body, scoped(connectionId)),
   /**
    * 环境自检：探测**指定连接**的凭据有效权限，并解释各项限制。
    *

@@ -677,6 +677,75 @@ class TestDiagnostics:
         # No console credentials configured in the fixture -> advisory only.
         assert by_key["console"]["status"] == "warn"
 
+    def test_probes_the_requested_connection(self, api, monkeypatch) -> None:
+        """自检必须打「正在配置的那条连接」，不是全局兜底连接。
+
+        回归用例：新增节点（172.16.149.42）后点「环境自检」，报告却回另一台
+        主机的 https://172.16.149.3:8006 —— 因为接口走 get_client()，未指定
+        连接时只读「兜底连接」。这里用两条连接复现：兜底那条连不上，被指定的
+        那条指向 mock Proxmox。
+        """
+        import test_pve_client as fixtures
+
+        monkeypatch.setattr(
+            fixtures,
+            "PERMISSIONS",
+            {"/": ["Sys.Audit", "VM.Audit", "Datastore.Audit"]},
+        )
+        mock = pve_module._client.conn
+        profiles = [
+            # 兜底连接：127.0.0.1:1 上没有服务，连接会被立即拒绝（不会拖慢用例）
+            {
+                "id": "old",
+                "name": "旧节点",
+                "host": "127.0.0.1",
+                "port": 1,
+                "token_id": TOKEN_ID,
+                "token_secret": TOKEN_SECRET,
+                "verify_ssl": False,
+            },
+            # 刚新增的那条：指向 mock Proxmox
+            {
+                "id": "new",
+                "name": "新节点",
+                "host": mock.host,
+                "port": mock.port,
+                "token_id": TOKEN_ID,
+                "token_secret": TOKEN_SECRET,
+                "verify_ssl": False,
+            },
+        ]
+        monkeypatch.setattr(
+            store, "get_connections", lambda: [dict(p) for p in profiles]
+        )
+        monkeypatch.setattr(store, "get_active_connection_id", lambda: "old")
+        # 清掉可能残留的按连接客户端缓存（指纹相同也会复用）
+        monkeypatch.setattr(pve_module, "_scoped_clients", {})
+
+        headers = auth_headers(api)
+
+        # 不指定连接 = 沿用兜底连接，正是用户看到「IP 对不上」的那条路径
+        fallback = api.get("/api/config/diagnostics", headers=headers).json()
+        assert fallback["connection_id"] == "old"
+        assert fallback["host"] == "https://127.0.0.1:1"
+        assert fallback["reachable"] is False
+
+        # 指名连接：地址与凭据都取自同一份 profile，报告才能和「新增时填的 IP」对上
+        body = api.get(
+            "/api/config/diagnostics?connection_id=new", headers=headers
+        ).json()
+        assert body["connection_id"] == "new"
+        assert body["connection_name"] == "新节点"
+        assert body["host"] == mock.host
+        assert body["reachable"] is True
+        assert body["status"] == "warn"
+
+        # 指向已删除的连接：说清楚，而不是伪装成「连不上」
+        missing = api.get(
+            "/api/config/diagnostics?connection_id=gone", headers=headers
+        )
+        assert missing.status_code == 404
+
     def test_detects_privilege_separated_token(self, api, monkeypatch) -> None:
         """An empty /access/permissions is the signature of a token with no ACL.
 

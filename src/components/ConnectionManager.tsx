@@ -299,11 +299,16 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
 
   /* ---- 环境自检 ---- */
   /* 用已保存的凭据探测 Proxmox，报告有效权限与实际可用的能力。
-     目的是把「令牌权限不足导致列表全空」这类问题直接讲清楚。 */
+     目的是把「令牌权限不足导致列表全空」这类问题直接讲清楚。
+
+     **必须指名要探测哪条连接**：后端在未指定时只探「兜底连接」（保存的第一条），
+     于是在刚新增的节点上点自检，报告里回的却是另一台主机的 host —— 表现为
+     「新增的 IP 是 172.16.149.42，自检却返回 https://172.16.149.3:8006」。
+     editingId 为空（未保存的新建）时按钮本来就是禁用的。 */
   const runDiagnostics = async () => {
     setDiagnosing(true);
     try {
-      const result = await configApi.diagnostics();
+      const result = await configApi.diagnostics(editingId ?? undefined);
       setDiagnostics(result);
       if (result.ok) {
         toast.success(
@@ -491,6 +496,16 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
   };
 
   const configured = configQuery.data?.configured ?? false;
+
+  /* 「当前这张表单」是否已经具备跑自检的凭据。
+     不能复用上面的 configured —— 那个来自 /config/connection，说的是**兜底
+     连接**；编辑另一条连接时它会给出错误的前置判断（按钮该灰没灰 / 该亮没亮），
+     与报告打错主机是同一个成因。 */
+  const formConfigured = Boolean(
+    form.host.trim() &&
+      form.token_id.trim() &&
+      (secretAlreadySet || (form.token_secret ?? '').trim()),
+  );
 
   /* 自检结果统计：正常 / 提醒 / 异常 */
   const diagCounts = useMemo(() => {
@@ -725,7 +740,7 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
                   icon={<IconShield size={15} />}
                   onClick={() => void runDiagnostics()}
                   loading={diagnosing}
-                  disabled={!configured || dirty}
+                  disabled={!formConfigured || dirty}
                   title={dirty ? t('conn.diagBeforeSave') : t('conn.diagHint')}
                 >
                   {t('conn.diagnostics')}
@@ -1071,6 +1086,15 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
                 </div>
 
                 <div className="set-diag-context">
+                  {/* 报告归属：多连接下「这份报告打的是哪条连接」必须写在脸上，
+                      否则用户只能靠 host 猜，而猜错一次就会以为 IP 存错了 */}
+                  {diagnostics.connection_name ? (
+                    <span className="fs-xs text-muted">
+                      {t('conn.diagConnection', {
+                        name: diagnostics.connection_name,
+                      })}
+                    </span>
+                  ) : null}
                   <span className="mono fs-sm">{diagnostics.host || '—'}</span>
                   {diagnostics.pve_version ? (
                     <span className="fs-xs text-muted">

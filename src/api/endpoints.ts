@@ -382,8 +382,15 @@ export const configApi = {
     put<ConnectionConfig | { ok: boolean }>('/config/connection', body),
   testConnection: (body: Omit<ConnectionConfigInput, 'node_default'>) =>
     post<ConnectionTestResult>('/config/connection/test', body),
-  /** 环境自检：探测当前凭据的有效权限，并解释各项限制 */
-  diagnostics: () => get<DiagnosticsResult>('/config/diagnostics'),
+  /**
+   * 环境自检：探测**指定连接**的凭据有效权限，并解释各项限制。
+   *
+   * 必须带上 connectionId：后端未指定连接时只探「兜底连接」（通常是保存的
+   * 第一条），于是给新加的节点点自检、报告里却是另一台主机的地址 —— 正是
+   * 「新增 172.16.149.42，自检返回 https://172.16.149.3:8006」的成因。
+   */
+  diagnostics: (connectionId?: string) =>
+    get<DiagnosticsResult>('/config/diagnostics', scoped(connectionId)),
   /** 面板级创建默认值（默认 DNS + 默认克隆方式），创建向导向所有用户预填 */
   getVmDefaults: () => get<VmDefaults>('/config/vm-defaults'),
   /** 整份保存（与 IP 池同一契约）：漏传的字段会被写回默认值，所以要传全 */

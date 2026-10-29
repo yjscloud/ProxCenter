@@ -5,7 +5,7 @@ import secrets
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from .. import (
@@ -29,9 +29,11 @@ from ..pve import (
     PveConnection,
     ProxmoxClient,
     ProxmoxError,
+    client_for_connection,
     connection_from_profile,
     get_client,
     rebuild_client,
+    requested_connection,
 )
 from ..schemas import (
     ConnectionConfigIn,
@@ -393,6 +395,7 @@ async def repair_connection_permissions(
 
 @router.get("/config/diagnostics")
 async def diagnostics(
+    connection_id: str = Query(default=""),
     user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
 ) -> Dict[str, Any]:
     """Probe the configured credential and report what the panel can actually do.
@@ -406,8 +409,37 @@ async def diagnostics(
 
     So we ask Proxmox directly for the credential's effective privileges and
     turn the gaps into concrete remediation commands.
+
+    **必须说明探测的是哪一条连接。** 多连接部署里 ``get_client()`` 在未指定
+    连接时只读「兜底连接」（``store.get_active_connection_id()``，通常是第一条
+    保存的连接）。于是刚新增完一台节点、在它的表单上点「环境自检」，报告里
+    回的却是旧连接的 ``host``（例如新增 172.16.149.42，报告显示
+    ``https://172.16.149.3:8006``）—— 看起来像节点 IP 存错了，实际是自检
+    打错了主机。``?connection_id=`` 或 ``X-PVE-Connection`` 指定后，凭据与
+    地址都取自那一条连接，报告的 ``connection_id`` / ``host`` 才说得清归属。
     """
-    client = get_client()
+    # 目标连接：显式参数 → 请求头 / 顶栏作用域 → 兜底连接。
+    # 与 pve.get_client() 同一套解析口径，报告里的 connection_id 就是真正被
+    # 探测的那条，不会出现「报告写 A、实际打 B」。
+    conn_id = (connection_id or "").strip() or requested_connection()
+    profiles = store.get_connections()
+    if conn_id:
+        profile: Optional[Dict[str, Any]] = next(
+            (c for c in profiles if str(c.get("id") or "") == conn_id), None
+        )
+        # 存的是已删除的 id（老页面标签页 / 顶栏作用域残留）：直接说清楚，
+        # 别让它退化成一次「连不上」的 502。
+        if profile is None:
+            raise HTTPException(status_code=404, detail="连接不存在")
+    else:
+        conn_id = str(store.get_active_connection_id() or "")
+        profile = next(
+            (c for c in profiles if str(c.get("id") or "") == conn_id), None
+        )
+
+    # 按 id 取客户端：命中的是这条连接自己的 host / port / 令牌，
+    # 而不是全局那个「兜底」客户端（见 pve.client_for_connection）。
+    client = client_for_connection(conn_id)
 
     checks: List[Dict[str, Any]] = []
 
@@ -419,6 +451,15 @@ async def diagnostics(
     result: Dict[str, Any] = {
         "ok": False,
         "reachable": False,
+        # 报告回显「这次探测的是哪条连接」：host 只说明打到哪台 PVE，
+        # 同一台 PVE 也可能被登记成多条连接（端口 / 令牌不同）。
+        "connection_id": conn_id,
+        "connection_name": str(
+            (profile or {}).get("name") or (profile or {}).get("host") or ""
+        ),
+        # host 由 PveConnection.base_url 拼出：协议前缀 https:// + 该连接的
+        # host:port（未显式给协议时补 https，端口缺省 8006）——
+        # 取值来源就是上面这条连接的 profile，不再来自全局兜底客户端。
         "host": client.conn.base_url,
         "token_id": client.conn.token_id,
         "pve_version": None,

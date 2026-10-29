@@ -3929,6 +3929,7 @@ export const zhCN = {
   'conn.diagIssues': '环境自检发现问题',
   'conn.diagSeeReport': '请查看下方自检报告',
   'conn.diagError': '环境自检失败',
+  'conn.diagConnection': '自检连接：{name}',
   'conn.deleted': '连接已删除',
   'conn.deleteFailed': '删除失败',
   'conn.repairOk': '已授予令牌权限',

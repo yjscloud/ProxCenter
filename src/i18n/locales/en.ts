@@ -4330,6 +4330,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'conn.diagIssues': 'Diagnostics found problems',
   'conn.diagSeeReport': 'See the diagnostics report below',
   'conn.diagError': 'Diagnostics failed',
+  'conn.diagConnection': 'Probed connection: {name}',
   'conn.deleted': 'Connection deleted',
   'conn.deleteFailed': 'Failed to delete',
   'conn.repairOk': 'Token permissions granted',

@@ -598,6 +598,11 @@ export interface DiagnosticsResult {
   ok: boolean;
   status: 'ok' | 'warn' | 'fail';
   reachable: boolean;
+  /** 本次实际探测的连接 id（多连接下报告必须说清「打的是哪一条」） */
+  connection_id?: string;
+  /** 连接名称（未命名时是主机地址）；与 connection_id 一起标注报告归属 */
+  connection_name?: string;
+  /** 该连接的 PVE 地址，形如 https://172.16.149.42:8006 */
   host: string;
   token_id: string;
   pve_version: string | null;

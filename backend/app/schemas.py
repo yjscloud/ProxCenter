@@ -123,6 +123,10 @@ class ConnectionTestIn(BaseModel):
     verify_ssl: bool = settings.pve_verify_ssl
     # 与 ConnectionConfigIn 同义：填写后按这张证书钉扎（忽略主机名）
     ca_cert: str = ""
+    #: 这条候选配置对应的已保存连接。``token_secret`` 留空表示复用它已存的
+    #: 密钥 —— 必须是**这一条**的，不能回落到「兜底连接」（多连接下编辑第二条
+    #: 连接会拿到第一条的 secret，报「凭据被拒绝」）。留空则沿用旧行为。
+    connection_id: str = ""
 
 
 class VmDefaultsIn(BaseModel):

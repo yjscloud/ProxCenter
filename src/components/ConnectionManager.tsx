@@ -262,15 +262,19 @@ export function ConnectionManager({ isAdmin }: ConnectionManagerProps) {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await configApi.testConnection({
-        host: form.host.trim(),
-        port: Number(form.port),
-        token_id: form.token_id.trim(),
-        // 留空时后端会复用已保存的 secret
-        token_secret: (form.token_secret ?? '').trim(),
-        verify_ssl: form.verify_ssl,
-        ca_cert: (form.ca_cert ?? '').trim(),
-      });
+      const result = await configApi.testConnection(
+        {
+          host: form.host.trim(),
+          port: Number(form.port),
+          token_id: form.token_id.trim(),
+          // 留空时后端复用**这条连接**已保存的 secret（必须指名，否则会拿
+          // 兜底连接的密钥去测另一台主机）
+          token_secret: (form.token_secret ?? '').trim(),
+          verify_ssl: form.verify_ssl,
+          ca_cert: (form.ca_cert ?? '').trim(),
+        },
+        editingId ?? undefined,
+      );
       setTestResult(result);
       if (result.ok) {
         toast.success(

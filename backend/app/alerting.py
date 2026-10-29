@@ -27,7 +27,12 @@ from . import (
     site,
     store,
 )
-from .pve import get_client
+from .pve import (
+    all_connection_clients,
+    get_client,
+    parallel,
+    requested_connection,
+)
 # 客户机 IP 的解析（Guest Agent / 容器网卡 / 静态配置）统一在 app.guestip，
 # 这里只是把「只按 node+vmid 解析虚拟机 IP」那个入口再导出一份用
 from .guestip import resolve_vm_ip
@@ -213,7 +218,13 @@ class RecipientBook:
         return self._hosts
 
     def _connection_id(self) -> str:
-        """归属 ref 的连接前缀。取不到时用空串（ref 里的旧写法 ``-`` 也认）。"""
+        """**兜底**的连接前缀（资源条目自己没带 connection_id 时才用）。
+
+        巡检会给每条资源标注来源连接（见 :func:`_collect_resources`），归属必须按
+        资源自己的连接去查：面板同时接多套 PVE 时，``<连接>:<节点>:<vmid>`` 里的
+        连接是唯一能把「两套集群里都叫 pve 的 100 号机器」分开的东西。拿全局
+        「当前连接」代替它，归属就会查到另一套集群上的同号机器 —— 告警发给别人。
+        """
         if self._connection is None:
             try:
                 self._connection = str(store.get_active_connection_id() or "")
@@ -256,17 +267,23 @@ class RecipientBook:
         return self._supervisors[name]
 
     async def guest_owner(self, res: Dict[str, Any]) -> str:
-        """这台虚拟机 / 容器的归属者（没有归属时是空串，不做兜底）。"""
+        """这台虚拟机 / 容器的归属者（没有归属时是空串，不做兜底）。
+
+        连接前缀取**资源自己的** ``connection_id``（巡检会标注），只有拿不到时
+        才回落到全局的当前连接 —— 否则多套 PVE 上同节点 + 同 VMID 的机器会互相
+        顶替，告警投给错误的人。
+        """
         if str(res.get("type") or "") not in ("qemu", "lxc"):
             return ""
         vmid = res.get("vmid")
         if vmid is None or not str(vmid):
             return ""
+        connection_id = str(res.get("connection_id") or "") or self._connection_id()
         return ownership.vm_owner_from(
             await self._guest_owners(),
             str(res.get("node") or ""),
             vmid,
-            self._connection_id(),
+            connection_id,
         )
 
     async def recipient(self, fallback: str, machine_owner: Optional[str]) -> str:
@@ -639,6 +656,10 @@ ACTIVE_COLUMNS = (
     "node",
     "ip",
     "vmid",
+    # 资源来自哪条 PVE 连接。恢复判定要按「连接 + 节点 + VMID」还原对象身份
+    # （见 alarm_subject_of_row）：VMID 只在**集群内**唯一，两套 PVE 都有 100
+    # 号机器是常态，不带连接就会把另一套集群上的同号机器当成「同一个对象」。
+    "connection_id",
     "ts",
     # 连续「正常」的巡检周期数，回落防抖用（见 recovery_confirmed）。
     # 放在状态表里而不是内存里：报警状态本身就是为了跨重启识别恢复，
@@ -701,6 +722,9 @@ CREATE TABLE IF NOT EXISTS alert_active (
     node        VARCHAR(64),
     ip          VARCHAR(64),
     vmid        VARCHAR(32),
+    -- 资源来自哪条 PVE 连接（见 ACTIVE_COLUMNS 里的同名项）。旧行 / 其它告警
+    -- 来源不传这一列，落 NULL —— 恢复判定按「没有连接」兼容处理。
+    connection_id VARCHAR(64),
     ts          BIGINT,
     quiet_cycles INT NOT NULL DEFAULT 0,
     notify_source VARCHAR(32),
@@ -758,6 +782,12 @@ async def init_table() -> None:
         if "mail_count" not in columns:
             await db.execute(
                 "ALTER TABLE alert_active ADD COLUMN mail_count INT NOT NULL DEFAULT 0"
+            )
+        if "connection_id" not in columns:
+            # 旧库补列：可空。升级前写下的行没有连接信息，恢复判定按「连接未知」
+            # 兼容（见 alarm_subject_of_row 与 evaluate 的恢复分支）。
+            await db.execute(
+                "ALTER TABLE alert_active ADD COLUMN connection_id VARCHAR(64)"
             )
         # 归属进了主键，key 会变长（旧表的 191 位不够装）
         cursor = await db.execute(
@@ -2375,11 +2405,18 @@ async def vm_disk_usage(client: Any, node: str, vmid: int) -> Optional[float]:
     return None if info is None else info[0]
 
 
-def _match_target(rule: Dict[str, Any], res: Dict[str, Any]) -> Optional[str]:
-    """这条规则命中这条资源吗？命中返回展示名（告警 key 的组成部分）。
+def _match_target(
+    rule: Dict[str, Any],
+    res: Dict[str, Any],
+    default_connection_id: Optional[str] = None,
+) -> Optional[str]:
+    """这条规则命中这条资源吗？命中返回展示名（通知正文用）。
 
     抽出来是因为「预取虚拟机磁盘使用率」和主循环必须用同一套判定，否则会出现
     「预取了但不评估」或「评估了却没数据」的两套口径。
+
+    目标比对统一走 :func:`target_matches`（连接 + 节点 + VMID），不再拿展示名
+    直接当身份：名字不唯一、也可能被改，靠它匹配会「一台机器的规则去报另一台」。
     """
     target_type = rule.get("target_type")
     if res.get("type") not in RESOURCE_TYPES.get(target_type, set()):
@@ -2393,21 +2430,25 @@ def _match_target(rule: Dict[str, Any], res: Dict[str, Any]) -> Optional[str]:
             return None
         if metric != "offline" and str(res.get("status")) != "running":
             return None
-    label = _label(res, target_type)
-    want = rule.get("target") or "*"
-    if want != "*" and want != label and want != str(res.get("vmid") or ""):
+    if not target_matches(
+        rule.get("target"), res, target_type, default_connection_id
+    ):
         return None
-    return label
+    return _label(res, target_type)
 
 
 async def prefetch_vm_disk_usage(
-    client: Any, rules: Iterable[Dict[str, Any]], resources: List[Dict[str, Any]]
-) -> Dict[Tuple[str, int], Optional[Tuple[float, float, float]]]:
+    clients: Dict[str, Any],
+    rules: Iterable[Dict[str, Any]],
+    resources: List[Dict[str, Any]],
+    default_connection_id: Optional[str] = None,
+) -> Dict[Tuple[str, str, str], Optional[Tuple[float, float, float]]]:
     """本轮需要的虚拟机磁盘使用率与容量，一次并发取完。
 
     每台虚拟机一次 agent 往返，串行会拖慢整轮评估（agent 无响应时更久）。
-    同一个 VM 常被多条规则指到，按 (node, vmid) 去重后只取一次；并发压在 6
-    以内，避免把 PVE 的 agent 通道占满。
+    同一个 VM 常被多条规则指到，按 **(连接, 节点, VMID)** 去重后只取一次；并发
+    压在 6 以内，避免把 PVE 的 agent 通道占满。连接必须进 key：两套集群各有一台
+    100 号机器时，只按 (node, vmid) 去重会把 A 的磁盘用量贴到 B 的告警上。
     """
     targets: set = set()
     for rule in rules:
@@ -2416,7 +2457,7 @@ async def prefetch_vm_disk_usage(
         if str(rule.get("target_type")) != "vm":
             continue
         for res in resources:
-            if _match_target(rule, res) is None:
+            if _match_target(rule, res, default_connection_id) is None:
                 continue
             # 只有 qemu 需要问 agent。容器的 cluster/resources 条目本来就有真实
             # 的 disk / maxdisk（lxc 报的是文件系统已用量），走 agent 反而会 404，
@@ -2426,23 +2467,29 @@ async def prefetch_vm_disk_usage(
             vmid = res.get("vmid")
             if not isinstance(vmid, int):
                 continue
-            targets.add((str(res.get("node") or ""), vmid))
+            targets.add(res_key(res))
     if not targets:
         return {}
 
     sem = asyncio.Semaphore(6)
 
-    async def one(node: str, vmid: int) -> Optional[Tuple[float, float, float]]:
+    async def one(connection_id: str, node: str, vmid: str) -> Optional[Tuple[float, float, float]]:
+        client = clients.get(connection_id)
+        if client is None:
+            return None
         async with sem:
-            return await vm_disk_fs_usage(client, node, vmid)
+            try:
+                return await vm_disk_fs_usage(client, node, int(vmid))
+            except (TypeError, ValueError):
+                return None
 
     items = sorted(targets)
     results = await asyncio.gather(
-        *(one(node, vmid) for node, vmid in items), return_exceptions=True
+        *(one(*item) for item in items), return_exceptions=True
     )
-    out: Dict[Tuple[str, int], Optional[float]] = {}
-    for (node, vmid), value in zip(items, results):
-        out[(node, vmid)] = None if isinstance(value, BaseException) else value
+    out: Dict[Tuple[str, str, str], Optional[Tuple[float, float, float]]] = {}
+    for key, value in zip(items, results):
+        out[key] = None if isinstance(value, BaseException) else value
     return out
 
 
@@ -2452,36 +2499,162 @@ def _label(res: Dict[str, Any], target_type: str) -> str:
     return str(res.get("name") or res.get("vmid") or "")
 
 
+def res_key(res: Dict[str, Any]) -> Tuple[str, str, str]:
+    """资源在「连接 + 节点 + VMID」上的索引键（磁盘预取 / 恢复快照共用）。
+
+    三样缺一不可：VMID 与节点名只在集群内唯一，少一个连接就会把另一套 PVE 上
+    同号机器的数据（磁盘用量、容量、状态）贴到本轮的告警里。
+    """
+    return (
+        str(res.get("connection_id") or ""),
+        str(res.get("node") or ""),
+        str(res.get("vmid") or ""),
+    )
+
+
+def target_ref_of(res: Dict[str, Any], target_type: str) -> str:
+    """一条资源的对象身份：``<连接>:<节点>:<VMID>``（宿主机为 ``<连接>:<节点>``）。
+
+    为什么连接必须进 ref：VMID 与节点名都只在**集群内**唯一。面板同时接多套
+    PVE 时，两套集群各有一台 100 号机器、各有一台叫 ``pve`` 的节点是常态 ——
+    只按「节点 + VMID」认对象，规则会命中另一套集群上的同号机器（推送内容全是
+    那台机器的），告警 key 也会撞在一起（互相压制冷却、恢复时清错状态）。
+    """
+    connection_id = str(res.get("connection_id") or "")
+    node = str(res.get("node") or "")
+    if target_type == "node":
+        return (connection_id or "-") + ":" + node
+    vmid = str(res.get("vmid") or "")
+    if vmid:
+        return ownership.vm_ref(connection_id, node, vmid)
+    return _label(res, target_type)
+
+
+def parse_target_ref(target: Any) -> Optional[Tuple[str, str, str]]:
+    """把规则目标拆成 ``(连接, 节点, VMID)``；不是对象 ref 时返回 ``None``。
+
+    连接 id / 节点名 / VMID 都不含 ``:``，所以按 ``:`` 切分是安全的；反过来说，
+    **不带 ``:`` 的目标一定是升级前的旧口径**（纯 VMID / 展示名 / 节点名），
+    见 :func:`target_matches` 对旧口径的兼容处理。
+    """
+    text = str(target or "").strip()
+    if not text or text == "*" or ":" not in text:
+        return None
+    parts = text.split(":", 2)
+    if len(parts) < 2:
+        return None
+    return parts[0], parts[1], (parts[2] if len(parts) > 2 else "")
+
+
+def legacy_target_matches(target: str, res: Dict[str, Any], target_type: str) -> bool:
+    """升级前的目标口径：虚拟机比 VMID 或展示名，宿主机比节点名。"""
+    if target_type == "vm":
+        return target == str(res.get("vmid") or "") or target == _label(res, target_type)
+    return target == str(res.get("node") or "")
+
+
+def _default_connection_id() -> str:
+    """「兜底读取」那条连接的 id —— 升级前的巡检只读它。"""
+    try:
+        return str(store.get_active_connection_id() or "")
+    except Exception:  # noqa: BLE001 - 读不到就当作「没有默认连接」
+        return ""
+
+
+def target_matches(
+    target: Any,
+    res: Dict[str, Any],
+    target_type: str,
+    default_connection_id: Optional[str] = None,
+) -> bool:
+    """这条规则的目标指的是不是这条资源。
+
+    * ``*`` —— 全部对象；
+    * 对象 ref —— 精确比对「连接 + 节点 + VMID」，跨连接的同号机器不会互相命中；
+    * 旧口径（纯 VMID / 展示名 / 节点名）—— **只认默认连接**：升级前巡检只读
+      这一条连接，这样存量规则「原来会响的仍然会响」，同时不再误伤其它集群上的
+      同号机器。巡检会尽量把这类目标归一成 ref（见 :func:`upgrade_legacy_targets`）。
+    """
+    want = str(target or "*").strip() or "*"
+    if want == "*":
+        return True
+    if parse_target_ref(want) is not None:
+        return want == target_ref_of(res, target_type)
+    default_cid = (
+        _default_connection_id() if default_connection_id is None else default_connection_id
+    )
+    if str(res.get("connection_id") or "") != str(default_cid or ""):
+        return False
+    return legacy_target_matches(want, res, target_type)
+
+
 def alarm_subject(res: Dict[str, Any], target_type: str) -> str:
     """告警状态的「对象身份」：告警 key 里用的那一截。
 
-    必须**集群内唯一**，所以虚拟机用「节点 + VMID」而不是名字：Proxmox 的虚拟机
-    名字不要求唯一，一个集群里同时存在两台 ``web`` 很常见。用名字的话两台机器会
-    共用一个 alarm_key —— 后一台命中的是前一台的告警状态，冷却窗口里直接被当成
-    「同一告警的重复轮次」跳过，于是「多台虚拟机只有一台会告警」。
+    必须**跨集群唯一**，所以用带连接的对象 ref（见 :func:`target_ref_of`）：
+    展示名不唯一（Proxmox 允许同名），「节点 + VMID」也只是集群内唯一。
     展示名（``_label``）仍然只用于界面与通知正文，两者不要混用。
     """
-    if target_type == "node":
-        return str(res.get("node") or "")
-    vmid = str(res.get("vmid") or "")
-    node = str(res.get("node") or "")
-    if vmid:
-        return node + ":" + vmid
-    return _label(res, target_type)
+    return target_ref_of(res, target_type)
 
 
 def alarm_subject_of_row(row: Dict[str, Any]) -> str:
     """从 ``alert_active`` 的一行还原对象身份（恢复判定时用）。
 
-    升级前的行是按展示名建的 key，这里对不上就由调用方回退到旧口径（见
-    :func:`evaluate` 的恢复分支），不能让存量告警因为换了 key 就「消失」。
+    ``connection_id`` 是后加的列：升级前写下的行没有值，按「连接未知」（``-``）
+    还原，调用方再用 :func:`legacy_subjects` 同时认旧口径的 key，存量告警不会
+    因为换了 key 就「消失」。
     """
-    if str(row.get("target_type") or "") == "vm":
-        vmid = str(row.get("vmid") or "")
-        node = str(row.get("node") or "")
-        if vmid:
-            return node + ":" + vmid
+    target_type = str(row.get("target_type") or "")
+    connection_id = str(row.get("connection_id") or "")
+    node = str(row.get("node") or "")
+    vmid = str(row.get("vmid") or "")
+    if target_type == "vm" and vmid:
+        return ownership.vm_ref(connection_id, node, vmid)
+    if target_type == "node" and node:
+        return (connection_id or "-") + ":" + node
     return str(row.get("target") or "")
+
+
+def _snapshot_for(
+    row: Dict[str, Any],
+    vm_resources: Dict[Tuple[str, str, str], Dict[str, Any]],
+    node_resources: Dict[Tuple[str, str], Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """恢复通知要用的本轮资源快照。
+
+    先按行里的「连接 + 节点 + VMID」精确取；升级前写下的行没有连接信息，退回
+    「节点 + VMID」—— **只有唯一命中才认**：多套集群同号时不猜，宁可让模板留空，
+    也不要拿另一台机器的状态/容量去渲染这条恢复通知。
+    """
+    cid = str(row.get("connection_id") or "")
+    node = str(row.get("node") or "")
+    if str(row.get("target_type")) == "vm":
+        vmid = str(row.get("vmid") or "")
+        snapshot = vm_resources.get((cid, node, vmid))
+        if snapshot is not None or cid:
+            return snapshot
+        matches = [
+            item for key, item in vm_resources.items() if key[1] == node and key[2] == vmid
+        ]
+    else:
+        snapshot = node_resources.get((cid, node))
+        if snapshot is not None or cid:
+            return snapshot
+        matches = [item for key, item in node_resources.items() if key[1] == node]
+    return matches[0] if len(matches) == 1 else None
+
+
+def legacy_subjects(subject: str) -> List[str]:
+    """对象身份的旧写法：更早按展示名，「节点 + VMID」是上一版的写法。
+
+    界面上曾经先后用过这两种 key，恢复判定必须一并认，否则升级那一刻正在告警
+    的机器会被当成「不属于任何人」静默清掉 —— 用户看到的是告警凭空消失。
+    """
+    text = str(subject or "")
+    if text.count(":") >= 2:
+        return [text.split(":", 1)[1]]
+    return []
 
 
 def host_address(client: Any) -> str:
@@ -2507,14 +2680,15 @@ async def adopt_active(
     不搬会怎样：新 key 在库里查不到，于是这台机器同时产生一条新告警（给机器主人）
     和一条「已恢复」（给旧归属），后者的时间戳还更新 —— 看着像告警刚响就自己好了。
 
-    ``legacy_label`` 是升级前写下的「按展示名」的 key 尾巴：告警 key 后来改成了
-    「节点 + VMID」（见 :func:`alarm_subject`），存量行如果不同时认一下旧写法，升级
-    那一刻正在告警的机器会被重复告警一遍、再补一条恢复通知。
+    ``legacy_label`` 是升级前写下的「按展示名」的 key 尾巴：告警 key 先后用过
+    「展示名」与「节点 + VMID」，现在是「连接 + 节点 + VMID」（见
+    :func:`alarm_subject`），存量行如果不同时认一下旧写法，升级那一刻正在告警的
+    机器会被重复告警一遍、再补一条恢复通知。
     """
     if not old_owner:
         return {}
     new_key = alarm_key(recipient, rule_id, label)
-    tails = [label]
+    tails = [label, *legacy_subjects(label)]
     if legacy_label and legacy_label != label:
         tails.append(legacy_label)
     # 收件人没变时旧行也在自己名下（换的只是 key 尾巴），两个名字都要认
@@ -2545,6 +2719,216 @@ async def adopt_active(
     return {}
 
 
+def _needed_connections(rules: Iterable[Dict[str, Any]]) -> Optional[set]:
+    """这批规则真正要读哪几条连接；``None`` 表示「全都要」。
+
+    规则目标已经是对象 ref 时，只有目标所属的连接有意义 —— 一套装了 10 条连接的
+    面板、规则只落在其中 2 条上，就没必要每轮去问另外 8 条（这是「多连接巡检」
+    唯一的额外开销来源，能省就省）。
+
+    两种情况必须全量：
+
+    * ``*`` 规则：它本来就覆盖所有机器；
+    * 旧口径目标（裸 VMID / 名字）：要拿全量资源才能判断该归一到哪台
+      （见 :func:`upgrade_legacy_targets`），而且它只认兜底连接。
+    """
+    needed: set = set()
+    for rule in rules:
+        target = str(rule.get("target") or "*").strip() or "*"
+        if target == "*":
+            return None
+        parsed = parse_target_ref(target)
+        if parsed is None:
+            return None
+        needed.add(parsed[0])
+    return needed or None
+
+
+def _alert_clients(rules: Iterable[Dict[str, Any]] = ()) -> Dict[str, Any]:
+    """本轮巡检要读的连接：``{connection_id: client}``。
+
+    未指定 ``X-PVE-Connection``（定时巡检就是这种情况）时合并已保存的**相关**
+    连接 —— 与 ``/vms`` / ``/nodes`` 列表同一口径：用户在那两处能选到的机器，
+    巡检就必须看得到，否则「给另一套 PVE 上的机器配的规则」永远命中不到；但只读
+    规则真正指向的那几条（见 :func:`_needed_connections`），不做无用功。
+
+    指定了连接（顶栏聚焦某套集群时手动「立即检测」）则只读那一套。
+
+    只读默认连接是「规则漏触发 + 推送别的虚拟机」的总根因：规则按 VMID 选目标，
+    而 VMID 只在集群内唯一 —— 巡检只读 A 集群时，配在 B 集群上的规则要么永不命中，
+    要么命中 A 集群上同号的那台机器。
+    """
+    scoped = requested_connection()
+    needed = _needed_connections(rules)
+    clients: Dict[str, Any] = {}
+    try:
+        pairs = all_connection_clients() or []
+    except Exception:  # noqa: BLE001 - 连接列表读不到就退回兜底连接
+        pairs = []
+        logger.warning("告警巡检：读取连接列表失败", exc_info=True)
+    for profile, client in pairs:
+        cid = str((profile or {}).get("id") or "")
+        if not cid or (scoped and cid != scoped):
+            continue
+        if needed is not None and cid not in needed:
+            continue
+        clients[cid] = client
+    if not clients and needed:
+        # 规则指着的连接一条都不在（连接被删/改名）：不要退回兜底连接去猜，
+        # 那正是「命中另一套集群上同号机器」的老问题；本轮这些规则就是没得评。
+        logger.warning(
+            "告警巡检：规则指向的连接不存在（%s），本轮跳过", ", ".join(sorted(needed))
+        )
+        return {}
+    if clients or scoped:
+        return clients
+    # 单连接 / 升级前的部署：没有连接列表，退回「兜底读取」的那一条
+    try:
+        client = get_client()
+    except Exception:  # noqa: BLE001
+        logger.warning("告警巡检：取不到 PVE 客户端", exc_info=True)
+        return {}
+    if not getattr(getattr(client, "conn", None), "configured", True):
+        return {}
+    return {str(_default_connection_id() or ""): client}
+
+
+async def _collect_resources(clients: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """并发拉取各连接的资源清单，并给每条资源标注来源连接。
+
+    每条连接独立失败：一条 PVE 掉了只跳过它自己，其它连接的规则照常评估（以前
+    是 ``except: return []``，一台连不上整轮静默，用户看到的是「配了规则不响」）。
+    """
+    items = list(clients.items())
+    if not items:
+        return []
+    results = await parallel(
+        (client.cluster_resources() for _cid, client in items),
+        limit=max(1, len(items)),
+    )
+    resources: List[Dict[str, Any]] = []
+    failed: List[str] = []
+    for (cid, _client), result in zip(items, results):
+        if isinstance(result, BaseException):
+            failed.append(cid)
+            logger.warning("告警巡检：连接 %s 读取资源清单失败：%s", cid or "-", result)
+            continue
+        for res in result or []:
+            if not isinstance(res, dict):
+                continue
+            item = dict(res)
+            # 连接是「对象身份」的一部分（见 target_ref_of），这里统一标注，
+            # 后面的命中判定、状态 key、归属查询、磁盘预取都按它分流。
+            item["connection_id"] = cid
+            resources.append(item)
+    if failed and not resources:
+        logger.warning("告警巡检：所有 PVE 连接都读取失败，本轮跳过")
+    return resources
+
+
+def _client_of(res: Dict[str, Any], clients: Dict[str, Any]) -> Any:
+    """这条资源所属连接的客户端。
+
+    取不到时退回任意一条（只为兼容「资源没标连接」的老调用方式）；正常路径下
+    资源一定带着 connection_id，绝不会问到另一套集群上去。
+    """
+    client = clients.get(str(res.get("connection_id") or ""))
+    if client is not None:
+        return client
+    return next(iter(clients.values()), None)
+
+
+async def upgrade_legacy_targets(
+    rules: List[Dict[str, Any]],
+    resources: List[Dict[str, Any]],
+    book: "RecipientBook",
+) -> List[Dict[str, Any]]:
+    """把旧口径的规则目标（裸 VMID / 展示名 / 节点名）归一成对象 ref。
+
+    为什么必须归一：旧目标是「裸 VMID」，而 VMID 只在集群内唯一。面板接多套 PVE
+    时同一个 VMID 往往在两套集群上都存在，规则只能靠「默认连接」去猜（见
+    :func:`target_matches`）—— 猜错的表现就是「配的是 A 机，报出来的却是 B 机、
+    A 机反倒永远不响」。归一之后规则与机器一一对应。
+
+    冲突（同一个旧目标同时对上多台机器）时优先取**规则主人自己名下**的那台：
+    「给自己的机器配规则」是绝大多数用法，而默认连接上那台往往根本不属于他。
+    仍然判不出来就原样保留（继续按默认连接解释，与升级前行为一致），只记一条
+    日志 —— 猜错比不猜更糟。
+
+    返回归一后的完整规则列表（写库失败时就是原列表）。
+    """
+    pending: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+    for rule in rules:
+        target = str(rule.get("target") or "*").strip() or "*"
+        if target == "*" or parse_target_ref(target) is not None:
+            continue
+        key = (owner_of(rule), str(rule.get("target_type") or ""), target)
+        pending.setdefault(key, []).append(rule)
+    if not pending:
+        return rules
+
+    patches: Dict[str, Tuple[str, str]] = {}
+    for (rule_owner, target_type, target), group in pending.items():
+        if target_type not in RESOURCE_TYPES:
+            continue
+        candidates = [
+            res
+            for res in resources
+            if res.get("type") in RESOURCE_TYPES.get(target_type, set())
+            and legacy_target_matches(target, res, target_type)
+        ]
+        if not candidates:
+            continue
+        chosen: Optional[Dict[str, Any]] = None
+        if len(candidates) == 1:
+            chosen = candidates[0]
+        elif target_type == "vm":
+            mine = [
+                res
+                for res in candidates
+                if await book.guest_owner(res) == rule_owner
+            ]
+            if len(mine) == 1:
+                chosen = mine[0]
+        if chosen is None:
+            logger.warning(
+                "告警规则目标「%s」同时匹配 %d 个对象，无法自动归一，继续按默认连接解释",
+                target,
+                len(candidates),
+            )
+            continue
+        ref = target_ref_of(chosen, target_type)
+        if ref == target:
+            continue
+        for rule in group:
+            rule_id = str(rule.get("id") or "")
+            if rule_id:
+                patches[rule_id] = (target, ref)
+
+    if not patches:
+        return rules
+
+    # 重新读一遍再改：巡检在后台跑，期间用户可能刚保存过规则，不能拿本轮开头
+    # 那份快照整体覆盖回去。只改「目标仍是当初那个旧值」的行，用户的新编辑优先。
+    current = await load_rules()
+    changed = False
+    for rule in current:
+        patch = patches.get(str(rule.get("id") or ""))
+        if not patch or str(rule.get("target") or "") != patch[0]:
+            continue
+        rule["target"] = patch[1]
+        changed = True
+        logger.info(
+            "告警规则「%s」的目标已归一为 %s",
+            rule.get("name") or rule.get("id"),
+            patch[1],
+        )
+    if not changed:
+        return rules
+    await save_rules(current)
+    return current
+
+
 async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     """拉取 PVE 资源，检查启用的规则：超阈值发告警，回落则发恢复通知。
 
@@ -2559,10 +2943,53 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     await init_table()
     all_rules = await load_rules()
-    rules = [r for r in all_rules if r.get("enabled")]
+    scoped_rules = (
+        [r for r in all_rules if owner_of(r) == owner]
+        if owner is not None
+        else list(all_rules)
+    )
+    rules = [r for r in scoped_rules if r.get("enabled")]
+    if not rules:
+        # 规则被全部停用/删除：清理它们的告警状态，避免下次重新启用时误报恢复
+        scope_ids = {str(r.get("id")) for r in scoped_rules}
+        for key, row in (await load_active()).items():
+            if owner is not None and str(row.get("rule_id")) not in scope_ids:
+                continue
+            await clear_active(key)
+        return []
+    # 逐条连接读资源清单：规则的目标带连接（见 target_ref_of），只读默认连接会
+    # 让「配在另一套 PVE 上」的规则永远命中不到；反过来，默认连接上恰好有同号
+    # 机器时又会把别人的告警推出去。口径与 /vms、/nodes 列表保持一致。
+    clients = _alert_clients(rules)
+    if not clients:
+        logger.warning("告警巡检：没有可用的 PVE 连接，本轮跳过")
+        return []
+    resources = await _collect_resources(clients)
+    if not resources:
+        return []
+    now = time.time()
+    fired: List[Dict[str, Any]] = []
+    # 本轮各对象的实测值（key -> 百分比）与仍处于超阈值状态的对象
+    measured: Dict[str, float] = {}
+    alarming: set = set()
+    default_cid = _default_connection_id()
+    # 「机器归谁，告警就找谁」：归属表与账号清单在本轮里各只读一次
+    # （RecipientBook 内部按需加载，规则里没有虚拟机目标时一个查询都不发）。
+    book = RecipientBook()
+    # 旧口径的目标（裸 VMID / 展示名）尽量归一成对象 ref：不归一的话，配在另一套
+    # 集群上的机器永远命中不到，只能命中默认连接上的同号机器（就是「规则 A 报出
+    # 了机器 B」的成因）。
+    all_rules = await upgrade_legacy_targets(all_rules, resources, book)
+    rules = [
+        r
+        for r in all_rules
+        if r.get("enabled") and (owner is None or owner_of(r) == owner)
+    ]
+    if not rules:
+        return []
+    enabled_ids = {str(r.get("id")) for r in rules}
     active = await load_active()
     if owner is not None:
-        rules = [r for r in rules if owner_of(r) == owner]
         # 「立即检测」只看自己名下规则的状态。不能按 username 过滤：状态现在记在
         # **收件人**（机器归属者）名下，和配规则的人未必是同一个。按规则 id 过滤
         # 才能连同该用户已停用规则留下的状态一起清理（见下面的恢复/清理分支）。
@@ -2572,27 +2999,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             for key, row in active.items()
             if str(row.get("rule_id")) in own_ids
         }
-    enabled_ids = {str(r.get("id")) for r in rules}
-    if not rules:
-        # 规则被全部停用/删除：清理它们的告警状态，避免下次重新启用时误报恢复
-        for key, row in active.items():
-            if str(row.get("rule_id")) not in enabled_ids:
-                await clear_active(key)
-        return []
-    client = get_client()
-    if not client.conn.configured:
-        return []
-    try:
-        resources = await client.cluster_resources()
-    except Exception:
-        return []
-    now = time.time()
-    fired: List[Dict[str, Any]] = []
-    # 本轮各对象的实测值（key -> 百分比）与仍处于超阈值状态的对象
-    measured: Dict[str, float] = {}
-    alarming: set = set()
     # 虚拟机磁盘使用率要逐台问 guest agent，先并发取好（没有这类规则时是空表）
-    disk_usage = await prefetch_vm_disk_usage(client, rules, resources)
+    disk_usage = await prefetch_vm_disk_usage(clients, rules, resources, default_cid)
     # 本轮拿不到实测值的对象：既不判超阈值，也不能被恢复逻辑当成「已恢复」
     unmeasured: set = set()
     # 规则按**配置者**分组（决定兜底收件人、也决定旧数据的归属）；
@@ -2608,9 +3016,6 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         # 没有归属的规则（手工写进 settings 的旧数据）算作管理员的
         groups.setdefault(fallback, []).extend(groups.pop(""))
     channels = ChannelCache()
-    # 「机器归谁，告警就找谁」：归属表与账号清单在本轮里各只读一次
-    # （RecipientBook 内部按需加载，规则里没有虚拟机目标时一个查询都不发）。
-    book = RecipientBook()
 
     for rule_owner, owner_rules in groups.items():
         # 规则的主人是不是「能看到全局机器」的角色（管理员 / 区域管理员）：
@@ -2622,23 +3027,24 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             for res in resources:
                 # 判定与「预取磁盘使用率」共用同一套（见 _match_target），
                 # 两边口径一旦不同就会漏评估或拿不到数据。
-                label = _match_target(rule, res)
+                label = _match_target(rule, res, default_cid)
                 if label is None:
                     continue
-                # 告警状态的 key 用「节点 + VMID」而不是展示名：两台同名虚拟机
-                # 不能共用一个 key（见 alarm_subject）。
+                # 告警状态的 key 用「连接 + 节点 + VMID」：跨集群也不会有两台机器
+                # 共用一个 key（见 alarm_subject）。
                 subject = alarm_subject(res, target_type)
-                if not supervisor:
-                    # 普通用户没有全局视野：``*`` 只覆盖**不属于别人**的机器。
-                    # 不做这一步的话，新账号一条 ``*`` 规则会把别人的机器也算进来，
-                    # 而告警又按机器归属投给了别人 —— 他自己什么也看不到。
+                if not supervisor and target_type == "vm":
+                    # 普通用户没有全局视野：他的规则只覆盖**不属于别人**的机器，
+                    # 目标写 ``*`` 还是具体某一台都一样 —— 否则新账号一条 ``*``
+                    # 规则会把别人的机器也算进来，而告警又按机器归属投给了别人
+                    # （他自己什么也看不到）；手写一个别的机器的 ref 更会直接把
+                    # 别人的告警拉进自己的页面。
                     # 没有归属记录的机器仍然算进来：面板之外建的/对账清掉的机器
                     # 不属于任何人，把它排除只会让规则静默失效（与 RecipientBook
                     # 「宁可发给不该收的人，也不能谁都不收到」同一口径）。
-                    if target_type == "vm" and str(rule.get("target") or "*") == "*":
-                        machine_owner = await book.guest_owner(res)
-                        if machine_owner and machine_owner != rule_owner:
-                            continue
+                    machine_owner = await book.guest_owner(res)
+                    if machine_owner and machine_owner != rule_owner:
+                        continue
                 # 管理员 / 区域管理员配的规则是「全局规则」：规则是人配的，机器是
                 # 有主的，该处理这条告警的是机器归属者。宿主机 / 没有归属的机器
                 # 回落到配规则的人（见 RecipientBook）。普通用户配的规则发给自己。
@@ -2676,9 +3082,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                         # 虚拟机磁盘已用量只能来自 guest agent（cluster/resources
                         # 里 qemu 的 disk 恒为 0，算出来永远是 0%）。
                         # 容器不走这条路：它的 disk 字段就是真实已用量。
-                        disk_info = disk_usage.get(
-                            (str(res.get("node") or ""), int(res.get("vmid") or 0))
-                        )
+                        # key 带连接：跨集群同号机器不能互相取数。
+                        disk_info = disk_usage.get(res_key(res))
                         value = None if disk_info is None else disk_info[0]
                     else:
                         value = usage(res, metric)
@@ -2737,11 +3142,14 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 node = str(res.get("node") or "-")
                 status = str(res.get("status") or "-")
                 vmid = res.get("vmid") if target_type == "vm" else None
+                # 一律用**资源所属连接**的客户端：IP 解析与宿主机地址都必须是
+                # 那台机器自己的 PVE，拿默认连接去问只会问到另一套集群。
+                res_client = _client_of(res, clients)
                 # 虚拟机优先取 Guest Agent / cloud-init 里的地址，宿主机用 PVE 接入地址
                 if target_type == "vm":
-                    ip = await resolve_vm_ip(client, node, vmid)
+                    ip = await resolve_vm_ip(res_client, node, vmid)
                 else:
-                    ip = host_address(client)
+                    ip = host_address(res_client)
                 # 纯文本摘要仅用于面板历史记录展示，推送走卡片
                 if metric in STATE_METRICS:
                     detail_text = (
@@ -2768,9 +3176,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 if metric == "disk" and res.get("type") == "qemu":
                     # qemu 的 disk 恒为 0，容量同样要问 guest agent（上面取
                     # 使用率用的就是这份），否则模板里「硬盘： / 」又是一行空心。
-                    disk_info = disk_usage.get(
-                        (str(res.get("node") or ""), int(res.get("vmid") or 0))
-                    )
+                    disk_info = disk_usage.get(res_key(res))
                     if disk_info:
                         used, total = _capacity(disk_info[1]), _capacity(disk_info[2])
                 text = (
@@ -2852,6 +3258,8 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     "node": node,
                     "ip": ip,
                     "vmid": vmid,
+                    # 来源连接：恢复判定靠它还原对象身份（见 alarm_subject_of_row）
+                    "connection_id": str(res.get("connection_id") or ""),
                     # ts 是飞书 / Webhook 的冷却时间戳：只有这一轮真按整轮节奏发过
                     # 才推进它，否则「仅邮件提醒」那轮会把飞书的节奏一起往后推。
                     "ts": int(now) if base_due else int(last),
@@ -2884,13 +3292,13 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     # 本轮的资源快照按可寻址的 key 建索引：恢复通知的模板变量（状态、容量）
     # 从这里取实时值，而不是像以前那样一律留空 —— 否则用户自定义模板渲染出来
     # 全是空心行（「内存使用率： %（阈值 70.0%）」就是这么来的）。
-    vm_resources: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    node_resources: Dict[str, Dict[str, Any]] = {}
+    vm_resources: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    node_resources: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for res in resources:
         if res.get("type") in ("qemu", "lxc"):
-            vm_resources[(str(res.get("node") or ""), str(res.get("vmid") or ""))] = res
+            vm_resources[res_key(res)] = res
         elif res.get("type") == "node":
-            node_resources[str(res.get("node") or "")] = res
+            node_resources[res_key(res)[:2]] = res
     for key, row in list(active.items()):
         if key in alarming:
             continue
@@ -2901,12 +3309,18 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         row_owner = str(row.get("username") or "") or fallback
         # 恢复通知同样按收件人语言，且每行可能属于不同用户，逐行钉
         i18n.pin_language(await resolve_language(row_owner))
-        # key 的尾巴现在有两种写法：新版「节点 + VMID」（alarm_subject）与升级前
-        # 的展示名。两种都认，否则升级那一刻正在告警的行会被当成「不属于任何人」
-        # 静默清掉 —— 用户看到的是告警凭空消失、也收不到恢复通知。
+        # key 的尾巴先后有三种写法：最早是展示名，后来是「节点 + VMID」，
+        # 现在是「连接 + 节点 + VMID」（alarm_subject）。三种都认，否则升级那一刻
+        # 正在告警的行会被当成「不属于任何人」静默清掉 —— 用户看到的是告警凭空
+        # 消失、也收不到恢复通知。
+        subject = alarm_subject_of_row(row)
         expected = {
-            alarm_key(row_owner, row.get("rule_id"), alarm_subject_of_row(row)),
-            alarm_key(row_owner, row.get("rule_id"), str(row.get("target") or "")),
+            alarm_key(row_owner, row.get("rule_id"), tail)
+            for tail in (
+                subject,
+                *legacy_subjects(subject),
+                str(row.get("target") or ""),
+            )
         }
         if key not in expected:
             # 旧版（未按用户拆分）遗留的状态：静默清理，不误报恢复
@@ -2934,19 +3348,12 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         # 状态型指标恢复后不再计量）再回落告警时记下的值。全部拿不到才留空，
         # 让 render_alert_template 把不适用的行整行省略。
         recovery_metric = str(row.get("metric") or "")
-        if str(row.get("target_type")) == "vm":
-            snapshot = vm_resources.get(
-                (str(row.get("node") or ""), str(row.get("vmid") or ""))
-            )
-        else:
-            snapshot = node_resources.get(str(row.get("node") or ""))
+        snapshot = _snapshot_for(row, vm_resources, node_resources)
         if snapshot:
             recovery_status = str(snapshot.get("status") or "")
             used, total = _metric_capacity(snapshot, recovery_metric)
             if recovery_metric == "disk" and snapshot.get("type") == "qemu":
-                disk_info = disk_usage.get(
-                    (str(snapshot.get("node") or ""), int(snapshot.get("vmid") or 0))
-                )
+                disk_info = disk_usage.get(res_key(snapshot))
                 if disk_info:
                     used, total = _capacity(disk_info[1]), _capacity(disk_info[2])
         else:

@@ -6713,6 +6713,9 @@ export const en: Partial<Record<MessageKey, string>> = {
   'alerts.repeatCount': '{n} repeat reminders',
   'alerts.failedCount': '{n} failed',
   'alerts.notInList': '{name} (no longer in the list)',
+  /* 旧格式目标（只有 VMID / 名字，没有连接前缀）：请重新选择一次，保存后即按
+     「连接 + 节点 + VMID」落库。 */
+  'alerts.legacyTarget': '{name} (legacy target — please re-select)',
   'alerts.notifyTitle': 'Alert delivery switches',
   'alerts.notifySubtitle': 'Choose per source whether alerts are sent. Once turned off, checks for that source keep running but any match is discarded entirely: nothing is sent via Feishu / email / generic webhook or in-app messages, and nothing is written to the alert history or the workbench to-dos',
   'alerts.mutedSuffix': 'Delivery stopped · {desc}',

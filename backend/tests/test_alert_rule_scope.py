@@ -133,8 +133,11 @@ class _FakeClient:
     def __init__(self, resources: List[Dict[str, Any]]) -> None:
         self.conn = _FakeConn()
         self._resources = resources
+        #: 这条连接被巡检读了几次（用来验证「只读规则指向的连接」）
+        self.calls = 0
 
     async def cluster_resources(self) -> List[Dict[str, Any]]:
+        self.calls += 1
         return list(self._resources)
 
 
@@ -189,6 +192,41 @@ def _wire_evaluate(monkeypatch, resources, rules, sent: List[str]) -> None:
     monkeypatch.setattr(alerting, "resolve_vm_ip", fake_ip)
 
 
+def _wire_multi(
+    monkeypatch,
+    sources: Dict[str, List[Dict[str, Any]]],
+    rules: List[Dict[str, Any]],
+    sent: List[str],
+    default_cid: str = "a",
+    patch_rules: bool = True,
+) -> None:
+    """把巡检钉在「多套 PVE 连接」上：每条连接给一份资源清单。
+
+    ``default_cid`` 是「兜底读取」的那条连接（升级前的巡检只读它），旧口径的
+    目标（裸 VMID）只在这条连接上解释 —— 见 alerting.target_matches。
+    """
+    monkeypatch.setattr(
+        alerting,
+        "all_connection_clients",
+        lambda: [({"id": cid}, _FakeClient(res)) for cid, res in sources.items()],
+    )
+    monkeypatch.setattr(alerting, "requested_connection", lambda: "")
+    monkeypatch.setattr(alerting, "_default_connection_id", lambda: default_cid)
+    if patch_rules:
+        monkeypatch.setattr(alerting, "load_rules", lambda: _as_list(rules))
+
+    async def fake_dispatch(owner, feishu, email_cfg, title, text, card,
+                            webhook=None, context=None, source=""):
+        sent.append(owner)
+        return True, "已发送"
+
+    async def fake_ip(client, node, vmid):
+        return ""
+
+    monkeypatch.setattr(alerting, "dispatch", fake_dispatch)
+    monkeypatch.setattr(alerting, "resolve_vm_ip", fake_ip)
+
+
 def test_two_rules_for_two_vms_fire_two_alerts(db, monkeypatch) -> None:
     sent: List[str] = []
     resources = [_vm(101, "vm-a"), _vm(102, "vm-b")]
@@ -213,9 +251,10 @@ def test_same_named_vms_do_not_share_one_alarm(db, monkeypatch) -> None:
     assert len(fired) == 2
     assert len(sent) == 2
     active = _run(alerting.load_active())
+    # 对象身份 = 「连接 + 节点 + VMID」（测试库没有连接记录，前缀是 "-"）
     assert sorted(active) == [
-        alerting.alarm_key("admin", "r1", "pve1:101"),
-        alerting.alarm_key("admin", "r1", "pve2:102"),
+        alerting.alarm_key("admin", "r1", "-:pve1:101"),
+        alerting.alarm_key("admin", "r1", "-:pve2:102"),
     ]
 
 
@@ -301,3 +340,190 @@ def test_new_account_without_manage_permission_is_told_so(db) -> None:
     assert data["viewer"]["is_admin"] is False
     assert data["operator"]["can_manage"] is True
     assert data["admin"]["can_manage"] is True
+
+
+# ---------------------------------------------------------------- 多套 PVE
+#
+# VMID 与节点名都只在**集群内**唯一。面板同时接多套 PVE 时，「只存 VMID」的
+# 规则目标和「节点 + VMID」的告警身份都会撞车：规则配的是 A 集群上的机器，
+# 巡检却命中 B 集群上同号的那台（推送内容全是它的），另一台反倒永远不响。
+def test_vm_target_ref_only_fires_the_machine_on_its_own_connection(db, monkeypatch) -> None:
+    """规则目标带连接：两套集群都有 103 时，只报自己那台。"""
+    sent: List[str] = []
+    sources = {"a": [_vm(103, "proxCenter-17")], "b": [_vm(103, "test111")]}
+    rules = [_rule(id="r1", name="CPU告警1", target="b:pve:103")]
+    _wire_multi(monkeypatch, sources, rules, sent)
+
+    fired = _run(alerting.evaluate())
+
+    assert [row["target"] for row in fired] == ["test111"]
+    rows = _run(alerting.history(50))
+    assert [(row["rule_name"], row["target"]) for row in rows] == [
+        ("CPU告警1", "test111")
+    ]
+
+
+def test_same_vmid_on_two_connections_do_not_share_one_alarm(db, monkeypatch) -> None:
+    """同一 VMID 分布在两套集群：两条独立告警，不会互相压制冷却。"""
+    sent: List[str] = []
+    sources = {"a": [_vm(100, "vm-a")], "b": [_vm(100, "vm-b")]}
+    _wire_multi(monkeypatch, sources, [_rule()], sent)
+
+    fired = _run(alerting.evaluate())
+
+    assert sorted(row["target"] for row in fired) == ["vm-a", "vm-b"]
+    assert sorted(_run(alerting.load_active())) == [
+        alerting.alarm_key("admin", "r1", "a:pve:100"),
+        alerting.alarm_key("admin", "r1", "b:pve:100"),
+    ]
+
+
+def test_legacy_vmid_target_is_upgraded_to_the_owners_machine(db, monkeypatch) -> None:
+    """旧口径「裸 VMID」跨集群有歧义时，归一到规则主人自己那台。"""
+    _make_user("bob")
+
+    async def seed() -> None:
+        await ownership.set_owner(
+            ownership.KIND_VM, ownership.vm_ref("b", "pve", 103), "bob"
+        )
+
+    _run(seed())
+    # 规则真的落库（不走 load_rules 桩）：要验证归一后的目标写回去了
+    _run(
+        alerting.save_rules_for(
+            [
+                {
+                    "id": "r1",
+                    "name": "CPU告警1",
+                    "target_type": "vm",
+                    "target": "103",
+                    "metric": "cpu",
+                    "threshold": 80,
+                }
+            ],
+            "bob",
+        )
+    )
+
+    sent: List[str] = []
+    sources = {"a": [_vm(103, "proxCenter-17")], "b": [_vm(103, "test111")]}
+    _wire_multi(monkeypatch, sources, [], sent, patch_rules=False)
+
+    fired = _run(alerting.evaluate())
+
+    assert [row["target"] for row in fired] == ["test111"]
+    assert sent == ["bob"]
+    saved = _run(alerting.load_rules())
+    assert [rule["target"] for rule in saved] == ["b:pve:103"]
+
+
+def test_alert_recipient_follows_the_machines_own_connection(db, monkeypatch) -> None:
+    """归属按机器自己那条连接查：同号机器属于不同的人，各发各的。"""
+    _make_user("alice")
+
+    async def seed() -> None:
+        await ownership.set_owner(
+            ownership.KIND_VM, ownership.vm_ref("b", "pve", 100), "alice"
+        )
+
+    _run(seed())
+
+    sent: List[str] = []
+    sources = {"a": [_vm(100, "vm-a")], "b": [_vm(100, "vm-b")]}
+    _wire_multi(monkeypatch, sources, [_rule()], sent)
+
+    _run(alerting.evaluate())
+
+    assert sorted(sent) == ["admin", "alice"]
+    rows = _run(alerting.history(50))
+    assert {row["target"]: row["username"] for row in rows} == {
+        "vm-a": "admin",
+        "vm-b": "alice",
+    }
+
+
+def test_only_the_connections_named_by_rules_are_read(db, monkeypatch) -> None:
+    """规则目标都是 ref 时，没被指到的连接不读 —— 多连接巡检不做无用功。"""
+    sent: List[str] = []
+    sources = {"a": [_vm(100, "vm-a")], "b": [_vm(200, "vm-b")], "c": [_vm(300, "vm-c")]}
+    clients = {cid: _FakeClient(res) for cid, res in sources.items()}
+    monkeypatch.setattr(
+        alerting,
+        "all_connection_clients",
+        lambda: [({"id": cid}, client) for cid, client in clients.items()],
+    )
+    monkeypatch.setattr(alerting, "requested_connection", lambda: "")
+    monkeypatch.setattr(
+        alerting, "load_rules", lambda: _as_list([_rule(target="b:pve:200")])
+    )
+
+    async def fake_dispatch(owner, feishu, email_cfg, title, text, card,
+                            webhook=None, context=None, source=""):
+        sent.append(owner)
+        return True, "已发送"
+
+    async def fake_ip(client, node, vmid):
+        return ""
+
+    monkeypatch.setattr(alerting, "dispatch", fake_dispatch)
+    monkeypatch.setattr(alerting, "resolve_vm_ip", fake_ip)
+
+    _run(alerting.evaluate())
+
+    assert [row for row in sent] == ["admin"]
+    assert {cid: client.calls for cid, client in clients.items()} == {
+        "a": 0,
+        "b": 1,
+        "c": 0,
+    }
+
+
+def test_star_rules_still_read_every_connection(db, monkeypatch) -> None:
+    """``*`` 规则覆盖所有机器：每条连接都要读，不能按「目标」省掉。"""
+    sent: List[str] = []
+    sources = {"a": [_vm(100, "vm-a")], "b": [_vm(200, "vm-b")]}
+    clients = {cid: _FakeClient(res) for cid, res in sources.items()}
+    monkeypatch.setattr(
+        alerting,
+        "all_connection_clients",
+        lambda: [({"id": cid}, client) for cid, client in clients.items()],
+    )
+    monkeypatch.setattr(alerting, "requested_connection", lambda: "")
+    monkeypatch.setattr(alerting, "load_rules", lambda: _as_list([_rule()]))
+
+    async def fake_dispatch(owner, feishu, email_cfg, title, text, card,
+                            webhook=None, context=None, source=""):
+        sent.append(owner)
+        return True, "已发送"
+
+    async def fake_ip(client, node, vmid):
+        return ""
+
+    monkeypatch.setattr(alerting, "dispatch", fake_dispatch)
+    monkeypatch.setattr(alerting, "resolve_vm_ip", fake_ip)
+
+    _run(alerting.evaluate())
+
+    assert {cid: client.calls for cid, client in clients.items()} == {"a": 1, "b": 1}
+
+
+def test_new_account_cannot_pull_alerts_from_someone_elses_machine(db, monkeypatch) -> None:
+    """普通用户手写一个别人的 ref：既不触发，也不把别人的告警拉进自己的页面。"""
+    _make_user("bob")
+
+    async def seed() -> None:
+        await ownership.set_owner(
+            ownership.KIND_VM, ownership.vm_ref("a", "pve", 101), "alice"
+        )
+
+    _run(seed())
+
+    sent: List[str] = []
+    sources = {"a": [_vm(101, "alice-vm")]}
+    rules = [_rule(id="b1", username="bob", target="a:pve:101")]
+    _wire_multi(monkeypatch, sources, rules, sent)
+
+    _run(alerting.evaluate())
+
+    assert sent == []
+    assert _run(alerting.history(50)) == []

@@ -6572,6 +6572,9 @@ export const zhCN = {
   'alerts.repeatCount': '重复提醒 {n}',
   'alerts.failedCount': '发送失败 {n}',
   'alerts.notInList': '{name}（已不在列表）',
+  /* 旧格式目标（只有 VMID / 名字，没有连接前缀）：请重新选择一次，保存后即按
+     「连接 + 节点 + VMID」落库。 */
+  'alerts.legacyTarget': '{name}（旧格式目标，请重新选择）',
   'alerts.notifyTitle': '告警推送开关',
   'alerts.notifySubtitle': '按来源决定是否发送告警。关掉之后该来源的巡检照常运行，但命中的告警整条丢弃：飞书 / 邮件 / 通用 Webhook 与站内消息都不再发出，也不会写进告警历史与工作台待办',
   'alerts.mutedSuffix': '已停止推送 · {desc}',

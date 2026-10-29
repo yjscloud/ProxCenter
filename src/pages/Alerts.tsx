@@ -131,6 +131,19 @@ function tplSections(value: unknown): Record<string, string> {
 }
 
 /**
+ * 规则目标的对象 ref：`<连接>:<节点>:<VMID>`（宿主机为 `<连接>:<节点>`）。
+ *
+ * 与后端 `alerting.target_ref_of` 同一口径 —— 两处必须一致，否则「界面上选中的
+ * 那台」和「后端认的那台」会对不上。VMID 只在**集群内**唯一，而这两份列表都是
+ * 所有 PVE 连接合并的结果：只存 VMID 的话，另一套集群上同号的机器会顶替它。
+ */
+function targetRef(connectionId: unknown, node: unknown, vmid?: unknown): string {
+  const cid = String(connectionId || "-");
+  const withVmid = vmid !== undefined && vmid !== null && String(vmid) !== "";
+  return `${cid}:${node || ""}${withVmid ? `:${vmid}` : ""}`;
+}
+
+/**
  * 投递状态的四态：结果（送达 / 失败）× 类别（告警 / 恢复）。
  *
  * 排序也用它 —— 按「该不该先管」排：发送失败 > 恢复通知失败 > 新告警 > 已恢复。
@@ -269,22 +282,36 @@ export function Alerts() {
   /* 标题预览：与后端同一口径 —— 填了用填的，留空用面板名称 */
   const titleBrand = String(feishu?.title || "").trim() || site.name;
 
-  // 目标下拉选项：宿主机取节点名；虚拟机只列运行中的（取值用 VMID，
-  // 集群内唯一，避免同名虚拟机造成歧义），「全部」表示监控所有对象。
+  /* 目标下拉选项的取值是**对象 ref**：`<连接>:<节点>:<VMID>`（宿主机为
+     `<连接>:<节点>`），与后端 alerting.target_ref_of 同一口径。
+
+     为什么不能只存 VMID：VMID 只在**集群内**唯一，而这两份列表都是「所有 PVE
+     连接合并」的结果（见 /vms、/nodes）。只存 103 的话，另一套集群上同号的机器
+     会跟它抢同一个目标 —— 规则配的是这台，告警推的却是那台，另一台反倒永远
+     不响。连接进 ref 之后，每台机器都是独立的选项，也永远不会串。
+
+     「全部」仍然是 `*`，表示监控所有对象。 */
   const targetOptions = useMemo(() => {
     const all = [{ label: t("alerts.all"), value: "*" }];
+    const hostLabel = (n: { node: string; connection_name?: string }) =>
+      n.connection_name ? `${n.node}（${n.connection_name}）` : n.node;
     return {
       node: [
         ...all,
-        ...(nodesQuery.data ?? []).map((n) => ({ label: n.node, value: n.node })),
+        ...(nodesQuery.data ?? []).map((n) => ({
+          label: hostLabel(n),
+          value: targetRef(n.connection_id, n.node),
+        })),
       ],
       vm: [
         ...all,
         ...(vmsQuery.data ?? [])
           .filter((vm) => isRunning(vm.status) && !vm.template)
           .map((vm) => ({
-            label: `${vm.name}（VMID ${vm.vmid}）`,
-            value: String(vm.vmid),
+            label: `${vm.name}（VMID ${vm.vmid}${
+              vm.connection_name ? ` · ${vm.connection_name}` : ""
+            }）`,
+            value: targetRef(vm.connection_id, vm.node, vm.vmid),
           })),
       ],
     };
@@ -554,7 +581,20 @@ export function Alerts() {
   function targetSelectOptions(rule: AlertRule) {
     const list = targetOptions[rule.target_type === "vm" ? "vm" : "node"];
     if (list.some((o) => o.value === rule.target)) return list;
-    return [{ label: t("alerts.notInList", { name: rule.target }), value: rule.target }, ...list];
+    /* 对不上有两种原因，别混成一句：
+       * 目标带连接前缀（新格式）却不在列表里 —— 机器被关机 / 删除了；
+       * 目标没有连接前缀 —— 规则存的是升级前的旧写法（裸 VMID / 机器名），
+         后端会尽量自动归一，这里也提示「重新选择」，选完保存就完成迁移。 */
+    const legacy = !String(rule.target || "").includes(":");
+    return [
+      {
+        label: legacy
+          ? t("alerts.legacyTarget", { name: rule.target })
+          : t("alerts.notInList", { name: rule.target }),
+        value: rule.target,
+      },
+      ...list,
+    ];
   }
 
   /* ---- 推送来源开关（全局，管理员）----

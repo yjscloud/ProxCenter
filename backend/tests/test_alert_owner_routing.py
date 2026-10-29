@@ -401,6 +401,6 @@ def test_legacy_state_does_not_fire_a_second_alert(db, monkeypatch) -> None:
     assert sent == [], "冷却还没到点，不该因为换了 key 就再响一次"
     rows = _run(alerting.load_active())
     assert alerting.alarm_key("admin", "r1", "vm-a") not in rows
-    # 新 key 的对象身份是「节点 + VMID」（见 alerting.alarm_subject）
-    moved = rows[alerting.alarm_key("alice", "r1", "pve:100")]
+    # 新 key 的对象身份是「连接 + 节点 + VMID」（见 alerting.alarm_subject）
+    moved = rows[alerting.alarm_key("alice", "r1", "-:pve:100")]
     assert moved["username"] == "alice"

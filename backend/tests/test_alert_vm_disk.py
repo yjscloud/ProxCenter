@@ -113,18 +113,48 @@ def test_prefetch_covers_running_qemu_only_and_dedupes() -> None:
         {"id": "2", "target_type": "vm", "target": "*", "metric": "disk"},
         {"id": "3", "target_type": "vm", "target": "*", "metric": "cpu"},
     ]
-    out = asyncio.run(alerting.prefetch_vm_disk_usage(client, rules, resources))
+    out = asyncio.run(
+        alerting.prefetch_vm_disk_usage({"": client}, rules, resources)
+    )
     # 两条规则指同一台 -> 只问一次 agent；关机 / 模板 / 容器 / 节点都不问
     assert client.calls == [("pve", 103)]
     # 返回 (使用率%, 已用字节, 总字节)：容量给模板的 {used}/{total} 用
-    assert out[("pve", 103)][0] == pytest.approx(50.0)
-    assert out[("pve", 103)][1:] == (50.0, 100.0)
+    assert out[("", "pve", "103")][0] == pytest.approx(50.0)
+    assert out[("", "pve", "103")][1:] == (50.0, 100.0)
     assert len(out) == 1
 
 
 def test_prefetch_is_free_without_disk_rules() -> None:
     client = FakeClient()
     rules = [{"id": "1", "target_type": "vm", "target": "*", "metric": "cpu"}]
-    out = asyncio.run(alerting.prefetch_vm_disk_usage(client, rules, [QEMU_ROW]))
+    out = asyncio.run(
+        alerting.prefetch_vm_disk_usage({"": client}, rules, [QEMU_ROW])
+    )
     assert out == {}
     assert client.calls == []
+
+
+def test_prefetch_uses_each_connections_own_client() -> None:
+    """两套集群都有 103 号机器：各问各的 agent，数据不会贴到对方头上。"""
+    client_a = FakeClient(
+        [{"mountpoint": "/", "type": "ext4", "used-bytes": 10, "total-bytes": 100}]
+    )
+    client_b = FakeClient(
+        [{"mountpoint": "/", "type": "ext4", "used-bytes": 90, "total-bytes": 100}]
+    )
+    resources = [
+        {**QEMU_ROW, "connection_id": "a", "name": "a-103"},
+        {**QEMU_ROW, "connection_id": "b", "name": "b-103"},
+    ]
+    rules = [{"id": "1", "target_type": "vm", "target": "*", "metric": "disk"}]
+
+    out = asyncio.run(
+        alerting.prefetch_vm_disk_usage(
+            {"a": client_a, "b": client_b}, rules, resources
+        )
+    )
+
+    assert client_a.calls == [("pve", 103)]
+    assert client_b.calls == [("pve", 103)]
+    assert out[("a", "pve", "103")][0] == pytest.approx(10.0)
+    assert out[("b", "pve", "103")][0] == pytest.approx(90.0)

@@ -324,7 +324,12 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             "detail": detail,
             "kind": "alarm",
         }
-        await alerting.record(entry, source=alerting.SOURCE_QUOTA, repeat=bool(prev))
+        await alerting.record(
+            entry,
+            source=alerting.SOURCE_QUOTA,
+            repeat=bool(prev),
+            channels=alerting.channel_ids(ch["feishu"], ch["email"], ch["hook"]),
+        )
         entry["text"] = text
         fired.append(entry)
 
@@ -377,6 +382,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 "kind": "recovery",
             },
             source=alerting.SOURCE_QUOTA,
+            channels=alerting.channel_ids(ch["feishu"], ch["email"], ch["hook"]),
         )
         await alerting.clear_active(key)
         entry = {"kind": "recovery", "target": who, "text": text}

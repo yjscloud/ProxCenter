@@ -1,13 +1,14 @@
 """邮件模块的单元测试。
 
 这些用例**不需要 MySQL、也不需要真实 SMTP**：只验证纯逻辑（收件人归一、
-是否算配好、脱敏、报文构造、模板内容），投递本身用 monkeypatch 换掉，
-所以整个文件连数据库都不会碰。
+是否算配好、脱敏、报文构造、模板内容、会话复用），投递本身用 monkeypatch
+换掉，所以整个文件连数据库都不会碰。
 """
 from __future__ import annotations
 
 import asyncio
 import os
+import smtplib
 import sys
 from pathlib import Path
 
@@ -233,6 +234,125 @@ class TestSendMail:
         # 不抛异常，且返回带服务器地址与响应码的中文说明（而不是原始异常字符串）
         assert "smtp.example.com:587" in detail
         assert "421" in detail
+
+
+# ------------------------------------------------------------ 会话复用
+class _FakeServer:
+    """最小可用的假 SMTP：只实现 _open / _deliver 用到的那几个方法。
+
+    记录「建了几次连、登录了几次、每封发到哪个会话上」，用来验证批量告警
+    只登录一次；``fail_next_send`` 模拟服务端把复用的会话掐掉。
+    """
+
+    instances: list = []
+    fail_next_send = False
+    reject_next_send = False
+    attempts = 0
+
+    def __init__(self, host, port, timeout=None, context=None):
+        self.host = host
+        self.port = port
+        self.logins = 0
+        self.sent: list = []
+        self.quit_called = False
+        _FakeServer.instances.append(self)
+
+    def ehlo(self) -> None:
+        pass
+
+    def starttls(self, context=None) -> None:
+        pass
+
+    def login(self, username, password) -> None:
+        self.logins += 1
+
+    def send_message(self, message) -> None:
+        _FakeServer.attempts += 1
+        if _FakeServer.fail_next_send:
+            _FakeServer.fail_next_send = False
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+        if _FakeServer.reject_next_send:
+            _FakeServer.reject_next_send = False
+            raise smtplib.SMTPRecipientsRefused({"a@b.com": (550, b"no such user")})
+        self.sent.append(message)
+
+    def quit(self) -> None:
+        self.quit_called = True
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.fixture()
+def fake_smtp(monkeypatch):
+    mailer.reset_session()
+    _FakeServer.instances = []
+    _FakeServer.fail_next_send = False
+    _FakeServer.reject_next_send = False
+    _FakeServer.attempts = 0
+    monkeypatch.setattr(smtplib, "SMTP", _FakeServer)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _FakeServer)
+    yield _FakeServer
+    mailer.reset_session()
+
+
+class TestSessionReuse:
+    """一批告警只建一次连、登一次录（这是「告警邮件一封都收不到」的修复点）。
+
+    故障形态：一轮巡检连着发 8~10 封，每封都自己连一次 SMTP。公共邮箱对
+    「同一账号短时间多次登录」有硬限制，超了就直接掐连接，
+    ``send_mail`` 拿到 ``Connection unexpectedly closed``。收件人看到的
+    是「邮件一封都收不到」，而飞书一切正常 —— 看起来像某个人的邮箱坏了。
+    """
+
+    def test_a_batch_logs_in_once(self, fake_smtp) -> None:
+        for i in range(3):
+            ok, detail = run(
+                mailer.send_mail("a@b.com", f"主题 {i}", "正文", cfg=READY_CFG)
+            )
+            assert ok, detail
+
+        assert len(fake_smtp.instances) == 1, "三封邮件不该建三次连接"
+        assert fake_smtp.instances[0].logins == 1
+        assert len(fake_smtp.instances[0].sent) == 3
+
+    def test_disconnected_session_is_reopened_and_the_mail_resent(self, fake_smtp) -> None:
+        """复用的会话被服务端掐掉时重连一次再发，而不是把这封丢掉。"""
+        assert run(mailer.send_mail("a@b.com", "第一封", "正文", cfg=READY_CFG))[0]
+
+        fake_smtp.fail_next_send = True
+        ok, detail = run(mailer.send_mail("a@b.com", "第二封", "正文", cfg=READY_CFG))
+
+        assert ok, detail
+        assert len(fake_smtp.instances) == 2, "断线后应当重连"
+        assert fake_smtp.instances[0].quit_called
+        assert len(fake_smtp.instances[1].sent) == 1, "重连后要把这封补发出去"
+
+    def test_a_changed_config_opens_a_new_session(self, fake_smtp) -> None:
+        """换了服务器 / 账号 / 授权码必须重连，不能拿旧会话继续发。"""
+        run(mailer.send_mail("a@b.com", "s", "b", cfg=READY_CFG))
+        run(mailer.send_mail("a@b.com", "s", "b", cfg={**READY_CFG, "host": "smtp.other.com"}))
+
+        assert len(fake_smtp.instances) == 2
+
+    def test_an_idle_session_is_dropped(self, fake_smtp) -> None:
+        """空闲超过 SESSION_IDLE 就丢掉：留着多半已经被服务端踢了。"""
+        run(mailer.send_mail("a@b.com", "s", "b", cfg=READY_CFG))
+        mailer._session.used -= mailer.SESSION_IDLE + 1
+
+        run(mailer.send_mail("a@b.com", "s", "b", cfg=READY_CFG))
+        assert len(fake_smtp.instances) == 2
+
+    def test_a_rejected_mail_is_not_retried(self, fake_smtp) -> None:
+        """收件人被拒（5xx）是业务错误：重试只会把同一封失败邮件再发一遍。"""
+        fake_smtp.reject_next_send = True
+
+        ok, detail = run(mailer.send_mail("a@b.com", "s", "b", cfg=READY_CFG))
+
+        assert ok is False
+        assert "550" in detail
+        assert fake_smtp.attempts == 1, "5xx 不该触发重试"
+        assert len(fake_smtp.instances) == 1, "5xx 不该触发重连"
 
 
 # ---------------------------------------------------------------- 模板

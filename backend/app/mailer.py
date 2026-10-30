@@ -8,6 +8,10 @@
 而 ``smtplib`` 是阻塞的，所以统一用 ``asyncio.to_thread`` 丢到线程里，
 不阻塞事件循环。
 
+**整批邮件共用一个 SMTP 会话**（见下面的「会话复用」）：告警一轮可能连着发
+十几封，每封都重新建连 + 登录会被公共邮箱判定为异常并掐断连接，表现为
+「邮件一封都收不到」。会话复用与断线重连是投递可靠性的一部分，不是优化。
+
 约定与项目其它模块保持一致：
 
 * 密码落库前用 :func:`crypto.encrypt` 加密，**永不回传前端**，只回 ``password_set``；
@@ -22,6 +26,7 @@ import logging
 import smtplib
 import socket
 import ssl
+import threading
 import time
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate
@@ -222,8 +227,12 @@ def _ssl_context(verify: bool) -> ssl.SSLContext:
     return context
 
 
-def _deliver(cfg: Dict[str, Any], message: EmailMessage) -> None:
-    """阻塞式投递，由 to_thread 调用。"""
+def _open(cfg: Dict[str, Any]) -> smtplib.SMTP:
+    """建连 + TLS + 登录，返回一个可以继续发多封的会话。
+
+    失败时先把半开的连接关掉再抛出：否则每失败一次就漏一个 socket，批量告警
+    失败时会把文件描述符耗掉。
+    """
     host = cfg["host"]
     port = int(cfg.get("port") or 587)
     mode = cfg.get("tls") or "starttls"
@@ -244,12 +253,139 @@ def _deliver(cfg: Dict[str, Any], message: EmailMessage) -> None:
         username = cfg.get("username") or ""
         if username:
             server.login(username, cfg.get("password") or "")
-        server.send_message(message)
-    finally:
+    except BaseException:
+        _close(server)
+        raise
+    return server
+
+
+def _close(server: Any) -> None:
+    """关掉会话。``quit`` 也可能因为连接已断而抛，兜住即可。"""
+    try:
+        server.quit()
+    except Exception:  # noqa: BLE001 - 关连接失败没有任何补救动作
         try:
-            server.quit()
-        except (smtplib.SMTPException, OSError):
+            server.close()
+        except Exception:  # noqa: BLE001
             pass
+
+
+# --------------------------------------------------------------- 会话复用
+#
+# 为什么不能「一封邮件一次连接」
+# ----------------------------
+# 告警是成批出现的：一轮巡检里 4 台机器 × 2 条规则就是 8 封，每封都自己连一次
+# SMTP，就是 8 次 TLS 握手 + 8 次登录。公共邮箱（QQ / 163 / 企业邮网关）对
+# 「同一账号短时间多次登录」有硬限制，超了不一定会返回 5xx —— 更常见的做法是
+# 直接把连接掐掉，客户端只看到 ``Connection unexpectedly closed``。
+#
+# 线上实测（v0.3.9，约 8 封/轮）：一轮里几乎整批失败，只有零星一封成功；
+# 历史的 detail 全是「飞书：已发送；邮件：发送失败：Connection unexpectedly
+# closed」。收件人（普通用户）看到的现象就是「告警邮件一封都收不到」，而飞书
+# 与 Webhook 一切正常 —— 故障看起来像「某个人的邮箱坏了」，实际是投递方式。
+#
+# 所以整批共用一个会话：连一次、登录一次，之后连续 DATA。会话在
+# ``SESSION_IDLE`` 秒内没有新邮件就丢掉（服务端也会踢空闲连接，留着反而会
+# 撞上一次「已断开」）；SMTP 配置变了（换服务器 / 账号 / 加密方式）也丢掉。
+# 发送时发现会话已被服务端关掉，重连一次再发。断开几乎都发生在上一条命令的应答
+# 阶段（服务端踢会话 / 限流），此时这封还没进入 DATA，重发不会重复；极小概率
+# 是服务端收下后立刻断开，那会多一封重复告警 —— 相比「整批告警丢失」，这个代价
+# 可以接受。
+SESSION_IDLE = 60.0
+
+
+class _Session:
+    """一个已登录的 SMTP 会话，以及它对应的配置指纹。"""
+
+    __slots__ = ("server", "key", "used")
+
+    def __init__(self, server: smtplib.SMTP, key: str) -> None:
+        self.server = server
+        self.key = key
+        self.used = time.monotonic()
+
+
+#: 进程内唯一的复用会话。只在 :func:`_deliver` 里读写，由 _SESSION_LOCK 保护。
+_session: Optional[_Session] = None
+#: 用 threading.Lock 而不是 asyncio.Lock：真正的 I/O 发生在 ``to_thread`` 的
+#: 工作线程里，锁必须跨线程有效，且不能绑定到某个事件循环（测试会反复
+#: ``asyncio.run``，绑定 loop 的锁在下一个 loop 上会直接报错）。
+_SESSION_LOCK = threading.Lock()
+
+
+def _fingerprint(cfg: Dict[str, Any]) -> str:
+    """会话匹配用的配置指纹。密码也在里面：换了授权码必须重连。"""
+    return "|".join(
+        str(cfg.get(name, ""))
+        for name in ("host", "port", "tls", "username", "password", "sender", "verify_ssl")
+    )
+
+
+def reset_session() -> None:
+    """丢掉复用会话（配置变更 / 测试收尾时用）。"""
+    global _session
+    with _SESSION_LOCK:
+        if _session is not None:
+            _close(_session.server)
+            _session = None
+
+
+def _deliver(cfg: Dict[str, Any], message: EmailMessage) -> None:
+    """阻塞式投递，由 to_thread 调用。
+
+    会话复用与重连见上面的「会话复用」一节。任何异常照常抛出，由
+    :func:`send_mail` 翻成中文原因 —— 这里不吞异常，否则「发失败了」会被
+    记成成功。
+    """
+    global _session
+    key = _fingerprint(cfg)
+    with _SESSION_LOCK:
+        session = _session
+        if session is not None and (
+            session.key != key or time.monotonic() - session.used > SESSION_IDLE
+        ):
+            _close(session.server)
+            _session = None
+            session = None
+        if session is None:
+            session = _Session(_open(cfg), key)
+            _session = session
+        try:
+            session.server.send_message(message)
+        except Exception as exc:  # noqa: BLE001 - 分类后决定重试还是上抛
+            # 复用的会话失效（空闲被踢 / 上一封撞上限流）：重连一次再发。
+            # 「对方拒收」是业务错误，重试只会把同一封失败的邮件再发一遍，
+            # 所以这里必须先分类 —— 不能见到异常就重试。
+            if not _transient(exc):
+                raise
+            _close(session.server)
+            _session = None
+            session = _Session(_open(cfg), key)
+            _session = session
+            session.server.send_message(message)
+        session.used = time.monotonic()
+
+
+def _transient(exc: BaseException) -> bool:
+    """这条失败是不是「连接没了」，而不是「这封邮件被拒」。
+
+    分类要注意 ``smtplib`` 的继承关系：``SMTPException`` 是 ``OSError`` 的
+    子类，而 ``SMTPRecipientsRefused``（收件人不存在）、
+    ``SMTPSenderRefused``（发件人不符）都直接继承它。如果只按 ``OSError``
+    判，这些业务错误会被当成网络抖动重试一遍 —— 库里的记录还会显示「重试后
+    成功」（其实只是第二次恰好没触发拒收），排查时完全看不出真相。
+
+    ``421 service not available`` 是服务端在说「现在不接，连接我要关了」，
+    与其他 5xx（535 认证失败、553 发件人不符）性质不同：前者换个连接还有
+    机会，后者重试多少次都一样。
+    """
+    if isinstance(exc, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError)):
+        return True
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return int(getattr(exc, "smtp_code", 0) or 0) == 421
+    if isinstance(exc, smtplib.SMTPException):
+        return False
+    return isinstance(exc, OSError)
 
 
 # 各端口惯用的加密方式。两者对不上时 TCP 能连上，但双方都在等对方先开口，

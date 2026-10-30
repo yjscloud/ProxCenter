@@ -11,6 +11,8 @@
 3. **普通用户配的规则是「自己的」**：``*`` 只覆盖自己名下的机器，告警发给自己。
    按「机器归属」投递是**管理员 / 区域管理员**的口径；照搬到普通用户身上，新建账号
    配完规则后告警全进了别人（机器归属者）的通道，他自己的告警页永远是空的。
+   没有归属记录的机器**不算**在普通用户的范围内 —— 它不属于任何人，也就不属于
+   规则创建者；这类机器由管理员规则兜底。
 
 模块层用 ``asyncio.run`` + ``db`` 夹具（只建表、不起 app），写法与
 test_alert_owner_routing 一致。
@@ -281,8 +283,14 @@ def test_new_account_rule_only_covers_its_own_machines(db, monkeypatch) -> None:
     assert _run(alerting.history(50, "admin")) == []
 
 
-def test_new_account_rule_fires_without_ownership_record(db, monkeypatch) -> None:
-    """明确指定 VMID 的规则照常生效：没有归属记录也不该被静默丢弃。"""
+def test_new_account_rule_skips_machines_without_an_owner(db, monkeypatch) -> None:
+    """没有归属记录的机器不属于任何人，更不属于规则创建者：普通用户不报。
+
+    以前这里放行（「怕无主机器没人报」），代价是任何普通用户配一条 ``*`` 规则，
+    就能把面板之外建的 / 对账清掉的机器（名称、节点、指标值）订阅到自己名下 ——
+    这些机器在 /vms 里对他是看不见的。无主机器的告警交给管理员规则兜底
+    （见下面的 test_admin_rule_still_follows_machine_ownership）。
+    """
     _make_user("bob")
 
     sent: List[str] = []
@@ -293,7 +301,29 @@ def test_new_account_rule_fires_without_ownership_record(db, monkeypatch) -> Non
 
     fired = _run(alerting.evaluate())
 
-    assert [row["username"] for row in fired] == ["bob"]
+    assert fired == []
+    assert sent == []
+    assert _run(alerting.history(50)) == []
+    assert _run(alerting.load_active()) == {}
+
+
+def test_star_rule_of_a_normal_user_never_touches_unowned_machines(db, monkeypatch) -> None:
+    """``*`` 与「手写某个 ref」同一条口径：无主机器的 ref 也不放行。"""
+    _make_user("bob")
+    _own("bob", 101)
+
+    sent: List[str] = []
+    resources = [_vm(101, "bob-vm"), _vm(102, "orphan-vm")]
+    _wire_evaluate(
+        monkeypatch,
+        resources,
+        [_rule(id="b1", username="bob", target="*")],
+        sent,
+    )
+
+    fired = _run(alerting.evaluate())
+
+    assert [row["target"] for row in fired] == ["bob-vm"]
     assert sent == ["bob"]
 
 

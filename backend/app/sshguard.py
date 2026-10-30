@@ -1038,6 +1038,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     i18n.pin_language(await alerting.resolve_language(target_owner))
     feishu = await alerting.load_feishu(target_owner)
     email_cfg = await alerting.load_alert_email(target_owner)
+    # 显式读一份 Webhook：dispatch 不传时会自己读，但历史里的渠道要按「实际
+    # 传给 dispatch 的那份配置」算（见 alerting.channel_ids），必须握在手上。
+    webhook_cfg = await alerting.load_webhook(target_owner)
     cooldown = int(policy["cooldown_minutes"]) * 60
     now = time.time()
     threshold = int(policy["max_failures"])
@@ -1081,6 +1084,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             text,
             card,
             source=alerting.SOURCE_SSHGUARD,
+            webhook=webhook_cfg,
         )
         state = {
             "username": target_owner,
@@ -1100,7 +1104,12 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         await alerting.mark_active(key, state)
         active[key] = dict(state, alarm_key=key)
         entry = {**state, "result": "sent" if ok else "failed", "detail": detail, "kind": "alarm"}
-        await alerting.record(entry, source=alerting.SOURCE_SSHGUARD, repeat=bool(prev))
+        await alerting.record(
+            entry,
+            source=alerting.SOURCE_SSHGUARD,
+            repeat=bool(prev),
+            channels=alerting.channel_ids(feishu, email_cfg, webhook_cfg),
+        )
         entry["text"] = text
         fired.append(entry)
 
@@ -1131,6 +1140,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 text,
                 card,
                 source=alerting.SOURCE_SSHGUARD,
+                webhook=webhook_cfg,
             )
             state = {
                 "username": target_owner,
@@ -1151,7 +1161,11 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             await alerting.mark_active(key, state)
             active[key] = dict(state, alarm_key=key)
             entry = {**state, "result": "sent" if ok else "failed", "detail": detail, "kind": "alarm"}
-            await alerting.record(entry, source=alerting.SOURCE_SSHGUARD)
+            await alerting.record(
+                entry,
+                source=alerting.SOURCE_SSHGUARD,
+                channels=alerting.channel_ids(feishu, email_cfg, webhook_cfg),
+            )
             entry["text"] = text
             fired.append(entry)
 
@@ -1177,6 +1191,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             text,
             card,
             source=alerting.SOURCE_SSHGUARD,
+            webhook=webhook_cfg,
         )
         await alerting.record(
             {
@@ -1193,6 +1208,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 "kind": "recovery",
             },
             source=alerting.SOURCE_SSHGUARD,
+            channels=alerting.channel_ids(feishu, email_cfg, webhook_cfg),
         )
         await alerting.clear_active(key)
         fired.append({"kind": "recovery", "target": row.get("target"), "text": text})

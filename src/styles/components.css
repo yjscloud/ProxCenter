@@ -4336,6 +4336,15 @@ body.is-col-resizing * {
   color: var(--text-muted);
 }
 
+/* 发送渠道：一排小徽章。可能同时有「飞书 + 邮件 + 站内信」，横排比竖排省高度，
+   徽章之间留 4px 断行也自然。 */
+.alert-hist-channels {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
 /* 历史卡片标题右侧：搜索框 + 清空按钮。窄屏换行，别把搜索框压成一条缝 */
 .alert-hist-actions {
   display: flex;

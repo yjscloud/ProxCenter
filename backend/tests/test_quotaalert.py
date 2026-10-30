@@ -143,8 +143,10 @@ class _Stub:
         )
         return True, "sent"
 
-    async def record(self, entry, *, source="", repeat=False):
-        self.recorded.append({**entry, "source": source, "repeat": repeat})
+    async def record(self, entry, *, source="", repeat=False, channels=None):
+        self.recorded.append(
+            {**entry, "source": source, "repeat": repeat, "channels": list(channels or [])}
+        )
 
     async def mark_active(self, key, row):
         self.marked.append(key)
@@ -215,6 +217,8 @@ class TestEvaluate:
         assert stub.dispatched[0]["owner"] == "alice"
         assert stub.dispatched[0]["source"] == alerting.SOURCE_QUOTA
         assert stub.marked and stub.recorded
+        # 历史里的渠道跟着实际投递走：这个桩只开了飞书，邮件与 Webhook 都关着
+        assert stub.recorded[0]["channels"] == ["feishu"]
 
     def test_stores_used_ratio_not_remaining(self, monkeypatch) -> None:
         """历史里存的是**已用比例**，不是剩余比例。

@@ -174,11 +174,15 @@ class RecipientBook:
 
     兜底：机器没有归属记录（面板之外创建的、对账时清掉的），或者归属记录指向一个
     已经不存在的账号（用户被删掉时归属表不级联清理）时，回落给配规则的人。宁可
-    发给「不该收的人」，也不能让一条告警谁都不收到。
+    发给「不该收的人」，也不能让一条告警谁都不收到 —— 但这个兜底只对能看到全局
+    机器的角色成立（见 :meth:`is_supervisor`）。
 
     **普通用户配的规则不走这条路**：他没有「别人的机器」可管，规则就该落到他自己
     名下（见 :meth:`is_supervisor`）。否则新建的普通账号配完规则，告警全被投到机器
     归属者那里，自己一条也收不到 —— 使用者的结论必然是「我给新账号配的规则不生效」。
+    同理，无主机器也不进普通用户的规则范围（判定在 :func:`evaluate`）：机器不属于
+    任何人，更不属于规则创建者；让 ``*`` 把它们捞进来，等于凭空多出一批「界面里
+    看不见的机器」的告警。
 
     一轮巡检里同一个收件人会命中很多条规则，所以归属表与账号清单各读一次、
     之后都在内存里判断 —— 不按每台机器查库。
@@ -583,6 +587,61 @@ MUTED_DETAIL = "该来源已停止推送告警（静默，不记录历史）"
 RESULT_SENT = "sent"
 RESULT_MUTED = "muted"
 
+# --------------------------------------------------------------- 投递渠道
+#
+# 落进 ``alert_history.channel``（逗号分隔），界面据此标出「这条告警是从哪个
+# 渠道发出的」。用固定的英文 id 而不是渠道的中文名：这一列要进 CSV、也可能被
+# 拿去做 SQL 过滤，翻译是展示层的事（见前端 alerts.channel* 词条）。
+#
+# 记的是**尝试过的渠道**，不是「成功的渠道」：一条告警确实走了邮件、但被 SMTP
+# 拒了，用户最需要知道的恰恰是「它试过邮件，失败了」—— 只记成功的渠道会把
+# 失败掩盖掉（这正是此前「飞书成功掩盖邮件失败」的老问题）。成功与否看同一行的
+# ``result`` 与 ``detail``。
+CHANNEL_FEISHU = "feishu"
+CHANNEL_EMAIL = "email"
+CHANNEL_WEBHOOK = "webhook"
+#: 站内消息（顶栏铃铛）。record 会为每条告警留一条，所以它总是出现在渠道里。
+CHANNEL_INBOX = "inbox"
+CHANNEL_IDS = (CHANNEL_FEISHU, CHANNEL_EMAIL, CHANNEL_WEBHOOK, CHANNEL_INBOX)
+#: 列宽（VARCHAR(64)）留足余量：四个渠道的 id 加起来不到 30 个字符。
+CHANNEL_MAX = 64
+
+
+def channel_ids(
+    feishu: Dict[str, Any],
+    email_cfg: Dict[str, Any],
+    webhook: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """本次投递会用到的渠道。
+
+    :func:`dispatch` 用它决定「发哪几个通道」，各告警来源用它填历史行的
+    ``channel`` —— 两处共用同一个函数，渠道字段就**不可能**与实际投递不一致。
+    复制一份判定条件到调用方是这类字段最常见的错法：改了 dispatch 忘了改
+    记录端，历史里就开始出现「渠道写了邮件、实际没发」。
+    """
+    ids: List[str] = []
+    if (feishu or {}).get("enabled"):
+        ids.append(CHANNEL_FEISHU)
+    if (email_cfg or {}).get("enabled"):
+        ids.append(CHANNEL_EMAIL)
+    if (webhook or {}).get("enabled"):
+        ids.append(CHANNEL_WEBHOOK)
+    return ids
+
+
+def channel_text(raw: Any) -> str:
+    """把渠道集合归一成数据库里那一列的样子（去重、按固定顺序、截断）。
+
+    顺序固定而不是「按传入顺序」：同一条告警在两边（告警与恢复）的渠道写法
+    一致，肉眼比对与 SQL 过滤都不用考虑顺序。未知值直接丢弃 —— 宁可少一个
+    徽章，也不要往库里塞一个界面解释不了的字符串。
+    """
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    wanted = {str(item or "").strip().lower() for item in (raw or ())}
+    ordered = [cid for cid in CHANNEL_IDS if cid in wanted]
+    return ",".join(ordered)[:CHANNEL_MAX]
+
 
 def default_notify_sources() -> Dict[str, bool]:
     """默认全开：升级后不会突然少收到本该收到的告警。"""
@@ -699,6 +758,11 @@ CREATE TABLE IF NOT EXISTS alert_history (
     threshold   DOUBLE,
     result      VARCHAR(32),
     detail      TEXT,
+    -- 本条告警尝试过的投递渠道（逗号分隔，取值见 CHANNEL_IDS）：
+    -- feishu / email / webhook / inbox。成功与否仍看 result 与 detail ——
+    -- 记「尝试过」而不是「成功的」，否则失败的通道会从历史里消失，用户
+    -- 永远查不出「邮件为什么没收到」。
+    channel     VARCHAR(64) NOT NULL DEFAULT '',
     kind        VARCHAR(16) DEFAULT 'alarm',
     -- 1 = 同一事件的重复提醒（告警没恢复、冷却到点又发了一次）。
     -- 每发一次就记一条（用户要的就是「发了三封 = 三条记录」），这一列让界面
@@ -757,6 +821,14 @@ async def init_table() -> None:
             # 旧库补列：升级前的历史里没有「重复提醒」这种行，默认 0 正好
             await db.execute(
                 "ALTER TABLE alert_history ADD COLUMN is_repeat TINYINT NOT NULL DEFAULT 0"
+            )
+        if "channel" not in columns:
+            # 旧库补列：升级前的记录没有渠道信息，留空串（界面显示「-」）。
+            # 不按 detail 里的「飞书：/邮件：」反推：detail 是展示文本、
+            # 随语言变化，反推出来的渠道随时可能错，历史数据宁可缺失。
+            await db.execute(
+                "ALTER TABLE alert_history ADD COLUMN channel"
+                " VARCHAR(64) NOT NULL DEFAULT ''"
             )
         columns = await database.table_columns(db, "alert_active")
         if "username" not in columns:
@@ -1627,11 +1699,7 @@ async def dispatch(
     if webhook is None:
         webhook = await load_webhook(owner)
 
-    if not (
-        feishu.get("enabled")
-        or email_cfg.get("enabled")
-        or webhook.get("enabled")
-    ):
+    if not channel_ids(feishu, email_cfg, webhook):
         return False, i18n.tr("告警通知已停用，仅记录")
 
     # 自定义文案：只覆盖「邮箱标题/正文」与「飞书卡片正文」，通道开没开仍按上面的
@@ -1670,21 +1738,24 @@ async def dispatch(
                 ),
             )
 
-    channels: List[str] = []
+    # 用 channel_ids 而不是在这里各写一遍 if：同一份判定同时服务「发哪些」
+    # 与「历史里记哪些」（见 :func:`channel_ids`）。
+    used = channel_ids(feishu, email_cfg, webhook)
+    parts: List[str] = []
     delivered = False
-    if feishu.get("enabled"):
+    if CHANNEL_FEISHU in used:
         ok, detail = await send_feishu(out_card, owner)
         delivered = delivered or ok
-        channels.append(i18n.tr("飞书：") + detail)
-    if email_cfg.get("enabled"):
+        parts.append(i18n.tr("飞书：") + detail)
+    if CHANNEL_EMAIL in used:
         ok, detail = await send_alert_email(owner, mail_title, mail_text)
         delivered = delivered or ok
-        channels.append(i18n.tr("邮件：") + detail)
-    if webhook.get("enabled"):
-        ok, detail = await send_webhook(title, text, context, owner, cfg=webhook)
+        parts.append(i18n.tr("邮件：") + detail)
+    if CHANNEL_WEBHOOK in used:
+        ok, detail = await send_webhook(title, text, context, owner, cfg=webhook or {})
         delivered = delivered or ok
-        channels.append(i18n.tr("Webhook：") + detail)
-    return delivered, i18n.pick("；", "; ").join(channels)
+        parts.append(i18n.tr("Webhook：") + detail)
+    return delivered, i18n.pick("；", "; ").join(parts)
 
 
 #: 「发送测试」用的样例告警：字段与资源告警一致，好让人一眼看到每行会长什么样
@@ -2013,7 +2084,11 @@ async def send_feishu(card: Dict[str, Any], owner: str = "") -> Tuple[bool, str]
 
 
 async def record(
-    entry: Dict[str, Any], *, source: str = "", repeat: bool = False
+    entry: Dict[str, Any],
+    *,
+    source: str = "",
+    repeat: bool = False,
+    channels: Optional[Iterable[str]] = None,
 ) -> None:
     """记一条告警历史，并给这条告警的**收件人**留一条站内消息。
 
@@ -2040,6 +2115,11 @@ async def record(
 
     唯一的例外是 ``result=sent``：这条其实已经投递出去了，说明开关是在投递之后
     才关的。这种时间差不该把一条真发出去的记录抹掉，所以照写。
+
+    ``channels`` 是这次投递走过的渠道（调用方用 :func:`channel_ids` 从**实际传给
+    dispatch 的那几份配置**算出来，别自己另判一遍）。站内消息由本函数自己补上：
+    只要这条告警有收件人，铃铛里就一定会多一条，所以 ``inbox`` 与外部渠道是两件
+    事，不能指望调用方记得。
     """
     # 门禁一：重复轮次只在真的发出去了才补一条（恢复通知不算重复轮次，它是事件的终点）
     is_repeat = bool(repeat) and entry.get("kind", "alarm") == "alarm"
@@ -2054,10 +2134,17 @@ async def record(
     if source and not already_sent and not await push_enabled(source):
         return
 
+    # 渠道：调用方给的（外部通道）+ 站内信（有收件人就一定有）。
+    # 收件人为空 = 这条告警没有归属，push_alert 会直接丢弃，那就不该记 inbox。
+    touched = list(channels or [])
+    if str(entry.get("username") or "").strip():
+        touched.append(CHANNEL_INBOX)
+    channel = channel_text(touched)
+
     sql = (
         "INSERT INTO alert_history (username, rule_id, rule_name, target_type, target, metric,"
-        " value, threshold, result, detail, kind, is_repeat, ts)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " value, threshold, result, detail, channel, kind, is_repeat, ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     )
     at = int(entry.get("ts") or time.time())
     async with database.connect() as db:
@@ -2074,6 +2161,7 @@ async def record(
                 entry.get("threshold", 0),
                 entry.get("result", ""),
                 entry.get("detail", ""),
+                channel,
                 entry.get("kind", "alarm"),
                 1 if is_repeat else 0,
                 at,
@@ -2938,8 +3026,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
     **收件人跟着机器归属走，不跟规则归属走**（见 :class:`RecipientBook`）：管理员
     给全部虚拟机配一条规则，告警照样落到每台机器的主人手上；宿主机与没有归属的
     机器才回落到配规则的人。普通用户（没有全局视野的角色）配的规则是**自己的**：
-    ``*`` 只覆盖自己名下的机器，告警也只发给自己 —— 否则新账号配完规则，告警全被
-    投到机器归属者那里，他一条也收不到。
+    ``*`` 只覆盖**自己名下**的机器（没有归属记录的也不算），告警只发给自己 ——
+    否则新账号配完规则，告警全被投到机器归属者那里，他一条也收不到；而把无主机器
+    也算进来，等于让任何人都能用一条 ``*`` 规则订阅到不在自己名下的机器告警。
     """
     await init_table()
     all_rules = await load_rules()
@@ -3034,16 +3123,19 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 # 共用一个 key（见 alarm_subject）。
                 subject = alarm_subject(res, target_type)
                 if not supervisor and target_type == "vm":
-                    # 普通用户没有全局视野：他的规则只覆盖**不属于别人**的机器，
+                    # 普通用户没有全局视野：他的规则只覆盖**自己名下**的机器，
                     # 目标写 ``*`` 还是具体某一台都一样 —— 否则新账号一条 ``*``
                     # 规则会把别人的机器也算进来，而告警又按机器归属投给了别人
                     # （他自己什么也看不到）；手写一个别的机器的 ref 更会直接把
                     # 别人的告警拉进自己的页面。
-                    # 没有归属记录的机器仍然算进来：面板之外建的/对账清掉的机器
-                    # 不属于任何人，把它排除只会让规则静默失效（与 RecipientBook
-                    # 「宁可发给不该收的人，也不能谁都不收到」同一口径）。
+                    # **没有归属记录的机器同样不算**：它不属于任何人，却也绝不
+                    # 属于规则创建者。以前留给普通用户是怕「无主机器没人报」，
+                    # 代价是任何人都能配一条 ``*`` 规则，把面板之外建的 / 对账
+                    # 清掉的机器（名称、节点、指标值）全订阅到自己名下 —— 这些
+                    # 机器在 /vms 里对普通用户本来是看不见的。无主机器的告警由
+                    # 管理员的规则兜底（supervisor 规则会把它们回落到配规则的人）。
                     machine_owner = await book.guest_owner(res)
-                    if machine_owner and machine_owner != rule_owner:
+                    if machine_owner != rule_owner:
                         continue
                 # 管理员 / 区域管理员配的规则是「全局规则」：规则是人配的，机器是
                 # 有主的，该处理这条告警的是机器归属者。宿主机 / 没有归属的机器
@@ -3205,19 +3297,21 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 # context 供通用 Webhook 的请求体模板取用（飞书走卡片、邮件走正文，
                 # 只有自定义 Webhook 需要这些散字段）。
                 alert_title = kind + i18n.tr("：") + label
+                # 本轮不该发的通道就地置为未启用：dispatch 只管「发什么」，
+                # 「这一步该不该发」由上面的 base_due / mail_due 决定。
+                # 单独取变量是因为历史行的渠道必须按**同一份**配置算（见 channel_ids）
+                send_feishu = feishu if base_due else {**feishu, "enabled": False}
+                send_email = email_cfg if mail_due else {**email_cfg, "enabled": False}
+                send_hook = webhook_cfg if base_due else {**webhook_cfg, "enabled": False}
                 ok, detail = await dispatch(
                     recipient,
-                    # 本轮不该发的通道就地置为未启用：dispatch 只管「发什么」，
-                    # 「这一步该不该发」由上面的 base_due / mail_due 决定。
-                    feishu if base_due else {**feishu, "enabled": False},
-                    email_cfg if mail_due else {**email_cfg, "enabled": False},
+                    send_feishu,
+                    send_email,
                     alert_title,
                     text,
                     card,
                     source=SOURCE_RESOURCE,
-                    # 本轮不该发的通道就地置为未启用：dispatch 只管「发什么」，
-                    # 「这一步该不该发」由上面的 base_due / mail_due 决定。
-                    webhook=webhook_cfg if base_due else {**webhook_cfg, "enabled": False},
+                    webhook=send_hook,
                     context={
                         "level": "alarm",
                         "title": alert_title,
@@ -3284,7 +3378,12 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                     "detail": detail,
                     "kind": "alarm",
                 }
-                await record(entry, source=SOURCE_RESOURCE, repeat=bool(prev))
+                await record(
+                    entry,
+                    source=SOURCE_RESOURCE,
+                    repeat=bool(prev),
+                    channels=channel_ids(send_feishu, send_email, send_hook),
+                )
                 entry["text"] = text
                 fired.append(entry)
 
@@ -3424,7 +3523,11 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             "detail": detail,
             "kind": "recovery",
         }
-        await record(entry, source=SOURCE_RESOURCE)
+        await record(
+            entry,
+            source=SOURCE_RESOURCE,
+            channels=channel_ids(feishu, email_cfg, chans["webhook"]),
+        )
         await clear_active(key)
         entry["text"] = recovery_text
         fired.append(entry)

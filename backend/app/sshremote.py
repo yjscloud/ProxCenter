@@ -1679,6 +1679,7 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 text,
                 card,
                 source=alerting.SOURCE_SSHREMOTE,
+                webhook=chans["webhook"],
             )
             state = {
                 # 告警归主机的归属者：他的告警页与站内铃铛才看得到这条
@@ -1705,7 +1706,10 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 "kind": "alarm",
             }
             await alerting.record(
-                entry, source=alerting.SOURCE_SSHREMOTE, repeat=bool(prev)
+                entry,
+                source=alerting.SOURCE_SSHREMOTE,
+                repeat=bool(prev),
+                channels=alerting.channel_ids(feishu, email_cfg, chans["webhook"]),
             )
             entry["text"] = text
             fired.append(entry)
@@ -1735,6 +1739,7 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
             text,
             card,
             source=alerting.SOURCE_SSHREMOTE,
+            webhook=row_chans["webhook"],
         )
         await alerting.record(
             {
@@ -1751,6 +1756,9 @@ async def evaluate_fleet() -> List[Dict[str, Any]]:
                 "kind": "recovery",
             },
             source=alerting.SOURCE_SSHREMOTE,
+            channels=alerting.channel_ids(
+                row_chans["feishu"], row_chans["email"], row_chans["webhook"]
+            ),
         )
         await alerting.clear_active(key)
         fired.append({"kind": "recovery", "target": row.get("target"), "text": text})

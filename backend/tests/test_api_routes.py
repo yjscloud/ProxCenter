@@ -3089,6 +3089,28 @@ class TestMonitoringIsolation:
         return {"Authorization": "Bearer " + login.json()["access_token"]}
 
     @staticmethod
+    def _assign_vm(api: TestClient, admin: Dict[str, str], username: str) -> Dict[str, Any]:
+        """把模拟环境里的第一台虚拟机指派给 ``username``（空 = 收回，回到无主）。
+
+        走面板自己的 ``PUT /vms/{node}/{vmid}/owner``，ref 由后端按连接算 ——
+        测试里自己拼 ``<连接>:<节点>:<vmid>`` 等于把内部细节抄一遍，连接前缀一变
+        就会「指派成功了但巡检查不到」。
+        """
+        vms = api.get("/api/vms", headers=admin).json()
+        vm = next(
+            item
+            for item in vms
+            if not item.get("template") and item.get("vmid") is not None
+        )
+        resp = api.put(
+            f"/api/vms/{vm['node']}/{vm['vmid']}/owner",
+            json={"username": username, "connection_id": vm.get("connection_id")},
+            headers=admin,
+        )
+        assert resp.status_code == 200, resp.text
+        return vm
+
+    @staticmethod
     def _rule(rule_id: str, name: str, **extra: Any) -> Dict[str, Any]:
         # 阈值 10% 低于模拟数据里的 25%，一测就能命中
         rule: Dict[str, Any] = {
@@ -3180,6 +3202,9 @@ class TestMonitoringIsolation:
     def test_alert_history_is_per_user(self, api) -> None:
         admin = auth_headers(api)
         bob = self._new_user(api, "bob")
+        # 普通用户的规则只覆盖**自己名下**的机器（无主机器不算），
+        # 所以先把模拟环境里那台虚拟机指派给他，规则才有对象可命中
+        self._assign_vm(api, admin, "bob")
         api.put("/api/alerts/rules", json=[self._rule("b1", "bob 规则")], headers=bob)
         api.put("/api/alerts/rules", json=[self._rule("a1", "管理员规则")], headers=admin)
 
@@ -3192,7 +3217,14 @@ class TestMonitoringIsolation:
         assert bob_history
         assert {r["username"] for r in bob_history} == {"bob"}
 
-        # 管理员检测跑全部规则，两边各自留下自己的历史
+        # 管理员检测跑全部规则：这台机器属于 bob，告警仍记在 bob 名下
+        # （收件人跟机器归属走），管理员的历史里不该多出一条「别人的机器」
+        assert api.post("/api/alerts/check", headers=admin).status_code == 200
+        admin_history = api.get("/api/alerts", headers=admin).json()["history"]
+        assert {r["username"] for r in admin_history} == {"bob"}
+
+        # 机器收回（无主）后再检测：这次由管理员的 "*" 规则兜底，记在他自己名下
+        self._assign_vm(api, admin, "")
         assert api.post("/api/alerts/check", headers=admin).status_code == 200
         admin_history = api.get("/api/alerts", headers=admin).json()["history"]
         assert {r["username"] for r in admin_history} == {"admin", "bob"}

@@ -38,6 +38,23 @@ TASK_LIMIT = 1000
 
 GUEST_TYPE_LABELS = {"qemu": "虚拟机", "lxc": "容器"}
 ALERT_KIND_LABELS = {"alarm": "告警", "recovery": "恢复"}
+#: 告警渠道 id → 导出文件里的中文名（取值见 alerting.CHANNEL_IDS）
+ALERT_CHANNEL_LABELS = {
+    "feishu": "飞书",
+    "email": "邮件",
+    "webhook": "Webhook",
+    "inbox": "站内信",
+}
+
+
+def _alert_channels(raw: Any) -> str:
+    """把 ``alert_history.channel`` 的 id 列表翻成中文名（空值留空）。
+
+    未知 id 原样保留：导出是排障材料，宁可露一个没见过的标识，也不要悄悄
+    吞掉「这条到底走了哪个渠道」的线索。
+    """
+    ids = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    return "、".join(ALERT_CHANNEL_LABELS.get(item, item) for item in ids)
 
 
 def _time_header(base: str = "时间") -> str:
@@ -333,6 +350,9 @@ async def export_alerts(
                 item.get("target") or "",
                 item.get("value") if item.get("value") is not None else "",
                 item.get("threshold") if item.get("threshold") is not None else "",
+                # 渠道按导出文件的语言给出中文名（导出不走 i18n 字典，
+                # 与同一份文件里的「归属用户 / 对象类型」等表头一致）
+                _alert_channels(item.get("channel")),
                 item.get("result") or "",
                 item.get("detail") or "",
             ]
@@ -350,6 +370,7 @@ async def export_alerts(
             "对象",
             "当前值",
             "阈值",
+            "发送渠道",
             "结果",
             "详情",
         ],

@@ -86,6 +86,26 @@ const INTERNAL_METRIC_LABELS: Record<string, MessageKey> = {
 const isStateMetric = (metric: string) => STATE_METRICS.has(metric);
 
 /**
+ * 投递渠道 id → 界面文案。id 与后端 `alerting.CHANNEL_IDS` 一一对应，
+ * 后端只负责把「这封告警走过哪些渠道」记成 id，翻译放在这里（历史里可能
+ * 出现旧版本没有的渠道，那种情况原样显示 id，不吞掉线索）。
+ */
+const CHANNEL_LABELS: Record<string, MessageKey> = {
+  feishu: "alerts.channelFeishu",
+  email: "alerts.channelEmail",
+  webhook: "alerts.channelWebhook",
+  inbox: "alerts.channelInbox",
+};
+
+/** 历史行的 channel 列 → 渠道 id 数组（后端存的是逗号分隔的固定 id）。 */
+function channelIdsOf(raw: unknown): string[] {
+  return String(raw ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/**
  * 文案模板的指标页签：邮件正文与飞书卡片各按指标分五页（顺序与后端
  * TEMPLATE_METRICS 一致），哪条规则触发就用哪个页签渲染 —— CPU 页签的模板
  * 不会带出内存行，离线 / 备份页签也没有百分比可写。
@@ -686,6 +706,33 @@ export function Alerts() {
               {r.is_repeat ? (
                 <span className="alert-hist-repeat">{t("alerts.repeatNotice")}</span>
               ) : null}
+            </span>
+          );
+        },
+      },
+      {
+        key: "channel",
+        header: t("alerts.colChannel"),
+        width: 160,
+        sortable: true,
+        sortValue: (r) => channelIdsOf(r.channel).join(","),
+        render: (r) => {
+          /* 渠道列回答的是「这条告警是从哪个渠道发出的」。记的是**尝试过**的
+             渠道：邮件发失败了也要显示「邮件」，否则用户永远查不出「为什么
+             收不到」—— 成功与否看左边的投递状态与行内 detail。 */
+          const ids = channelIdsOf(r.channel);
+          if (ids.length === 0) {
+            /* 升级前的历史没有渠道信息。写「-」而不是「站内信」：那时候到底
+               发没发外部渠道，已经无从考证，猜一个只会误导排查。 */
+            return <span className="text-muted">-</span>;
+          }
+          return (
+            <span className="alert-hist-channels">
+              {ids.map((id) => (
+                <Badge key={id} variant="neutral" size="sm">
+                  {CHANNEL_LABELS[id] ? t(CHANNEL_LABELS[id]) : id}
+                </Badge>
+              ))}
             </span>
           );
         },

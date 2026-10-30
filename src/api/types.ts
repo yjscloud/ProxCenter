@@ -2919,6 +2919,15 @@ export interface AlertRecord {
   threshold: number;
   result: string;
   detail: string;
+  /**
+   * 这条告警**尝试过**的投递渠道，逗号分隔（见后端 alerting.CHANNEL_IDS）：
+   * feishu / email / webhook / inbox（站内信）。
+   *
+   * 记「尝试过」而不是「成功的」：邮件发失败时最需要知道的恰恰是「它试过
+   * 邮件」；成功与否看同一行的 result 与 detail。升级前的历史没有这一列，
+   * 会是空串。
+   */
+  channel?: string;
   /** alarm = 触发告警，recovery = 恢复正常 */
   kind?: 'alarm' | 'recovery';
   /**

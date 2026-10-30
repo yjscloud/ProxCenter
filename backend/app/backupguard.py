@@ -360,6 +360,9 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
 
     feishu = await alerting.load_feishu(target_owner)
     email_cfg = await alerting.load_alert_email(target_owner)
+    # 显式读一份 Webhook：dispatch 不传时会自己读，但历史里的渠道要按「实际
+    # 传给 dispatch 的那份配置」算（见 alerting.channel_ids），必须握在手上。
+    webhook_cfg = await alerting.load_webhook(target_owner)
     now = time.time()
     # 备份丢失/被改动是「状态型」异常：有变化才有意义，冷却用 10 分钟
     cooldown = 600
@@ -390,6 +393,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             text,
             _card(record, now),
             source=alerting.SOURCE_BACKUPGUARD,
+            webhook=webhook_cfg,
         )
         state = {
             "username": target_owner,
@@ -410,7 +414,10 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
         active[key] = dict(state, alarm_key=key)
         entry = {**state, "result": "sent" if ok else "failed", "detail": detail, "kind": "alarm"}
         await alerting.record(
-            entry, source=alerting.SOURCE_BACKUPGUARD, repeat=bool(prev)
+            entry,
+            source=alerting.SOURCE_BACKUPGUARD,
+            repeat=bool(prev),
+            channels=alerting.channel_ids(feishu, email_cfg, webhook_cfg),
         )
         entry["text"] = text
         fired.append(entry)
@@ -437,6 +444,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
             text,
             card,
             source=alerting.SOURCE_BACKUPGUARD,
+            webhook=webhook_cfg,
         )
         await alerting.record(
             {
@@ -453,6 +461,7 @@ async def evaluate(owner: Optional[str] = None) -> List[Dict[str, Any]]:
                 "kind": "recovery",
             },
             source=alerting.SOURCE_BACKUPGUARD,
+            channels=alerting.channel_ids(feishu, email_cfg, webhook_cfg),
         )
         await alerting.clear_active(key)
         fired.append({"kind": "recovery", "target": volid, "text": text})

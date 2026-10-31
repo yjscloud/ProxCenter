@@ -138,9 +138,14 @@ const HOST_VIEW_KEY = 'proxcenter.baseline.host-view';
 
 function readHostView(): HostViewMode {
   try {
-    return localStorage.getItem(HOST_VIEW_KEY) === 'list' ? 'list' : 'card';
+    /*
+    默认**列表**：这一屏的问题是「哪几台不合格、差在哪、分数多少」——
+    一列排开才扫得动；卡片一张张看，机器一多就得一路往下滚。
+    用户手动切过卡片视图的，仍按他自己选的来（存的是 'card'）。
+    */
+    return localStorage.getItem(HOST_VIEW_KEY) === 'card' ? 'card' : 'list';
   } catch {
-    return 'card';
+    return 'list';
   }
 }
 
@@ -1136,17 +1141,31 @@ export function SecurityBaseline() {
                       })
                     : t('baseline.scanningAll')}
                 </p>
-                {/* 骨架沿用真卡片的外形（.baseline-host-card），
-                    别在卡片里再套一排白卡 */}
-                <div className="baseline-host-grid" aria-hidden="true">
-                  {[0, 1, 2].map((i) => (
-                    <div className="baseline-host-card" key={i}>
-                      <Skeleton width="45%" height={15} />
-                      <Skeleton width="85%" height={11} />
-                      <Skeleton height={24} radius={6} />
-                    </div>
-                  ))}
-                </div>
+                {/* 骨架跟着当前视图走：默认是列表，若这里一律画卡片骨架，
+                    加载完会「卡片闪一下再变表格」，像是切换了两次视图。
+                    列表用 Table 自带的骨架（表格形状），卡片沿用真卡片外形。 */}
+                {hostView === 'list' ? (
+                  <Table
+                    caption={t('baseline.tableCaption')}
+                    rows={[]}
+                    columns={hostColumns}
+                    rowKey={(host) => host.host_id}
+                    loading
+                    dense
+                    sort={hostSort}
+                    onSortChange={setHostSort}
+                  />
+                ) : (
+                  <div className="baseline-host-grid" aria-hidden="true">
+                    {[0, 1, 2].map((i) => (
+                      <div className="baseline-host-card" key={i}>
+                        <Skeleton width="45%" height={15} />
+                        <Skeleton width="85%" height={11} />
+                        <Skeleton height={24} radius={6} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             ) : fleet && fleet.hosts.length ? (
               hostView === 'card' ? (

@@ -2,7 +2,14 @@
    ProxCenter — 仪表盘
    ========================================================================== */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -53,10 +60,12 @@ import {
   formatBytes,
   formatUptimeShort,
   formatRelative,
+  formatDateTime,
   toPercent,
   usageColor,
   usageTone,
 } from '../utils/format';
+import { useRollingSeries } from '../hooks/useRollingSeries';
 import { taskStatusMeta, nodeStatusMeta } from '../utils/status';
 import type {
   DashboardTop,
@@ -572,6 +581,55 @@ export function Dashboard() {
     enabled: loadNodes,
   });
 
+  /* ---- 数据时效 ----
+     绿点只说明「WebSocket 连着」，不等于「数据是新的」。这里把几路查询里
+     最新的 dataUpdatedAt 取出来，在页头明写「更新于 xx」；同时补一个
+     「回到前台若数据已过期就自动刷新」的行为（全局默认 refetchOnWindowFocus
+     是关的，否则每个页面切回来都要打一轮接口）。 */
+  const invalidateDashboard = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['vms'] });
+    void queryClient.invalidateQueries({ queryKey: ['nodes'] });
+    void queryClient.invalidateQueries({ queryKey: ['storages'] });
+    void queryClient.invalidateQueries({ queryKey: ['cluster'] });
+    void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+  }, [queryClient]);
+
+  const updatedAt = Math.max(
+    summaryQuery.dataUpdatedAt,
+    nodesQuery.dataUpdatedAt,
+    fleetQuery.dataUpdatedAt,
+    storagesQuery.dataUpdatedAt,
+    tasksQuery.dataUpdatedAt,
+    capacityQuery.dataUpdatedAt,
+  );
+
+  /* 相对时间要自己「走」：不重渲染的话「3 分钟前」会一直停在 3 分钟前 */
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 15_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const [autoRefreshed, setAutoRefreshed] = useState(false);
+  const autoRefreshTimer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const onFocus = () => {
+      if (!pveReady || !updatedAt) return;
+      /* 轮询间隔的 2 倍之内视作「还新」，不打扰用户 */
+      const intervalMs = typeof refresh === 'number' ? refresh : 30_000;
+      if (Date.now() - updatedAt < intervalMs * 2) return;
+      invalidateDashboard();
+      setAutoRefreshed(true);
+      if (autoRefreshTimer.current) window.clearTimeout(autoRefreshTimer.current);
+      autoRefreshTimer.current = window.setTimeout(() => setAutoRefreshed(false), 4_000);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      if (autoRefreshTimer.current) window.clearTimeout(autoRefreshTimer.current);
+    };
+  }, [invalidateDashboard, pveReady, refresh, updatedAt]);
+
   /* 实时节点指标流：后端把逐页轮询集中到一条 WebSocket 上，
      5s 推一次。连接正常时优先用实时值驱动 KPI 与节点行，
      断线则回落到 10s 轮询，保证任何情况下都有数据。
@@ -721,6 +779,24 @@ export function Dashboard() {
     };
   }, [mergedNodes]);
 
+  /* ---- KPI 迷你趋势 ----
+     仪表盘只有「当前值」，没有历史序列。这里用客户端定长缓冲记录最近若干次
+     采样：CPU / 内存走 WebSocket，几秒一个点；存储与用户口径跟轮询走。
+     加载中不采样，避免一上来先记一串 0 把曲线压平。 */
+  const nodesReady = loadNodes && !nodesQuery.isLoading && Boolean(nodesQuery.data);
+  const storagesReady =
+    loadStorages && !storagesQuery.isLoading && Boolean(storagesQuery.data);
+  const summaryReady = canGuest && !summaryQuery.isLoading && Boolean(guestStats);
+  const adminCpuSeries = useRollingSeries(nodeStats.cpuAvg, nodesReady);
+  const adminMemSeries = useRollingSeries(nodeStats.memPercent, nodesReady);
+  const storageSeries = useRollingSeries(storageStats.percent, storagesReady);
+  const myCpuSeries = useRollingSeries(myStats.cpuPercent, summaryReady);
+  const myMemSeries = useRollingSeries(myStats.memPercent, summaryReady);
+  const myDiskSeries = useRollingSeries(
+    myStats.diskPercent,
+    summaryReady && myStats.diskUsageKnown,
+  );
+
   /* 卡片里显示的节点：离线优先，其次按 CPU 负载降序。
      不是简单按名字排 —— 打开仪表盘是为了看谁在冒烟，
      「最吃力的排最前」比「字母序」有用得多。 */
@@ -745,16 +821,19 @@ export function Dashboard() {
   const distribution = useMemo(
     () => [
       {
+        id: 'running',
         name: t('dashboard.dist.running'),
         value: stats.running,
         color: CHART_COLORS.success,
       },
       {
+        id: 'stopped',
         name: t('dashboard.dist.stopped'),
         value: stats.stopped,
         color: CHART_COLORS.grey,
       },
       {
+        id: 'other',
         name: t('dashboard.dist.other'),
         value: stats.other,
         color: CHART_COLORS.warning,
@@ -766,6 +845,17 @@ export function Dashboard() {
   const donutData = useMemo(
     () => distribution.filter((d) => d.value > 0),
     [distribution],
+  );
+
+  /* 分布卡下钻：把「看到某状态多少台」直接变成「去列表处理这些机器」。
+     「其他」是过渡态集合（迁移中 / 备份中 / 锁定等），列表没有对应的筛选项，
+     落到全部列表即可，用户仍能按状态自行判断。 */
+  const drillToStatus = useCallback(
+    (status?: string) => {
+      const query = status === 'running' || status === 'stopped' ? status : 'all';
+      navigate(`/vms?status=${query}`);
+    },
+    [navigate],
   );
 
   /* ---- 最近任务表格 ---- */
@@ -999,6 +1089,8 @@ export function Dashboard() {
                  读不到状态则退成 neutral，不用红去吓人。 */
               tone={postureTone}
               loading={fleetQuery.isLoading}
+              /* 唯一的主指标卡：进入大盘最先要回答的是「集群健康吗」 */
+              featured
               /* HA 的几种状态要说清楚是哪一种，不能一律写成「未启用」：
                  单机根本不存在 HA（显示为「未启用」会让人以为配置漏了），
                  多节点集群跑着 HA 但没托管资源，也应该读作「已启用」。
@@ -1018,6 +1110,7 @@ export function Dashboard() {
               loading={nodesQuery.isLoading}
               progress={nodeStats.cpuAvg}
               progressColor={usageColor(nodeStats.cpuAvg)}
+              trend={adminCpuSeries}
               hint={
                 <span className="mono">
                   {t('dashboard.kpi.cores', {
@@ -1036,6 +1129,7 @@ export function Dashboard() {
               loading={nodesQuery.isLoading}
               progress={nodeStats.memPercent}
               progressColor={usageColor(nodeStats.memPercent)}
+              trend={adminMemSeries}
               hint={
                 <span className="mono">
                   {formatBytes(nodeStats.usedMem)} / {formatBytes(nodeStats.totalMem)}
@@ -1054,6 +1148,7 @@ export function Dashboard() {
             loading={storagesQuery.isLoading}
             progress={storageStats.percent}
             progressColor={usageColor(storageStats.percent)}
+            trend={storageSeries}
             hint={
               <span className="mono">
                 {formatBytes(storageStats.used)} / {formatBytes(storageStats.total)}
@@ -1074,6 +1169,7 @@ export function Dashboard() {
             icon={<IconVm size={16} />}
             tone="accent"
             loading={summaryQuery.isLoading}
+            featured
             hint={
               <>
                 <span className="text-success">
@@ -1124,6 +1220,7 @@ export function Dashboard() {
           loading={myLoading}
           progress={myStats.cpuPercent}
           progressColor={usageColor(myStats.cpuPercent)}
+          trend={myCpuSeries}
           hint={
             <span className="mono">
               {/* 用 myCores 而不是管理员那张的 cores：「物理核心」说的是宿主机
@@ -1144,6 +1241,7 @@ export function Dashboard() {
           loading={myLoading}
           progress={myStats.memPercent}
           progressColor={usageColor(myStats.memPercent)}
+          trend={myMemSeries}
           hint={
             <span className="mono">
               {formatBytes(myStats.usedMem)} / {formatBytes(myStats.totalMem)}
@@ -1164,6 +1262,7 @@ export function Dashboard() {
             loading={myLoading}
             progress={myStats.diskPercent}
             progressColor={usageColor(myStats.diskPercent)}
+            trend={myDiskSeries}
             hint={
               <span className="mono">
                 {formatBytes(myStats.usedDisk)} / {formatBytes(myStats.totalDisk)}
@@ -1221,7 +1320,11 @@ export function Dashboard() {
           />
 
           {nodesQuery.isLoading ? (
-            <div className="flex flex-col gap-16">
+            <div
+              className="flex flex-col gap-16"
+              role="status"
+              aria-label={t('common.loading')}
+            >
               {[0, 1].map((i) => (
                 <div key={i}>
                   <div className="skeleton skeleton-text" style={{ width: '30%' }} />
@@ -1238,6 +1341,11 @@ export function Dashboard() {
             <EmptyState
               title={t('dashboard.nodes.empty')}
               description={t('dashboard.nodes.emptyDesc')}
+              action={
+                <Button variant="secondary" size="sm" onClick={() => navigate('/nodes')}>
+                  {t('dashboard.nodes.emptyAction')}
+                </Button>
+              }
               compact
             />
           ) : (
@@ -1303,6 +1411,7 @@ export function Dashboard() {
                 showLegend={false}
                 centerLabel={t('dashboard.dist.center')}
                 centerValue={stats.total}
+                onDatumClick={(datum) => drillToStatus(datum.id)}
               />
             </div>
 
@@ -1310,21 +1419,29 @@ export function Dashboard() {
               {distribution.map((row) => {
                 const pct = stats.total > 0 ? (row.value / stats.total) * 100 : 0;
                 return (
-                  <li className="dist-item" key={row.name}>
-                    <span
-                      className="dist-dot"
-                      style={{ background: row.color }}
-                      aria-hidden="true"
-                    />
-                    <span className="dist-name">{row.name}</span>
-                    <span className="dist-count mono">{row.value}</span>
-                    <span className="dist-pct mono">{pct.toFixed(1)}%</span>
-                    <span className="dist-bar" aria-hidden="true">
+                  <li key={row.id}>
+                    <button
+                      type="button"
+                      className="dist-item dist-item-action"
+                      onClick={() => drillToStatus(row.id)}
+                      aria-label={t('dashboard.dist.drillAria', { name: row.name })}
+                      title={t('dashboard.dist.drillTitle', { name: row.name })}
+                    >
                       <span
-                        className="dist-bar-fill"
-                        style={{ width: `${pct}%`, background: row.color }}
+                        className="dist-dot"
+                        style={{ background: row.color }}
+                        aria-hidden="true"
                       />
-                    </span>
+                      <span className="dist-name">{row.name}</span>
+                      <span className="dist-count mono">{row.value}</span>
+                      <span className="dist-pct mono">{pct.toFixed(1)}%</span>
+                      <span className="dist-bar" aria-hidden="true">
+                        <span
+                          className="dist-bar-fill"
+                          style={{ width: `${pct}%`, background: row.color }}
+                        />
+                      </span>
+                    </button>
                   </li>
                 );
               })}
@@ -1342,6 +1459,7 @@ export function Dashboard() {
         error={capacityQuery.isError}
         timeframe={capacityTimeframe}
         onTimeframeChange={setCapacityTimeframe}
+        onRetry={() => void capacityQuery.refetch()}
       />
     ),
 
@@ -1372,7 +1490,11 @@ export function Dashboard() {
         />
         <div className="top-vms">
           {summaryQuery.isLoading ? (
-            <div className="flex flex-col gap-16">
+            <div
+              className="flex flex-col gap-16"
+              role="status"
+              aria-label={t('common.loading')}
+            >
               {[0, 1, 2, 3, 4].map((i) => (
                 <div key={i} className="skeleton skeleton-text" style={{ width: '70%' }} />
               ))}
@@ -1384,6 +1506,11 @@ export function Dashboard() {
                 isAdmin
                   ? t('dashboard.top.emptyDesc')
                   : t('dashboard.top.emptyDescMine')
+              }
+              action={
+                <Button variant="secondary" size="sm" onClick={() => navigate('/vms')}>
+                  {t('dashboard.manageVms')}
+                </Button>
               }
               compact
             />
@@ -1512,6 +1639,21 @@ export function Dashboard() {
       }
       actions={
         <>
+          {/* 数据时效：绿点只说明「连着」，这里说明「多新」 */}
+          {updatedAt ? (
+            <span
+              className={`dash-updated${autoRefreshed ? ' is-fresh' : ''}`}
+              title={t('dashboard.updatedAtTitle', {
+                time: formatDateTime(updatedAt),
+              })}
+            >
+              {autoRefreshed
+                ? t('dashboard.autoRefreshed')
+                : t('dashboard.updatedAt', {
+                    time: formatRelative(updatedAt, nowTick),
+                  })}
+            </span>
+          ) : null}
           <Button
             variant="secondary"
             icon={<IconRefresh size={15} />}
@@ -1521,11 +1663,7 @@ export function Dashboard() {
                  storages / cluster.status / cluster.tasks / cluster.ha-status /
                  dashboard.capacity / dashboard.top），逐个列一定会有漏 —— 原先就
                  漏了 HA、容量预测、Top 排行三路，点刷新后它们停在旧值不动。 */
-              void queryClient.invalidateQueries({ queryKey: ['vms'] });
-              void queryClient.invalidateQueries({ queryKey: ['nodes'] });
-              void queryClient.invalidateQueries({ queryKey: ['storages'] });
-              void queryClient.invalidateQueries({ queryKey: ['cluster'] });
-              void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+              invalidateDashboard();
             }}
             loading={refreshing}
           >
@@ -1587,6 +1725,11 @@ export function Dashboard() {
           <EmptyState
             title={t('dashboard.emptyAllHidden')}
             description={t('dashboard.emptyAllHiddenDesc')}
+            action={
+              <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+                {t('dashboard.editLayout')}
+              </Button>
+            }
           />
         ) : (
           <EmptyState

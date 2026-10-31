@@ -228,10 +228,13 @@ export function formatDate(value?: number | string | Date | null): string {
 /**
  * 相对时间："3 分钟前" / "3 min ago"
  */
-export function formatRelative(value?: number | string | Date | null): string {
+export function formatRelative(
+  value?: number | string | Date | null,
+  now: number = Date.now(),
+): string {
   const d = toDate(value);
   if (!d) return '—';
-  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  const diff = Math.floor((now - d.getTime()) / 1000);
   if (diff < 0) return formatDateTime(d);
   if (diff < 60) return tStatic('format.justNow');
   if (diff < 3_600) return tStatic('format.minutesAgo', { n: Math.floor(diff / 60) });

@@ -47,6 +47,15 @@
   --info:#0052d9; --info-dim:rgba(0,82,217,.08);
   --usage-low:#0052d9; --usage-mid:#e37318; --usage-high:#d54941;
 
+  /* 图表令牌：与 src/utils/chartColors.ts 一一对应。
+     JS 侧因为要把颜色写进 SVG 的 stroke/fill 属性，仍保留十六进制字面量
+     （属性里用 var() 在部分浏览器不生效）；这里的 CSS 变量供纯 CSS 图表 /
+     图例 / 纹理使用，两边改色时一起改。 */
+  --chart-accent:#0052d9; --chart-success:#2ba471; --chart-warning:#e37318; --chart-danger:#d54941;
+  --chart-purple:#7d5fff; --chart-cyan:#00a4ff; --chart-grey:#a9aeb8;
+  /* 刻度从 #c9cdd4 提亮到 #8c8c8c：细线刻度在白底上要满足 3:1 非文本对比度 */
+  --chart-axis:#8c8c8c; --chart-grid:rgba(0,0,0,.07);
+
   /* 光晕：浅色下只做轻微彩色投影 */
   --glow-accent:0 4px 14px -6px rgba(0,82,217,.4);
   --glow-success:0 4px 14px -6px rgba(43,164,113,.4);

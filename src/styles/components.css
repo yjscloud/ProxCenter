@@ -4394,10 +4394,11 @@ body.is-col-resizing * {
 }
 
 /* 规则表里一个单元格就是一个输入框：34px 控件 + 上下 12px 内边距 = 每条规则
-   46px，八列一排看下来很占地方。本页压到 30px，一屏能多放两条规则。 */
+   46px，八列一排看下来很占地方。本页压到 32px（不是 30px：30px 下数字与
+   下拉箭头贴边，点起来也偏紧），一屏仍然能多放规则。 */
 .page-alerts .table-dense .input-wrap,
 .page-alerts .table-dense .select {
-  height: 30px;
+  height: 32px;
 }
 
 /* 通知模板：正文与样例**逐行并排**。
@@ -6069,5 +6070,565 @@ body.is-col-resizing * {
 @media (max-width: 640px) {
   .assign-scope {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   仪表盘 —— 焦点分级 / 数据时效 / 迷你趋势 / 下钻 / 容量图窄屏降级
+   ---------------------------------------------------------------------------
+   这些规则原先散落各页，集中放在这里便于「一条建议一处改」。
+   --------------------------------------------------------------------------- */
+
+/* 唯一主指标卡：只加边框与极轻的品牌色底，不改变栅格占位 —— 一改 span
+   就会在窄屏上引发重排。数值放大，和其余 KPI 拉开层级。 */
+.kpi-card.is-featured {
+  border-color: var(--accent-border);
+  background-image: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--accent) 5%, var(--bg-surface)),
+    var(--bg-surface) 72%
+  );
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent),
+    var(--shadow-sm);
+}
+
+.kpi-card.is-featured::before {
+  height: 3px;
+  opacity: 1;
+}
+
+.kpi-card.is-featured .kpi-value {
+  font-size: 34px;
+}
+
+/* KPI 迷你趋势线：贴在说明文字下方，不抢主数值的注意力 */
+.kpi-spark {
+  margin-top: 6px;
+  line-height: 0;
+  opacity: 0.9;
+}
+
+/* 顶栏「更新于 xx」 */
+.dash-updated {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dash-updated.is-fresh {
+  color: var(--success);
+}
+
+/* 资源分布下钻：状态行变成按钮，保留原有网格排版 */
+.dist-item-action {
+  width: 100%;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.dist-item-action:hover {
+  background: var(--bg-hover);
+}
+
+.dist-item-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 容量趋势图：原先高度写在 inline style 上，挪到 CSS 才能做窄屏二选一 */
+.capacity-chart-shell {
+  width: 100%;
+  height: 220px;
+}
+
+.capacity-mobile-summary {
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0 2px;
+}
+
+.capacity-mobile-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.capacity-mobile-row:last-child {
+  border-bottom: 0;
+}
+
+.capacity-mobile-label {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.capacity-mobile-value {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  text-align: right;
+}
+
+/* 窄屏上图表刻度会挤成一团：换成「结论式」文字摘要 */
+@media (max-width: 640px) {
+  .capacity-chart-shell {
+    display: none;
+  }
+
+  .capacity-mobile-summary {
+    display: flex;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   告警监控 —— 层级 / 当前告警概览 / 颜色语义 / 表格视觉
+   ---------------------------------------------------------------------------
+   涉及全局类的覆盖（.card-title / .table / .field-message 等）全部限定在
+   .page-alerts 作用域内，避免波及其它页面；.alert-active-* 是本页专用类名，
+   不参与全局复用。
+   --------------------------------------------------------------------------- */
+
+/* 1) 去掉每张卡左侧的 4px 品牌色竖条。
+      只处理本页真实存在的写法（Card 自己带 page-block），不写匹配不到的死选择器。 */
+.page-alerts .card.page-block {
+  border-left: 1px solid var(--border);
+}
+
+/* 2) 三级层级：分组 16/600、卡片 14/500、正文 13/12。
+      只改字号不够 —— 卡片标题的字重也降一档，层级才不只靠 2px 支撑。
+      不加上方 eyebrow：标题上方的装饰小字会制造第二层「假标题」。 */
+.page-alerts .page-section-head {
+  margin-top: 12px;
+}
+
+.page-alerts .page-section-title {
+  font-size: var(--font-size-lg);
+  letter-spacing: -0.01em;
+}
+
+.page-alerts .page-section-desc {
+  color: var(--text-secondary);
+}
+
+.page-alerts .card.page-block .card-title {
+  font-weight: var(--font-weight-medium);
+}
+
+/* 概览是唯一焦点卡：标题保持 600，配顶部 2px 品牌线 */
+.page-alerts .card.alert-active .card-title {
+  font-weight: var(--font-weight-semibold);
+}
+
+/* 3) 当前告警概览：只读、列表优先。
+      顶部 2px 品牌线是全页唯一的强调线；盖掉 .card::before 的通用高光，
+      避免两条线叠在一起。 */
+.page-alerts .alert-active {
+  border-top: 2px solid var(--accent);
+}
+
+.page-alerts .alert-active::before {
+  display: none;
+}
+
+.alert-active-updated {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-active-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(88px, 1fr) auto auto;
+  gap: 12px;
+  margin-top: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-muted);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.alert-active-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* 对象（含归属徽章） / 指标 / 数值+阈值 / 相对时间。
+   没有红色圆点：整张卡都是告警，再点一个红点只是增加红色噪音。 */
+.alert-active-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(88px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border-muted);
+  font-size: var(--font-size-sm);
+}
+
+.alert-active-item:first-child {
+  border-top: 0;
+}
+
+.alert-active-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.alert-active-target-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.alert-active-target-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+/* 第二行：节点 + VMID。VM 名不再只藏在 hover 的 title 里。 */
+.alert-active-target-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.alert-active-metric {
+  color: var(--text-secondary);
+}
+
+/* 数值不再用红色：红色留给「需要立刻处理」的语义；12px 红字在白底约
+   4.4:1，本就不达 AA。阈值文案退成次级灰。 */
+.alert-active-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text-primary);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-active-threshold {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-normal);
+  color: var(--text-secondary);
+}
+
+.alert-active-time {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-active-empty,
+.alert-active-more {
+  margin: 10px 0 2px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+/* 窄屏：改成 2×2 —— 对象 / 数值 一行，指标 / 最近提醒 一行。
+   时间与指标都保留（它们是这块概览的增量信息），只把阈值文案让掉。 */
+@media (max-width: 767px) {
+  .alert-active-columns {
+    display: none;
+  }
+
+  .alert-active-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "target value"
+      "metric time";
+    gap: 2px 8px;
+    padding: 10px 0;
+  }
+
+  .alert-active-target {
+    grid-area: target;
+  }
+
+  .alert-active-metric {
+    grid-area: metric;
+  }
+
+  .alert-active-value {
+    grid-area: value;
+    justify-self: end;
+  }
+
+  .alert-active-time {
+    grid-area: time;
+    justify-self: end;
+  }
+
+  .alert-active-threshold {
+    display: none;
+  }
+
+  /* 手机上的三级层级：页面标题 16，分组降到 15，卡片 14 */
+  .page-alerts .page-section-title {
+    font-size: 15px;
+  }
+}
+
+/* 4) 危险操作降权：清历史仍然可被找到，但不再用一块常驻的实心红抢注意力。
+      红色只留给「现在就需要处理」的当前告警。 */
+.page-alerts .alert-danger-action {
+  color: var(--danger);
+}
+
+.page-alerts .alert-danger-action:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* 5) 关键辅助文字提对比度：#8c8c8c 在白底约 3.5:1，12px 下难以辨认。
+      历史表的阈值文案与相对时间同属一类，必须一起抬，否则只修一半。
+      :not(.field-message-error) 是为了不把真正的错误红字一起盖掉。 */
+.page-alerts .alert-hist-rel,
+.page-alerts .alert-hist-repeat,
+.page-alerts .alert-hist-thr,
+.page-alerts .field-message:not(.field-message-error),
+.page-alerts .alc-mail-desc {
+  color: var(--text-secondary);
+}
+
+/* 6) 表格视觉：取消全局 hover 的 2px 蓝竖条 —— 刚删掉的装饰线不该在 hover
+      时以另一种形式回来；表头去大写、字重退后；启用列的表头与单元格一起居中。 */
+.page-alerts .table thead th {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+
+.page-alerts .table tbody tr:hover {
+  box-shadow: none;
+}
+
+.page-alerts .alert-rules-table td {
+  vertical-align: middle;
+}
+
+.page-alerts .alert-rules-table td:nth-last-child(2),
+.page-alerts .alert-rules-table th:nth-last-child(2) {
+  text-align: center;
+}
+
+/* 历史表每行的指标图标原来是品牌蓝：刚删掉蓝色竖条，别让蓝色噪音从图标回来。 */
+.page-alerts .alert-hist-metric-icon {
+  color: var(--text-secondary);
+}
+
+/* 控件高度统一在文件前部的 .page-alerts .table-dense 一处定义（32px），
+   这里不再重复声明，避免同一选择器出现两个值。 */
+
+/* 7) 历史表的时间/数值列本来就是等宽数字（.alert-hist-num / .alert-hist-abs），
+      不再重复声明。 */
+
+/* 8) 失败原因可见：贴在「投递状态」徽章下方，失败时才渲染。
+      触屏没有 hover、键盘也读不到 title，这一行必须真实存在于文档流里。 */
+.page-alerts .alert-hist-detail {
+  display: block;
+  max-width: 100%;
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* 9) 规则删除后的撤销条 */
+.page-alerts .alert-undo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* 10) 概览对象名可点：去掉按钮默认外观，保留文本的省略与字重 */
+.page-alerts .alert-active-link {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  /* 不写 font 简写：它会把 .alert-active-target-name 的 600 一起重置成继承值 */
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.page-alerts .alert-active-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.page-alerts .alert-active-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* 规则工具条：搜索 + 批量启停。卡片操作区放不下时自动换行 */
+.page-alerts .alert-rules-card .card-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.page-alerts .alert-rules-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.page-alerts .alert-rules-tools .input-wrap {
+  width: 180px;
+}
+
+/* 概览底部：余量提示 + 查看全部 */
+.page-alerts .alert-active-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.page-alerts .alert-active-more {
+  margin: 0;
+}
+
+.page-alerts .alert-active-viewall {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.page-alerts .alert-active-viewall:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.page-alerts .alert-active-viewall:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* 11) 窄屏规则表：8 列横滚改成一条规则一张卡。
+      表头隐藏，用 data-label 把列名放到每个控件前面；
+      触屏控件抬到 40px，复选框放大点击区。 */
+@media (max-width: 767px) {
+  .page-alerts .alert-rules-table thead {
+    display: none;
+  }
+
+  .page-alerts .alert-rules-table,
+  .page-alerts .alert-rules-table tbody,
+  .page-alerts .alert-rules-table tr,
+  .page-alerts .alert-rules-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .page-alerts .alert-rules-table tr {
+    margin-bottom: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-surface);
+  }
+
+  .page-alerts .alert-rules-table td {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    border: 0;
+  }
+
+  .page-alerts .alert-rules-table td::before {
+    content: attr(data-label);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+  }
+
+  .page-alerts .alert-rules-table td:last-child {
+    grid-template-columns: 1fr;
+    justify-items: end;
+    padding-top: 8px;
+  }
+
+  .page-alerts .alert-rules-table td:last-child::before {
+    display: none;
+  }
+
+  /* 说明文字横跨两列，不被 88px 的标签列挤成窄条 */
+  .page-alerts .alert-rules-table .alert-rule-hint {
+    grid-column: 1 / -1;
+    margin-top: 0;
+  }
+
+  /* 覆盖桌面端的「启用列居中」与斑马纹：卡片化后应左对齐、统一底色 */
+  .page-alerts .alert-rules-table td:nth-last-child(2) {
+    text-align: left;
+  }
+
+  .page-alerts .alert-rules-table tbody tr:nth-child(even) {
+    background: var(--bg-surface);
+  }
+
+  /* 这里已经不需要横滚，去掉右侧那道「还能滑」的假阴影 */
+  .page-alerts .table-container {
+    box-shadow: none;
+  }
+
+  .page-alerts .alert-rules-table .input-wrap,
+  .page-alerts .alert-rules-table .select {
+    height: 40px;
+  }
+
+  .page-alerts .alert-rules-table input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
   }
 }

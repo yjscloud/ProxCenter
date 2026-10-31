@@ -19,8 +19,10 @@
    ========================================================================== */
 
 import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { errorMessage } from '../api/client';
 import { guestsApi, type GuestRef } from '../api/guests';
+import { invalidateQuota } from '../hooks/quotaCache';
 import { useToast } from '../hooks/useToast';
 import { useT } from '../i18n';
 import { Button } from './ui/Button';
@@ -49,6 +51,7 @@ export function OwnerAssignDialog({
 }: OwnerAssignDialogProps) {
   const t = useT();
   const toast = useToast();
+  const qc = useQueryClient();
   const [owner, setOwner] = useState('');
   /** 读到的当前归属：既做「原归 xxx」提示，也是「这是改派」的判定依据 */
   const [previous, setPrevious] = useState('');
@@ -121,6 +124,10 @@ export function OwnerAssignDialog({
         guest.connection_id ?? undefined,
         reason.trim() || undefined,
       );
+      /* 归属决定额度算在谁头上：改派之后「我的额度 / 平台台数」都变了。
+         这个弹窗不经过 useTaskRunner（那里会自动作废），所以在这里显式作废 ——
+         否则被改派的人还看到旧余量（见 scripts/check-quota-invalidation.mjs）。 */
+      invalidateQuota(qc);
       /* 结果里带上这次连带处理了什么：快照标记清了几条、活动告警搬了几条、
          穿透规则失效了几条。管理员需要知道改派不是「只改一个名字」 */
       const notes: string[] = [];

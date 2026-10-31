@@ -448,3 +448,8 @@
 .chart-stats { gap: 32px; }
 .monitor-grid { gap: 20px; }
 .chart-title { font-size: 15px; }
+
+/* 环形图下钻：扇区可点时给指针反馈（是否可点由 .is-clickable 决定） */
+.donut-wrap.is-clickable .recharts-sector {
+  cursor: pointer;
+}

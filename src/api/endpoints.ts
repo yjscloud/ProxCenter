@@ -2114,9 +2114,17 @@ export const firewallApi = {
    --------------------------------------------------------------------------- */
 
 export const sshApi = {
-  /** 概览：日志源、失败排行、fail2ban 状态与当前策略 */
-  overview: (hours?: number) =>
-    get<SshOverview>('/ssh/overview', hours ? { params: { hours } } : undefined),
+  /**
+   * 概览：日志源、失败排行、fail2ban 状态与当前策略。
+   *
+   * 后端对「读日志 + 聚合」这一轮有 2 分钟缓存（多人同时打开时只采一次）。
+   * `refresh = true` 绕过它强制重采 —— 只给页面上的「刷新 / 立即检测」用，
+   * 普通轮询走缓存即可。
+   */
+  overview: (hours?: number, refresh?: boolean) =>
+    get<SshOverview>('/ssh/overview', {
+      params: { ...(hours ? { hours } : {}), ...(refresh ? { refresh: 1 } : {}) },
+    }),
   /** 失败来源明细 */
   failures: (hours = 24, minCount = 1) =>
     get<{
@@ -2340,8 +2348,14 @@ export const sshFleetApi = {
       detail?: string;
     }>(`/ssh/hosts/${id}/trust`, undefined, force ? { params: { force: true } } : undefined),
 
-  overview: (hours?: number) =>
-    get<FleetOverview>('/ssh/fleet', hours ? { params: { hours } } : undefined),
+  /**
+   * 多机概览。一轮要 SSH 每台主机，后端因此有 2 分钟缓存；
+   * `refresh = true` 绕过去强制重采（页面「刷新 / 立即检测」用）。
+   */
+  overview: (hours?: number, refresh?: boolean) =>
+    get<FleetOverview>('/ssh/fleet', {
+      params: { ...(hours ? { hours } : {}), ...(refresh ? { refresh: 1 } : {}) },
+    }),
   failures: (hostId: string, hours = 24, minCount = 1) =>
     get<{
       source: SshLogSource;

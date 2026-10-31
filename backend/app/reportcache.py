@@ -84,6 +84,11 @@ def scope_key(
 ScopeKey = Tuple[str, Optional[FrozenSet[str]], str]
 
 
+def _key_matches(key: Any, prefix: str) -> bool:
+    """缓存 key 的第一段就是功能名（见 :func:`scope_key`）。"""
+    return isinstance(key, tuple) and bool(key) and str(key[0]).startswith(prefix)
+
+
 def peek(key: ScopeKey) -> Optional[Any]:
     """取未过期的缓存；没有（或已过期）返回 ``None``。"""
     hit = _cache.get(key)
@@ -211,6 +216,24 @@ async def get_snapshot_or_scan(
     payload = await produce()
     store(key, payload)
     return payload, False
+
+
+def clear_namespace(prefix: str) -> None:
+    """按**功能名前缀**清内存缓存（不碰落库快照）。
+
+    :func:`clear` 是全清（连快照一起），适合「端口 / 基线」这种口径整体失效的
+    场景。SSH 安全页只是多挂了一份只读汇总缓存，它的策略 / 主机变更没必要把
+    端口与基线的快照一起清掉 —— 那会让对方下一次打开重扫一轮。
+
+    前缀匹配让 ``"ssh"`` 能一次清掉 ``"ssh-log:24"`` / ``"ssh-fleet:0"`` 这些
+    带参数后缀的键。
+    """
+    for key in [item for item in _cache if _key_matches(item, prefix)]:
+        _cache.pop(key, None)
+    for key in [item for item in _locks if _key_matches(item, prefix)]:
+        _locks.pop(key, None)
+    for key in [item for item in _refresh_marks if _key_matches(item, prefix)]:
+        _refresh_marks.pop(key, None)
 
 
 async def clear() -> None:

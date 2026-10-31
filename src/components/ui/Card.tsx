@@ -6,6 +6,7 @@ import { createContext, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { IconChevronDown } from '../Icons';
 import { useT } from '../../i18n';
+import { Sparkline } from './Sparkline';
 
 /**
  * 折叠状态经 Context 下传给 CardHeader：卡片可折叠时，按钮要渲染在标题栏
@@ -232,6 +233,15 @@ export interface KpiCardProps {
   onClick?: () => void;
   /** 可点时的悬停说明 */
   title?: string;
+  /**
+   * 主指标卡（视觉焦点）。
+   *
+   * 一排 KPI 里只应有一张带这个标记：它把「这个集群现在怎么样」这一条结论
+   * 放大，其余卡降级为支撑读数。样式差异见 CSS `.kpi-card.is-featured`。
+   */
+  featured?: boolean;
+  /** 最近若干采样值（时间先后），有 2 个以上时画一条迷你趋势线 */
+  trend?: number[];
 }
 
 export function KpiCard({
@@ -245,10 +255,20 @@ export function KpiCard({
   loading = false,
   onClick,
   title,
+  featured = false,
+  trend,
 }: KpiCardProps) {
+  const t = useT();
+  const featureClass = featured ? ' is-featured' : '';
+  const trendColor = progressColor ?? `var(--${tone === 'neutral' ? 'accent' : tone})`;
+
   if (loading) {
     return (
-      <div className="kpi-card">
+      <div
+        className={`kpi-card${featureClass}`}
+        role="status"
+        aria-label={t('common.loading')}
+      >
         <div className="skeleton skeleton-text" style={{ width: '40%' }} />
         <div
           className="skeleton skeleton-text"
@@ -274,15 +294,25 @@ export function KpiCard({
       </div>
       <div className="kpi-value">{value}</div>
       {hint ? <div className="kpi-hint">{hint}</div> : null}
+      {trend && trend.length > 1 ? (
+        <div className="kpi-spark">
+          <Sparkline points={trend} color={trendColor} width={112} height={26} />
+        </div>
+      ) : null}
       {progress !== undefined ? (
         <div className="kpi-progress" role="presentation">
           <div
             className="kpi-progress-fill"
             /* 进度条做成实心色块，不再加外发光：一排五张卡同时发光时，
-               反倒是「哪里有问题」这个信息被淹掉了（浅色主题下尤其明显）。 */
+               反倒是「哪里有问题」这个信息被淹掉了（浅色主题下尤其明显）。
+               纹理兜底：中高占用时叠一层斜纹，弱色觉用户不必只靠蓝/橙/红。 */
             style={{
               width: `${Math.min(100, Math.max(0, progress))}%`,
               background: progressColor ?? `var(--${tone === 'neutral' ? 'accent' : tone})`,
+              backgroundImage:
+                progress >= 50
+                  ? 'repeating-linear-gradient(45deg, rgba(255,255,255,.4) 0 2px, transparent 2px 5px)'
+                  : undefined,
             }}
           />
         </div>
@@ -296,7 +326,7 @@ export function KpiCard({
     return (
       <button
         type="button"
-        className={`kpi-card kpi-${tone} is-clickable`}
+        className={`kpi-card kpi-${tone} is-clickable${featureClass}`}
         onClick={onClick}
         title={title}
       >
@@ -305,5 +335,5 @@ export function KpiCard({
     );
   }
 
-  return <div className={`kpi-card kpi-${tone}`}>{body}</div>;
+  return <div className={`kpi-card kpi-${tone}${featureClass}`}>{body}</div>;
 }

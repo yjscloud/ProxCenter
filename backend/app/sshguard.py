@@ -510,6 +510,30 @@ async def collect(hours: int = 24) -> Dict[str, Any]:
 
 # ------------------------------------------------------- 登录记录与「陌生 IP」
 
+async def collect_cached(hours: int = 24, refresh: bool = False) -> Dict[str, Any]:
+    """只读接口用的 :func:`collect`：带 2 分钟 TTL 缓存 + 同 key 并发去重。
+
+    为什么不直接改 :func:`collect`：巡检（:func:`evaluate`）也走它，那条路径
+    要的是「这一轮的最新日志」，缓存会让告警晚一轮才发。缓存只挂在页面的读
+    路径上（见 ``routers/ssh.py`` 的 ``_report``）。
+
+    ``refresh=True`` 是页面上「刷新 / 立即检测」的通路：绕过缓存真读一遍，并把
+    新结果写回缓存 —— 否则用户点了刷新却看不到变化（缓存还没到期），很像坏了。
+
+    key 里带 ``hours`` 与当前语言：统计窗口不同结论就不同，而报告里的来源说明
+    是在出口按当前语言渲染的。策略变更由 :func:`save_policy` 清缓存。
+    """
+    from . import reportcache
+
+    key = reportcache.scope_key(f"ssh-log:{int(hours or 0)}", None)
+    if refresh:
+        payload = await collect(hours)
+        reportcache.store(key, payload)
+        return payload
+    payload, _hit = await reportcache.get_or_scan(key, lambda: collect(hours))
+    return payload
+
+
 async def known_ips() -> Dict[str, Dict[str, Any]]:
     await init_table()
     async with database.connect() as db:
@@ -683,6 +707,11 @@ async def save_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
     current = await load_policy()
     policy = normalise_policy(raw, current)
     await store.set_setting(POLICY_KEY, json.dumps(policy, ensure_ascii=False))
+    # 报告是按旧策略的窗口与忽略地址统计出来的：策略一改，缓存里那份就与页面上
+    # 的「统计窗口 N 小时」对不上了。函数内导入避免与 inspection 成环。
+    from . import reportcache
+
+    reportcache.clear_namespace("ssh")
     return policy
 
 

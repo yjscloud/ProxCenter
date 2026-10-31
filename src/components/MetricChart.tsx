@@ -16,42 +16,30 @@ import {
   YAxis,
   Cell,
 } from 'recharts';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { RrdPoint } from '../api/types';
 import { ChartSkeleton } from './ui/Spinner';
 import { EmptyState } from './ui/EmptyState';
 import { ErrorState } from './ui/EmptyState';
 import { formatBytes, formatTimeLabel, toPercent } from '../utils/format';
+import { CHART_COLORS, CHART_TOKENS } from '../utils/chartColors';
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import { useT } from '../i18n';
 
-/* ---------------------------------------------------------------------------
-   主题色常量（与 theme.css 的令牌色保持一致）
-   --------------------------------------------------------------------------- */
+/* 图表配色统一收敛到 utils/chartColors（single source of truth）。
+   这里保留 re-export，避免已有的 `import { CHART_COLORS } from './MetricChart'`
+   一次性全部失效。 */
+export { CHART_COLORS };
 
-export const CHART_COLORS = {
-  accent: '#0052d9',
-  success: '#2ba471',
-  warning: '#e37318',
-  danger: '#d54941',
-  purple: '#7d5fff',
-  cyan: '#00a4ff',
-  grey: '#a9aeb8',
-  netIn: '#2ba471',
-  netOut: '#7d5fff',
-  diskRead: '#0052d9',
-  diskWrite: '#e37318',
-} as const;
-
-/* 坐标轴：浅色下用中性灰，不与数据抢视觉 */
+/* 坐标轴：浅色下用中性灰，不与数据抢视觉；令牌里已提升对比度 */
 const AXIS_STYLE = {
-  stroke: '#c9cdd4',
+  stroke: CHART_TOKENS.axis,
   fontSize: 11,
 } as const;
 
 const GRID_STYLE = {
-  stroke: 'rgba(0, 0, 0, 0.07)',
+  stroke: CHART_TOKENS.grid,
   strokeDasharray: '4 4',
 } as const;
 
@@ -645,6 +633,8 @@ export interface DonutDatum {
   name: string;
   value: number;
   color: string;
+  /** 下钻用的稳定标识（名称会随语言变化，不能拿它当键） */
+  id?: string;
 }
 
 export function DonutChart({
@@ -653,6 +643,7 @@ export function DonutChart({
   centerLabel,
   centerValue,
   showLegend = true,
+  onDatumClick,
 }: {
   data: DonutDatum[];
   /**
@@ -668,10 +659,14 @@ export function DonutChart({
    * 关掉之后环形图独占整块高度，明细交给调用方自己排（更像控制台的资源分布卡）。
    */
   showLegend?: boolean;
+  /** 点击扇区下钻（可选）。传了之后扇区可点，并有指针反馈。 */
+  onDatumClick?: (datum: DonutDatum) => void;
 }) {
   const t = useT();
   const anim = useFirstFrameAnimation();
   const total = data.reduce((sum, d) => sum + d.value, 0);
+  /* 图案 id 必须全局唯一：同一页可能同时存在多个环形图 */
+  const patternPrefix = `donut-tex-${useId().replace(/:/g, '')}`;
 
   if (total === 0) {
     return (
@@ -681,12 +676,48 @@ export function DonutChart({
     );
   }
 
+  /* 读屏摘要：图本身对读屏不可读，用一句话把「每一类各多少、占比多少」讲完 */
+  const summary = data
+    .map((d) => `${d.name} ${d.value} (${((d.value / total) * 100).toFixed(1)}%)`)
+    .join('，');
+
   return (
     /* has-legend 会在 CSS 里把中心文字上移半个图例高度 ——
        recharts 的图例占掉底部 28px，圆心并不在容器的垂直中点。 */
-    <div className={`donut-wrap${showLegend ? ' has-legend' : ''}`} style={{ height }}>
+    <div
+      className={`donut-wrap${showLegend ? ' has-legend' : ''}${
+        onDatumClick ? ' is-clickable' : ''
+      }`}
+      style={{ height }}
+      role="img"
+      aria-label={summary}
+    >
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
+          {/* 纹理兜底：除了色相，每一类再叠一种方向不同的斜纹。
+              色觉障碍用户在只能看到灰度时，仍能靠纹理区分扇区。 */}
+          <defs>
+            {data.map((d, index) => (
+              <pattern
+                key={d.name}
+                id={`${patternPrefix}-${index}`}
+                width={8}
+                height={8}
+                patternUnits="userSpaceOnUse"
+                patternTransform={`rotate(${45 + index * 60})`}
+              >
+                <rect width={8} height={8} fill={d.color} />
+                <line
+                  x1={0}
+                  y1={0}
+                  x2={0}
+                  y2={8}
+                  stroke="rgba(255,255,255,0.3)"
+                  strokeWidth={1.2}
+                />
+              </pattern>
+            ))}
+          </defs>
           <Pie
             data={data}
             dataKey="value"
@@ -698,9 +729,17 @@ export function DonutChart({
             strokeWidth={2}
             animationDuration={anim ? ANIM_MS : 0}
             isAnimationActive={anim}
+            onClick={
+              onDatumClick
+                ? (_entry: unknown, index: number) => {
+                    const datum = data[index];
+                    if (datum) onDatumClick(datum);
+                  }
+                : undefined
+            }
           >
-            {data.map((d) => (
-              <Cell key={d.name} fill={d.color} />
+            {data.map((d, index) => (
+              <Cell key={d.name} fill={`url(#${patternPrefix}-${index})`} />
             ))}
           </Pie>
           <Tooltip

@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { alertsApi, exportUrl, nodesApi, vmsApi } from "../api/endpoints";
 import { PageShell } from "../components/Layout";
 import { Card, CardHeader } from "../components/ui/Card";
@@ -175,8 +179,9 @@ function deliveryMeta(r: AlertRecord, t: TFunc) {
   const sent = r.result === "sent";
   const isRecovery = r.kind === "recovery";
   if (sent) {
+    /* 「已恢复」是结案，不是当前告警：用中性徽章，把绿/蓝/红留给仍在发生的事 */
     return isRecovery
-      ? { variant: "info" as const, label: t("alerts.badgeRecovered"), rank: 3 }
+      ? { variant: "neutral" as const, label: t("alerts.badgeRecovered"), rank: 3 }
       : { variant: "success" as const, label: t("alerts.badgeSent"), rank: 2 };
   }
   return isRecovery
@@ -216,6 +221,14 @@ export function Alerts() {
   const toast = useToast();
   const qc = useQueryClient();
 
+  /* 相对时间自己走：刷新间隔可能被设成「关闭」，那时没有重渲染，
+     「更新于 刚刚」会永久冻住。 */
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 15_000);
+    return () => window.clearInterval(id);
+  }, []);
+
   /* 分组说明与指标定义：文案随语言走，所以在组件内构造 */
   const groupDesc = useMemo<Record<SectionGroup, string>>(
     () => ({
@@ -242,11 +255,20 @@ export function Alerts() {
   const [hookWebhookClear, setHookWebhookClear] = useState(false);
   const [hookSecretClear, setHookSecretClear] = useState(false);
   const [clearHistoryOpen, setClearHistoryOpen] = useState(false);
+  /* 规则删除：先确认，再给一次撤销 —— 删除只改本地，保存前都还能反悔 */
+  const [deleteRuleIndex, setDeleteRuleIndex] = useState<number | null>(null);
+  const [lastDeletedRule, setLastDeletedRule] = useState<{
+    rule: AlertRule;
+    index: number;
+  } | null>(null);
   /* 历史搜索：一个框同时匹配对象名称与规则名称。
      必须交给服务端筛 —— 历史只回最近 80 条，在前端过滤的话，上周那条永远搜不到。
      300ms 防抖：别让每个按键都打一次接口。 */
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  /* 规则搜索在本地做：规则本来就整份在内存里，不必为它再打一次接口 */
+  const [ruleQueryInput, setRuleQueryInput] = useState("");
+  const ruleQuery = ruleQueryInput.trim().toLowerCase();
   useEffect(() => {
     const timer = setTimeout(() => setSearch(searchInput.trim()), 300);
     return () => clearTimeout(timer);
@@ -267,6 +289,9 @@ export function Alerts() {
        带搜索词才另开一条 key。 */
     queryKey: search ? ["alerts", search] : ["alerts"],
     queryFn: () => alertsApi.get(search),
+    /* 换搜索词会换 queryKey：不给上一份数据的话，首屏概览会跟着历史搜索
+       闪一次「正在读取告警数据…」—— 浏览动作不该影响告警结论。 */
+    placeholderData: keepPreviousData,
     refetchInterval: refresh,
     retry: false,
   });
@@ -584,6 +609,18 @@ export function Alerts() {
     () => new Set(activeAlarms.map((a) => String(a.target || "")).filter(Boolean)),
     [activeAlarms],
   );
+  const activeTargetCount = activeTargets.size;
+  /* 只读概览：按「最近一次提醒」由近到远排前 5。
+     后端 active.ts 是冷却锚点 / 最近推送时间，不是首次告警时间 ——
+     所以不能说「挂得最久」，也不能拿它当「告警开始时间」。 */
+  const activeRows = useMemo(
+    () =>
+      [...activeAlarms]
+        .sort((a, b) => Number(b.ts ?? 0) - Number(a.ts ?? 0))
+        .slice(0, 5),
+    [activeAlarms],
+  );
+  const hiddenActiveCount = Math.max(0, activeAlarms.length - activeRows.length);
   const historySubtitle = [
     activeTargets.size > 0 ? t("alerts.activeObjects", { n: activeTargets.size }) : "",
     records.length > 0 ? t("alerts.totalRecords", { n: records.length }) : "",
@@ -606,6 +643,38 @@ export function Alerts() {
 
   function patch(index: number, next: Partial<AlertRule>) {
     setRules((list) => (list ? list.map((r, i) => (i === index ? { ...r, ...next } : r)) : list));
+  }
+
+  /* 批量启停：只动自己有权改的规则，别人的规则保持原样。
+     和单条切换一样只改本地，保存后才生效。 */
+  function setAllRulesEnabled(enabled: boolean) {
+    setRules((list) =>
+      list
+        ? list.map((r) =>
+            canManage && !isForeign(r) ? { ...r, enabled } : r,
+          )
+        : list,
+    );
+  }
+
+  /* 概览 → 历史：把对象名带进历史搜索并滚过去。
+     概览只给结论不给去处的话，运维还得自己在 80 条里重新找一遍。 */
+  function viewInHistory(term: string) {
+    setSearchInput(term);
+    window.requestAnimationFrame(() => {
+      const reduce = window.matchMedia?.(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      document
+        .getElementById(`${SECTION_PREFIX}history`)
+        ?.scrollIntoView({
+          behavior: reduce ? "auto" : "smooth",
+          block: "start",
+        });
+      /* 键盘用户点完链接后焦点仍停在概览；把焦点交到历史搜索框 */
+      const box = document.getElementById("alert-history-search");
+      if (box instanceof HTMLInputElement) box.focus({ preventScroll: true });
+    });
   }
 
   /**
@@ -732,6 +801,11 @@ export function Alerts() {
               {r.is_repeat ? (
                 <span className="alert-hist-repeat">{t("alerts.repeatNotice")}</span>
               ) : null}
+              {/* 失败原因不能只挂在 title 上：触屏没有 hover、键盘也读不到。
+                  失败时直接把 detail 渲染出来，行高会变，但这是排障最需要的一行。 */}
+              {r.result !== "sent" && r.detail ? (
+                <span className="alert-hist-detail">{r.detail}</span>
+              ) : null}
             </span>
           );
         },
@@ -770,10 +844,9 @@ export function Alerts() {
         sortable: true,
         sortValue: (r) => r.rule_name || "",
         render: (r) => (
-          /* detail（投递详情 / 失败原因）后端一直有、卡片时代却从没渲染过。
-             放进 title：不占列宽，也不至于被埋没 —— 而「发送失败」恰恰是最需要
-             看到原因的那一格。 */
-          <span className="alert-hist-rule" title={r.detail || undefined}>
+          /* detail（投递详情 / 失败原因）现在渲染在「投递状态」格里，
+             这里只负责规则名与归属，不再把它藏进 hover。 */
+          <span className="alert-hist-rule">
             <span className="fw-500 truncate">{r.rule_name || t("alerts.fallbackAlarm")}</span>
             {isAdmin && r.username ? (
               <Badge variant="neutral" size="sm">
@@ -846,7 +919,7 @@ export function Alerts() {
               <span
                 className="fw-600"
                 style={{
-                  color: recovered ? "var(--success)" : "var(--danger)",
+                  color: recovered ? "var(--text-secondary)" : "var(--danger)",
                 }}
               >
                 {recovered ? t("alerts.recoveredOk") : t("alerts.stateAbnormal")}
@@ -909,10 +982,31 @@ export function Alerts() {
      与历史表同一套分页，但 resetKey 只跟作用域走：规则内容变了（新增 / 删除 /
      改名）不该把人从第 3 页弹回第 1 页，越界由 hook 用 Math.min 夹住。 */
   const ruleList = rules ?? [];
-  const rulePage = usePaged(ruleList, `${isAdmin}|${canManage}`);
-  /* 分页只切显示，编辑 / 删除仍按**全量下标**操作：rows 就是从 offset 开始的
-     那一段切片，用它换算回来的索引才能对上 patch() / filter()。 */
-  const ruleOffset = (rulePage.page - 1) * rulePage.pageSize;
+  /* 搜索后行序会变，分页 offset 不再等于全量下标；用对象引用反查全量下标，
+     patch / delete 才不会改到别的规则。 */
+  const filteredRules = useMemo(() => {
+    if (!ruleQuery) return ruleList;
+    return ruleList.filter((r) => {
+      const hay = [
+        r.name,
+        r.target,
+        r.username,
+        r.target_type === "node" ? t("alerts.targetNode") : t("alerts.targetVm"),
+        metricMap[r.metric]?.label,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(ruleQuery);
+    });
+  }, [ruleList, ruleQuery, t, metricMap]);
+  const rulePage = usePaged(
+    filteredRules,
+    `${isAdmin}|${canManage}|${ruleQuery}`,
+  );
+  const editableRuleCount = ruleList.filter(
+    (r) => canManage && !isForeign(r),
+  ).length;
 
   return (
     <PageShell
@@ -996,6 +1090,178 @@ export function Alerts() {
           {t("alerts.manageForbidden")}
         </Notice>
       ) : null}
+
+      {/* 当前告警：只读概览，把「现在哪里在响」提到首屏。
+          不新增任何控件 —— 数据来自上面已经取回的 active 列表，这里只换一种
+          呈现顺序：先给结论，再给配置。 */}
+      <Card className="page-block alert-active" collapsible={false}>
+        <CardHeader
+          title={t("alerts.currentTitle")}
+          subtitle={t("alerts.currentSubtitle")}
+          icon={<IconAlert size={16} />}
+          actions={
+            <>
+              {/* 数据新鲜度用查询时间，而不是「最新一条告警的时间」：
+                  后者在长时间无告警时会显示「更新于 3 天前」，看起来像面板卡死。 */}
+              {query.dataUpdatedAt > 0 ? (
+                <span className="alert-active-updated">
+                  {t("alerts.updatedAt", {
+                    time: formatRelative(query.dataUpdatedAt, nowTick),
+                  })}
+                </span>
+              ) : null}
+              <Badge
+                variant={
+                  query.isError || !query.data
+                    ? "neutral"
+                    : activeTargetCount > 0
+                      ? "danger"
+                      : "success"
+                }
+                size="sm"
+                dot
+              >
+                {query.isError
+                  ? t("alerts.currentUnknown")
+                  : !query.data
+                    ? t("alerts.currentLoading")
+                    : activeTargetCount > 0
+                      ? t("alerts.currentSummary", {
+                          n: activeTargetCount,
+                          m: activeAlarms.length,
+                        })
+                      : t("alerts.currentClear")}
+              </Badge>
+            </>
+          }
+        />
+
+        {/* 四态：加载 / 失败且无缓存 / 失败但有缓存（保留最后已知 + 过期提示）/ 正常。
+            绝不在「还不知道」时显示成「当前正常」。 */}
+        {!query.data && query.isError ? (
+          <p className="alert-active-empty" role="status">
+            {t("alerts.currentError")}
+          </p>
+        ) : !query.data ? (
+          <p className="alert-active-empty" role="status">
+            {t("alerts.currentLoadingBody")}
+          </p>
+        ) : (
+          <>
+            {/* 断连时不要把最后已知的告警清空 —— 那是事故期间最需要看的东西 */}
+            {query.isError ? (
+              <Notice tone="warning" title={t("alerts.currentStaleTitle")}>
+                {t("alerts.currentStale", {
+                  time: formatRelative(query.dataUpdatedAt, nowTick),
+                })}
+              </Notice>
+            ) : null}
+            {activeRows.length === 0 ? (
+              <p className="alert-active-empty" role="status">
+                {t("alerts.currentEmpty")}
+              </p>
+            ) : (
+              <>
+                {/* 列头：四段内容靠位置记忆太累，给一排 12px 的轻列名即可 */}
+                <div className="alert-active-columns" aria-hidden="true">
+                  <span>{t("alerts.colObject")}</span>
+                  <span>{t("alerts.colMetric")}</span>
+                  <span>{t("alerts.colValue")}</span>
+                  <span>{t("alerts.currentLastNotified")}</span>
+                </div>
+                <ul className="alert-active-list">
+                  {activeRows.map((item) => {
+                    const metric = String(item.metric ?? "");
+                    const state = isStateMetric(metric);
+                    const internalKey = INTERNAL_METRIC_LABELS[metric];
+                    const metricLabel =
+                      metricMap[metric]?.label ??
+                      (internalKey ? t(internalKey) : metric || "—");
+                    const vmId =
+                      item.vmid != null && String(item.vmid) !== ""
+                        ? String(item.vmid)
+                        : "";
+                    /* 兼容两种口径：正常是 VM 名；旧数据可能是 0:pve1:103 这种 ref。 */
+                    const targetText = String(item.target ?? "");
+                    const looksLikeRef = /^[^:]*:[^:]+:/.test(targetText);
+                    const primary =
+                      (!looksLikeRef && targetText) ||
+                      (item.node && vmId
+                        ? `${item.node} / VM ${vmId}`
+                        : item.node || item.ip || targetText || "—");
+                    /* 第二行给出节点与 VMID —— VM 名不再只藏在 hover 的 title 里 */
+                    const metaParts: string[] = [];
+                    if (item.node && item.node !== primary) metaParts.push(item.node);
+                    if (vmId) metaParts.push(`VM ${vmId}`);
+                    const meta = metaParts.join(" · ");
+                    return (
+                      <li className="alert-active-item" key={item.alarm_key}>
+                        <span className="alert-active-target" title={meta || undefined}>
+                          <span className="alert-active-target-line">
+                            {/* 概览不能是死路：点对象名 → 带进历史搜索并滚过去。
+                                旧数据若是 0:pve1:103 这种 ref，搜不到任何结果，
+                                那就保持纯文本，不制造一次注定失败的下钻。 */}
+                            {!looksLikeRef && item.target ? (
+                              <button
+                                type="button"
+                                className="alert-active-target-name alert-active-link"
+                                onClick={() => viewInHistory(item.target!)}
+                                title={t("alerts.currentViewHistory", { name: primary })}
+                              >
+                                {primary}
+                              </button>
+                            ) : (
+                              <span className="alert-active-target-name">{primary}</span>
+                            )}
+                            {isAdmin && item.username ? (
+                              <Badge variant="neutral" size="sm">
+                                {item.username}
+                              </Badge>
+                            ) : null}
+                          </span>
+                          {meta ? (
+                            <span className="alert-active-target-meta">{meta}</span>
+                          ) : null}
+                        </span>
+                        <span className="alert-active-metric">{metricLabel}</span>
+                        <span className="alert-active-value">
+                          {state
+                            ? t("alerts.stateAbnormal")
+                            : `${Number(item.value ?? 0)}%`}
+                          {!state ? (
+                            <span className="alert-active-threshold">
+                              {t("alerts.threshold", {
+                                n: Number(item.threshold ?? 0),
+                              })}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="alert-active-time">
+                          {formatRelative(item.ts, nowTick)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <div className="alert-active-footer">
+                  {hiddenActiveCount > 0 ? (
+                    <span className="alert-active-more">
+                      {t("alerts.currentMore", { n: hiddenActiveCount })}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="alert-active-viewall"
+                    onClick={() => viewInHistory("")}
+                  >
+                    {t("alerts.currentViewAll")}
+                  </button>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </Card>
 
       <header className="page-section-head">
         <h2 className="page-section-title">{t("alerts.groupChannels")}</h2>
@@ -1800,7 +2066,10 @@ export function Alerts() {
         <p className="page-section-desc">{groupDesc.records}</p>
       </header>
 
-      <Card className="page-block" id={`${SECTION_PREFIX}rules`}>
+      <Card
+        className="page-block alert-rules-card"
+        id={`${SECTION_PREFIX}rules`}
+      >
         <CardHeader
           title={t("alerts.rulesTitle")}
           subtitle={
@@ -1809,6 +2078,34 @@ export function Alerts() {
           icon={<IconAlert size={16} />}
           actions={
             <>
+              <div className="alert-rules-tools">
+                <Input
+                  value={ruleQueryInput}
+                  onChange={(e) => setRuleQueryInput(e.target.value)}
+                  prefix={<IconSearch size={14} />}
+                  placeholder={t("alerts.searchRulesPlaceholder")}
+                  aria-label={t("alerts.searchRulesPlaceholder")}
+                  block={false}
+                />
+                {editableRuleCount > 0 ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setAllRulesEnabled(true)}
+                    >
+                      {t("alerts.enableAll")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setAllRulesEnabled(false)}
+                    >
+                      {t("alerts.disableAll")}
+                    </Button>
+                  </>
+                ) : null}
+              </div>
               <Button
                 variant="ghost"
                 size="sm"
@@ -1823,8 +2120,9 @@ export function Alerts() {
                     newRule(isAdmin && !hostListUnavailable ? "node" : "vm"),
                   ];
                   setRules(next);
-                  /* 新规则追加在末尾：不跟着翻页的话，点完「添加」当前页
-                     看不到这一行，像是没加上 */
+                  /* 清掉搜索再翻页：新规则多半不匹配当前关键词，留着搜索会
+                     让人以为「点了添加却没加上」 */
+                  setRuleQueryInput("");
                   rulePage.setPage(Math.ceil(next.length / rulePage.pageSize));
                 }}
               >
@@ -1846,6 +2144,7 @@ export function Alerts() {
                         // 后端会按 id 去重、认领归属，用返回结果刷新本地列表，
                         // 否则保存后界面仍显示旧数据（含历史重复项）
                         setRules(res.rules ?? []);
+                        setLastDeletedRule(null);
                       },
                       t("alerts.rulesSaved"),
                     );
@@ -1854,6 +2153,9 @@ export function Alerts() {
                       // 配好了」的编辑丢掉，回到服务端的真实状态。留着它，用户会
                       // 以为规则已经生效，实际一条都没落库。
                       setRules(query.data?.rules ?? []);
+                      /* 本地列表已被服务端数据覆盖：撤销条也要一起收掉，
+                         否则撤销会把同 id 的规则再插回服务端列表，出现重复行 */
+                      setLastDeletedRule(null);
                     }
                   })()
                 }
@@ -1870,51 +2172,85 @@ export function Alerts() {
             {t("alerts.nodesUnavailable")}
           </Notice>
         ) : null}
+        {/* 删除只改本地，保存前都能反悔：给一次显式的撤销，比让用户刷新页面强 */}
+        {lastDeletedRule ? (
+          <Notice tone="info" title={t("alerts.ruleRemovedTitle")}>
+            <span className="alert-undo-row">
+              <span>
+                {t("alerts.ruleRemoved", {
+                  name: lastDeletedRule.rule.name || t("alerts.fallbackAlarm"),
+                })}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setRules((list) => {
+                    if (!list) return list;
+                    const next = [...list];
+                    next.splice(lastDeletedRule.index, 0, lastDeletedRule.rule);
+                    return next;
+                  });
+                  setLastDeletedRule(null);
+                }}
+              >
+                {t("alerts.undoRemove")}
+              </Button>
+            </span>
+          </Notice>
+        ) : null}
         {rules && rules.length > 0 ? (
+          filteredRules.length > 0 ? (
           <>
           <div className="table-container">
-            <table className="table table-dense">
+            <table className="table table-dense alert-rules-table">
+              <caption className="sr-only">{t("alerts.rulesTitle")}</caption>
               <thead>
                 <tr>
-                  {isAdmin ? <th>{t("alerts.colOwner")}</th> : null}
-                  <th>{t("alerts.colRuleName")}</th>
-                  <th>{t("alerts.colTargetType")}</th>
-                  <th>{t("alerts.colTarget")}</th>
-                  <th>{t("alerts.colMetric")}</th>
-                  <th>{t("alerts.colThreshold")}</th>
-                  <th>{t("alerts.colEnabled")}</th>
-                  <th />
+                  {isAdmin ? <th scope="col">{t("alerts.colOwner")}</th> : null}
+                  <th scope="col">{t("alerts.colRuleName")}</th>
+                  <th scope="col">{t("alerts.colTargetType")}</th>
+                  <th scope="col">{t("alerts.colTarget")}</th>
+                  <th scope="col">{t("alerts.colMetric")}</th>
+                  <th scope="col">{t("alerts.colThreshold")}</th>
+                  <th scope="col">{t("alerts.colEnabled")}</th>
+                  <th scope="col">
+                    <span className="sr-only">{t("alerts.colActions")}</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {rulePage.rows.map((r, i) => {
-                  /* 页内下标 → 全量下标：patch / filter 都作用在完整的 rules 上 */
-                  const index = ruleOffset + i;
+                  /* 搜索 / 分页后行序会变：用对象引用反查全量下标，
+                     patch / filter 都作用在完整的 rules 上 */
+                  const index = ruleList.indexOf(r);
                   const readonly = isForeign(r) || !canManage;
                   return (
                   <tr key={r.id}>
                     {isAdmin ? (
-                      <td>
+                      <td data-label={t("alerts.colOwner")}>
                         <Badge variant={readonly ? "neutral" : "success"} size="sm">
                           {r.username || ownUsername || "-"}
                         </Badge>
                       </td>
                     ) : null}
-                    <td>
+                    <td data-label={t("alerts.colRuleName")}>
                       <div className="input-wrap">
                         <input
                           className="input"
                           value={r.name}
                           disabled={readonly}
+                          aria-label={`${t("alerts.colRuleName")} ${i + 1}`}
                           onChange={(e) => patch(index, { name: e.target.value })}
                         />
                       </div>
                     </td>
-                    <td>
+                    <td data-label={t("alerts.colTargetType")}>
                       <select
                         className="select"
                         value={r.target_type}
                         disabled={readonly}
+                        aria-label={`${t("alerts.colTargetType")} ${i + 1}`}
                         onChange={(e) =>
                           // 切换对象类型后原目标不再适用，重置为「全部」
                           patch(index, { target_type: e.target.value, target: "*" })
@@ -1932,11 +2268,12 @@ export function Alerts() {
                         <option value="vm">{t("alerts.targetVm")}</option>
                       </select>
                     </td>
-                    <td>
+                    <td data-label={t("alerts.colTarget")}>
                       <select
                         className="select"
                         value={r.target}
                         disabled={readonly}
+                        aria-label={`${t("alerts.colTarget")} ${i + 1}`}
                         onChange={(e) => patch(index, { target: e.target.value })}
                       >
                         {targetSelectOptions(r).map((o) => (
@@ -1946,11 +2283,12 @@ export function Alerts() {
                         ))}
                       </select>
                     </td>
-                    <td>
+                    <td data-label={t("alerts.colMetric")}>
                       <select
                         className="select"
                         value={r.metric}
                         disabled={readonly}
+                        aria-label={`${t("alerts.colMetric")} ${i + 1}`}
                         onChange={(e) => patch(index, { metric: e.target.value })}
                       >
                         {metrics.map((m) => (
@@ -1960,7 +2298,7 @@ export function Alerts() {
                         ))}
                       </select>
                     </td>
-                    <td>
+                    <td data-label={t("alerts.colThreshold")}>
                       {isStateMetric(r.metric) ? (
                         /* 状态型指标不看阈值：这里给一句语义说明，
                            而不是一个填了也没有任何作用的数字框 */
@@ -1972,6 +2310,7 @@ export function Alerts() {
                             type="number"
                             value={r.threshold}
                             disabled={readonly}
+                            aria-label={`${t("alerts.colThreshold")} ${i + 1}`}
                             onChange={(e) => patch(index, { threshold: Number(e.target.value) })}
                           />
                         </div>
@@ -1979,25 +2318,29 @@ export function Alerts() {
                       {/* 虚拟机的磁盘已用量只能从客户机取：没有 agent 就没有数据，
                           规则会一直静默。这句话就是用来解释「配了却不触发」的。 */}
                       {r.target_type === 'vm' && r.metric === 'disk' ? (
-                        <div className="fs-xs text-muted" style={{ marginTop: 4 }}>
+                        <div
+                          className="fs-xs text-muted alert-rule-hint"
+                          style={{ marginTop: 4 }}
+                        >
                           {t('alerts.vmDiskAgentHint')}
                         </div>
                       ) : null}
                     </td>
-                    <td>
+                    <td data-label={t("alerts.colEnabled")}>
                       <input
                         type="checkbox"
                         checked={r.enabled}
                         disabled={readonly}
+                        aria-label={`${t("alerts.colEnabled")} ${i + 1}`}
                         onChange={(e) => patch(index, { enabled: e.target.checked })}
                       />
                     </td>
-                    <td>
+                    <td data-label={t("alerts.colActions")}>
                       <IconButton
                         label={readonly ? t("alerts.deleteRuleReadonly") : t("alerts.deleteRule")}
                         variant="danger"
                         disabled={readonly}
-                        onClick={() => setRules(rules.filter((_, k) => k !== index))}
+                        onClick={() => setDeleteRuleIndex(index)}
                       >
                         <IconTrash size={15} />
                       </IconButton>
@@ -2012,6 +2355,11 @@ export function Alerts() {
               不必等超过一页才出现（见 Pagination 的 showBar 说明） */}
           <PagerBar pager={rulePage} />
           </>
+          ) : (
+            <div className="text-secondary fs-sm">
+              {t("alerts.rulesEmptySearch", { q: ruleQueryInput.trim() })}
+            </div>
+          )
         ) : (
           <div className="text-secondary fs-sm">{t("alerts.rulesEmpty")}</div>
         )}
@@ -2027,6 +2375,7 @@ export function Alerts() {
               {/* 一个框同时匹配对象名称与规则名称：先想「按哪个字段查」再选下拉，
                   纯属多余 */}
               <Input
+                id="alert-history-search"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 prefix={<IconSearch size={14} />}
@@ -2035,8 +2384,9 @@ export function Alerts() {
                 block={false}
               />
               <Button
-                variant="danger"
+                variant="ghost"
                 size="sm"
+                className="alert-danger-action"
                 icon={<IconTrash size={14} />}
                 loading={busy === "clear"}
                 /* 搜索时禁用：确认框里的条数用的是当前列表长度，筛选状态下
@@ -2072,11 +2422,39 @@ export function Alerts() {
       </Card>
 
       <ConfirmDialog
+        open={deleteRuleIndex !== null}
+        danger
+        irreversible={false}
+        title={t("alerts.deleteRuleTitle")}
+        confirmText={t("alerts.deleteRuleConfirm")}
+        message={t("alerts.deleteRuleMessage", {
+          name:
+            deleteRuleIndex !== null
+              ? rules?.[deleteRuleIndex]?.name || t("alerts.fallbackAlarm")
+              : "",
+        })}
+        onCancel={() => setDeleteRuleIndex(null)}
+        onConfirm={() => {
+          if (deleteRuleIndex === null || !rules) return;
+          const removed = rules[deleteRuleIndex];
+          /* 列表在确认期间可能被保存 / 刷新改掉，越界时直接关掉，别塞 undefined */
+          if (!removed) {
+            setDeleteRuleIndex(null);
+            return;
+          }
+          setLastDeletedRule({ rule: removed, index: deleteRuleIndex });
+          setRules(rules.filter((_, k) => k !== deleteRuleIndex));
+          setDeleteRuleIndex(null);
+        }}
+      />
+
+      <ConfirmDialog
         open={clearHistoryOpen}
         danger
         title={t("alerts.clearTitle")}
         confirmText={t("alerts.clearConfirm")}
-        message={t("alerts.clearMessage", { n: records.length })}
+        /* 历史只回最近 80 条，后端删的是全部：给一个具体条数会低报，改成不承诺数量 */
+        message={t("alerts.clearMessageAll")}
         onCancel={() => setClearHistoryOpen(false)}
         onConfirm={clearHistory}
       />

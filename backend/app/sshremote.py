@@ -265,9 +265,9 @@ async def find_by_address(address: str) -> Optional[Dict[str, Any]]:
 
 
 async def _invalidate_report_cache() -> None:
-    """受管主机集合变了 → 「端口与进程 / 安全基线」的全平台总览缓存作废。
+    """受管主机集合变了 → 「端口与进程 / 安全基线 / SSH 安全」的总览缓存作废。
 
-    那两页的总览是**现场巡检**的结果，带 2 分钟 TTL（见 :mod:`app.reportcache`）。
+    那几页的总览是**现场采集**的结果，带 2 分钟 TTL（见 :mod:`app.reportcache`）。
     缓存的 key 只有「功能名 + 可见主机集合 + 语言」，**不含主机数量** —— 新登记
     或刚接入一台机器时 key 完全没变，于是它会命中那份「还不含这台机器」的旧报告，
     最长 2 分钟不出现在总览里，看起来正像「面板下发的虚拟机没被纳管」。
@@ -325,6 +325,9 @@ async def delete_host(host_id: str) -> int:
         await ownership.delete_owner(ownership.KIND_SSH_HOST, host_id)
         # 池里的连接也一并丢掉：主机都没了，留着只是占着一条 SSH
         forget_connection(host_id)
+        # 汇总缓存里还挂着这台机器：不清的话它会在列表上再留 2 分钟，
+        # 而且每轮都显示成「连不上」
+        await _invalidate_report_cache()
     return removed
 
 
@@ -1523,12 +1526,47 @@ async def fleet_reports(
     return reports
 
 
+async def _fleet_reports_cached(
+    hours: Optional[int],
+    host_ids: Optional[Iterable[str]],
+    refresh: bool = False,
+) -> List[Dict[str, Any]]:
+    """页面用的 fleet 报告：2 分钟 TTL 缓存 + 同 key 并发去重。
+
+    一轮要 SSH 每台主机（读日志、解析），几秒到几十秒。同一个人来回切页面、
+    几个人同时打开、开两个标签，都不该重跑一遍 —— 这也是「每次进这一页都要
+    等一会儿」的主因。
+
+    告警巡检（:func:`evaluate_fleet`）仍走不带缓存的 :func:`fleet_reports`：
+    那条路径不能晚一轮才看到爆破。
+
+    key 里带可见主机集合（``None`` = 管理员不限，与空集合必须分开）、统计窗口
+    与语言。主机增删改会经 :func:`save_host` / :func:`delete_host` 清掉它。
+
+    ``refresh=True`` 绕过缓存真采一轮（页面「刷新 / 立即检测」用），并把新结果
+    写回缓存 —— 否则点了刷新看到的还是那份旧报告。
+    """
+    from . import reportcache
+
+    key = reportcache.scope_key(f"ssh-fleet:{int(hours or 0)}", host_ids)
+    if refresh:
+        payload = await fleet_reports(hours, host_ids)
+        reportcache.store(key, payload)
+    else:
+        payload, _hit = await reportcache.get_or_scan(
+            key, lambda: fleet_reports(hours, host_ids)
+        )
+    # 浅拷贝：缓存里那份列表是共享的，调用方就地改写会污染下一次读
+    return [dict(item) for item in payload]
+
+
 async def fleet_overview(
     hours: Optional[int] = None,
     host_ids: Optional[Iterable[str]] = None,
+    refresh: bool = False,
 ) -> Dict[str, Any]:
     """多机概览：每台主机的统计 + fail2ban 状态。"""
-    reports = await fleet_reports(hours, host_ids)
+    reports = await _fleet_reports_cached(hours, host_ids, refresh)
     hosts_payload: List[Dict[str, Any]] = []
     for report in reports:
         fail2ban: Dict[str, Any] = {"installed": False, "running": False, "jails": [], "details": [], "preferred": "", "hint": ""}

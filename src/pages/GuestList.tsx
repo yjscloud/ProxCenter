@@ -533,6 +533,25 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams, canCreate]);
 
+  /* 状态深链：仪表盘「资源分布」点某个状态跳过来（/vms?status=running）。
+     只认四个合法值；读完立刻把参数抹掉 —— 否则用户随后手动改筛选，地址栏
+     仍停在一个已经不成立的查询上，刷新后会「跳回」旧筛选。 */
+  useEffect(() => {
+    const status = searchParams.get('status');
+    if (!status) return;
+    if (
+      status === 'all' ||
+      status === 'running' ||
+      status === 'stopped' ||
+      status === 'template'
+    ) {
+      setStatusFilter(status);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete('status');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   /* ---- 弹窗状态 ---- */
   const [deleteTarget, setDeleteTarget] = useState<VmSummary | null>(null);
   const [bulkDelete, setBulkDelete] = useState(false);

@@ -14,7 +14,7 @@
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { sshApi, sshFleetApi } from '../api/endpoints';
 import { errorMessage } from '../api/client';
 import { AskAiButton } from '../components/AskAiButton';
@@ -51,6 +51,14 @@ import type {
   SshLoginRow,
 } from '../api/types';
 
+/* 监测数据是**现场采集**的：本机读日志，受管主机各拨一条 SSH 跑 journalctl 与
+   fail2ban，一轮几秒到几十秒。所以缓存要留久一点 —— 5 分钟内再进这一页直接吃
+   缓存、一个请求都不发；超过 5 分钟也是先把上次结果画出来、后台静默重采，页面
+   不再空等一轮 SSH（与「端口与进程 / 安全基线」同一口径）。 */
+const SSH_STALE_TIME = 5 * 60_000;
+/** 离开页面后缓存还留多久：去别的页看一眼再回来，不该重扫（默认只留 5 分钟）。 */
+const SSH_GC_TIME = 30 * 60_000;
+
 export function SshSecurity() {
   const t = useT();
   const { hasPermission, isAdmin } = useAuth();
@@ -77,25 +85,38 @@ export function SshSecurity() {
      本机数据只有管理员能读（后端按归属隔离），而且**必须已导入**（未导入是 409）。
      两个条件不满足就不发请求，免得一进页面就吃三个错误。 */
   const localReady = isAdmin && localHostInfo.enabled;
-  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
+  /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval）。
+     但这一页的两份数据都是**现场采集**（读日志 / SSH 每台主机），而后端给它们
+     加了 2 分钟的采集缓存 —— 轮得比缓存还密只是重复读同一份，压到 60 秒起。
+     要立刻看最新数据，用右上角「刷新」（它带 refresh=1 绕开缓存）。 */
   const refresh = useRefreshInterval();
+  const pollInterval = refresh ? Math.max(refresh, 60_000) : false;
   const overviewQuery = useQuery({
     queryKey: ['ssh', 'overview'],
     queryFn: () => sshApi.overview(),
     enabled: localReady,
-    refetchInterval: refresh,
+    staleTime: SSH_STALE_TIME,
+    gcTime: SSH_GC_TIME,
+    placeholderData: keepPreviousData,
+    refetchInterval: pollInterval,
     retry: false,
   });
   const loginsQuery = useQuery({
     queryKey: ['ssh', 'logins'],
     queryFn: () => sshApi.logins(100),
     enabled: localReady,
+    /* 登录明细来自库里（巡检时落的），不是现读日志：留一分钟足够 */
+    staleTime: 60_000,
+    gcTime: SSH_GC_TIME,
     retry: false,
   });
   const knownQuery = useQuery({
     queryKey: ['ssh', 'known-ips'],
     queryFn: sshApi.knownIps,
     enabled: localReady,
+    /* 已知 IP 只有人工「信任 / 不再信任」才会变，且本地改动后自己会失效 */
+    staleTime: 60_000,
+    gcTime: SSH_GC_TIME,
     retry: false,
   });
 
@@ -103,12 +124,18 @@ export function SshSecurity() {
   const fleetQuery = useQuery({
     queryKey: ['ssh', 'fleet'],
     queryFn: () => sshFleetApi.overview(),
-    refetchInterval: refresh,
+    staleTime: SSH_STALE_TIME,
+    gcTime: SSH_GC_TIME,
+    placeholderData: keepPreviousData,
+    refetchInterval: pollInterval,
     retry: false,
   });
   const hostsQuery = useQuery({
     queryKey: ['ssh', 'hosts'],
     queryFn: sshFleetApi.hosts,
+    /* 主机清单是配置：不常变，也不该为它每次进来打一次接口 */
+    staleTime: 5 * 60_000,
+    gcTime: SSH_GC_TIME,
     retry: false,
   });
 
@@ -177,9 +204,29 @@ export function SshSecurity() {
     if (jail && !jailDraft.jail) setJailDraft((prev) => ({ ...prev, jail }));
   }, [jail, jailDraft.jail]);
 
+  /* 手动刷新 = **真采一轮**：后端读接口带 2 分钟缓存（挡掉多人同时打开时的
+     重复 SSH 与重复读日志），这里必须用 refresh=1 绕开它 —— 否则点了刷新看到的
+     还是那份旧报告，像是按钮坏了。其余三份是便宜查询，直接重取即可。 */
   const refreshAll = () => {
-    void overviewQuery.refetch();
-    void fleetQuery.refetch();
+    void (async () => {
+      try {
+        await Promise.all([
+          qc.fetchQuery({
+            queryKey: ['ssh', 'overview'],
+            queryFn: () => sshApi.overview(undefined, true),
+            staleTime: 0,
+          }),
+          qc.fetchQuery({
+            queryKey: ['ssh', 'fleet'],
+            queryFn: () => sshFleetApi.overview(undefined, true),
+            staleTime: 0,
+          }),
+        ]);
+      } catch {
+        /* 失败已经落在各自的 query 状态上（页面顶部与卡片里会显示），
+           这里不必再弹一次 */
+      }
+    })();
     void hostsQuery.refetch();
     void loginsQuery.refetch();
     void knownQuery.refetch();
@@ -478,7 +525,25 @@ export function SshSecurity() {
 
   /* --------------------------------------------------------------- 渲染 */
 
-  const scopeLoading = overviewQuery.isLoading || fleetQuery.isLoading;
+  /* 「加载中」只看一件事：**当前作用域还没有任何数据**。
+     原先写成 `overview.isLoading || fleet.isLoading`，于是
+       * 看本机数据也得等整轮远程 SSH（fleet）回来才出内容；
+       * 切到某台受管主机、或后台静默重采时，整块又退回骨架 —— 明明手里
+         已经有上一轮的结果。
+     作用域内的旧值先画出来，后台刷新由上面的「检查于」那一行体现。
+
+     本机那一档还多一个前提：本机管辖状态（``localHostInfo.state``）没回来时
+     不知道该不该等本机数据（普通用户根本不会发这个请求）。这段时间也算加载，
+     否则会先闪一条「主机已不存在」，再跳去受管主机。 */
+  const scopeLoading =
+    scopeId === 'local'
+      ? !local && (localHostInfo.state === undefined || overviewQuery.isPending)
+      : !fleet && fleetQuery.isPending;
+
+  /* 采集时间跟着作用域走：远程作用域下显示本机报告的采集时间会误导人。
+     fleet 的 generated_at 就是这一轮巡检真正开始的时间。 */
+  const scopeGeneratedAt =
+    scopeId === 'local' ? local?.report.generated_at : fleet?.generated_at;
 
   const failures = current?.top_ips ?? [];
   const logins = loginsQuery.data?.logins ?? [];
@@ -557,8 +622,8 @@ export function SshSecurity() {
                 })}
               </Badge>
             ) : null}
-            {local?.report.generated_at
-              ? t('ssh.checkedAt', { time: formatRelative(local.report.generated_at) })
+            {scopeGeneratedAt
+              ? t('ssh.checkedAt', { time: formatRelative(scopeGeneratedAt) })
               : ''}
           </span>
         </div>

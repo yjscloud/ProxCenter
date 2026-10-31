@@ -22,6 +22,11 @@ export interface ConfirmDialogProps {
   cancelText?: string;
   /** 危险操作（红色按钮 + 图标）*/
   danger?: boolean;
+  /**
+   * danger 时是否强调「不可撤销」。
+   * 本地可反悔的删除（保存前能撤销）传 false，否则提示与事实相反。
+   */
+  irreversible?: boolean;
   /** 需要用户输入指定文本才能确认（如删除时输入 VM 名称）*/
   requireText?: string;
   /** 确认按钮 loading */
@@ -40,6 +45,7 @@ export function ConfirmDialog({
   confirmText,
   cancelText,
   danger = false,
+  irreversible = true,
   requireText,
   loading = false,
   container,
@@ -100,7 +106,7 @@ export function ConfirmDialog({
       container={container}
     >
       <div className="confirm-body">
-        {danger ? (
+        {danger && irreversible ? (
           <Notice tone="danger" title={t('confirm.irreversible')}>
             {message ?? t('confirm.understand')}
           </Notice>

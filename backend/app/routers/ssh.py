@@ -11,7 +11,16 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import hostscope, localhost, panelkey, security, sshguard, sshremote, store
+from .. import (
+    hostscope,
+    localhost,
+    panelkey,
+    reportcache,
+    security,
+    sshguard,
+    sshremote,
+    store,
+)
 from ..formatters import short_hostname
 from ..schemas import (
     SshHostIn,
@@ -28,8 +37,18 @@ SSH_VIEW = security.require_permission("ssh.view")
 SSH_MANAGE = security.require_permission("ssh.manage")
 
 
-async def _report(hours: int, limit: int = 50) -> Dict[str, Any]:
-    report = await sshguard.collect(hours)
+async def _report(
+    hours: int, limit: int = 50, refresh: bool = False
+) -> Dict[str, Any]:
+    """概览用的本机报告。
+
+    走 ``collect_cached`` 而不是 ``collect``：读日志 + 解析一轮要几百毫秒到几秒，
+    而页面可能被反复打开、几个人同时看。缓存只在这一条读路径上，巡检仍用
+    ``collect``（见 :func:`app.sshguard.collect_cached` 的说明）。
+
+    ``refresh=True`` 只由页面的「刷新 / 立即检测」传进来：绕过缓存真读一遍。
+    """
+    report = await sshguard.collect_cached(hours, refresh)
     payload = sshguard.overview_payload(report)
     payload["top_ips"] = payload.get("top_ips", [])[: max(1, min(200, limit))]
     return payload
@@ -206,14 +225,18 @@ async def trust_host(
 @router.get("/fleet")
 async def fleet_overview(
     hours: int = Query(default=0, ge=0, le=168),
+    refresh: bool = Query(default=False),
     user: Dict[str, Any] = Depends(SSH_VIEW),
 ) -> Dict[str, Any]:
     """本机 + 受管主机的汇总（远程并发拉取，失败的主机会单独标注原因）。
 
     管理员看全部；普通用户只看自己那几台（本机不在其中）。
+
+    ``refresh=1`` 绕过 2 分钟的采集缓存真采一轮：页面上「刷新 / 立即检测」用它，
+    否则点了按钮看到的还是缓存里那份旧报告。
     """
     return await sshremote.fleet_overview(
-        hours or None, await hostscope.allowed_host_ids(user)
+        hours or None, await hostscope.allowed_host_ids(user), refresh
     )
 
 
@@ -419,6 +442,9 @@ async def import_local_host(
 ) -> Dict[str, Any]:
     """把面板本机纳入安全管控（幂等，需要二次确认）。"""
     state = await localhost.enable(by=str(user.get("username") or ""))
+    # fleet 汇总缓存 key 里只有「可见主机集合」，本机的进出不在其中：
+    # 不清的话列表上会少一台（或多一台）最多 2 分钟。
+    reportcache.clear_namespace("ssh")
     await security.audit(
         request,
         user,
@@ -441,6 +467,7 @@ async def remove_local_host(
     **不删除任何已有数据** —— 已入库的登录审计事件留着，只是不再采集本机。
     """
     state = await localhost.disable()
+    reportcache.clear_namespace("ssh")
     await security.audit(
         request,
         user,
@@ -455,12 +482,16 @@ async def remove_local_host(
 @router.get("/overview", dependencies=[Depends(hostscope.require_local_admin)])
 async def overview(
     hours: int = Query(default=0, ge=0, le=168),
+    refresh: bool = Query(default=False),
     user: Dict[str, Any] = Depends(SSH_VIEW),
 ) -> Dict[str, Any]:
-    """概览：日志源、失败统计、fail2ban 状态与当前策略。"""
+    """概览：日志源、失败统计、fail2ban 状态与当前策略。
+
+    ``refresh=1`` 绕过 2 分钟的采集缓存（页面「刷新 / 立即检测」用）。
+    """
     policy = await sshguard.load_policy()
     window = hours or int(policy["window_hours"])
-    report = await _report(window)
+    report = await _report(window, refresh=refresh)
     known = await sshguard.known_ips()
     fail2ban = await sshguard.fail2ban_status()
     return {

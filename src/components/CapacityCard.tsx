@@ -22,10 +22,11 @@ import { ErrorState } from './ui/EmptyState';
 import { SegmentedControl } from './ui/Input';
 import { ChartSkeleton } from './ui/Spinner';
 import { formatBytes, formatTimeLabel, trendColor } from '../utils/format';
+import { CHART_TOKENS } from '../utils/chartColors';
 import { useT, type TFunc } from '../i18n';
 
-const AXIS_STYLE = { stroke: '#c9cdd4', fontSize: 11 } as const;
-const GRID_STYLE = { stroke: 'rgba(0,0,0,0.07)', strokeDasharray: '4 4' } as const;
+const AXIS_STYLE = { stroke: CHART_TOKENS.axis, fontSize: 11 } as const;
+const GRID_STYLE = { stroke: CHART_TOKENS.grid, strokeDasharray: '4 4' } as const;
 
 const HORIZON_CAP = 720; // 投影最多画 720 天，避免曲线被拉平
 
@@ -151,12 +152,15 @@ export function CapacityCard({
   error,
   timeframe = 'month',
   onTimeframeChange,
+  onRetry,
 }: {
   forecast: CapacityForecast | undefined;
   loading?: boolean;
   error?: unknown;
   timeframe?: CapacityTimeframe;
   onTimeframeChange?: (value: CapacityTimeframe) => void;
+  /** 加载失败时的重试入口（没有它，错误态只能靠整页刷新） */
+  onRetry?: () => void;
 }) {
   const t = useT();
   const hasData = !!forecast && forecast.history.length >= 2;
@@ -274,6 +278,7 @@ export function CapacityCard({
         <ErrorState
           title={t('capacity.loadFailed')}
           message={t('capacity.loadFailedMsg')}
+          onRetry={onRetry}
         />
       ) : !hasData ? (
         <EmptyState
@@ -282,69 +287,113 @@ export function CapacityCard({
           compact
         />
       ) : (
-        <div style={{ width: '100%', height: 220 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            {/* 必须是 ComposedChart 而不是 AreaChart：
-                recharts 的 AreaChart 只渲染 Area 子节点，混在里面的 <Line>
-                会被静默丢掉 —— 表现是「投影虚线根本不画、右半边整图表空白，
-                连容量上限参考线也不出现」（参考线在 y 轴域外时同样不画，
-                而域是由实际渲染的曲线算出来的，于是互为因果）。
-                ComposedChart 才是官方支持的 Area + Line 组合容器。 */}
-            <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: -4 }}>
-              <defs>
-                <linearGradient id="gradCapacity" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#0052d9" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#0052d9" stopOpacity={0.02} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid vertical={false} {...GRID_STYLE} />
-              <XAxis
-                dataKey="time"
-                tickFormatter={(v: number) => axisTick(v, span || 86_400 * 30)}
-                minTickGap={48}
-                {...AXIS_STYLE}
-              />
-              <YAxis
-                tickFormatter={(v: number) => formatBytes(v, 0)}
-                width={72}
-                {...AXIS_STYLE}
-              />
-              <Tooltip content={<TooltipBox span={span} />} />
-              <ReferenceLine
-                y={total}
-                stroke="#d54941"
-                strokeDasharray="6 4"
-                label={{
-                  value: t('capacity.seriesLimit'),
-                  position: 'insideTopRight',
-                  fontSize: 10,
-                  fill: '#d54941',
-                }}
-              />
-              <Area
-                type="monotone"
-                dataKey="used"
-                name={t('capacity.seriesUsed')}
-                stroke="#0052d9"
-                strokeWidth={2.4}
-                fill="url(#gradCapacity)"
-                connectNulls={false}
-                animationDuration={450}
-              />
-              <Line
-                type="monotone"
-                dataKey="proj"
-                name={t('capacity.seriesProjectedName')}
-                stroke="#e37318"
-                strokeWidth={2}
-                strokeDasharray="6 4"
-                dot={false}
-                connectNulls={false}
-                animationDuration={450}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
+        <>
+          {/* 图表对读屏是一张不可读的 SVG：用 aria-label 把结论讲完。
+              （上面那三个数字仍各自可读，这里只补「趋势 + 结论」。） */}
+          <div
+            className="capacity-chart-shell"
+            role="img"
+            aria-label={t('capacity.chartAria', {
+              used: formatBytes(used, 0),
+              total: formatBytes(total, 0),
+              pct: usedPct.toFixed(1),
+              verdict: verdict.text,
+            })}
+          >
+            <ResponsiveContainer width="100%" height="100%">
+              {/* 必须是 ComposedChart 而不是 AreaChart：
+                  recharts 的 AreaChart 只渲染 Area 子节点，混在里面的 <Line>
+                  会被静默丢掉 —— 表现是「投影虚线根本不画、右半边整图表空白，
+                  连容量上限参考线也不出现」（参考线在 y 轴域外时同样不画，
+                  而域是由实际渲染的曲线算出来的，于是互为因果）。
+                  ComposedChart 才是官方支持的 Area + Line 组合容器。 */}
+              <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: -4 }}>
+                <defs>
+                  <linearGradient id="gradCapacity" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={CHART_TOKENS.accent} stopOpacity={0.3} />
+                    <stop offset="100%" stopColor={CHART_TOKENS.accent} stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid vertical={false} {...GRID_STYLE} />
+                <XAxis
+                  dataKey="time"
+                  tickFormatter={(v: number) => axisTick(v, span || 86_400 * 30)}
+                  minTickGap={48}
+                  {...AXIS_STYLE}
+                />
+                <YAxis
+                  tickFormatter={(v: number) => formatBytes(v, 0)}
+                  width={72}
+                  {...AXIS_STYLE}
+                />
+                <Tooltip content={<TooltipBox span={span} />} />
+                <ReferenceLine
+                  y={total}
+                  stroke={CHART_TOKENS.danger}
+                  strokeDasharray="6 4"
+                  label={{
+                    value: t('capacity.seriesLimit'),
+                    position: 'insideTopRight',
+                    fontSize: 10,
+                    fill: CHART_TOKENS.danger,
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="used"
+                  name={t('capacity.seriesUsed')}
+                  stroke={CHART_TOKENS.accent}
+                  strokeWidth={2.4}
+                  fill="url(#gradCapacity)"
+                  connectNulls={false}
+                  animationDuration={450}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="proj"
+                  name={t('capacity.seriesProjectedName')}
+                  stroke={CHART_TOKENS.warning}
+                  strokeWidth={2}
+                  strokeDasharray="6 4"
+                  dot={false}
+                  connectNulls={false}
+                  animationDuration={450}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* 窄屏降级：图表压扁后刻度会挤成一团，改成「结论式」文字摘要。
+              与图表同时渲染、由 CSS 二选一显示，避免 JS 侧判断窗口宽度。 */}
+          <div className="capacity-mobile-summary">
+            <div className="capacity-mobile-row">
+              <span className="capacity-mobile-label">{t('capacity.currentUsed')}</span>
+              <span className="capacity-mobile-value mono">
+                {formatBytes(used, 0)} / {formatBytes(total, 0)} · {usedPct.toFixed(1)}%
+              </span>
+            </div>
+            <div className="capacity-mobile-row">
+              <span className="capacity-mobile-label">
+                {rate != null && rate < 0 ? t('capacity.avgDrop') : t('capacity.avgGrow')}
+              </span>
+              <span
+                className="capacity-mobile-value mono"
+                style={{ color: rate != null && rate !== 0 ? trendColor(rate) : undefined }}
+              >
+                {rate == null
+                  ? '—'
+                  : t('capacity.perDay', {
+                      sign: rate >= 0 ? '+' : '-',
+                      size: formatBytes(Math.abs(rate), 0),
+                    })}
+              </span>
+            </div>
+            <div className="capacity-mobile-row">
+              <span className="capacity-mobile-label">{t('capacity.mobileVerdict')}</span>
+              <span className="capacity-mobile-value">{verdict.text}</span>
+            </div>
+          </div>
+        </>
       )}
     </Card>
   );

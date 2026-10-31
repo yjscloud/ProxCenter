@@ -89,6 +89,11 @@ export function SshSecurityConfig() {
   const [ownerTarget, setOwnerTarget] = useState<SshHost | null>(null);
   const [ownerValue, setOwnerValue] = useState('');
   const [ownerBusy, setOwnerBusy] = useState(false);
+  /* 从别人名下改派要确认两次：主机归属一改，四套安全数据的可见范围立刻跟着变，
+     而覆盖式写入没有撤销 */
+  const [ownerConfirming, setOwnerConfirming] = useState(false);
+  /* 变更理由 / 工单号：只进审计 —— previous 回答「从谁到谁」，这个回答「为什么」 */
+  const [ownerReason, setOwnerReason] = useState('');
 
   const hostsQuery = useQuery({
     queryKey: ['ssh', 'hosts'],
@@ -135,6 +140,12 @@ export function SshSecurityConfig() {
   const policy = overviewQuery.data?.policy ?? null;
   const hostPage = usePaged(hosts, 'hosts');
 
+  /** 改派判定：有原主、选了新的人、且不是同一个人（收回与首次指派不算） */
+  const ownerNext = ownerValue.trim();
+  const ownerCurrent = (ownerTarget?.owner ?? '').trim();
+  const ownerIsTransfer =
+    Boolean(ownerCurrent) && Boolean(ownerNext) && ownerNext !== ownerCurrent;
+
   /** 主机增删改后，两边页面共用 ['ssh'] 前缀，一次失效即可 */
   const refreshFleet = () => qc.invalidateQueries({ queryKey: ['ssh'] });
 
@@ -142,9 +153,22 @@ export function SshSecurityConfig() {
   const saveOwner = async () => {
     const target = ownerTarget;
     if (!target) return;
+    const next = ownerValue.trim();
+    const current = (target.owner ?? '').trim();
+    /* 只有「从一个已有主人转到另一个人名下」才拦：覆盖式写入没有撤销，
+       第一次点击只是把按钮换成「确认改派」，第二次才真的发请求 */
+    const isTransfer = Boolean(current) && Boolean(next) && next !== current;
+    if (isTransfer && !ownerConfirming) {
+      setOwnerConfirming(true);
+      return;
+    }
     setOwnerBusy(true);
     try {
-      const res = await sshFleetApi.assignOwner(target.id, ownerValue.trim());
+      const res = await sshFleetApi.assignOwner(
+        target.id,
+        next,
+        ownerReason.trim() || undefined,
+      );
       /* 改派时把「原来归谁」写出来：覆盖式写入之后，这是唯一能说明
          「这台主机的安全数据刚才是谁在管」的地方 */
       const shifted =
@@ -580,6 +604,8 @@ export function SshSecurityConfig() {
                 title={t('sshConfig.ownerBtnTitle')}
                 onClick={() => {
                   setOwnerValue(row.owner ?? '');
+                  setOwnerReason('');
+                  setOwnerConfirming(false);
                   setOwnerTarget(row);
                 }}
               >
@@ -735,7 +761,10 @@ export function SshSecurityConfig() {
 
       <Modal
         open={Boolean(ownerTarget)}
-        onClose={() => setOwnerTarget(null)}
+        onClose={() => {
+          setOwnerConfirming(false);
+          setOwnerTarget(null);
+        }}
         title={t('sshConfig.ownerModalTitle')}
         description={
           ownerTarget
@@ -760,7 +789,11 @@ export function SshSecurityConfig() {
               loading={ownerBusy}
               onClick={() => void saveOwner()}
             >
-              {t('common.save')}
+              {ownerIsTransfer
+                ? ownerConfirming
+                  ? t('sshConfig.ownerTransferConfirm', { to: ownerNext })
+                  : t('sshConfig.ownerTransferStart', { to: ownerNext })
+                : t('common.save')}
             </Button>
           </>
         }
@@ -771,8 +804,35 @@ export function SshSecurityConfig() {
           label={t('sshConfig.ownerField')}
           hint={t('sshConfig.ownerHint')}
           value={ownerValue}
-          onChange={setOwnerValue}
+          onChange={(next) => {
+            setOwnerValue(next);
+            /* 换了目标就退出确认态：否则「选错人 + 已在确认态」一次点击就提交了 */
+            setOwnerConfirming(false);
+          }}
         />
+
+        <Input
+          label={t('sshConfig.ownerReason')}
+          hint={t('sshConfig.ownerReasonHint')}
+          placeholder={t('sshConfig.ownerReasonPlaceholder')}
+          value={ownerReason}
+          maxLength={120}
+          onChange={(e) => setOwnerReason(e.target.value)}
+        />
+
+        {ownerIsTransfer ? (
+          <Notice
+            tone={ownerConfirming ? 'danger' : 'warning'}
+            title={t('sshConfig.ownerTransferTitle', {
+              from: ownerCurrent,
+              to: ownerNext,
+            })}
+          >
+            {ownerConfirming
+              ? t('sshConfig.ownerTransferArmed', { from: ownerCurrent, to: ownerNext })
+              : t('sshConfig.ownerTransferBody', { from: ownerCurrent, to: ownerNext })}
+          </Notice>
+        ) : null}
       </Modal>
 
       {policy ? (

@@ -4335,7 +4335,10 @@ export const zhCN = {
   'guestList.assignPickFirst': '请先选择一位用户；要清除归属请明确选中那一项',
   'guestList.assignLoadFailed': '读不到当前归属，已禁止保存',
   'guestList.assignFailed': '指派失败',
-  /* 改派（A → B）：覆盖式写入没有撤销，所以要点两次；提示里写清「谁失去什么」 */
+  /* 改派（A → B）：覆盖式写入没有撤销，所以要点两次。
+     提示只陈述「归属从谁改到谁」，**不写**「{from} 会失去可见性」—— 这句在
+     from 是超级管理员（改派后仍然看全部）或区域管理员（仍在自己的区域内）时
+     就是错的，而这两个角色恰恰是最常执行改派的人。 */
   'guestList.assignPrevOwner': '原归 {name}',
   'guestList.assignSnapshotsMoved': '快照归属标记清理 {n} 条',
   'guestList.assignAlertsMoved': '活动告警移交 {n} 条',
@@ -4343,20 +4346,29 @@ export const zhCN = {
   'guestList.assignTransferStart': '改派给 {to}',
   'guestList.assignTransferConfirm': '确认改派给 {to}',
   'guestList.assignTransferTitle': '{from} → {to}',
-  'guestList.assignTransferBody': '保存后 {from} 会立即失去这台{noun}的可见性与管理权，且无法撤销。',
-  'guestList.assignTransferArmed': '再点一次确认：{from} 现在还能看到这台{noun}，改派后立刻失去。',
+  'guestList.assignTransferBody': '保存后这台{noun}的归属立即从 {from} 改为 {to}，可见性、配额与告警收件人都按新主人重新判定，且无法撤销。',
+  'guestList.assignTransferArmed': '再点一次确认：归属将从 {from} 改为 {to}，点下即生效。',
   /* 边界清单：改派到底带走了什么、没带走什么 —— 这是弹窗存在的另一半理由 */
   'guestList.assignScopeFollowTitle': '会跟着机器走',
   'guestList.assignScopeFollowAccess': '面板可见性与管理权',
+  'guestList.assignScopeFollowAccessNote': '新主人立刻能看到并操作，原主人立即不可见',
   'guestList.assignScopeFollowQuota': '配额与用量统计口径',
+  'guestList.assignScopeFollowQuotaNote': '台数与资源占用换到新主人名下',
   'guestList.assignScopeFollowAlerts': '告警收件人（含正在告警的条目）',
+  'guestList.assignScopeFollowAlertsNote': '正在告警的条目改挂给新主人，旧的不再残留',
   'guestList.assignScopeFollowSnapshots': '快照归属',
+  'guestList.assignScopeFollowSnapshotsNote': '快照跟机器走，原主人名下的标记被清掉',
   'guestList.assignScopeFollowFrp': '指向这台机器的穿透规则（会失效）',
+  'guestList.assignScopeFollowFrpNote': '隧道立即断开；改回原主人后自动恢复',
   'guestList.assignScopeKeepTitle': '不会跟过来',
   'guestList.assignScopeKeepAudit': '历史操作审计与告警历史',
+  'guestList.assignScopeKeepAuditHow': '不搬（历史事实）。要交接：在「审计日志 / 告警」按这台机器查，或导出 CSV',
   'guestList.assignScopeKeepHost': '宿主机的 SSH 安全 / 基线 / 端口与进程',
+  'guestList.assignScopeKeepHostHow': '去「SSH 安全」把这台主机也指派给同一人（会连带同机其他机器）',
   'guestList.assignScopeKeepLogin': '面板登录记录',
+  'guestList.assignScopeKeepLoginHow': '不搬；新主人登录后自然产生新记录',
   'guestList.assignScopeKeepCreds': '账号密码与凭据',
+  'guestList.assignScopeKeepCredsHow': '面板口令 / Token 由本人重设；主机凭据在「SSH 安全 → 编辑主机」',
   'guestList.assignReason': '变更理由 / 工单号（可选）',
   'guestList.assignReasonHint': '只记入审计，不参与任何判定',
   'guestList.assignReasonPlaceholder': '例如：项目交接 / OPS-1234',
@@ -5009,7 +5021,7 @@ export const zhCN = {
   'networks.noNodesDesc': '集群中没有可用节点。',
   'networks.loadErrorTitle': '无法加载网络信息',
   'networks.loadErrorMsg':
-    '所有节点的网卡接口都请求失败，请检查后端 /nodes/{node}/network 接口。',
+    '所有节点的网卡接口都请求失败，请检查后端 /nodes/:node/network 接口。',
   'networks.manageNode': '管理此节点网络',
   'networks.viewNode': '查看此节点网络',
   'networks.nodeLoadFailed': '该节点网络信息加载失败',
@@ -5087,6 +5099,17 @@ export const zhCN = {
   'sshConfig.ownerHint':
     '从下拉里搜一个用户选中；选「（不指派）」= 收回归属，之后这台主机只有管理员可见。',
   'sshConfig.ownerPlaceholder': '例如 zhangsan',
+  /* 改派：主机归属一改，四套安全数据的可见范围立刻跟着变，所以要点两次 */
+  'sshConfig.ownerTransferStart': '改派给 {to}',
+  'sshConfig.ownerTransferConfirm': '确认改派给 {to}',
+  'sshConfig.ownerTransferTitle': '{from} → {to}',
+  'sshConfig.ownerTransferBody':
+    '保存后这台主机的归属立即从 {from} 改为 {to}，四套安全数据的可见范围按新主人重新判定，且无法撤销。',
+  'sshConfig.ownerTransferArmed':
+    '再点一次确认：归属将从 {from} 改为 {to}，点下即生效。',
+  'sshConfig.ownerReason': '变更理由 / 工单号（可选）',
+  'sshConfig.ownerReasonHint': '只记入审计，不参与任何判定',
+  'sshConfig.ownerReasonPlaceholder': '例如：主机交接 / OPS-1234',
   'sshConfig.policySection': '异常登录告警策略',
   'sshConfig.policySectionHint': '对当前可见的主机生效',
   'sshConfig.editHostTitle': '编辑主机：{name}',

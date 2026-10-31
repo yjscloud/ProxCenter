@@ -1033,20 +1033,33 @@ export const en: Partial<Record<MessageKey, string>> = {
   'guestList.assignTransferStart': 'Reassign to {to}',
   'guestList.assignTransferConfirm': 'Confirm reassign to {to}',
   'guestList.assignTransferTitle': '{from} → {to}',
-  'guestList.assignTransferBody': 'Once saved, {from} immediately loses access to this {noun}. This cannot be undone.',
-  'guestList.assignTransferArmed': 'Click again to confirm: {from} still has access to this {noun} right now.',
+  'guestList.assignTransferBody': 'Once saved, this {noun} moves from {from} to {to}. Visibility, quota and alert recipients are re-evaluated for the new owner, and this cannot be undone.',
+  'guestList.assignTransferArmed': 'Click again to confirm: ownership moves from {from} to {to} and takes effect immediately.',
   /* Scope list: what the reassignment carries over, and what it does not */
   'guestList.assignScopeFollowTitle': 'Follows the guest',
   'guestList.assignScopeFollowAccess': 'Panel visibility and management rights',
+  'guestList.assignScopeFollowAccessNote': 'The new owner can act at once; the previous owner loses access immediately',
   'guestList.assignScopeFollowQuota': 'Quota and usage accounting',
+  'guestList.assignScopeFollowQuotaNote': 'Machine count and resource usage move to the new owner',
   'guestList.assignScopeFollowAlerts': 'Alert recipients (including firing alerts)',
+  'guestList.assignScopeFollowAlertsNote': 'Firing entries move to the new owner; none stay behind',
   'guestList.assignScopeFollowSnapshots': 'Snapshot ownership',
+  'guestList.assignScopeFollowSnapshotsNote': 'Snapshots travel with the guest; old markers are cleared',
   'guestList.assignScopeFollowFrp': 'Tunnel rules pointing at this guest (they get suspended)',
+  'guestList.assignScopeFollowFrpNote': 'The tunnel drops at once and recovers if assigned back',
   'guestList.assignScopeKeepTitle': 'Does not follow',
   'guestList.assignScopeKeepAudit': 'Historical audit log and alert history',
+  'guestList.assignScopeKeepAuditHow':
+    'Never moved (historical facts). To hand over: filter by this guest in Audit / Alerts, or export a CSV',
   'guestList.assignScopeKeepHost': 'Host-level SSH hardening / baseline / ports & processes',
+  'guestList.assignScopeKeepHostHow':
+    'Assign that host to the same user on the SSH Security page (other guests on it go too)',
   'guestList.assignScopeKeepLogin': 'Panel login records',
+  'guestList.assignScopeKeepLoginHow':
+    'Never moved; the new owner generates records by signing in',
   'guestList.assignScopeKeepCreds': 'Passwords and credentials',
+  'guestList.assignScopeKeepCredsHow':
+    'Panel password / tokens: reset by the owner. Host credentials: “SSH Security → Edit host”',
   'guestList.assignReason': 'Reason / ticket (optional)',
   'guestList.assignReasonHint': 'Recorded in the audit log only',
   'guestList.assignReasonPlaceholder': 'e.g. project handover / OPS-1234',
@@ -5053,7 +5066,7 @@ export const en: Partial<Record<MessageKey, string>> = {
   'networks.noNodesDesc': 'There are no usable nodes in the cluster.',
   'networks.loadErrorTitle': 'Could not load network information',
   'networks.loadErrorMsg':
-    'Every node\u2019s interface request failed; check the backend /nodes/{node}/network endpoint.',
+    'Every node\u2019s interface request failed; check the backend /nodes/:node/network endpoint.',
   'networks.manageNode': 'Manage this node\u2019s network',
   'networks.viewNode': 'View this node\u2019s network',
   'networks.nodeLoadFailed': 'Could not load this node\u2019s network information',
@@ -5135,6 +5148,16 @@ export const en: Partial<Record<MessageKey, string>> = {
   'sshConfig.ownerHint':
     'Search and pick a user from the list; choosing "(unassigned)" clears the owner, after which the host is admin-only.',
   'sshConfig.ownerPlaceholder': 'e.g. zhangsan',
+  'sshConfig.ownerTransferStart': 'Reassign to {to}',
+  'sshConfig.ownerTransferConfirm': 'Confirm reassign to {to}',
+  'sshConfig.ownerTransferTitle': '{from} → {to}',
+  'sshConfig.ownerTransferBody':
+    'After saving, this host moves from {from} to {to}. Visibility of SSH security, baseline, ports/processes and login audit is re-evaluated for the new owner, and this cannot be undone.',
+  'sshConfig.ownerTransferArmed':
+    'Click again to confirm: ownership moves from {from} to {to} and takes effect immediately.',
+  'sshConfig.ownerReason': 'Reason / ticket (optional)',
+  'sshConfig.ownerReasonHint': 'Written to the audit log only; never used for decisions',
+  'sshConfig.ownerReasonPlaceholder': 'e.g. host handover / OPS-1234',
   'sshConfig.policySection': 'Anomalous login alert policy',
   'sshConfig.policySectionHint': 'Applies to the hosts currently visible to you',
   'sshConfig.editHostTitle': 'Edit host: {name}',

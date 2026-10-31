@@ -84,7 +84,10 @@ export function OwnerAssignDialog({
         setLoadError(errorMessage(err));
       })
       .finally(() => setLoading(false));
-  }, [guest?.node, guest?.vmid, guest?.type]);
+    /* connection_id 也要进依赖：VMID 只在**同一个集群内**唯一，两套 PVE 上各有一台
+       100 号机器时，只按 node/vmid/type 判断就会沿用上一个连接读到的归属 ——
+       弹窗里显示的「当前归属」是别人的账，改派可能直接覆盖掉真正的主人。 */
+  }, [guest?.node, guest?.vmid, guest?.type, guest?.connection_id]);
 
   const nextOwner = owner.trim();
   /** 从某个人名下转到另一个人名下 —— 只有这种情况才需要二次确认 */
@@ -211,35 +214,85 @@ export function OwnerAssignDialog({
           title={t('guestList.assignTransferTitle', { from: previous, to: nextOwner })}
         >
           {confirming
-            ? t('guestList.assignTransferArmed', { from: previous, noun })
-            : t('guestList.assignTransferBody', { from: previous, noun })}
+            ? t('guestList.assignTransferArmed', { from: previous, to: nextOwner, noun })
+            : t('guestList.assignTransferBody', { from: previous, to: nextOwner, noun })}
         </Notice>
       ) : null}
 
       {/* 「会跟随 / 不会跟随」固定展示：这是唯一能让人在点确认之前知道
-          宿主机上的安全数据不会跟过来的地方 */}
+          宿主机上的安全数据不会跟过来的地方。
+
+          两列**结构必须一致**（每条 = 一行主文 + 一行注），否则短的那列底下会留
+          一大片空白，看起来像内容没加载出来；长的那列也会显得被挤压。 */}
       <div className="assign-scope">
         <div className="assign-scope-col">
           <span className="assign-scope-title assign-scope-follow">
             {t('guestList.assignScopeFollowTitle')}
           </span>
           <ul className="assign-scope-list">
-            <li>{t('guestList.assignScopeFollowAccess')}</li>
-            <li>{t('guestList.assignScopeFollowQuota')}</li>
-            <li>{t('guestList.assignScopeFollowAlerts')}</li>
-            <li>{t('guestList.assignScopeFollowSnapshots')}</li>
-            <li>{t('guestList.assignScopeFollowFrp')}</li>
+            <li>
+              {t('guestList.assignScopeFollowAccess')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeFollowAccessNote')}
+              </span>
+            </li>
+            <li>
+              {t('guestList.assignScopeFollowQuota')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeFollowQuotaNote')}
+              </span>
+            </li>
+            <li>
+              {t('guestList.assignScopeFollowAlerts')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeFollowAlertsNote')}
+              </span>
+            </li>
+            <li>
+              {t('guestList.assignScopeFollowSnapshots')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeFollowSnapshotsNote')}
+              </span>
+            </li>
+            <li>
+              {t('guestList.assignScopeFollowFrp')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeFollowFrpNote')}
+              </span>
+            </li>
           </ul>
         </div>
         <div className="assign-scope-col">
           <span className="assign-scope-title assign-scope-keep">
             {t('guestList.assignScopeKeepTitle')}
           </span>
+          {/* 每条都带「要跟随怎么操作」：只写「不会跟」而没有下一步，等于把问题
+              丢回给操作者 —— 尤其宿主机那条，它确实能跟，只是要单独改一次主机归属 */}
           <ul className="assign-scope-list">
-            <li>{t('guestList.assignScopeKeepAudit')}</li>
-            <li>{t('guestList.assignScopeKeepHost')}</li>
-            <li>{t('guestList.assignScopeKeepLogin')}</li>
-            <li>{t('guestList.assignScopeKeepCreds')}</li>
+            <li>
+              {t('guestList.assignScopeKeepAudit')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeKeepAuditHow')}
+              </span>
+            </li>
+            <li>
+              {t('guestList.assignScopeKeepHost')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeKeepHostHow')}
+              </span>
+            </li>
+            <li>
+              {t('guestList.assignScopeKeepLogin')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeKeepLoginHow')}
+              </span>
+            </li>
+            <li>
+              {t('guestList.assignScopeKeepCreds')}
+              <span className="assign-scope-note">
+                {t('guestList.assignScopeKeepCredsHow')}
+              </span>
+            </li>
           </ul>
         </div>
       </div>

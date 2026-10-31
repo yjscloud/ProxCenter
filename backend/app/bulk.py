@@ -96,6 +96,19 @@ def _audit_action(action: str, prefix: str, params: BulkParams) -> str:
     return f"{prefix}.{action}"
 
 
+def assign_target_error(params: BulkParams) -> str:
+    """批量指派的目标用户校验；返回空串表示通过。
+
+    空用户名在归属语义里是**收回**（删除 ``resource_owner`` 那一行），而批量收回
+    一次会抹掉 N 台机器的归属、且没有撤销 —— 界面上的按钮已经禁用了空值，但接口
+    是公开的（脚本 / 第三方调用），服务端必须自己拦住，否则「不支持批量清除」只
+    是一句写在文档里的话。
+    """
+    if (params.username or "").strip():
+        return ""
+    return "批量指派必须指定用户；收回归属请在单台操作里做"
+
+
 def _op_connection() -> str:
     """同 ``routers.vms._op_connection``：显式指定优先，否则当前连接。"""
     from . import store
@@ -418,7 +431,10 @@ async def run_bulk(
             if security.has_user_permission(user, perm):
                 security.ensure_permission_role(user, perm)
         target_user = (payload.params.username or "").strip()
-        if target_user and not await store.get_user(target_user):
+        target_error = assign_target_error(payload.params)
+        if target_error:
+            raise HTTPException(status_code=400, detail=target_error)
+        if not await store.get_user(target_user):
             raise HTTPException(status_code=404, detail=f"用户 {target_user} 不存在")
 
     # 不可逆动作整批要求一次二次确认，而不是每台弹一次

@@ -6021,14 +6021,14 @@ body.is-col-resizing * {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elevated);
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 
 .assign-scope-title {
   display: block;
   font-size: var(--font-size-sm);
   font-weight: 600;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .assign-scope-follow {
@@ -6044,7 +6044,26 @@ body.is-col-resizing * {
   padding-left: 16px;
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
-  line-height: 1.7;
+  line-height: 1.55;
+}
+
+/* 条目之间留一点呼吸：每条现在是「主文 + 注」两行，不加间距会糊成一段 */
+.assign-scope-list li + li {
+  margin-top: 6px;
+}
+
+/* 每条下面的注（左列 = 具体影响，右列 = 想跟随怎么操作）：次要色 + 折角箭头，
+   与主文分开，但**不**做成第二个列表项（否则读起来像又多了一条） */
+.assign-scope-note {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.assign-scope-note::before {
+  content: '↳ ';
 }
 
 @media (max-width: 640px) {

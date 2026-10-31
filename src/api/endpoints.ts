@@ -7,6 +7,7 @@ import {
   CSRF_HEADER,
   del,
   get,
+  getWithTotal,
   http,
   post,
   put,
@@ -33,11 +34,13 @@ import type {
   RemediationPreview,
   RemediationResult,
   AiStreamEvent,
+  AssignOwnerResult,
   AuditEntry,
   AuditQuery,
   CaptchaChallenge,
   BackupCreateRequest,
   BackupItem,
+  BackupOwnerDriftReport,
   BackupStats,
   BackupJob,
   BackupJobInput,
@@ -221,6 +224,7 @@ import type {
   TemplateCloneRequest,
   TemplateCloneResult,
   CapacityForecast,
+  DashboardSummary,
   DashboardTop,
   IsoItem,
   AlertRecord,
@@ -766,6 +770,31 @@ export const vmsApi = {
       },
       ...scoped(opts?.connectionId),
     }),
+  /**
+   * 列表页专用：带 ``limit`` 与总条数。
+   *
+   * 千台以上的集群整份列表能到 1MB+，而列表页一次只渲染一页 20 行。这里先要
+   * 前 N 条，同时拿回 ``X-Total-Count``，页面上显示「已加载 500 / 共 3120」，
+   * 用户点「加载全部」再去掉 limit。
+   */
+  listPaged: (
+    node?: string,
+    opts?: {
+      withIp?: boolean;
+      connectionId?: string;
+      type?: 'qemu' | 'lxc' | 'all';
+      limit?: number;
+    },
+  ) =>
+    getWithTotal<VmSummary[]>('/vms', {
+      params: {
+        ...(node ? { node } : {}),
+        ...(opts?.withIp ? { with_ip: true } : {}),
+        ...(opts?.type ? { type: opts.type } : {}),
+        ...(opts?.limit ? { limit: opts.limit } : {}),
+      },
+      ...scoped(opts?.connectionId),
+    }),
   create: (body: VmCreateRequest, connectionId?: string) =>
     post<VmCreateResponse>('/vms', body, scoped(connectionId)),
   /** 下发配额读数：还能建几台（创建向导用它把数量摆在明面上） */
@@ -873,13 +902,16 @@ export const vmsApi = {
     connectionId?: string,
     /** 客户机类型：容器必须传 'lxc'，否则归属会落进 vm 桶，额度同时算两组 */
     guestType?: string,
+    /** 变更理由 / 工单号：只进审计，不参与任何判定 */
+    reason?: string,
   ) =>
-    put<{ node: string; vmid: number; owner: string | null }>(
+    put<AssignOwnerResult>(
       `/vms/${node}/${vmid}/owner`,
       {
         username,
         connection_id: connectionId || null,
         guest_type: guestType ?? null,
+        reason: reason || null,
       },
       /* 归属读写都在「已知在哪条连接上」的场景里发生：把连接一并声明出去，
          后端就不用再按节点 / VMID 推断（那一步要么查归属表、要么逐台 PVE
@@ -888,6 +920,17 @@ export const vmsApi = {
     ),
 
   /* 快照 */
+  /**
+   * 全站快照汇总（一次请求）：服务端并发扫各客户机 + 60 秒缓存 + 变更即作废。
+   * 快照页用它替代「前端逐台发 G 个请求」。
+   */
+  allSnapshots: (opts?: { fresh?: boolean; limit?: number }) =>
+    get<Snapshot[]>('/snapshots', {
+      params: {
+        ...(opts?.fresh ? { fresh: true } : {}),
+        ...(opts?.limit ? { limit: opts.limit } : {}),
+      },
+    }),
   snapshots: (node: string, vmid: number) =>
     get<Snapshot[]>(`/vms/${node}/${vmid}/snapshot`),
   createSnapshot: (node: string, vmid: number, body: SnapshotCreateRequest) =>
@@ -950,6 +993,21 @@ export const lxcApi = {
       params: {
         ...(node ? { node } : {}),
         ...(opts?.withIp ? { with_ip: true } : {}),
+      },
+      ...scoped(opts?.connectionId),
+    }),
+  /**
+   * 列表页专用：带 ``limit`` 与总条数（语义同 ``vmsApi.listPaged``）。
+   */
+  listPaged: (
+    node?: string,
+    opts?: { withIp?: boolean; connectionId?: string; limit?: number },
+  ) =>
+    getWithTotal<VmSummary[]>('/lxc', {
+      params: {
+        ...(node ? { node } : {}),
+        ...(opts?.withIp ? { with_ip: true } : {}),
+        ...(opts?.limit ? { limit: opts.limit } : {}),
       },
       ...scoped(opts?.connectionId),
     }),
@@ -1098,10 +1156,11 @@ export const lxcApi = {
     vmid: number,
     username: string | null,
     connectionId?: string,
+    reason?: string,
   ) =>
-    put<{ node: string; vmid: number; owner: string | null }>(
+    put<AssignOwnerResult>(
       `/lxc/${node}/${vmid}/owner`,
-      { username, connection_id: connectionId || null },
+      { username, connection_id: connectionId || null, reason: reason || null },
       scoped(connectionId),
     ),
 };
@@ -1285,6 +1344,14 @@ export const backupsApi = {
     params: { node?: string; storage?: string; vmid?: number } = {},
     connectionId?: string,
   ) => get<BackupItem[]>('/backups', { params, ...scoped(connectionId) }),
+  /**
+   * 备份归属对账（仅管理员，只读）。
+   *
+   * 对照归档 notes 里的 `[owner:x]` 与机器**当前**归属，列出不一致的条目。
+   * 不回写任何内容 —— 存量 notes 是历史事实，改不改由人决定。
+   */
+  ownerDrift: (limit = 200) =>
+    get<BackupOwnerDriftReport>('/backups/owner-drift', { params: { limit } }),
   /** 最近 N 天的备份任务成败统计，跨所有已保存的 PVE（本身就汇总，不带连接） */
   stats: (days = 7) =>
     get<BackupStats>('/backups/stats', { params: { days } }),
@@ -1551,6 +1618,14 @@ export const templatesApi = {
    --------------------------------------------------------------------------- */
 
 export const dashboardApi = {
+  /**
+   * 仪表盘的**客户机口径**汇总：台数 + 资源占用 + TopN 榜单。
+   *
+   * 首页原本分别拉 `/vms`、`/lxc`、`/dashboard/top` 三条（前两条是全量列表，
+   * 500 台时 0.5–1.5 MB），三份数据在后端却来自同一批 `cluster/resources`。
+   * 合成一条后，首页每 tick 从 8 条降到 6 条，payload 也从 MB 级降到 KB 级。
+   */
+  summary: () => get<DashboardSummary>('/dashboard/summary'),
   top: (limit = 5) =>
     get<DashboardTop>('/dashboard/top', { params: { limit } }),
   capacity: (timeframe: 'week' | 'month' | 'year' = 'month') =>
@@ -1745,6 +1820,18 @@ export const frpApi = {
       put<FrpRule>(`/frp/rules/${id}`, payload),
     remove: (id: string) =>
       del<{ deleted: string }>(`/frp/rules/${id}`),
+    /**
+     * 给升级前创建的规则补上「指向哪台机器」（仅管理员）。
+     *
+     * 只有补上之后，规则才会在目标机器改派时自动失效。只补空字段，不覆盖已有值；
+     * 反查不到地址的规则会在 `unlinked` 里返回。
+     */
+    relink: () =>
+      post<{
+        checked: number;
+        linked: number;
+        unlinked: { id: string; name: string; username: string; local_ip: string }[];
+      }>("/frp/rules/relink"),
   },
   /**
    * 用户授权（仅管理员）：给某个用户额外放行可穿透的目标 IP / 网段。
@@ -2228,9 +2315,10 @@ export const sshFleetApi = {
    * 收回后这台主机只有管理员可见。
    */
   assignOwner: (id: string, username: string) =>
-    put<{ ok: boolean; host_id: string; owner: string }>(`/ssh/hosts/${id}/owner`, {
-      username,
-    }),
+    put<{ ok: boolean; host_id: string; owner: string; previous?: string | null }>(
+      `/ssh/hosts/${id}/owner`,
+      { username },
+    ),
   /**
    * 确认并记住主机指纹（首次连接后必须做一次）。
    *

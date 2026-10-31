@@ -1050,10 +1050,11 @@ class TestReconcileOwners:
         assert len(_stored_refs()) == 1
 
     def test_non_guest_kinds_are_never_touched(self, owner_db, monkeypatch) -> None:
-        """别类归属（受管主机、导入文件、告警规则…）不在这本账里，一律不碰。"""
+        """别类归属（受管主机、导入文件…）不在这本账里，一律不碰。"""
         self._own(ownership.KIND_SSH_HOST, "host-1")
         self._own(ownership.KIND_IMPORT, "-:local:import/x.ova")
-        self._own(ownership.KIND_ALERT_RULE, "rule-1")
+        # 历史遗留 / 未声明的 kind：对账不认识它，就不该动它
+        self._own("alert_rule", "rule-1")
 
         result = _reconcile(monkeypatch, [({"id": "c1"}, _LiveClient([]))])
 

@@ -16,9 +16,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+from . import pvecache
 from .formatters import pve_flag
 from .pve import (
     ProxmoxError,
@@ -28,6 +30,76 @@ from .pve import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: 单次机队探测的墙钟上限（秒）。一条连不上的 PVE 会让 httpx 卡到
+#: ``HTTP_TIMEOUT``（默认 30 秒）—— 这个接口可以慢，但不能无限慢。
+PANEL_FLEET_TIMEOUT = 8.0
+
+#: 机队探测结果的缓存时长（秒）。探活是**真实请求**（每条连接 2~4 次），
+#: 而顶栏与仪表盘都在按刷新间隔轮询它 —— 没有缓存时，用户把间隔调到 5 秒
+#: 等于持续探测 PVE。30 秒与 ``/connections/status`` 取同一口径。
+PANEL_FLEET_TTL = 30.0
+
+#: 后台探测任务的引用。必须留住：``create_task`` 返回的对象一旦被回收，
+#: 任务可能被取消（事件循环只保留弱引用）。
+_probe_task: Any = None
+
+
+def panel_fleet_key(can_manage: bool) -> str:
+    """缓存 key。``can_manage`` 决定每条连接是否带主机地址，必须分开存。"""
+    return f"panel:fleet:{'manage' if can_manage else 'view'}"
+
+
+async def _probe(can_manage: bool) -> None:
+    """真的跑一次探测并写缓存；失败只记日志（调用方拿到的是旧值 / None）。"""
+    try:
+        await asyncio.wait_for(
+            pvecache.cached(
+                panel_fleet_key(can_manage),
+                PANEL_FLEET_TTL,
+                lambda: collect(can_manage=can_manage),
+            ),
+            timeout=PANEL_FLEET_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("机队状态探测超时（%.0fs）", PANEL_FLEET_TIMEOUT)
+    except Exception:  # noqa: BLE001 - 探测失败不该拖垮调用方
+        logger.warning("机队状态探测失败", exc_info=True)
+
+
+async def panel_fleet(can_manage: bool) -> Optional[Dict[str, Any]]:
+    """**阻塞**取机队状态（带缓存 + 超时）；失败返回 ``None``。
+
+    给 ``/api/cluster/fleet-status`` 用 —— 那个端点天生就是「去探测一次」，
+    可以等。``/api/health`` 不要用它，见 :func:`panel_fleet_cached`。
+    """
+    await _probe(can_manage)
+    return pvecache.peek(panel_fleet_key(can_manage))
+
+
+def panel_fleet_cached(can_manage: bool) -> Optional[Dict[str, Any]]:
+    """**不阻塞**取机队状态：只读缓存，过期就在后台刷新。
+
+    ``/api/health`` 是顶栏每 tick 都在等的请求，也是前端 ``pveReady`` 的门槛 ——
+    让它去等一次 8 秒的探测，等于「一台 PVE 连不上，整站列表都不发请求」。
+    所以这里只返回**当前已知值**（可能是过期几十秒的旧值，也可能还没有），
+    同时把刷新丢给后台任务；缓存由 ``/cluster/fleet-status`` 与它共用，
+    两边不会各探测一遍。
+    """
+    global _probe_task
+    key = panel_fleet_key(can_manage)
+    hit = pvecache.peek(key, PANEL_FLEET_TTL)
+    if hit is not None:
+        return hit
+
+    if _probe_task is None or _probe_task.done():
+        try:
+            _probe_task = asyncio.get_running_loop().create_task(_probe(can_manage))
+        except RuntimeError:  # pragma: no cover - 没有事件循环（脚本 / 测试外调用）
+            _probe_task = None
+
+    # 过期但仍有值：先给旧的，「上一轮的数字」远好过「这一块整片消失」
+    return pvecache.peek(key)
 
 
 def active_connection() -> Dict[str, str]:

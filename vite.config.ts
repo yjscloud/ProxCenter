@@ -102,11 +102,15 @@ export default defineConfig({
         codeSplitting: {
           groups: [
             ...Object.entries(MANUAL_CHUNKS).map(chunkGroup),
-            // i18n 字典（en / zh-CN 各 400KB+ 源码）被所有页面共享，体积比任何
-            // 业务页面都大。不显式命名时，rolldown 会把它并进「首个引用它的
-            // 模块」所在的 chunk，产物里出现过 LanguageSelect-*.js 786KB 这种
-            // 完全看不出内容的文件名 —— 排查体积和缓存问题时会被误导。
-            { name: 'i18n', test: /[\\/]src[\\/]i18n[\\/]/ },
+            // i18n 字典（zh-CN 400KB+ 源码）被所有页面共享，体积比任何业务页面
+            // 都大。不显式命名时，rolldown 会把它并进「首个引用它的模块」所在
+            // 的 chunk，产物里出现过 LanguageSelect-*.js 786KB 这种完全看不出
+            // 内容的文件名 —— 排查体积和缓存问题时会被误导。
+            //
+            // **``locales/`` 排除在外**：英文词典是动态 import 的（见
+            // i18n/index.tsx 的 preloadLang）。把它归进这个组，rolldown 会强行
+            // 把它并回静态 chunk，按需加载直接失效（实测：分组后 i18n 仍是 777KB）。
+            { name: 'i18n', test: /[\\/]src[\\/]i18n[\\/](?!locales[\\/])/ },
           ],
         },
       },

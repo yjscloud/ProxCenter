@@ -407,6 +407,12 @@ async def upload_to_storage(
 
     # 新文件要能被下一次列表刷新看到，不能等 TTL 到期
     pvecache.invalidate("storage-content:")
+    # 容器模板列表缓存 60 秒：刚上传的 vztmpl 必须立刻出现在新建容器向导里
+    if content == "vztmpl":
+        pvecache.invalidate("templates:vztmpl")
+    # 镜像（iso / import）列表缓存 30 秒：新传的 ISO 得马上能被选中
+    if content in ("iso", "import"):
+        pvecache.invalidate("templates:images")
 
     payload = resp.json().get("data")
     return {"task": payload if isinstance(payload, str) else "", "filename": filename}

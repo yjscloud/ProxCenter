@@ -976,6 +976,14 @@ export interface HealthStatus {
   /** 当前连接到的 Proxmox VE 版本（仅登录后返回） */
   pve_version?: string | null;
   node_count?: number;
+  /**
+   * 全机队状态（仅登录且持有 `node.view` 时返回）。
+   *
+   * 与 `/cluster/fleet-status` 是同一份数据、同一个 30 秒缓存：顶栏原先同时轮询
+   * 两条接口，其中后者逐条连接真实探活（C×(2~4) 次上游请求）。合并到 health
+   * 后顶栏每 tick 只发一条，探活由缓存统一切流。
+   */
+  fleet?: FleetStatus | null;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1370,7 +1378,9 @@ export type BulkAction =
   | 'tag'
   | 'migrate'
   | 'balloon'
-  | 'snapshot';
+  | 'snapshot'
+  /** 指派归属（管理员）：一台一次改归属，整批只失效一次缓存 */
+  | 'assign';
 
 /** 一台目标机器。type 能带就带，省掉后端一次探测请求。 */
 export interface BulkTarget {
@@ -1401,6 +1411,10 @@ export interface BulkParams {
   name?: string;
   description?: string;
   vmstate?: boolean;
+  /** assign：目标用户名（整批同一个） */
+  username?: string;
+  /** assign：变更理由 / 工单号，只进审计 */
+  reason?: string;
 }
 
 export interface BulkRequest {
@@ -2343,6 +2357,34 @@ export interface DashboardTop {
   total_running: number;
 }
 
+/** 仪表盘的客户机口径汇总（`GET /api/dashboard/summary`） */
+export interface DashboardGuestStats {
+  /** 排除模板后的台数 */
+  total: number;
+  running: number;
+  stopped: number;
+  vms: number;
+  cts: number;
+  vm_running: number;
+  ct_running: number;
+  vm_stopped: number;
+  /** 运行 / 停止以外的状态（暂停、挂起、未知），资源分布卡单独一档 */
+  vm_other: number;
+  used_cores: number;
+  total_cores: number;
+  used_mem: number;
+  total_mem: number;
+  used_disk: number;
+  total_disk: number;
+}
+
+export interface DashboardSummary {
+  /** 这份汇总算出来的时刻（秒）：命中后端 10 秒缓存时会略早于「现在」 */
+  as_of: number;
+  guests: DashboardGuestStats;
+  top: DashboardTop;
+}
+
 export interface CapacityForecastPoint {
   time: number;
   used: number;
@@ -2478,6 +2520,8 @@ export interface Snapshot {
   vmid?: number;
   node?: string;
   vmname?: string;
+  /** 后端 /snapshots 聚合接口给的字段名（前端映射成 vmname） */
+  vm_name?: string;
   /** qemu | lxc —— 全局快照视图里据此跳到虚拟机页还是容器页 */
   vm_type?: string;
 }
@@ -2746,6 +2790,55 @@ export interface FrpServer {
   token_set: boolean;
 }
 
+/**
+ * 指派 / 收回客户机归属的结果。
+ *
+ * 后端除了改归属那一行，还会连带处理一批「跟着机器走」的东西（见
+ * backend/app/ownership.py:transfer_guest）。这些数字拿来做结果提示：
+ * 管理员需要知道「这次改派顺手动了什么」，否则改派就成了一个黑箱。
+ */
+export interface AssignOwnerResult {
+  node: string;
+  vmid: number;
+  /** 改派后的归属；null = 已收回（无人认领） */
+  owner: string | null;
+  /** 改派前的归属；首次指派 / 本来就无人认领时为 null */
+  previous?: string | null;
+  /** 连带清掉的快照归属标记条数（快照跟随机器） */
+  snapshots_removed?: number;
+  /** 跟着换收件人的活动告警条数 */
+  active_alerts_moved?: number;
+  /** 因改派而失效的穿透规则条数（规则保留，但不再渲染） */
+  frp_rules_suspended?: number;
+}
+
+/**
+ * 备份归档「创建者标记 vs 机器当前归属」的一条差异。
+ *
+ * 只读视图：后端不写 notes、不改归属。`reason` 是机器可读的分类，文案由界面按
+ * 语言组织（不要把后端的说明文字当展示文本用）。
+ */
+export interface BackupOwnerDrift {
+  volid: string;
+  node: string;
+  storage: string;
+  vmid: number | null;
+  ctime: number | null;
+  /** 归档 notes 里写的创建者（空串 = 没有标记） */
+  marker: string;
+  /** 机器**现在**的归属者（空串 = 已无归属） */
+  owner: string;
+  /** reassigned = 标记与归属不一致；machine-unowned = 机器已无主；unmarked = 缺标记 */
+  reason: 'reassigned' | 'machine-unowned' | 'unmarked';
+}
+
+export interface BackupOwnerDriftReport {
+  checked: number;
+  total: number;
+  truncated: boolean;
+  drift: BackupOwnerDrift[];
+}
+
 export interface FrpRule {
   id: string;
   username: string;
@@ -2754,6 +2847,23 @@ export interface FrpRule {
   local_ip: string;
   local_port: number;
   remote_port: number;
+  /**
+   * 规则关联到的客户机（`<连接>:<节点>:<vmid>`）；空串 = 未关联。
+   *
+   * 存量规则（升级前创建的）没有这个字段，读出来是空串：既不算失效，也不受
+   * 改派复核保护。重新保存一次规则即可补上。
+   */
+  guest_ref?: string;
+  /**
+   * 目标机器已经不属于规则创建者 —— 规则保留，但**不再参与 frpc 渲染**。
+   *
+   * 机器改派回原主人后会自动恢复，所以它是「状态」而不是「错误」。
+   */
+  stale?: boolean;
+  /** 失效原因（后端按日志口径给的中文说明；界面文案请用 stale_owner 自行组织） */
+  stale_reason?: string;
+  /** 目标机器现在归谁；空串 = 已无归属（收回 / 删除） */
+  stale_owner?: string;
 }
 
 export interface FrpRuleInput {

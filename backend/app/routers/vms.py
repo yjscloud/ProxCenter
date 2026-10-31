@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from .. import (
     bulk,
@@ -19,15 +19,19 @@ from .. import (
     guestpasswd,
     ownership,
     panelkey,
+    pvecache,
     quota,
     security,
     sshremote,
     store,
     vmconfig,
 )
+from ..config import settings
 from ..formatters import (
     decode_agent_output,
+    guest_summary_rows,
     normalize_agent_interfaces,
+    paginate_rows,
     parse_df_output,
     pve_flag,
 )
@@ -168,6 +172,7 @@ async def collect_vms(
     node: Optional[str] = None,
     with_ip: bool = False,
     guest_type: str = "qemu",
+    lightweight: bool = False,
 ) -> List[Dict[str, Any]]:
     """汇总（可跨多条连接）的 guest 清单，并按归属过滤。
 
@@ -178,6 +183,10 @@ async def collect_vms(
     ``with_ip=true`` 会逐台解析主 IP（虚拟机先问 Guest Agent、退回静态
     cloud-init 地址；容器读 ``netN`` 里的静态地址），代价是每台两次 PVE 请求，
     所以默认关闭。
+
+    ``lightweight=true`` 跳过「创建时间回填」这类列表页才需要、且会逐台读
+    config 的补充（见 :func:`app.guest_created.fill`），给仪表盘那种只数台数的
+    调用方用：它不需要 created，却会被这份回填拖慢冷启动。
     """
     # 未显式指定 X-PVE-Connection 时，合并所有已保存 PVE 的虚拟机；单台失败
     # 只跳过它自己，不让整个列表报错。
@@ -272,7 +281,8 @@ async def collect_vms(
 
         # 创建时间：缓存里没有的逐台读一次 config（每台一次请求 + 进程内缓存，
         # 一轮有预算上限），取不到就留空 —— 它不比 IP 重要，不值得拖慢列表。
-        if items:
+        # 仪表盘只要台数，不值得为它打这么多 config 请求（lightweight）。
+        if items and not lightweight:
             await guest_created.fill(client, items)
 
         result.extend(items)
@@ -332,21 +342,40 @@ async def collect_vms(
 
 @router.get("/vms")
 async def list_vms(
+    response: Response,
     node: Optional[str] = None,
     with_ip: bool = Query(False),
     # qemu（默认，保持既有行为）| lxc | all
     # ``all`` 给「虚拟机」列表页用：容器和虚拟机混排展示，靠返回里的
     # ``type`` 字段区分该调哪套接口。存量调用方不带这个参数，不受影响。
     guest_type: str = Query(default="qemu", alias="type", pattern="^(qemu|lxc|all)$"),
+    # 轻量列表：只回台数 / 占用算得出来的字段（见 guest_summary_rows）。
+    # 列表页仍用全量，第三方脚本的既有用法也保持不动。
+    summary: bool = Query(False, description="只返回轻量字段，体积约为全量的 1/5"),
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        description="只返回前 N 条（默认全量，保持既有语义）；实际总数见 X-Total-Count",
+    ),
     user: Dict[str, Any] = Depends(security.require_permission("vm.view")),
 ) -> List[Dict[str, Any]]:
     """All VMs (and, with ``type=all``, containers), enriched where cheap.
 
     过滤与归属隔离都在 :func:`collect_vms` 里，导出接口共用同一份实现。
+
+    ``limit`` 是**可选**的：不传仍返回全量（第三方脚本按这个语义在用），传了才
+    截断，并用 ``X-Total-Count`` 告诉调用方总数 —— 前端据此提示「已加载 500 / 共
+    3120」。统一在这里做，而不是每个页面各切一刀。
     """
-    return await collect_vms(
-        user=user, node=node, with_ip=with_ip, guest_type=guest_type
+    rows = await collect_vms(
+        user=user,
+        node=node,
+        with_ip=with_ip,
+        guest_type=guest_type,
+        lightweight=summary,
     )
+    rows = guest_summary_rows(rows) if summary else rows
+    return paginate_rows(rows, response, limit)
 
 
 @router.get("/vms/{node}/{vmid}")
@@ -1545,17 +1574,30 @@ async def set_vm_owner(
     # （见 VmOwnerIn.guest_type 的说明）。正常路径上前端按类型分派到 /lxc 那个
     # 端点，这里只作兜底。
     kind = ownership.kind_for_type(payload.guest_type)
-    if username:
-        await ownership.set_owner(kind, ref, username)
-    else:
-        await ownership.delete_owner(kind, ref)
+    # 走归属变更的唯一入口：除了改这一行，它还要清这台机器的快照标记并作废
+    # 按人分档的读缓存（见 ownership.transfer_guest 的说明）。
+    result = await ownership.transfer_guest(kind, ref, username)
 
     await security.audit(
         request, user, "vm.assign" if username else "vm.unassign",
         target=f"{node}/{vmid}",
-        detail={"username": username or None},
+        detail={
+            "username": username or None,
+            # 改派前的归属：覆盖式 upsert 之后，这里是唯一能回答「原来是谁」的地方
+            "previous": result.get("previous") or None,
+            "snapshots_removed": result.get("snapshots_removed") or 0,
+            "active_alerts_moved": result.get("active_alerts_moved") or 0,
+            "frp_rules_suspended": result.get("frp_rules_suspended") or 0,
+            # 改派理由 / 工单号：覆盖式写入之后，「为什么改」只能靠这一条
+            "reason": (payload.reason or "").strip() or None,
+        },
     )
-    return {"node": node, "vmid": vmid, "owner": username or None}
+    return {
+        "node": node,
+        "vmid": vmid,
+        "owner": username or None,
+        "previous": result.get("previous") or None,
+    }
 
 
 # =========================================================== config / edits
@@ -2171,6 +2213,9 @@ async def create_snapshot(
     await security.audit(
         request, user, "snapshot.create", target=f"{node}/{vmid}/{payload.name}"
     )
+    # 全局快照汇总缓存 60 秒：不主动作废的话，用户刚建完快照去汇总页会看不到它。
+    # 变更路径通通作废（/snapshots 的缓存前缀），宁可多扫一次，也不能「看起来没生效」。
+    pvecache.invalidate("snapshots:")
     return {"task": task}
 
 
@@ -2197,6 +2242,7 @@ async def rollback_snapshot(
     await security.audit(
         request, user, "snapshot.rollback", target=f"{node}/{vmid}/{name}"
     )
+    pvecache.invalidate("snapshots:")
     return {"task": task}
 
 
@@ -2227,6 +2273,7 @@ async def delete_snapshot(
     await security.audit(
         request, user, "snapshot.delete", target=f"{node}/{vmid}/{name}"
     )
+    pvecache.invalidate("snapshots:")
     return {"task": task}
 
 
@@ -2253,36 +2300,30 @@ async def bulk_vm_action(
 
 
 # ============================================================== scan
+#: 全量快照汇总的缓存时长（秒）。快照是低频事件（创建 / 删除都要人点），
+#: 60 秒窗口换来的是「同一份列表只拉一轮」：200 台机器就是 200 次 PVE 请求。
+SNAPSHOTS_TTL = 60.0
+
+
 @router.get("/snapshots")
 async def all_snapshots(
+    response: Response,
+    fresh: bool = Query(False, description="绕过 60 秒缓存，立刻重新拉取"),
+    limit: Optional[int] = Query(
+        None, ge=1, description="只返回前 N 条（默认全量）；总数见 X-Total-Count"
+    ),
     # 汇总页同时覆盖虚拟机与容器：只认一侧会让另一侧的用户整页打不开
     user: Dict[str, Any] = Depends(
         security.require_any_permission("vm.view", "ct.view")
     ),
 ) -> List[Dict[str, Any]]:
-    """Every snapshot across the cluster, for the global snapshot page."""
-    client = get_client()
-    try:
-        resources = await client.cluster_resources("vm")
-    except ProxmoxError as exc:
-        _raise(exc)
+    """Every snapshot across the cluster, for the global snapshot page.
 
-    # 容器同样有快照（只是没有 vmstate），一并汇总进来
-    vms = [r for r in (resources or []) if r.get("type") in ("qemu", "lxc")]
-
-    def _snapshots_of(vm: Dict[str, Any]) -> Any:
-        node, vmid = vm["node"], vm["vmid"]
-        if vm.get("type") == "lxc":
-            return client.lxc_snapshots(node, vmid)
-        return client.qemu_snapshots(node, vmid)
-
-    coros = [
-        _snapshots_of(vm)
-        for vm in vms
-        if vm.get("node") and vm.get("vmid")
-    ]
-    results = await parallel(coros, limit=6)
-
+    性能：每台客户机一次 PVE 请求（``G`` 次），并发上限取
+    ``settings.pve_snapshot_concurrency``（默认 16，原先写死 6 —— 200 台要跑
+    34 轮）；结果按「连接 + 可见范围」缓存 60 秒。归属三张表（快照 / 虚拟机 /
+    容器）合并成一条 ``IN`` 查询，原先是一次请求 3–4 次独立往返。
+    """
     # 快照级用户隔离：创建者标记优先；无标记（旧版本创建）时按所属机器归属回落。
     # 虚拟机看 KIND_VM、容器看 KIND_CT，逐台按 type 选表。
     scope = security.visible_owner(user)
@@ -2291,44 +2332,84 @@ async def all_snapshots(
     if security.is_region_admin(user):
         security.ensure_region_allowed(user, _op_connection())
         scope = None
-    snap_owners = await ownership.owners_map(ownership.KIND_SNAPSHOT)
-    vm_owners = await ownership.owners_map(ownership.KIND_VM)
-    ct_owners = await ownership.owners_map_for(ownership.KIND_CT)
 
-    output: List[Dict[str, Any]] = []
-    for vm, snaps in zip(vms, results):
-        if isinstance(snaps, Exception):
-            continue
-        vm_node = str(vm.get("node") or "")
-        owners = ct_owners if vm.get("type") == "lxc" else vm_owners
-        vm_owner = ownership.vm_owner_from(
-            owners, vm_node, vm.get("vmid"), _op_connection()
+    connection = _op_connection()
+    viewer = str(user.get("username") or "") if scope is not None else "-"
+    key = f"snapshots:{connection or '-'}:{scope or '-'}:{viewer}"
+
+    async def _collect() -> List[Dict[str, Any]]:
+        client = get_client()
+        try:
+            resources = await client.cluster_resources("vm")
+        except ProxmoxError as exc:
+            _raise(exc)
+
+        # 容器同样有快照（只是没有 vmstate），一并汇总进来
+        vms = [r for r in (resources or []) if r.get("type") in ("qemu", "lxc")]
+
+        def _snapshots_of(vm: Dict[str, Any]) -> Any:
+            node, vmid = vm["node"], vm["vmid"]
+            if vm.get("type") == "lxc":
+                return client.lxc_snapshots(node, vmid)
+            return client.qemu_snapshots(node, vmid)
+
+        coros = [
+            _snapshots_of(vm)
+            for vm in vms
+            if vm.get("node") and vm.get("vmid")
+        ]
+        limit = max(1, int(settings.pve_snapshot_concurrency))
+        results = await parallel(coros, limit=limit)
+
+        # 三张归属表一次取回：快照标记 / 虚拟机 / 容器读的是同一张表，
+        # 分成三次调用只是三次独立的 DB 往返。
+        maps = await ownership.owners_maps(
+            [ownership.KIND_SNAPSHOT, ownership.KIND_VM, ownership.KIND_CT]
         )
-        for snap in snaps or []:
-            name = snap.get("name")
-            if not name or name == "current":
-                continue
-            owner = snap_owners.get(
-                ownership.snapshot_ref(_op_connection(), vm_node, vm.get("vmid"), name)
-            ) or vm_owner
-            if scope is not None and owner != scope:
-                continue
-            output.append(
-                {
-                    "node": vm.get("node"),
-                    "vmid": vm.get("vmid"),
-                    "vm_name": vm.get("name") or f"VM {vm.get('vmid')}",
-                    # 前端据此跳到虚拟机页还是容器页
-                    "vm_type": vm.get("type") or "qemu",
-                    "vm_status": vm.get("status"),
-                    "name": name,
-                    "description": snap.get("description", ""),
-                    "snaptime": snap.get("snaptime"),
-                    "parent": snap.get("parent"),
-                    "vmstate": pve_flag(snap.get("vmstate", 0)) == 1,
-                    "owner": owner,
-                }
-            )
+        snap_owners = maps.get(ownership.KIND_SNAPSHOT, {})
+        vm_owners = maps.get(ownership.KIND_VM, {})
+        # 容器归属：升级前的记录记在 KIND_VM 下，合并时以 KIND_CT 为准
+        # （与 owners_map_for(KIND_CT) 同一语义）
+        ct_owners = {**vm_owners, **maps.get(ownership.KIND_CT, {})}
 
-    output.sort(key=lambda s: s.get("snaptime") or 0, reverse=True)
-    return output
+        output: List[Dict[str, Any]] = []
+        for vm, snaps in zip(vms, results):
+            if isinstance(snaps, Exception):
+                continue
+            vm_node = str(vm.get("node") or "")
+            owners = ct_owners if vm.get("type") == "lxc" else vm_owners
+            vm_owner = ownership.vm_owner_from(
+                owners, vm_node, vm.get("vmid"), connection
+            )
+            for snap in snaps or []:
+                name = snap.get("name")
+                if not name or name == "current":
+                    continue
+                owner = snap_owners.get(
+                    ownership.snapshot_ref(connection, vm_node, vm.get("vmid"), name)
+                ) or vm_owner
+                if scope is not None and owner != scope:
+                    continue
+                output.append(
+                    {
+                        "node": vm.get("node"),
+                        "vmid": vm.get("vmid"),
+                        "vm_name": vm.get("name") or f"VM {vm.get('vmid')}",
+                        # 前端据此跳到虚拟机页还是容器页
+                        "vm_type": vm.get("type") or "qemu",
+                        "vm_status": vm.get("status"),
+                        "name": name,
+                        "description": snap.get("description", ""),
+                        "snaptime": snap.get("snaptime"),
+                        "parent": snap.get("parent"),
+                        "vmstate": pve_flag(snap.get("vmstate", 0)) == 1,
+                        "owner": owner,
+                    }
+                )
+
+        output.sort(key=lambda s: s.get("snaptime") or 0, reverse=True)
+        return output
+
+    rows = await pvecache.cached(key, SNAPSHOTS_TTL, _collect, fresh=fresh)
+    # 缓存里存的是**全量**：截断只影响本次响应，命中缓存时 X-Total-Count 仍是真实总数
+    return paginate_rows(rows, response, limit)

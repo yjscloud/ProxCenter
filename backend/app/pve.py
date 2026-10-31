@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import reqmetrics
 from .config import settings
 
 # UPID format: UPID:<node>:<pid>:<pstart>:<starttime>:<type>:<id>:<user>:<comment>
@@ -288,6 +289,9 @@ class ProxmoxClient:
 
         url = f"{self.conn.api_url}{path}"
         client = await self._http()
+        # 所有 PVE 调用都从这个出口出去（含 fan-out 的并发子任务）——
+        # 只有这一处计数才能保证 X-PVE-Calls 与真实请求数一一对应。
+        reqmetrics.bump_pve()
 
         # Drop None values so PVE doesn't reject empty strings.
         clean_params = (
@@ -1376,6 +1380,33 @@ def _active_connection_id() -> str:
         return ""
 
 
+#: 客户端指纹只覆盖「会改变上游行为」的字段。原先是对整份 profile 做
+#: ``json.dumps(sort_keys=True)`` + sha256 —— 每次取客户端都要把含密钥的 dict
+#: 完整序列化一遍，而这段代码在一次请求里会被调用 N 次
+#: （``all_connection_clients`` 逐条连接一次）。字段清单化之后既省 CPU，
+#: 也不会因为多存一个展示名就让所有客户端重建。
+_FINGERPRINT_FIELDS = (
+    "id",
+    "host",
+    "port",
+    "token_id",
+    "token_secret",
+    "verify_ssl",
+    "ca_cert",
+    "node_default",
+    "console_user",
+    "console_password",
+)
+
+
+def _profile_fingerprint(profile: Dict[str, Any]) -> str:
+    blob = "\x1f".join(
+        "" if profile.get(field) is None else str(profile.get(field))
+        for field in _FINGERPRINT_FIELDS
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def _scoped_client(conn_id: str) -> Optional[ProxmoxClient]:
     """Return (and cache) a client for a saved, non-active connection."""
     try:
@@ -1389,9 +1420,7 @@ def _scoped_client(conn_id: str) -> Optional[ProxmoxClient]:
     if profile is None:
         return None
 
-    fingerprint = hashlib.sha256(
-        json.dumps(profile, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()[:16]
+    fingerprint = _profile_fingerprint(profile)
 
     cached = _scoped_clients.get(conn_id)
     if cached is not None and cached[0] == fingerprint:
@@ -1484,8 +1513,9 @@ def _stored_revision() -> str:
 
     if not cfg:
         return ""
-    blob = json.dumps(cfg, sort_keys=True, default=str)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    # 与客户端缓存同一个指纹口径：配置没变就不重建，变了（主机 / 令牌 / TLS）
+    # 才需要换。展示名之类的字段不参与，避免改个名字就打一次 PVE。
+    return _profile_fingerprint(cfg)
 
 
 async def _close_later(client: ProxmoxClient, delay: float = 30.0) -> None:

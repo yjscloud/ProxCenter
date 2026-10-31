@@ -131,11 +131,54 @@ async def allow(bucket: str, limit: int, window_seconds: int = 60) -> Tuple[bool
     """限流判断：被锁 → 直接拒；否则计数，窗口内超过 ``limit`` 即拒。
 
     返回 ``(是否放行, Retry-After 秒数)``。
+
+    **一次请求只花两条 SQL**：原先 ``blocked_for`` 一条 SELECT、``hit`` 一条
+    INSERT + 一条 SELECT，每个 API 请求固定 3 次数据库往返；而限流是**所有**
+    请求都要过的一层（含 401/404）。现在合成「一条 UPSERT（被锁就不计数）+
+    一条回读」，锁定状态同一行里就能判出来 —— 顺带省掉一次 ``blocked_until``
+    的独立查询。进程内锁定缓存仍然在最前面，命中时连库都不碰。
     """
-    locked = await blocked_for(bucket)
-    if locked:
-        return False, locked
-    count, retry_after = await hit(bucket, window_seconds)
+    now = _now()
+    cached_until = _blocked_cache.get(bucket, 0.0)
+    if cached_until > now:
+        return False, int(cached_until - now)
+
+    start = now - window_seconds
+    try:
+        async with database.connect() as db:
+            # blocked_until > now 时既不计数也不重置窗口：被锁的请求不该继续
+            # 累加计数（否则解锁后会立刻又被顶到上限）。
+            await db.execute(
+                "INSERT INTO rate_limits (bucket, window_start, hits, blocked_until)"
+                " VALUES (?, ?, 1, 0)"
+                " ON DUPLICATE KEY UPDATE"
+                "   hits = IF(blocked_until > ?, hits,"
+                "             IF(window_start <= ?, 1, hits + 1)),"
+                "   window_start = IF(blocked_until > ?, window_start,"
+                "                     IF(window_start <= ?, ?, window_start))",
+                (bucket, now, now, start, now, start, now),
+            )
+            cursor = await db.execute(
+                "SELECT hits, window_start, blocked_until FROM rate_limits WHERE bucket = ?",
+                (bucket,),
+            )
+            row = await cursor.fetchone()
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 - 数据库故障时放行，见模块说明
+        logger.warning("限流计数不可用（放行）：%s", exc)
+        return True, 0
+
+    if not row:
+        return True, 0
+
+    until = float(row["blocked_until"] or 0)
+    if until > now:
+        _blocked_cache[bucket] = until
+        return False, int(until - now)
+
+    count = int(row["hits"] or 0)
+    window_start = float(row["window_start"] or now)
+    retry_after = max(1, int(window_start + window_seconds - now))
     return count <= limit, retry_after
 
 

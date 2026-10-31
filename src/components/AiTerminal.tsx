@@ -22,6 +22,7 @@ import { Card, CardHeader } from './ui/Card';
 import { Notice } from './ui/EmptyState';
 import { IconRefresh } from './Icons';
 import { useT } from '../i18n';
+import { rafThrottle } from '../utils/raf';
 
 /**
  * 不撑满时的终端高度（兜底）。
@@ -295,17 +296,22 @@ export function AiTerminal({
         handshakeHint();
       };
 
-      const observer = new ResizeObserver(() => {
+      /* 拖窗口 / 展开侧栏时 ResizeObserver 会在一帧里回调多次，每次都 fit()
+         等于重复测量 + 重排整个终端。合并到下一帧做一次：
+         ``ConsoleXterm`` 早就是这个写法，这里补齐。 */
+      const refit = rafThrottle(() => {
         try {
           fit.fit();
         } catch {
           /* 忽略 */
         }
       });
+      const observer = new ResizeObserver(() => refit.run());
       observer.observe(container);
 
       teardown = () => {
         observer.disconnect();
+        refit.cancel();
         onData.dispose();
         onResize.dispose();
         try {

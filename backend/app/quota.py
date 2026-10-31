@@ -1569,6 +1569,46 @@ async def reconcile_owners() -> Dict[str, Any]:
     }
 
 
+async def prune_deleted_owners() -> Dict[str, Any]:
+    """清掉「归属指向已不存在的账号」的记录，返回 ``{"removed", "users", "refused"}``。
+
+    与 :func:`reconcile_owners` 补的是**两种不同的漂**，别混为一谈：
+
+      * 那个比的是「归属账 vs PVE 实际清单」—— 机器没了，记录该删；
+      * 这个比的是「归属账 vs 账号表」—— 人没了，记录也该删。
+
+    删号的写点已经会清（``routers/users.delete_user`` → ``ownership.forget_user``），
+    这里兜的是那一步失败、以及历史上根本没有那段逻辑的存量数据。
+
+    为什么值得清：归属行指向一个不存在的账号时，各处的兜底并不一致 —— 多数路径
+    把「归属查不到」当「没人认领」（严格隔离，仅管理员可见），告警投递则专门回落
+    到规则主人。一条永远没人认领的记录留在账上，既让「无人认领机器」的统计虚高，
+    也会在 PVE 回收 VMID 之后把新机器算到那个已删除的名字头上。
+
+    **读不到账号表就整轮跳过**：拿一份空清单去删，等于把全站归属清空。
+    """
+    try:
+        rows = await store.list_users()
+    except Exception as exc:  # noqa: BLE001 - 读不到账号表宁可不做
+        logger.warning("删号归属清理：读取账号表失败，本轮跳过：%s", exc)
+        return {"removed": 0, "users": 0, "refused": str(exc)}
+
+    usernames = {str(item.get("username") or "") for item in rows or []}
+    usernames.discard("")
+    entries = await ownership.all_refs()
+    doomed = [
+        (kind, ref)
+        for kind, ref, owner in entries
+        if ref and str(owner or "") not in usernames
+    ]
+    removed = await ownership.forget_refs(doomed)
+    if removed:
+        # 缓存里还挂着这些人的读数：不清的话「删掉的账号仍在用量榜上」会留一会儿
+        await ownership.invalidate_caches()
+        logger.info("删号归属清理：清掉 %d 条指向已删除账号的归属记录", removed)
+    return {"removed": removed, "users": len(usernames), "refused": ""}
+
+
 async def reconcile_snapshots() -> Dict[str, Any]:
     """额度对账：把「配了快照额度」的用户名下的快照计数重新枚举一遍。
 

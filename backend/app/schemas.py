@@ -568,6 +568,9 @@ class VmOwnerIn(BaseModel):
     # 变紧、虚拟机那组也虚占。正常路径上前端会按类型分派到 /lxc 那个端点，
     # 这个字段只是兜底：静默记错额度桶比报错难查得多。
     guest_type: Optional[str] = None
+    # 变更理由 / 工单号：**只写进审计**，不参与任何判定。改派是覆盖式写入，
+    # 事后能回答「谁改的、从谁到谁」，但答不了「为什么改」—— 那只能靠这个字段。
+    reason: Optional[str] = None
 
 
 class ResizeRequest(BaseModel):
@@ -835,6 +838,10 @@ class BulkParams(BaseModel):
     name: Optional[str] = None
     description: str = ""
     vmstate: bool = False
+    # assign：目标用户名（空 = 收回归属）
+    username: Optional[str] = None
+    # assign：变更理由 / 工单号（只进审计，不参与判定）
+    reason: str = ""
 
 
 class BulkRequest(BaseModel):
@@ -1539,6 +1546,9 @@ class SshHostOwnerIn(BaseModel):
     """指派受管主机的归属。``username`` 留空 = 收回（收回后仅管理员可见）。"""
 
     username: str = ""
+    # 变更理由 / 工单号：只写进审计。主机改派会连带改变四套安全数据的可见范围，
+    # 「为什么交给这个人」比客户机改派更值得留痕。
+    reason: Optional[str] = None
 
 
 class SshHostIn(BaseModel):

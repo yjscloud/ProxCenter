@@ -3,6 +3,12 @@
 按职责拆成「服务端（admin only）」+「规则（按用户归属）」+「进程控制（admin）」：
 - 服务端：frps 地址 / token / 启停 / 安装 —— 属于基础设施，普通用户不应改动。
 - 规则：每个人把自己的服务通过 frpc 暴露出去 —— 按 username 归属，admin 可看全部。
+  这里的 ``username`` 是**规则的创建人**，不是目标机器的归属：规则是用户自己的
+  对象（不是从某台客户机派生出来的），所以它不会随客户机改派而改主人。目标的
+  合法性在写入时按**当时**的归属校验（见 :mod:`app.frpguard`），并把目标机器记进
+  ``guest_ref``；之后每次读取都按**当前**归属复核，机器改派或收回就让规则失效
+  （``stale``，不删、不再渲染，见 :func:`app.frp.annotate_rules`）。
+  升级前建的规则没有 ``guest_ref``，用 ``POST /rules/relink`` 补齐。
 - 合并渲染：``frpc`` 实际只用一份配置文件，所以运行前要把 server + 所有人
   的规则合并后渲染成 frpc.toml。普通用户也能拉这个合并视图，确认自己
   的规则是否出现在最终生效的列表里。
@@ -97,6 +103,13 @@ def _public_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
         "local_ip": rule.get("local_ip", "127.0.0.1"),
         "local_port": rule.get("local_port", 80),
         "remote_port": rule.get("remote_port", 10000),
+        # 关联到哪台机器 + 是否因改派而失效（见 frp.annotate_rules）。
+        # 失效只是「不参与 frpc 渲染」，规则本身还在，作者能看到原因。
+        "guest_ref": rule.get("guest_ref", ""),
+        "stale": bool(rule.get("stale")),
+        "stale_reason": rule.get("stale_reason", ""),
+        # 目标机器现在归谁（空串 = 无主）：界面按语言自行组织原因文案
+        "stale_owner": rule.get("stale_owner", ""),
     }
 
 
@@ -109,9 +122,16 @@ def _scope_rules(
     return [r for r in rules if r.get("username") == username]
 
 
-def _visible_rules(rules: List[Dict[str, Any]], username: Optional[str]) -> List[Dict[str, Any]]:
-    """按当前用户过滤规则：admin 见全部，普通用户只看到自己 username 的。"""
-    return [_public_rule(r) for r in _scope_rules(rules, username)]
+async def _visible_rules(
+    rules: List[Dict[str, Any]], username: Optional[str]
+) -> List[Dict[str, Any]]:
+    """按当前用户过滤规则：admin 见全部，普通用户只看到自己 username 的。
+
+    过滤后再标注失效状态：普通用户因此能看到「我的这条为什么不通」，管理员
+    也能一眼看出哪些规则因为机器改派而不再生效。
+    """
+    scoped = _scope_rules(rules, username)
+    return [_public_rule(r) for r in await frp.annotate_rules(scoped)]
 
 
 def _visible_logs(
@@ -307,7 +327,7 @@ async def list_rules(
     server = await _load_server()
     username = _visible_username(user)
     return {
-        "rules": _visible_rules(rules, username),
+        "rules": await _visible_rules(rules, username),
         "own_username": str(user.get("username") or ""),
         "is_admin": _is_admin(user),
         "public_host": _public_host(server),
@@ -488,6 +508,8 @@ async def create_rule(
             "local_port": payload.local_port,
             "remote_port": remote_port,
             "username": target_user,
+            # 记下这条隧道指向哪台机器：改派之后要靠它判断该不该继续生效
+            "guest_ref": await frpguard.guest_ref_for_ip(target_user, local_ip),
         },
         username=target_user,
     )
@@ -505,6 +527,28 @@ async def create_rule(
         "success", f"username={rule['username']} name={rule['name']}",
     )
     return _public_rule(rule)
+
+
+@router.post("/rules/relink")
+async def relink_rules(
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission(_PERM_ADMIN)),
+) -> Dict[str, Any]:
+    """给存量规则补上「指向哪台机器」（仅管理员）。
+
+    补上之后这些规则才会被改派复核覆盖：目标机器换主人时自动失效，而不是继续把
+    前主人的隧道留在公网上。反查要用 PVE 侧的客户机地址，解析不到的规则保持
+    「未关联」并逐条返回，界面提示用户把目标改成自己名下的地址。
+
+    只补空字段，不覆盖已有值、不改归属、不重启 frpc —— 补的是「关联」，不是
+    「生效状态」；失效与否仍然每次读取时按归属现算。
+    """
+    result = await frp.relink_guests()
+    await security.audit(
+        request, user, "frp.rule.relink", "frp/rules", "success",
+        f"checked={result['checked']} linked={result['linked']}",
+    )
+    return result
 
 
 @router.put("/rules/{rule_id}")
@@ -558,6 +602,8 @@ async def update_rule(
             "local_ip": local_ip,
             "local_port": payload.local_port,
             "remote_port": remote_port,
+            # 目标地址换了就重新关联（改到别台机器上时 ref 必须跟着变）
+            "guest_ref": await frpguard.guest_ref_for_ip(owner, local_ip),
         },
         username=target.get("username", ""),
     )
@@ -713,7 +759,8 @@ async def get_effective(
     server = await _load_server()
     rules = await _load_rules()
     username = _visible_username(user)
-    scoped = _scope_rules(rules, username)
+    # 先标注再合并：失效规则的隧道不该出现在「我现在实际暴露了什么」里
+    scoped = await frp.annotate_rules(_scope_rules(rules, username))
     cfg = frp.effective_config(server, scoped)
     safe = dict(cfg)
     safe["token"] = ""
@@ -743,7 +790,8 @@ async def get_status(
     await frp.migrate_legacy()
     server = await _load_server()
     rules = await _load_rules()
-    cfg = frp.effective_config(server, _scope_rules(rules, _visible_username(user)))
+    scoped = await frp.annotate_rules(_scope_rules(rules, _visible_username(user)))
+    cfg = frp.effective_config(server, scoped)
     return {
         **frp.status(cfg, include_server=_is_admin(user)),
         "auto_restart": await frp.auto_restart_enabled(),
@@ -752,10 +800,15 @@ async def get_status(
 
 @router.get("/logs")
 async def get_logs(
-    user: Dict[str, Any] = Depends(security.require_permission(_PERM_VIEW)),
+    # 进程日志**只给管理员**：frpc 的日志里有连接 frps 的地址、失败重试的真实
+    # 原因、每条代理的起停顺序，等于把整套隧道的运行内情摊开。普通用户需要的是
+    # 「我这条隧道通不通」，那由 /effective + /rules 回答；日志不在其中。
+    # 原先这道门是 frp.view + 按规则名过滤行 —— 过滤是黑名单（认名字），
+    # 换个代理名或换一套日志格式就会漏，不如直接不给。
+    user: Dict[str, Any] = Depends(security.require_admin()),
 ) -> Dict[str, Any]:
     rules = await _load_rules()
-    return {"logs": _visible_logs(frp.read_logs(200), rules, _visible_username(user))}
+    return {"logs": _visible_logs(frp.read_logs(200), rules, None)}
 
 
 # ===========================================================================
@@ -771,7 +824,8 @@ async def legacy_config(
     server = await _load_server()
     rules = await _load_rules()
     username = _visible_username(user)
-    cfg = frp.effective_config(server, _scope_rules(rules, username))
+    scoped = await frp.annotate_rules(_scope_rules(rules, username))
+    cfg = frp.effective_config(server, scoped)
     safe = dict(cfg)
     safe["token"] = ""
     is_admin = _is_admin(user)
@@ -781,7 +835,9 @@ async def legacy_config(
     return {
         "config": safe,
         "token_set": bool(server.get("token")),
-        "logs": _visible_logs(frp.read_logs(150), rules, username),
+        # 旧前端会从这个合并视图里读日志；非管理员一律给空数组，语义与
+        # /api/frp/logs（仅 admin）保持一致 —— 不能因为走兼容端点就绕过限制。
+        "logs": _visible_logs(frp.read_logs(150), rules, username) if is_admin else [],
         **frp.status(cfg, include_server=is_admin),
     }
 
@@ -790,17 +846,9 @@ async def legacy_config(
 # 内部辅助
 # ---------------------------------------------------------------------------
 async def _restart_if_running() -> None:
-    """frpc 在跑时改完规则立即重启。
+    """frpc 在跑时改完规则立即重启（实现见 :func:`app.frp.restart_if_running`）。
 
-    frp.start 内部含 1.5 秒的同步等待，必须放到 worker thread 跑，否则会
-    阻塞 FastAPI 的 event loop，影响其它并发请求。但接口本身要同步等到重启
-    完成再返回 —— 否则前端立刻 refetch /effective 看到的还是旧进程。
+    放在 frp 模块里是为了让「归属变更」也能复用同一段逻辑：改派会让某些规则
+    失效，不重启的话那条隧道会一直跑到下一次手工重启为止。
     """
-    if not frp.is_running():
-        return
-    try:
-        cfg = await frp.effective()
-        await asyncio.to_thread(frp.start, cfg)
-    except frp.FrpError:
-        # 重启失败由用户后续手动 start 即可
-        pass
+    await frp.restart_if_running()

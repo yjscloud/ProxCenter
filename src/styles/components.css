@@ -6002,3 +6002,53 @@ body.is-col-resizing * {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   指派归属弹窗：「会跟随 / 不会跟随」两栏
+
+   改派的连带效果（快照归属、活动告警收件人、穿透规则失效）和「不跟过来的
+   东西」（宿主机四套安全数据、审计历史、面板登录记录）都写在这里。不写的话，
+   操作者只能从「隧道怎么断了 / 统计怎么变了」里事后反推。
+   --------------------------------------------------------------------------- */
+.assign-scope {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.assign-scope-col {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  padding: 10px 12px;
+}
+
+.assign-scope-title {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.assign-scope-follow {
+  color: var(--success);
+}
+
+.assign-scope-keep {
+  color: var(--text-muted);
+}
+
+.assign-scope-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+@media (max-width: 640px) {
+  .assign-scope {
+    grid-template-columns: 1fr;
+  }
+}

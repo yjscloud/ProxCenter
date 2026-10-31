@@ -127,16 +127,20 @@ async def assign_host_owner(
     if not row:
         raise HTTPException(status_code=404, detail="主机不存在")
     owner = str(payload.username or "").strip()
-    await hostscope.set_host_owner(host_id, owner)
+    result = await hostscope.set_host_owner(host_id, owner)
+    previous = result.get("previous") or ""
+    reason = (payload.reason or "").strip()
     await security.audit(
         request,
         user,
         "ssh.host_owner",
         row["host"],
         "success",
-        f"归属 → {owner or '（收回，仅管理员可见）'}",
+        f"归属 → {owner or '（收回，仅管理员可见）'}"
+        + (f"（原归 {previous}）" if previous and previous != owner else "")
+        + (f"｜理由：{reason}" if reason else ""),
     )
-    return {"ok": True, "host_id": host_id, "owner": owner}
+    return {"ok": True, "host_id": host_id, "owner": owner, "previous": previous or None}
 
 
 @router.post("/hosts/{host_id}/test", dependencies=[Depends(hostscope.require_host_access)])

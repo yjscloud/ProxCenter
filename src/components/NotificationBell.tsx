@@ -40,12 +40,14 @@ export function NotificationBell() {
      不随切页卸载，所以设置改了会立刻接上）。 */
   const refresh = useRefreshInterval();
 
-  /* 只看未读数：那是常驻轮询，没打开窗口也不该把整份消息搬来搬去 */
+  /* 只看未读数：那是常驻轮询，没打开窗口也不该把整份消息搬来搬去。
+     间隔下限 60 秒：铃铛上的角标不是秒级信息，把设置里的 5 秒直接套上来，
+     等于每个开着的标签页每秒多一条请求（这个组件不随切页卸载）。 */
   const unreadQuery = useQuery({
     queryKey: ['notifications', 'unread'],
     queryFn: notificationsApi.unread,
-    refetchInterval: refresh,
-    staleTime: 10_000,
+    refetchInterval: refresh === false ? false : Math.max(refresh, 60_000),
+    staleTime: 60_000,
     retry: false,
   });
 

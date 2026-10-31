@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
@@ -12,12 +13,14 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from . import store
+from . import ownership, store
 from .config import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 SETTING_KEY = "frp_config"
 # 「进程停了自动拉起」开关。与配置分开存：配置是「连去哪」，这是「要不要一直跑」。
@@ -164,6 +167,24 @@ def normalise_server(raw: Any) -> Dict[str, Any]:
     return cfg
 
 
+def normalise_guest_ref(raw: Any) -> str:
+    """规则关联的客户机 ref（``<连接>:<节点>:<vmid>``）；认不出来就是空串。
+
+    为什么存它：规则的目标合法性只在**写入时**校验过一次（见 :mod:`app.frpguard`），
+    客户机改派之后那条隧道就成了一条「前主人仍能访问的通道」。记下它指向哪台机器，
+    之后只读本地归属表就能判断这条规则该不该继续生效（见 :func:`annotate_rules`），
+    不必再问 PVE —— PVE 抖动不该让所有隧道一起断。
+    """
+    text = str(raw or "").strip()
+    parts = text.rsplit(":", 2)
+    if len(parts) != 3:
+        return ""
+    connection, node, vmid = parts
+    if not node or not vmid.isdigit():
+        return ""
+    return f"{connection or '-'}:{node}:{vmid}"
+
+
 def normalise_rule(raw: Any, username: str = "") -> Dict[str, Any]:
     """把一条规则规整成落库形状（**只用于存储层，不用于校验请求**）。
 
@@ -171,6 +192,9 @@ def normalise_rule(raw: Any, username: str = "") -> Dict[str, Any]:
     字段可能缺失。接口侧必须先用 ``schemas.FrpRuleIn`` / ``FrpRuleUpdateIn``
     校验（字段全必填），再把明确的值交进来 —— 否则一个 ``{}`` 就会被这里填成
     ``127.0.0.1:80 -> 10000`` 并直接落库（V2-01 的一半）。
+
+    ``guest_ref`` 是后加的**关联线索**（不是鉴权字段本身）：老规则没有它，
+    读出来是空串，表现为「未关联」，既不会被误停，也不会被误放行。
     """
     item = raw if isinstance(raw, dict) else {}
     return {
@@ -181,6 +205,7 @@ def normalise_rule(raw: Any, username: str = "") -> Dict[str, Any]:
         "local_ip": str(item.get("local_ip") or "127.0.0.1").strip(),
         "local_port": _port(item.get("local_port"), 80),
         "remote_port": _port(item.get("remote_port"), 10000),
+        "guest_ref": normalise_guest_ref(item.get("guest_ref")),
     }
 
 
@@ -220,6 +245,29 @@ async def save_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     cleaned = normalise_rules(rules)
     await store.set_setting(RULES_KEY, json.dumps(cleaned, ensure_ascii=False))
     return cleaned
+
+
+async def drop_rules_of(username: str) -> int:
+    """删掉某个账号名下的全部穿透规则，返回删除条数（删号时调用）。
+
+    与告警规则的处理刻意不同：告警规则**转无主**保命（监控不能出现真空），
+    穿透规则**直接删掉**。原因是它是一条活的网络通道 —— 账号都没了，还留着一条
+    从公网指向内网某个地址的转发，只会是负担：没人能解释它为什么存在，也没人会
+    去关它。而规则指向的目标是否还属于这个账号，本就不是规则自己能保证的
+    （写入时校验过一次，之后客户机可能已经改派）。
+
+    只改存储里的规则表：已经渲染出去的 frpc 配置要等下一次重载才少掉这条代理，
+    与「手工删除一条规则」的现有行为一致（路由层也不在这里重启 frpc）。
+    """
+    name = str(username or "").strip()
+    if not name:
+        return 0
+    rules = await load_rules()
+    kept = [rule for rule in rules if str(rule.get("username") or "") != name]
+    if len(kept) == len(rules):
+        return 0
+    await save_rules(kept)
+    return len(rules) - len(kept)
 
 
 # ---------------------------------------------------------------------------
@@ -292,10 +340,181 @@ async def migrate_legacy() -> None:
     await save_rules([normalise_rule(p) for p in old.get("proxies", [])])
 
 
+# ------------------------------------------------- 规则与「当前归属」的对齐
+def rule_guest_parts(ref: Any) -> Optional[Tuple[str, str, str]]:
+    """把 ``guest_ref`` 拆成 ``(连接, 节点, vmid)``；认不出来返回 ``None``。"""
+    text = normalise_guest_ref(ref)
+    if not text:
+        return None
+    connection, node, vmid = text.rsplit(":", 2)
+    return ("" if connection == "-" else connection, node, vmid)
+
+
+async def annotate_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """给规则标注 ``stale`` / ``stale_reason``：目标机器是否仍归规则作者。
+
+    判定完全基于**本地归属表**（:mod:`app.ownership`），不问 PVE：
+
+      * 规则没有 ``guest_ref``（存量规则，或管理员指向白名单之外的地址）→ 不判断；
+      * 目标机器仍归规则作者 → 有效；
+      * 已改派给别人 → 失效，原因里写明现在归谁；
+      * 机器已无归属（被删、被收回、对账清过）→ 失效。
+
+    失效的规则**不删、不改归属**：它仍是作者的一条配置，只是不再参与 frpc 渲染。
+    机器改派回来时它会自动恢复，也留下了「这条隧道为什么不通」的答案。
+    返回新列表（每项一份拷贝），调用方可以安全地再加工。
+
+    读不到归属表时按「全部失效」处理（fail-closed）：宁可让隧道断，也不能因为
+    一次库抖动把一条指向别人机器的通道留在公网上。
+    """
+    items = list(rules or [])
+    if not any(normalise_guest_ref(r.get("guest_ref")) for r in items):
+        return [dict(r) for r in items]
+    try:
+        owners = await ownership.guest_owners_map()
+    except Exception:  # noqa: BLE001 - 见 docstring 的 fail-closed 说明
+        logger.warning("读取归属失败：本轮把所有已关联的穿透规则按失效处理", exc_info=True)
+        owners = {}
+
+    out: List[Dict[str, Any]] = []
+    for rule in items:
+        item = dict(rule)
+        parts = rule_guest_parts(item.get("guest_ref"))
+        if parts is None:
+            item["stale"] = False
+            item["stale_reason"] = ""
+            out.append(item)
+            continue
+        connection, node, vmid = parts
+        current = ownership.vm_owner_from(owners, node, vmid, connection)
+        owner = str(item.get("username") or "")
+        # stale_owner 是给界面用的**机器可读**字段：原因文案要按用户语言渲染，
+        # 而后端不该替前端决定用哪国话（stale_reason 留作日志 / 兜底展示）。
+        item["stale_owner"] = current or ""
+        if current == owner:
+            item["stale"] = False
+            item["stale_reason"] = ""
+        elif not current:
+            item["stale"] = True
+            item["stale_reason"] = "目标机器已无归属"
+        else:
+            item["stale"] = True
+            item["stale_reason"] = f"目标机器已改派给 {current}"
+        out.append(item)
+    return out
+
+
+async def effective_rules() -> List[Dict[str, Any]]:
+    """渲染 frpc 用的规则：已剔除失效项（见 :func:`annotate_rules`）。"""
+    return [r for r in await annotate_rules(await load_rules()) if not r.get("stale")]
+
+
+async def suspend_count_for_guest(ref: str, new_owner: str) -> int:
+    """这台机器改派后会有几条规则因此失效（用于审计，不修改任何数据）。"""
+    target = normalise_guest_ref(ref)
+    if not target:
+        return 0
+    owner = str(new_owner or "")
+    rules = await load_rules()
+    return sum(
+        1
+        for rule in rules
+        if normalise_guest_ref(rule.get("guest_ref")) == target
+        and str(rule.get("username") or "") != owner
+    )
+
+
+async def relink_guests() -> Dict[str, Any]:
+    """给尚未关联客户机的规则补上 ``guest_ref``，返回统计。
+
+    为什么需要这个动作：``guest_ref`` 是后加的字段，升级前建的规则读出来是空串，
+    也就不受改派复核保护（见 :func:`annotate_rules`）。逐条重存当然也能补上，但那
+    要求每个用户自己知道这件事 —— 管理员需要一个动作把存量一次性补齐。
+
+    只补空的，**不覆盖已有值**：已有 ``guest_ref`` 的规则要么是对的，要么已经因为
+    改派被判失效；后者要改的是目标地址，不该由批量操作替用户决定。
+
+    按用户分组解析（每人一次），避免逐条规则各查一遍 PVE；某个用户解析失败只影响
+    他自己的规则，不会让整批回滚。返回 ``{"checked", "linked", "unlinked"}``，
+    ``unlinked`` 里逐条列出为什么没补上，交给界面显示。
+    """
+    from . import frpguard  # 延迟导入：frpguard 与本模块互相引用
+
+    rules = await load_rules()
+    pending: Dict[str, List[Dict[str, Any]]] = {}
+    for rule in rules:
+        if normalise_guest_ref(rule.get("guest_ref")):
+            continue
+        name = str(rule.get("username") or "")
+        if name:
+            pending.setdefault(name, []).append(rule)
+
+    linked = 0
+    unlinked: List[Dict[str, Any]] = []
+    for name, items in pending.items():
+        try:
+            targets = await frpguard.own_guest_targets(name, include_connection=True)
+        except Exception:  # noqa: BLE001 - 单个人解析失败不该拖垮整批
+            logger.warning("重新关联穿透规则：解析 %s 名下机器失败", name, exc_info=True)
+            targets = []
+        mapping = {
+            str(item.get("ip") or ""): ownership.vm_ref(
+                str(item.get("connection_id") or ""),
+                str(item.get("node") or ""),
+                item.get("vmid"),
+            )
+            for item in targets
+            if item.get("ip")
+        }
+        for rule in items:
+            ref = mapping.get(str(rule.get("local_ip") or "").strip(), "")
+            if ref:
+                rule["guest_ref"] = ref
+                linked += 1
+            else:
+                unlinked.append(
+                    {
+                        "id": str(rule.get("id") or ""),
+                        "name": str(rule.get("name") or ""),
+                        "username": name,
+                        "local_ip": str(rule.get("local_ip") or ""),
+                    }
+                )
+
+    if linked:
+        await save_rules(rules)
+    return {
+        "checked": sum(len(items) for items in pending.values()),
+        "linked": linked,
+        "unlinked": unlinked,
+    }
+
+
+async def restart_if_running() -> str:
+    """规则集合变了就重启 frpc 让新配置生效；返回错误说明（空串 = 正常）。
+
+    放在本模块而不是路由层，是为了让「归属变更」也能触发它：改派会让某些规则
+    失效，不重启的话那条隧道会一直跑到下一次手工重启为止 —— 也就是这次修复
+    想关掉的那个缺口。``start`` 内部有 1.5 秒同步等待，必须丢到线程里跑。
+    """
+    if not is_running():
+        return ""
+    try:
+        cfg = await effective()
+        await asyncio.to_thread(start, cfg)
+    except FrpError as exc:
+        return str(exc)
+    return ""
+
+
 def effective_config(
     server: Dict[str, Any], rules: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """合并成 frpc 实际使用的配置（服务端 + 所有人的规则）。"""
+    """合并成 frpc 实际使用的配置（服务端 + 所有人的规则）。
+
+    ``stale`` 的规则一律跳过：它们的目标机器已经不属于规则作者了
+    （判定见 :func:`annotate_rules`）。调用方即使传的是未过滤的列表也不会漏。
+    """
     return {
         "server_addr": server.get("server_addr", ""),
         "server_port": server.get("server_port", 7000),
@@ -309,13 +528,14 @@ def effective_config(
                 "remote_port": r["remote_port"],
             }
             for r in rules
+            if not r.get("stale")
         ],
     }
 
 
 async def effective() -> Dict[str, Any]:
     await migrate_legacy()
-    return effective_config(await load_server(), await load_rules())
+    return effective_config(await load_server(), await effective_rules())
 
 
 class FrpError(RuntimeError):

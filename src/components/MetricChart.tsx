@@ -16,6 +16,7 @@ import {
   YAxis,
   Cell,
 } from 'recharts';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { RrdPoint } from '../api/types';
 import { ChartSkeleton } from './ui/Spinner';
@@ -56,6 +57,41 @@ const GRID_STYLE = {
 
 /* 曲线刷新的动画时长：面板每几秒刷新一次，动画要快而不闪 */
 const ANIM_MS = 450;
+
+/* 一张 700px 宽的曲线只有约 700 个像素列，超出这个点数的采样画不出任何差别，
+   却要参与贝塞尔路径计算。一年视图的 rrddata 能到 1500+ 个点，这里抽稀到 500。 */
+const MAX_POINTS = 500;
+
+/**
+ * 等距抽稀。保留**首尾两点**：末点被「当前值」直接读走（`data[data.length-1]`），
+ * 丢了会让卡片上的读数跳回上一轮的旧值。
+ */
+export function samplePoints(points: RrdPoint[], max: number = MAX_POINTS): RrdPoint[] {
+  if (points.length <= max) return points;
+  const step = (points.length - 1) / (max - 1);
+  const out: RrdPoint[] = [];
+  for (let i = 0; i < max - 1; i += 1) {
+    out.push(points[Math.round(i * step)]);
+  }
+  out.push(points[points.length - 1]);
+  return out;
+}
+
+/**
+ * 是否播放「路径重绘」动画：只在首次挂载后的第一帧为真。
+ *
+ * 450ms 的绘制动画本身没问题，问题在于监控页每几秒就整体刷新一次 —— 动画
+ * 还没播完下一批数据就到了，等于常驻动画，CPU 全耗在插值上。首帧播一次足够
+ * 表达「这是新数据」，之后直接跳到终态。
+ */
+function useFirstFrameAnimation(): boolean {
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setOn(false), ANIM_MS + 150);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return on;
+}
 
 /* 图表卡片的「当前值」条目 */
 export interface ChartStat {
@@ -227,7 +263,8 @@ export function CpuChart({
 }) {
   const t = useT();
   /* Proxmox 的 cpu 是 0~1，也可能是多核累加值 → 归一化 */
-  const data = points.map((p) => ({
+  const anim = useFirstFrameAnimation();
+  const data = samplePoints(points).map((p) => ({
     time: p.time,
     cpu: Math.min(100, Math.max(0, toPercent(p.cpu ?? 0))),
   }));
@@ -285,7 +322,8 @@ export function CpuChart({
             stroke={CHART_COLORS.accent}
             strokeWidth={2.4}
             fill="url(#gradCpu)"
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
         </AreaChart>
       </ResponsiveContainer>
@@ -307,7 +345,8 @@ export function MemoryChart({
   error?: unknown;
 }) {
   const t = useT();
-  const data = points.map((p) => ({
+  const anim = useFirstFrameAnimation();
+  const data = samplePoints(points).map((p) => ({
     time: p.time,
     used: p.memused ?? p.mem ?? 0,
     total: p.memtotal ?? p.maxmem ?? 0,
@@ -374,7 +413,8 @@ export function MemoryChart({
             stroke={CHART_COLORS.cyan}
             strokeWidth={2.4}
             fill="url(#gradMemUsed)"
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
           {hasTotal ? (
             <Area
@@ -385,7 +425,8 @@ export function MemoryChart({
               strokeWidth={1.4}
               strokeDasharray="5 5"
               fillOpacity={0}
-              animationDuration={ANIM_MS}
+              animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
             />
           ) : null}
         </AreaChart>
@@ -408,7 +449,8 @@ export function NetworkChart({
   error?: unknown;
 }) {
   const t = useT();
-  const data = points.map((p) => ({
+  const anim = useFirstFrameAnimation();
+  const data = samplePoints(points).map((p) => ({
     time: p.time,
     netin: p.netin ?? 0,
     netout: p.netout ?? 0,
@@ -475,7 +517,8 @@ export function NetworkChart({
             stroke={CHART_COLORS.netIn}
             fill="url(#gradNetIn)"
             strokeWidth={2.2}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
           <Area
             type="monotone"
@@ -484,7 +527,8 @@ export function NetworkChart({
             stroke={CHART_COLORS.netOut}
             fill="url(#gradNetOut)"
             strokeWidth={2.2}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
         </AreaChart>
       </ResponsiveContainer>
@@ -506,7 +550,8 @@ export function DiskIoChart({
   error?: unknown;
 }) {
   const t = useT();
-  const data = points.map((p) => ({
+  const anim = useFirstFrameAnimation();
+  const data = samplePoints(points).map((p) => ({
     time: p.time,
     read: p.diskread ?? 0,
     write: p.diskwrite ?? 0,
@@ -573,7 +618,8 @@ export function DiskIoChart({
             stroke={CHART_COLORS.diskRead}
             fill="url(#gradDiskRead)"
             strokeWidth={2.2}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
           <Area
             type="monotone"
@@ -582,7 +628,8 @@ export function DiskIoChart({
             stroke={CHART_COLORS.diskWrite}
             fill="url(#gradDiskWrite)"
             strokeWidth={2.2}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
         </AreaChart>
       </ResponsiveContainer>
@@ -623,6 +670,7 @@ export function DonutChart({
   showLegend?: boolean;
 }) {
   const t = useT();
+  const anim = useFirstFrameAnimation();
   const total = data.reduce((sum, d) => sum + d.value, 0);
 
   if (total === 0) {
@@ -648,7 +696,8 @@ export function DonutChart({
             paddingAngle={2}
             stroke="var(--bg-surface)"
             strokeWidth={2}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           >
             {data.map((d) => (
               <Cell key={d.name} fill={d.color} />
@@ -729,7 +778,8 @@ function PercentAreaChart({
   error?: unknown;
 }) {
   const t = useT();
-  const data = points.map((p) => ({
+  const anim = useFirstFrameAnimation();
+  const data = samplePoints(points).map((p) => ({
     time: p.time,
     value: Math.min(100, Math.max(0, valueOf(p) ?? 0)),
   }));
@@ -779,7 +829,8 @@ function PercentAreaChart({
             stroke={color}
             strokeWidth={2.4}
             fill={`url(#${gradientId})`}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
         </AreaChart>
       </ResponsiveContainer>
@@ -860,7 +911,8 @@ export function LoadChart(props: {
   error?: unknown;
 }) {
   const t = useT();
-  const data = props.points.map((p) => {
+  const anim = useFirstFrameAnimation();
+  const data = samplePoints(props.points).map((p) => {
     const raw = Array.isArray(p.loadavg) ? p.loadavg[0] : p.loadavg;
     return { time: p.time, load: Number(raw) || 0 };
   });
@@ -909,7 +961,8 @@ export function LoadChart(props: {
             stroke={CHART_COLORS.accent}
             strokeWidth={2.4}
             fill="url(#gradLoad)"
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
         </AreaChart>
       </ResponsiveContainer>
@@ -938,7 +991,8 @@ export function PressureChart(props: {
   );
   if (!hasPressure) return null;
 
-  const data = props.points.map((p) => ({
+  const anim = useFirstFrameAnimation();
+  const data = samplePoints(props.points).map((p) => ({
     time: p.time,
     cpu: toPercent(p.pressurecpusome ?? 0),
     io: toPercent(p.pressureiosome ?? 0),
@@ -994,7 +1048,8 @@ export function PressureChart(props: {
             stroke={CHART_COLORS.accent}
             strokeWidth={2}
             fillOpacity={0}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
           <Area
             type="monotone"
@@ -1003,7 +1058,8 @@ export function PressureChart(props: {
             stroke={CHART_COLORS.warning}
             strokeWidth={2}
             fillOpacity={0}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
           <Area
             type="monotone"
@@ -1012,7 +1068,8 @@ export function PressureChart(props: {
             stroke={CHART_COLORS.purple}
             strokeWidth={2}
             fillOpacity={0}
-            animationDuration={ANIM_MS}
+            animationDuration={anim ? ANIM_MS : 0}
+            isAnimationActive={anim}
           />
         </AreaChart>
       </ResponsiveContainer>

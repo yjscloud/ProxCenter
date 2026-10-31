@@ -2,7 +2,7 @@
    ProxCenter — Table（斑马纹、排序、选择、空状态、列宽拖拽）
    ========================================================================== */
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { TableSkeleton } from './Spinner';
 import { EmptyState } from './EmptyState';
@@ -81,6 +81,85 @@ export function sortRows<T>(
     return String(va).localeCompare(String(vb), 'zh-CN') * dir;
   });
 }
+
+interface TableBodyRowProps<T> {
+  row: T;
+  index: number;
+  columns: Array<Column<T>>;
+  selected: boolean;
+  clickable: boolean;
+  expanded: boolean;
+  onRowClick?: (row: T) => void;
+  onRowHover?: (row: T) => void;
+  rowTitle?: (row: T) => string;
+  renderExpanded?: (row: T) => ReactNode;
+}
+
+/**
+ * 单行渲染，单独 memo。
+ *
+ * 表格每次**自身**状态变化（拖动列宽、切换排序、勾选一行）都会让 ``Table``
+ * 重渲染，而绝大多数行的数据根本没变。抽成 memo 组件后，只要调用方传进来的
+ * 回调是稳定引用（``useCallback``），这些行整行跳过 —— 省下的不只是 React
+ * 的 diff，还有每行 ``render(row, index)`` 里那些格式化 / 小图标组件的创建。
+ *
+ * 注意：调用方若把 ``onRowClick`` 写成内联箭头函数，memo 不会生效（每次都是
+ * 新引用），效果退化成和以前一样，不会更差。
+ */
+function TableBodyRowInner<T>({
+  row,
+  index,
+  columns,
+  selected,
+  clickable,
+  expanded,
+  onRowClick,
+  onRowHover,
+  rowTitle,
+  renderExpanded,
+}: TableBodyRowProps<T>) {
+  return (
+    <Fragment>
+      <tr
+        className={`${selected ? 'is-selected' : ''} ${
+          clickable ? 'is-clickable' : ''
+        } ${expanded ? 'is-expanded' : ''}`}
+        onClick={onRowClick ? () => onRowClick(row) : undefined}
+        onMouseEnter={onRowHover ? () => onRowHover(row) : undefined}
+        tabIndex={clickable ? 0 : undefined}
+        onKeyDown={
+          clickable
+            ? (e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  onRowClick?.(row);
+                }
+              }
+            : undefined
+        }
+        title={rowTitle?.(row)}
+      >
+        {columns.map((col) => (
+          <td
+            key={col.key}
+            className={`${col.align ? `ta-${col.align}` : ''} ${
+              col.mono ? 'mono' : ''
+            } ${col.className ?? ''}`}
+          >
+            {col.render(row, index)}
+          </td>
+        ))}
+      </tr>
+      {expanded && renderExpanded ? (
+        <tr className="table-expand-row">
+          <td colSpan={columns.length}>{renderExpanded(row)}</td>
+        </tr>
+      ) : null}
+    </Fragment>
+  );
+}
+
+const TableBodyRow = memo(TableBodyRowInner) as typeof TableBodyRowInner;
 
 export interface TableProps<T> {
   columns: Array<Column<T>>;
@@ -408,50 +487,21 @@ export function Table<T>({
           </tr>
         </thead>
         <tbody>
-          {displayRows.map((row, index) => {
-            const selected = isRowSelected?.(row) ?? false;
-            const clickable = Boolean(onRowClick);
-            const expanded = Boolean(isRowExpanded?.(row)) && Boolean(renderExpanded);
-            return (
-              <Fragment key={rowKey(row, index)}>
-                <tr
-                  className={`${selected ? 'is-selected' : ''} ${
-                    clickable ? 'is-clickable' : ''
-                  } ${expanded ? 'is-expanded' : ''}`}
-                  onClick={onRowClick ? () => onRowClick(row) : undefined}
-                  onMouseEnter={onRowHover ? () => onRowHover(row) : undefined}
-                  tabIndex={clickable ? 0 : undefined}
-                  onKeyDown={
-                    clickable
-                      ? (e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            onRowClick?.(row);
-                          }
-                        }
-                      : undefined
-                  }
-                  title={rowTitle?.(row)}
-                >
-                  {columns.map((col) => (
-                    <td
-                      key={col.key}
-                      className={`${col.align ? `ta-${col.align}` : ''} ${
-                        col.mono ? 'mono' : ''
-                      } ${col.className ?? ''}`}
-                    >
-                      {col.render(row, index)}
-                    </td>
-                  ))}
-                </tr>
-                {expanded ? (
-                  <tr className="table-expand-row">
-                    <td colSpan={columns.length}>{renderExpanded!(row)}</td>
-                  </tr>
-                ) : null}
-              </Fragment>
-            );
-          })}
+          {displayRows.map((row, index) => (
+            <TableBodyRow
+              key={rowKey(row, index)}
+              row={row}
+              index={index}
+              columns={columns}
+              selected={isRowSelected?.(row) ?? false}
+              clickable={Boolean(onRowClick)}
+              expanded={Boolean(isRowExpanded?.(row)) && Boolean(renderExpanded)}
+              onRowClick={onRowClick}
+              onRowHover={onRowHover}
+              rowTitle={rowTitle}
+              renderExpanded={renderExpanded}
+            />
+          ))}
         </tbody>
       </table>
     </div>

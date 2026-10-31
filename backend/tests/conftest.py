@@ -159,13 +159,20 @@ def drop_all_tables() -> None:
 
 
 def delete_setting_sync(key: str) -> None:
-    """同步删除一条 settings（测试里模拟「配置被别的进程改掉」用）。"""
+    """同步删除一条 settings（测试里模拟「配置被别的进程改掉」用）。
+
+    绕过 ``store.delete_setting`` 直接改库，所以必须手动丢掉进程内读缓存 ——
+    否则「删了配置」这件事对当前进程要等一个 TTL 才可见。
+    """
     conn = connect(settings.db_name)
     try:
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM settings WHERE `key` = %s", (key,))
     finally:
         conn.close()
+    from app import store as _store
+
+    _store.clear_settings_cache()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -205,6 +212,19 @@ def mysql_test_db():
     yield target
 
 
+@pytest.fixture(autouse=True)
+def reset_process_caches():
+    """每个用例开始前清空进程内缓存。
+
+    这些缓存不落库，却是**跨用例共享的全局状态**：``pvecache`` 里按连接分档的
+    条目会被下一个用例原样命中，于是「换了一套假 PVE 数据」的断言读到的是上一条
+    用例的结果（表现为「明明 monkeypatch 过了，返回值还是旧的」）。
+    用例自己的 ``clean_mysql_db`` 也清一次，两条路径互不依赖。
+    """
+    _clear_process_caches()
+    yield
+
+
 @pytest.fixture()
 def clean_mysql_db(mysql_test_db):
     """空库：删掉所有表，交给应用启动时重建。"""
@@ -221,9 +241,11 @@ def _clear_process_caches() -> None:
     * ``reportcache``：巡检报告的内存 TTL 缓存；
     * ``pvecache``：仪表盘 / 连接状态的只读缓存。
     """
-    from app import pvecache, reportcache
+    from app import pvecache, reportcache, store
 
     reportcache._cache.clear()
     reportcache._locks.clear()
     reportcache._refresh_marks.clear()
     pvecache.invalidate()
+    # settings 读缓存在清库后必须一起丢：否则「新库」里读到的还是上一个用例的值
+    store.clear_settings_cache()

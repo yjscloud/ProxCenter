@@ -406,6 +406,22 @@ export async function get<T>(
   return res.data;
 }
 
+/**
+ * 与 {@link get} 相同，但把 ``X-Total-Count`` 一并带回来。
+ *
+ * 列表接口的 ``limit`` 是可选的：截断只影响这一页拿到多少条，**总数**由响应头
+ * 给出。前端据此显示「已加载 500 / 共 3120」并决定要不要给「加载全部」。
+ */
+export async function getWithTotal<T>(
+  url: string,
+  config?: AxiosRequestConfig,
+): Promise<{ data: T; total: number | null }> {
+  const res = await http.get<T>(url, config);
+  const raw = res.headers['x-total-count'];
+  const parsed = raw === undefined || raw === null ? Number.NaN : Number(raw);
+  return { data: res.data, total: Number.isFinite(parsed) ? parsed : null };
+}
+
 export async function post<T>(
   url: string,
   body?: unknown,
@@ -489,7 +505,14 @@ export async function upload<T>(
   return res.data;
 }
 
-/** 判断是否为「功能未实现」错误，用于 UI 优雅降级 */
+/**
+ * 判断是否为「接口不存在」（404 / 501），用于 UI 优雅降级。
+ *
+ * 除了「功能未实现」，最常见的现实场景是**前端已更新、后端还在跑旧进程**：
+ * 新页面调用的接口在旧后端上不存在，整块数据就变成「加载失败」，而通用提示写的
+ * 是「后端不可达」——方向完全错了。调用方据此提示「重启/升级后端」，
+ * 而不是让用户去查网络和 Proxmox。
+ */
 export function isNotImplemented(err: unknown): boolean {
   return err instanceof ApiError && err.notImplemented;
 }

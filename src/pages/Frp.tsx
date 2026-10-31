@@ -49,6 +49,7 @@ import { useT, type TFunc } from "../i18n";
 
 export function Frp() {
   const t = useT();
+  const { isAdmin } = useAuth();
   return (
     <PageShell
       title={
@@ -69,7 +70,11 @@ export function Frp() {
 
       <RulesCard />
       <GrantsCard />
-      <LogCard />
+      {/* frpc 进程日志**仅超级管理员**可见：日志里带着 frps 地址、连接失败的真实
+          原因和每条代理的起停顺序，普通用户需要的信息（我这条隧道通不通）在规则
+          列表与生效配置里已经足够。后端 /api/frp/logs 同样是 require_admin，
+          这里不渲染卡片，顺带省掉一个必然 403 的轮询。 */}
+      {isAdmin ? <LogCard /> : null}
     </PageShell>
   );
 }
@@ -588,6 +593,8 @@ function RulesCard() {
   /** 新建规则走弹窗，填完再保存 —— 避免先落库一条空规则再反复重启 frpc */
   const [creating, setCreating] = useState(false);
   const [blockBusy, setBlockBusy] = useState(false);
+  /** 存量规则补关联（管理员动作，逐人解析 PVE 地址，可能慢一点） */
+  const [relinking, setRelinking] = useState(false);
 
   const listQuery = useQuery({
     queryKey: ["frp", "rules"],
@@ -635,6 +642,11 @@ function RulesCard() {
     return [...dups];
   }, [rules]);
 
+  /* 目标机器已不归规则作者的条数：规则本身还在，只是不进转发配置
+     （判定见后端 frp.annotate_rules）。管理员视角是「有多少条被暂停」，
+     用户视角是「我的哪几条为什么不通」。 */
+  const staleCount = useMemo(() => rules.filter((r) => r.stale).length, [rules]);
+
   /* 规则会越积越多（每台内网服务一条），和管理员那边其它列表一样分页。
      用统一的分页 hook：页码越界自动夹回最后一页，并提供「每页 N 条」下拉。
      resetKey 取「看的范围」（管理员看全部 / 用户看自己的）—— 这一页没有筛选框，
@@ -643,6 +655,34 @@ function RulesCard() {
 
   async function create(payload: FrpRuleInput) {
     await frpApi.rules.create(payload);
+  }
+
+  /**
+   * 给升级前创建的规则补上「指向哪台机器」。
+   *
+   * 补上之后它们才会被改派复核覆盖；补不上的（拿不到机器地址）逐条返回，
+   * 由用户自己把目标改成名下地址。只补空字段，不覆盖已有值。
+   */
+  async function relink() {
+    setRelinking(true);
+    try {
+      const res = await frpApi.rules.relink();
+      const rest = res.unlinked.length
+        ? t('frp.relinkUnlinked', { n: res.unlinked.length })
+        : undefined;
+      if (res.linked) {
+        toast.success(t('frp.relinkDone', { n: res.linked }), rest);
+      } else if (rest) {
+        toast.error(t('frp.relinkNone'), rest);
+      } else {
+        toast.success(t('frp.relinkNone'));
+      }
+      void qc.invalidateQueries({ queryKey: ["frp"] });
+    } catch (err) {
+      toast.error(t('frp.relinkFailed'), errorMessage(err));
+    } finally {
+      setRelinking(false);
+    }
   }
 
   async function update(id: string, payload: FrpRulePatch) {
@@ -693,15 +733,32 @@ function RulesCard() {
             : t('frp.rulesSubtitleUser', { user: ownUsername || t('frp.currentUser') })
         }
         actions={
-          canManage ? (
-            <Button
-              variant="primary"
-              size="sm"
-              icon={<IconPlus size={14} />}
-              onClick={() => setCreating(true)}
-            >
-              {t('frp.newRule')}
-            </Button>
+          canManage || canAdmin ? (
+            <div className="flex items-center gap-4">
+              {/* 存量规则补关联：只有补上 guest_ref，改派复核才管得到它们 */}
+              {canAdmin ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<IconRefresh size={14} />}
+                  loading={relinking}
+                  title={t('frp.relinkHint')}
+                  onClick={() => void relink()}
+                >
+                  {t('frp.relink')}
+                </Button>
+              ) : null}
+              {canManage ? (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<IconPlus size={14} />}
+                  onClick={() => setCreating(true)}
+                >
+                  {t('frp.newRule')}
+                </Button>
+              ) : null}
+            </div>
           ) : null
         }
       />
@@ -756,6 +813,16 @@ function RulesCard() {
       {dupNames.length > 0 ? (
         <Notice tone="danger" title={t('frp.dupTitle')}>
           {t('frp.dupBody', { names: dupNames.join(t('incident.evidenceSeparator')) })}
+        </Notice>
+      ) : null}
+
+      {/* 目标机器改派 / 收回后规则会自动失效：这条提示就是「你的隧道怎么不通了」
+          的答案。机器回到原主人名下会自动恢复，所以措辞是「失效」而不是「出错」。 */}
+      {staleCount > 0 ? (
+        <Notice tone="warning" title={t('frp.staleBadge')}>
+          {isAdmin
+            ? t('frp.staleNoticeAdmin', { n: staleCount })
+            : t('frp.staleNotice', { n: staleCount })}
         </Notice>
       ) : null}
 
@@ -1492,15 +1559,29 @@ function RuleRow({
       </td>
       <td>
         <div className="flex flex-wrap items-center gap-4">
-          <Badge variant={isEffective ? "success" : "neutral"} size="sm" dot pulse={isEffective}>
-            {isEffective ? t('frp.effective') : t('frp.notApplied')}
-          </Badge>
+          {rule.stale ? (
+            /* 失效优先于「已生效 / 未应用」：它不是「还没应用」，而是被主动排除 */
+            <Badge variant="warning" size="sm" dot>
+              {t('frp.staleBadge')}
+            </Badge>
+          ) : (
+            <Badge variant={isEffective ? "success" : "neutral"} size="sm" dot pulse={isEffective}>
+              {isEffective ? t('frp.effective') : t('frp.notApplied')}
+            </Badge>
+          )}
           {isDirty ? (
             <Badge variant={busy ? "info" : "warning"} size="sm" dot={busy} pulse={busy}>
               {busy ? t('frp.saving') : t('frp.unsaved')}
             </Badge>
           ) : null}
         </div>
+        {rule.stale ? (
+          <div className="fs-xs text-muted">
+            {rule.stale_owner
+              ? t('frp.staleAssignedTo', { name: rule.stale_owner })
+              : t('frp.staleUnowned')}
+          </div>
+        ) : null}
       </td>
       <td>
         <div className="flex items-center gap-4">

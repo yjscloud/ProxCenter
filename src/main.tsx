@@ -13,7 +13,7 @@ import { AuthProvider } from './hooks/useAuth';
 import { StepUpProvider } from './hooks/useStepUp';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LanguageCacheReset } from './components/LanguageCacheReset';
-import { I18nProvider } from './i18n';
+import { I18nProvider, detectLang, preloadLang } from './i18n';
 
 import './styles/theme.css';
 import './styles/global.css';
@@ -34,6 +34,10 @@ import './styles/responsive.css';
 /* ---------------------------------------------------------------------------
    React Query 配置
    --------------------------------------------------------------------------- */
+
+/* 英文界面：先把英文词典拉下来再挂载，避免首屏先闪一下中文再切成英文。
+   中文界面（默认）这里是一次同步返回，不产生任何请求。 */
+await preloadLang(detectLang());
 
 const queryClient = new QueryClient({
   defaultOptions: {

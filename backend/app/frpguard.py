@@ -314,7 +314,9 @@ def allowed_cidrs() -> List[Network]:
 
 
 # ------------------------------------------------------- 用户名下的客户机 IP
-async def own_guest_targets(username: str) -> List[Dict[str, Any]]:
+async def own_guest_targets(
+    username: str, *, include_connection: bool = False
+) -> List[Dict[str, Any]]:
     """某个用户名下虚机 / 容器的地址清单（带展示信息）。
 
     返回按 VMID 排序的 ``[{"ip","name","vmid","node","type"}]`` —— 这就是普通
@@ -414,15 +416,18 @@ async def own_guest_targets(username: str) -> List[Dict[str, Any]]:
             vmid = int(row["vmid"])
         except (TypeError, ValueError):
             vmid = 0
-        out.append(
-            {
-                "ip": text,
-                "name": str(row.get("name") or ""),
-                "vmid": vmid,
-                "node": str(row.get("node") or ""),
-                "type": str(row.get("type") or ""),
-            }
-        )
+        entry = {
+            "ip": text,
+            "name": str(row.get("name") or ""),
+            "vmid": vmid,
+            "node": str(row.get("node") or ""),
+            "type": str(row.get("type") or ""),
+        }
+        if include_connection:
+            # 只给内部拼归属 ref 用：多套 PVE 上同名节点 + 同号机器必须分开，
+            # 而对外（前端下拉）不需要这个字段，别把内部键混进接口形状。
+            entry["connection_id"] = str(row.get("connection_id") or "")
+        out.append(entry)
     out.sort(key=lambda item: (item["vmid"], item["ip"]))
     return out
 
@@ -430,6 +435,36 @@ async def own_guest_targets(username: str) -> List[Dict[str, Any]]:
 async def own_guest_ips(username: str) -> Set[str]:
     """某个用户名下虚机 / 容器的 IP 集合（:func:`own_guest_targets` 的投影）。"""
     return {item["ip"] for item in await own_guest_targets(username)}
+
+
+async def guest_ref_for_ip(username: str, ip: Any) -> str:
+    """把「用户名下某台机器的地址」反解成归属 ref；关联不上返回空串。
+
+    规则落库时用它记下这条隧道指向的是**哪台机器**，改派之后才能判断它该不该
+    继续生效（见 :func:`app.frp.annotate_rules`）。只做关联，不参与白名单判定 ——
+    「能不能指向这个 IP」由 :func:`check_target` 决定，这里只回答「这台是哪台」。
+
+    解析失败一律返回空串（= 未关联）：关联不上不代表规则非法，存量规则本来就没有
+    这个字段；把它当成「非法」会让升级瞬间所有隧道一起断。
+    """
+    text = str(ip or "").strip()
+    if not text or not username:
+        return ""
+    from . import ownership  # 延迟导入：本模块被 frp / 路由共同依赖，避免启动期环
+
+    try:
+        targets = await own_guest_targets(username, include_connection=True)
+    except Exception:  # noqa: BLE001 - 关联失败只影响后续判定，不影响写入
+        logger.debug("穿透规则关联客户机失败（按未关联处理）：%s", username, exc_info=True)
+        return ""
+    for item in targets:
+        if item.get("ip") == text:
+            return ownership.vm_ref(
+                str(item.get("connection_id") or ""),
+                str(item.get("node") or ""),
+                item.get("vmid"),
+            )
+    return ""
 
 
 # ------------------------------------------------- 用户授权（管理员按人放行）

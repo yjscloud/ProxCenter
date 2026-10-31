@@ -591,6 +591,11 @@ function RowMenu({
    列表页主体
    --------------------------------------------------------------------------- */
 
+/* 列表首次只拉这么多条：千台集群的整份清单能到 1MB+，而页面一次只渲染 20 行。
+   截断交给后端（``limit``），总数由 ``X-Total-Count`` 带回来，状态栏照实显示
+   「显示 20 / 共 3120」，超出时给一个「加载全部」的入口。 */
+const GUEST_LOAD_LIMIT = 500;
+
 export function GuestListPage({ kind }: { kind: GuestKind }) {
   const t = useT();
   const meta = KIND_META[kind];
@@ -617,14 +622,19 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
      别弹出一条点不动的操作栏 */
   const canBulkPower = hasPermission(`${permPrefix}.power`);
   const canBulkDelete = hasPermission(`${permPrefix}.delete`);
-  const bulkAny =
-    canBulkPower || canBulkDelete || canConfig || canSnapshot || canMigrate;
-  const bulkMore = canConfig || canSnapshot || canMigrate;
-  /* 导出会把整块磁盘镜像交出去，与备份同一口径（只有虚拟机有导出这件事） */
-  const canExport = kind === 'qemu' && hasPermission('vm.backup');
   /* 指派归属：按类型的权限点判，**不能按角色名**，否则区域管理员（有
      vm.assign / ct.assign，不是 admin）永远看不到这个入口 */
   const canAssign = hasPermission(`${permPrefix}.assign`);
+  const bulkAny =
+    canBulkPower ||
+    canBulkDelete ||
+    canConfig ||
+    canSnapshot ||
+    canMigrate ||
+    canAssign;
+  const bulkMore = canConfig || canSnapshot || canMigrate || canAssign;
+  /* 导出会把整块磁盘镜像交出去，与备份同一口径（只有虚拟机有导出这件事） */
+  const canExport = kind === 'qemu' && hasPermission('vm.backup');
   /* 「这台归谁」这一列 / 无人认领筛选：管理员与区域管理员看得到（后端也只给
      这两类人回填 owner，见 routers/vms.py 的列表过滤） */
   const canSeeOwner = isAdmin || canAssign;
@@ -709,20 +719,25 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
   const refresh = useRefreshInterval();
 
+  /* 「加载全部」是一次性动作：切换后重新拉一份不带 limit 的清单。 */
+  const [loadAllGuests, setLoadAllGuests] = useState(false);
+
   const guestsQuery = useQuery({
     queryKey: isLxc
-      ? ['lxc', 'with-ip', connFilter || 'all', nodeFilter || 'all']
-      : ['vms', 'with-ip', connFilter || 'all', nodeFilter || 'all'],
+      ? ['lxc', 'with-ip', connFilter || 'all', nodeFilter || 'all', loadAllGuests]
+      : ['vms', 'with-ip', connFilter || 'all', nodeFilter || 'all', loadAllGuests],
     queryFn: () =>
       isLxc
-        ? lxcApi.list(nodeFilter || undefined, {
+        ? lxcApi.listPaged(nodeFilter || undefined, {
             withIp: true,
             connectionId: connFilter || undefined,
+            limit: loadAllGuests ? undefined : GUEST_LOAD_LIMIT,
           })
-        : vmsApi.list(nodeFilter || undefined, {
+        : vmsApi.listPaged(nodeFilter || undefined, {
             withIp: true,
             type: 'qemu',
             connectionId: connFilter || undefined,
+            limit: loadAllGuests ? undefined : GUEST_LOAD_LIMIT,
           }),
     /* IP 列现在读后端的落库快照（后台作业预热，见 app.inspection），请求本身
        已经很便宜；间隔由「数据刷新间隔」定，列表要的是「状态大致是新的」。 */
@@ -864,8 +879,12 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
      列表页的搜索框是「我只记得这台机器的一部分」时唯一的入口，只认名称等于
      逼用户先猜对字段名；IP 尤其重要 —— 排障时手里往往只有个地址。
      空格分隔按「与」处理：多敲一个词只会缩小范围，不会突然放宽。 */
+  const guestRows = guestsQuery.data?.data ?? [];
+  const guestTotal = guestsQuery.data?.total ?? guestRows.length;
+  const guestTruncated = guestTotal > guestRows.length;
+
   const filtered = useMemo(() => {
-    const list = guestsQuery.data ?? [];
+    const list = guestRows;
     const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
     return list.filter((vm) => {
@@ -898,13 +917,13 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         .toLowerCase();
       return tokens.every((token) => haystack.includes(token));
     });
-  }, [guestsQuery.data, search, statusFilter, ownerFilter, manualIpOf]);
+  }, [guestRows, search, statusFilter, ownerFilter, manualIpOf]);
 
   /* 「无人认领」的台数。从已加载的清单里数，不另发请求 —— 列表本来就是它算出来的。
      模板不算在内：模板页另有归属语义，这里要的是「能认领的机器」。 */
   const unownedCount = useMemo(
-    () => (guestsQuery.data ?? []).filter((vm) => !vm.template && !vm.owner).length,
-    [guestsQuery.data],
+    () => guestRows.filter((vm) => !vm.template && !vm.owner).length,
+    [guestRows],
   );
 
   /* ---- 选择 ---- */
@@ -935,8 +954,8 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   };
 
   const selectedGuests = useMemo(
-    () => (guestsQuery.data ?? []).filter((vm) => selected.has(rowKeyOf(vm))),
-    [guestsQuery.data, selected],
+    () => guestRows.filter((vm) => selected.has(rowKeyOf(vm))),
+    [guestRows, selected],
   );
 
   /* 筛选变化时清理已不可见的选择 */
@@ -1817,6 +1836,10 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
                 disabled={pendingAction}
                 options={[
                   { label: t('guestList.bulkMore'), value: '' },
+                  /* 指派归在最前面：它是管理员在这个页面最常做的批量动作 */
+                  ...(canAssign
+                    ? [{ label: t('guestList.bulkAssign'), value: 'assign' as BulkAction }]
+                    : []),
                   ...(canConfig
                     ? [
                         { label: t('guestList.bulkTag'), value: 'tag' as BulkAction },
@@ -1953,10 +1976,21 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
             <span className="fs-sm text-muted">
               {t('guestList.showing', {
                 shown: filtered.length,
-                total: (guestsQuery.data ?? []).length,
+                total: guestTotal,
                 unit: L.unit,
               })}
             </span>
+            {/* 只加载了前 N 条时给一个明确的出口：否则用户会以为「就这么多台」 */}
+            {guestTruncated && !loadAllGuests ? (
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => setLoadAllGuests(true)}
+                title={t('guestList.loadAllHint')}
+              >
+                {t('guestList.loadAll', { total: guestTotal, unit: L.unit })}
+              </button>
+            ) : null}
             {/* 「列」按钮直接排进状态栏这一行：原先交给 Table 渲染，它会落在表格
                 上方单独一条工具条里（.table-colbar）——为了一个按钮多占一整行，
                 还把这张卡从中间切成两截。渲染位置本来就由调用方决定（见
@@ -2761,6 +2795,9 @@ function BulkParamsDialog({
   const [vmstate, setVmstate] = useState(false);
   /** 内存气球的最低保留量（MB）。空 = 没填（不能提交）；0 = 关闭气球驱动 */
   const [balloon, setBalloon] = useState('');
+  /** 批量指派的目标用户；空 = 没选（不能提交，**不支持**批量清除归属） */
+  const [assignUser, setAssignUser] = useState('');
+  const [assignReason, setAssignReason] = useState('');
 
   useEffect(() => {
     if (!action) return;
@@ -2772,6 +2809,8 @@ function BulkParamsDialog({
     setSnapDesc('');
     setVmstate(false);
     setBalloon('');
+    setAssignUser('');
+    setAssignReason('');
   }, [action]);
 
   const nodeOptions = nodes.map((n) => ({ label: n, value: n }));
@@ -2796,15 +2835,21 @@ function BulkParamsDialog({
         ? Boolean(target)
         : action === 'balloon'
           ? !balloonError
-          : action === 'snapshot'
-            ? Boolean(snapName) && !snapNameError
-            : false;
+          : action === 'assign'
+            /* 必须选人：批量「清除归属」一次抹掉 N 台机器的归属，
+               误点代价太大，要收回请单台操作 */
+            ? Boolean(assignUser.trim())
+            : action === 'snapshot'
+              ? Boolean(snapName) && !snapNameError
+              : false;
 
   const submit = () => {
     if (!action || !canSubmit) return;
     if (action === 'tag') onSubmit({ tags: tags.trim(), tag_mode: tagMode });
     else if (action === 'migrate') onSubmit({ target_node: target, online });
     else if (action === 'balloon') onSubmit({ balloon: balloonValue });
+    else if (action === 'assign')
+      onSubmit({ username: assignUser.trim(), reason: assignReason.trim() });
     else onSubmit({ name: snapName, description: snapDesc, vmstate });
   };
 
@@ -2813,6 +2858,7 @@ function BulkParamsDialog({
     migrate: 'guestList.bulkDialog.titleMigrate',
     balloon: 'guestList.bulkBalloon',
     snapshot: 'guestList.bulkSnapshot',
+    assign: 'guestList.bulkDialog.titleAssign',
   };
 
   return (
@@ -2917,6 +2963,28 @@ function BulkParamsDialog({
               {t('guestList.bulkDialog.balloonCtDesc')}
             </Notice>
           ) : null}
+        </div>
+      ) : null}
+
+      {action === 'assign' ? (
+        <div className="flex flex-col gap-16">
+          <UserSelect
+            label={t('guestList.bulkDialog.assignField')}
+            value={assignUser}
+            onChange={setAssignUser}
+            hint={t('guestList.bulkDialog.assignHint')}
+          />
+          <Input
+            label={t('guestList.bulkDialog.assignReason')}
+            placeholder={t('guestList.bulkDialog.assignReasonPlaceholder')}
+            value={assignReason}
+            maxLength={120}
+            onChange={(e) => setAssignReason(e.target.value)}
+            hint={t('guestList.bulkDialog.assignReasonHint')}
+          />
+          <Notice tone="warning" title={t('guestList.bulkDialog.assignWarnTitle')}>
+            {t('guestList.bulkDialog.assignWarnDesc')}
+          </Notice>
         </div>
       ) : null}
 

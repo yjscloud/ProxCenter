@@ -20,6 +20,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -115,8 +116,13 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
     void submit();
   };
 
+  /* Provider 包住整棵 <App/>：value 每次 render 换新对象的话，弹框里敲一个
+     字符（setPassword）就会让**所有** context 消费者重渲染 —— 症状是输密码
+     时整页跟着卡。`requestStepUp` 本身是 useCallback 稳定的，包一层 memo 即可。 */
+  const contextValue = useMemo(() => ({ requestStepUp }), [requestStepUp]);
+
   return (
-    <StepUpContext.Provider value={{ requestStepUp }}>
+    <StepUpContext.Provider value={contextValue}>
       {children}
       <Modal
         open={open}

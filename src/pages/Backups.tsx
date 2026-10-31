@@ -25,6 +25,7 @@ import { Modal } from '../components/ui/Modal';
 import { ErrorState, Notice, CollapsibleCard } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { BackupOwnerDriftDialog } from '../components/BackupOwnerDriftDialog';
 import {
   IconBackup,
   IconRefresh,
@@ -87,6 +88,8 @@ export function Backups() {
      「备份」也点不动。 */
   const canBackup =
     hasPermission('vm.backup') || hasPermission('ct.backup');
+  /** 归属对账：全集群存储遍历 + 列出所有人的标记，只给管理员 */
+  const [driftOpen, setDriftOpen] = useState(false);
 
   const tab = (params.get('tab') as TabKey | null) ?? 'files';
 
@@ -117,15 +120,27 @@ export function Backups() {
       }
       subtitle={t('backups.subtitle')}
       actions={
-        <Button
-          variant="secondary"
-          icon={<IconRefresh size={15} />}
-          onClick={() => {
-            void queryClient.invalidateQueries({ queryKey: ['backups'] });
-          }}
-        >
-          {t('common.refresh')}
-        </Button>
+        <>
+          {/* 存量归档里的 [owner:x] 不会随改派更新：这个入口把它们与现状的差异列出来 */}
+          {isAdmin ? (
+            <Button
+              variant="secondary"
+              icon={<IconShield size={15} />}
+              onClick={() => setDriftOpen(true)}
+            >
+              {t('backups.driftAction')}
+            </Button>
+          ) : null}
+          <Button
+            variant="secondary"
+            icon={<IconRefresh size={15} />}
+            onClick={() => {
+              void queryClient.invalidateQueries({ queryKey: ['backups'] });
+            }}
+          >
+            {t('common.refresh')}
+          </Button>
+        </>
       }
     >
       <div className="tabs" role="tablist" aria-label={t('backups.tabAria')}>
@@ -153,6 +168,8 @@ export function Backups() {
       ) : (
         <BackupCreateTab canBackup={canBackup} />
       )}
+
+      <BackupOwnerDriftDialog open={driftOpen} onClose={() => setDriftOpen(false)} />
     </PageShell>
   );
 }

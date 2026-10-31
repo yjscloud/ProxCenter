@@ -11,6 +11,20 @@
 * 管理员（role == admin）是超管视角，始终能看到并管理全部资源。
 * 普通用户只能看到/操作自己名下的资源；**没有归属记录的存量资源对普通用户不可见**
   （严格隔离）。
+
+单点真相与「变更入口」
+----------------------
+本模块是 owner 的**唯一事实源**：业务行（快照标记、备份 notes、规则条目）里
+另存的用户名都只是历史/展示，不参与鉴权判定。
+
+归属的变更（指派 / 收回 / 账号删除）一律走 :func:`transfer_guest` /
+:func:`transfer_host` / :func:`forget_user`，因为它们还要顺带做完三件容易漏的事：
+
+1. 清掉这台机器名下**快照的归属标记**（快照跟着机器走，不跟着人走）；
+2. 作废按用户分档的读缓存与额度读数（否则 10–60 秒内新旧主人看到的都是旧账）；
+3. 返回变更前的归属，供审计记录 ``previous``。
+
+逐个路由自己 upsert 一行，就是这些不一致的来源 —— 新增入口请复用上面的函数。
 """
 from __future__ import annotations
 
@@ -32,8 +46,6 @@ KIND_VM = "vm"
 #: 集群内唯一，同一条 ref 不可能既是虚拟机又是容器。
 KIND_CT = "ct"
 KIND_SNAPSHOT = "snapshot"
-KIND_FRP_RULE = "frp_rule"
-KIND_ALERT_RULE = "alert_rule"
 # 受管主机（ssh_hosts 的一行）。ref 就是主机 id —— 主机本身没有连接/节点那层
 # 复合主键，用它自己的 id 就够了。
 KIND_SSH_HOST = "ssh_host"
@@ -149,10 +161,15 @@ async def forget_refs(pairs: Sequence[Tuple[str, str]]) -> int:
     doomed = [(str(kind), str(ref)) for kind, ref in pairs if ref]
     if not doomed:
         return 0
+    # 一条 ``(kind, ref) IN ((?, ?), …)`` 删完，按 500 条分片（MySQL 的占位符
+    # 上限与 SQL 文本长度都要留余量）。原来是一对一 DELETE，几百条就是几百轮往返。
     async with database.connect() as db:
-        for kind, ref in doomed:
+        for start in range(0, len(doomed), 500):
+            chunk = doomed[start : start + 500]
+            marks = ", ".join("(?, ?)" for _ in chunk)
             await db.execute(
-                "DELETE FROM resource_owner WHERE kind = ? AND ref = ?", (kind, ref)
+                f"DELETE FROM resource_owner WHERE (kind, ref) IN ({marks})",
+                [value for pair in chunk for value in pair],
             )
         await db.commit()
     return len(doomed)
@@ -192,6 +209,273 @@ async def forget_guest(connection_id: str, node: str, vmid: Any) -> int:
             )
         await db.commit()
     return len(doomed)
+
+
+#: 归属变更后要一并作废的读缓存前缀。这些 key 里都带着「谁」这一维
+#: （owner / viewer / username），换了主人之后旧条目会把结果算到旧账上；它们的
+#: TTL 是 10–60 秒，不主动作废就是「机器已经给别人了，统计里还挂在我名下」。
+#: 不用 ``invalidate()`` 全清：只清这几档，避免把全站 PVE 只读缓存打成冷启动。
+CACHE_PREFIXES: Tuple[str, ...] = (
+    "dashboard:",
+    "snapshots:",
+    "backups:",
+    "search:",
+    "audit:actions:",
+)
+
+
+#: 归属代际号在 ``settings`` 里的键。多 worker 部署下靠它让别的进程的读缓存作废。
+GENERATION_KEY = "ownership_generation"
+#: 代际号的进程内缓存时长：每个 worker 最多每 5 秒问一次库。
+GENERATION_TTL = 5.0
+_generation_cache: Optional[Tuple[float, int]] = None
+
+
+async def generation() -> int:
+    """当前归属代际号（多进程共享），在本进程缓存 :data:`GENERATION_TTL` 秒。
+
+    用途见 :func:`app.pvecache.set_epoch_provider`：``pvecache`` 是**进程内**缓存，
+    改归属时写入方只能清掉自己那份；代际号一变，所有 worker 的旧条目一起失效。
+
+    读不到库时沿用上一次的值（首次为 0）：它只影响缓存新鲜度，不该让读接口报错，
+    也不该因为一次抖动把缓存打成「永不过期」（那样反而更脏）。
+    """
+    global _generation_cache
+    now = time.time()
+    if _generation_cache is not None and now - _generation_cache[0] < GENERATION_TTL:
+        return _generation_cache[1]
+    try:
+        async with database.connect() as db:
+            cursor = await db.execute(
+                "SELECT value FROM settings WHERE `key` = ?", (GENERATION_KEY,)
+            )
+            row = await cursor.fetchone()
+        text = str(row[0]).strip() if row else ""
+        value = int(text) if text.isdigit() else 0
+    except Exception:  # noqa: BLE001 - 见 docstring
+        return _generation_cache[1] if _generation_cache else 0
+    _generation_cache = (now, value)
+    return value
+
+
+async def _announce_change() -> None:
+    """把代际号 +1（写库），让**其它进程**的读缓存下次访问时作废。"""
+    global _generation_cache
+    try:
+        async with database.connect() as db:
+            await db.execute(
+                "INSERT INTO settings (`key`, value) VALUES (?, '1') "
+                "ON DUPLICATE KEY UPDATE value = CAST(value AS UNSIGNED) + 1",
+                (GENERATION_KEY,),
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001 - 失败只影响多进程的新鲜度
+        logger.warning(
+            "归属代际号自增失败：其它进程的读缓存只能按 TTL 自然过期", exc_info=True
+        )
+    # 本进程下次读取必定回源，免得自己还拿着旧值
+    _generation_cache = None
+
+
+async def invalidate_caches() -> None:
+    """作废随「归属人」分档的读缓存（本进程 + 其它 worker），含额度读数。
+
+    ``quota`` 顶层 ``import`` 了本模块，这里延迟导入避开循环依赖。
+    """
+    from . import pvecache, quota  # noqa: PLC0415 - 见上
+
+    for prefix in CACHE_PREFIXES:
+        pvecache.invalidate(prefix)
+    quota.invalidate()
+    await _announce_change()
+
+
+def guest_ref_prefixes(ref: str) -> Tuple[str, ...]:
+    """一台客户机在归属表里可能出现的全部 ref 前缀。
+
+    * ``<连接>:<节点>:<vmid>`` —— 现在的写法；
+    * ``-:<节点>:<vmid>`` —— 单连接时代的存量写法（见 :func:`forget_guest`）。
+
+    快照行是挂在这些前缀后面的 ``/快照名``，所以前缀必须两种都认，否则改派后
+    旧标记会留在表里继续把快照算到前任名下。
+    """
+    guest = str(ref or "").split("/", 1)[0]
+    if not guest:
+        return ()
+    prefixes = [guest]
+    parts = guest.rsplit(":", 2)
+    if len(parts) == 3 and parts[0] not in ("", "-"):
+        prefixes.append(f"-:{parts[1]}:{parts[2]}")
+    return tuple(dict.fromkeys(prefixes))
+
+
+async def forget_snapshots(ref: str) -> int:
+    """删掉一台客户机名下**快照的归属标记**，返回删除条数。
+
+    为什么改派时要删：快照是机器的从属物，读取侧也是「标记优先、没有标记就回落
+    到机器的归属」（见 :func:`vm_owner_from`）。标记一旦固化在旧主人名下，机器
+    改派后那批快照就仍然算前任的 —— 前任看得见、新主人看不见，是典型的
+    「安全信息不同步」。删掉标记，等于把判定统一成「快照跟着机器走」。
+
+    只删快照行，不动机器本体那一行。
+    """
+    prefixes = guest_ref_prefixes(ref)
+    if not prefixes:
+        return 0
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT ref FROM resource_owner WHERE kind = ?", (KIND_SNAPSHOT,)
+        )
+        rows = await cursor.fetchall()
+    doomed = [
+        (KIND_SNAPSHOT, str(row[0]))
+        for row in rows
+        if any(str(row[0] or "").startswith(f"{prefix}/") for prefix in prefixes)
+    ]
+    return await forget_refs(doomed)
+
+
+async def _retarget_active_alerts(ref: str, username: str) -> int:
+    """把这台客户机还挂着的活动告警改挂到新收件人名下，返回搬动条数。
+
+    只记日志、不往外抛：告警状态没搬过去只是「通知稍晚一点到」，让整次指派失败
+    则是「归属根本没改成」—— 后者严重得多。
+    """
+    parts = str(ref or "").split("/", 1)[0].rsplit(":", 2)
+    if len(parts) != 3:
+        return 0
+    connection_id = "" if parts[0] in ("", "-") else parts[0]
+    try:
+        from . import alerting  # noqa: PLC0415 - alerting 也 import 本模块
+
+        return await alerting.retarget_guest(
+            connection_id, parts[1], parts[2], str(username or "")
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("改派时迁移活动告警失败：%s", ref, exc_info=True)
+        return 0
+
+
+async def _suspend_frp_rules(ref: str, username: str, *, restart: bool = True) -> int:
+    """这台机器改派后失效的穿透规则条数，并让 frpc 重新加载（断掉那几条隧道）。
+
+    穿透规则的目标合法性只在写入时校验过一次（见 ``app.frpguard``），机器改派
+    之后那条隧道就成了「前主人仍能访问的通道」。这里不删规则、不改归属 ——
+    规则仍是前主人的配置 —— 只是让渲染时把它排除掉（``frp.annotate_rules``）。
+
+    失败只记日志：归属已经改完，那是更重要的事实；重启用下次手工操作也能补上，
+    但「隧道多开一会儿」得让人在日志里看得见。
+    """
+    try:
+        from . import frp  # noqa: PLC0415 - frp 顶层 import 本模块
+    except Exception:  # noqa: BLE001
+        logger.debug("穿透模块不可用，跳过隧道复核", exc_info=True)
+        return 0
+    try:
+        count = await frp.suspend_count_for_guest(ref, username)
+        # 批量指派时由调用方在最末尾统一重启一次：逐台重启会把 frpc 反复拉起，
+        # 每台 1.5 秒，200 台就是一串「隧道全断」的空窗。
+        if count and restart:
+            error = await frp.restart_if_running()
+            if error:
+                logger.warning(
+                    "改派后重启 frpc 失败（%s 条穿透规则已失效）：%s", count, error
+                )
+        return count
+    except Exception:  # noqa: BLE001
+        logger.warning("改派时复核穿透规则失败：%s", ref, exc_info=True)
+        return 0
+
+
+async def transfer_guest(
+    kind: str,
+    ref: str,
+    username: str,
+    *,
+    notify: bool = True,
+    restart: bool = True,
+) -> Dict[str, Any]:
+    """指派 / 收回一台客户机（虚拟机或容器），返回变更详情。
+
+    这是**客户机归属变更的唯一入口**，路由层不要再自己调
+    :func:`set_owner` / :func:`delete_owner` —— 那些只会改一行，改完之后
+    快照标记与读缓存都还停在旧账上。
+
+    返回 ``previous``（给审计留痕，也是事后唯一能回答「改派前是谁」的东西）与
+    连带处理的条数（快照标记 / 活动告警 / 穿透规则）。
+
+    ``notify`` / ``restart`` 只给**批量指派**用：一批 200 台如果每台都作废一遍缓存
+    并把 frpc 重启一次，代价是 200 次全量失效扫描 + 200 个 1.5 秒的隧道空窗。
+    批量调用方传 ``False``，最后自己调一次 :func:`invalidate_caches` 与
+    ``frp.restart_if_running`` —— 语义不变，只是把两件「全局」的事挪到末尾做一次。
+    """
+    previous = await get_owner_for(kind, ref)
+    if username:
+        await set_owner(kind, ref, username)
+    else:
+        await delete_owner(kind, ref)
+    if kind == KIND_CT:
+        # 升级前容器的归属记在 KIND_VM 下：只动 KIND_CT 会留下一条「幽灵」旧记录
+        # （重新指派后旧归属人仍能看到这台容器）。容器与虚拟机的 ref 形状相同、
+        # VMID 唯一，两类不可能同键，所以这一删不会误伤虚拟机。
+        await delete_owner(KIND_VM, ref)
+    snapshots = await forget_snapshots(ref)
+    # 这台机器还挂着的活动告警要跟着换收件人：告警状态是以「收件人」为主键存的
+    # （见 alerting.alarm_key），不搬的话前任会一直挂着一条「正在告警」，
+    # 而新主人要等下一轮巡检重新点火才看得见。
+    alerts = await _retarget_active_alerts(ref, str(username or ""))
+    # 穿透规则：目标机器换主人后，前主人那条隧道必须停（见 _suspend_frp_rules）
+    frp_suspended = await _suspend_frp_rules(ref, str(username or ""), restart=restart)
+    if notify:
+        await invalidate_caches()
+    return {
+        "previous": previous or "",
+        "owner": str(username or ""),
+        "snapshots_removed": int(snapshots),
+        "active_alerts_moved": int(alerts),
+        "frp_rules_suspended": int(frp_suspended),
+    }
+
+
+async def transfer_host(host_id: str, username: str) -> Dict[str, Any]:
+    """指派 / 收回一台受管主机，返回变更详情（``{"previous", "owner"}``）。
+
+    与 :func:`transfer_guest` 同一套理由：受管主机是「SSH 安全 / 登录审计 /
+    安全基线 / 端口与进程」四套安全数据的归属维度，换主人之后这几处的可见范围
+    都是读时现算的，所以只要改了归属并作废缓存，它们就会一起跟过去 ——
+    不需要、也不允许搬迁主机维度下的历史记录（那些是审计事实）。
+    """
+    previous = await get_owner(KIND_SSH_HOST, host_id)
+    if username:
+        await set_owner(KIND_SSH_HOST, host_id, username)
+    else:
+        await delete_owner(KIND_SSH_HOST, host_id)
+    await invalidate_caches()
+    return {"previous": previous or "", "owner": str(username or "")}
+
+
+async def forget_user(username: str) -> int:
+    """删掉某个用户名下的**全部**归属记录，返回删除条数。
+
+    账号被删除时必须调：归属行指向一个不存在的账号时，各处的解析都会退化成
+    「没有归属」（严格隔离下即「仅管理员可见」），但那只是碰巧——有的地方会把
+    空归属当成「不限」，也有的地方（如告警投递）要专门写兜底。与其让每条读路径
+    各自防御，不如在删号这个唯一的写点把账清干净。
+
+    清掉之后资源变成**无主**，由管理员决定给谁 —— 与对账作业的取舍一致
+    （「机器还在但没人认领是事实，该由人来决定」），这里不自动转给管理员。
+    """
+    name = str(username or "").strip()
+    if not name:
+        return 0
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "DELETE FROM resource_owner WHERE username = ?", (name,)
+        )
+        removed = cursor.rowcount
+        await db.commit()
+    await invalidate_caches()
+    return max(0, int(removed or 0))
 
 
 async def get_owner(kind: str, ref: str) -> Optional[str]:
@@ -276,6 +560,30 @@ async def owners_map(kind: str) -> Dict[str, str]:
             "SELECT ref, username FROM resource_owner WHERE kind = ?", (kind,)
         )
         return {row[0]: row[1] for row in await cursor.fetchall()}
+
+
+async def owners_maps(kinds: Sequence[str]) -> Dict[str, Dict[str, str]]:
+    """一次取出**多个类别**的全部归属（单条 SQL，``kind -> {ref: user}``）。
+
+    列表接口常常同时需要虚拟机、容器、快照三张归属表（例如全局快照汇总：
+    快照标记优先、没有标记就回落到所属机器的归属）。逐个调 :func:`owners_map`
+    就是三次独立往返，而它们读的是同一张表 —— 合并成一条 ``IN (...)`` 即可。
+    """
+    wanted = [str(kind) for kind in kinds if str(kind)]
+    if not wanted:
+        return {}
+    placeholders = ", ".join("?" for _ in wanted)
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT kind, ref, username FROM resource_owner "
+            f"WHERE kind IN ({placeholders})",
+            tuple(wanted),
+        )
+        rows = await cursor.fetchall()
+    merged: Dict[str, Dict[str, str]] = {kind: {} for kind in wanted}
+    for row in rows:
+        merged.setdefault(str(row[0]), {})[str(row[1])] = str(row[2] or "")
+    return merged
 
 
 async def owners_map_for(kind: str) -> Dict[str, str]:

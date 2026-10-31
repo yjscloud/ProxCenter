@@ -271,3 +271,58 @@ def normalize_task(task: Dict[str, Any]) -> Dict[str, Any]:
         "pid": task.get("pid"),
         "running": task.get("status") == "running",
     }
+
+
+#: 「轻量列表」保留的字段：仪表盘 / 看板只要这些就能算台数与占用，
+#: 而全量条目还带 tags / pool / netin / created / ip 等（500 台时体积差 4–5 倍）。
+GUEST_SUMMARY_FIELDS = (
+    "node",
+    "vmid",
+    "type",
+    "name",
+    "status",
+    "template",
+    "cpu",
+    "maxcpu",
+    "mem",
+    "maxmem",
+    "disk",
+    "maxdisk",
+    "uptime",
+    "connection_id",
+    "owner",
+)
+
+
+def guest_summary_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把客户机列表裁成轻量字段（``?summary=1`` 用）。
+
+    只裁剪、不改值：调用方拿到的仍是同一批机器、同一套归属过滤结果，
+    因此在列表页与看板之间不会出现口径差异。
+    """
+    return [
+        {field: row.get(field) for field in GUEST_SUMMARY_FIELDS if field in row}
+        for row in rows
+    ]
+
+
+def paginate_rows(
+    rows: List[Dict[str, Any]],
+    response: Any,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """把 ``limit`` 应用到列表结果上，并把**全量条数**写进 ``X-Total-Count``。
+
+    为什么先给「可选 limit」而不是直接改默认值：``/api/vms`` 这类接口有第三方
+    脚本在按「拿回全部」的语义用，悄悄截断会让它们少看到机器，而且不报错。
+    所以默认仍是全量；调用方显式要 ``limit`` 时才截断，并用响应头告诉它
+    「一共多少条、你拿到了多少」—— 前端据此显示「已加载 500 / 共 3120」。
+    """
+    total = len(rows)
+    try:
+        response.headers["X-Total-Count"] = str(total)
+    except Exception:  # noqa: BLE001 - 响应头写不进去不影响数据
+        pass
+    if limit is not None and limit >= 0:
+        return rows[:limit]
+    return rows

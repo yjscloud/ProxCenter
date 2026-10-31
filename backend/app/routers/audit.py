@@ -35,6 +35,11 @@ async def list_audit(
     start: Optional[float] = Query(default=None, description="起始 Unix 秒"),
     end: Optional[float] = Query(default=None, description="结束 Unix 秒"),
     search: Optional[str] = Query(default=None, description="关键词（动作/目标/详情/用户/IP）"),
+    before_id: Optional[int] = Query(
+        default=None,
+        ge=1,
+        description="键集分页：传上一页最后一条的 id，忽略 offset（深翻页不再全表扫）",
+    ),
     user: Dict[str, Any] = Depends(security.require_permission("audit.view")),
 ) -> Dict[str, Any]:
     # 用户隔离放在过滤之前：普通用户拿不到别人的记录，越权索取直接 403
@@ -46,7 +51,8 @@ async def list_audit(
         user,
         "audit.read",
         detail=(
-            f"limit={limit} offset={offset} username={username or '-'}"
+            f"limit={limit} offset={offset} before_id={before_id or '-'}"
+            f" username={username or '-'}"
             f" start={start or '-'} end={end or '-'} search={search or '-'}"
         ),
     )
@@ -59,6 +65,7 @@ async def list_audit(
         start=start,
         end=end,
         search=search,
+        before_id=before_id,
     )
 
     return {
@@ -75,9 +82,13 @@ async def list_audit(
             }
             for item in entries["items"]
         ],
+        # 键集模式下不数总数（total 为 None）：省掉那趟全表 COUNT
         "total": entries["total"],
         "limit": limit,
         "offset": offset,
+        "next_before_id": (
+            entries["items"][-1]["id"] if entries["items"] else None
+        ),
         # 前端据此提示「当前只显示自己的日志」；也方便调用方自检隔离是否生效
         "scope": "all" if security.visible_owner(user) is None else "own",
     }
@@ -93,7 +104,7 @@ async def list_actions(
         # 解析不出用户名时不能退化成「不加 username 条件」——那等于返回全量
         return {"actions": [], "users": []}
 
-    entries = await store.list_audit(limit=1000, username=scope)
-    actions = sorted({item["action"] for item in entries["items"]})
-    users = [scope] if scope else sorted({item["username"] for item in entries["items"]})
-    return {"actions": actions, "users": users}
+    # DISTINCT 直查（60 秒缓存）：原来拉 1000 行审计再在 Python 里去重，
+    # 行数一多就既慢又不准（超出 1000 行的动作根本不会出现在下拉里）。
+    actions, users = await store.audit_facets(scope or None)
+    return {"actions": actions, "users": [scope] if scope else users}

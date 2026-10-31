@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import i18n, mailer, panel_url, prefs, quota, security, store
+from .. import alerting, frp, i18n, mailer, ownership, panel_url, prefs, quota, security, store
 from ..schemas import ApprovalRequest, QuotaIn, UserCreate, UserUpdate
 
 
@@ -620,5 +620,27 @@ async def delete_user(
         raise HTTPException(status_code=409, detail="不能删除最后一个管理员账号")
 
     await store.delete_user(username)
-    await security.audit(request, user, "user.delete", target=username)
-    return {"deleted": True, "username": username}
+    # 归属行必须一起清：留着指向已删除账号的记录，各处解析都会退化成「没有归属」
+    # 或「归属无效」，而这两种情况在不同读路径上的兜底并不一致（见
+    # ownership.forget_user 的说明）。清掉之后资源变无主，由管理员重新指派。
+    owners_removed = await ownership.forget_user(username)
+    # 派生数据按各自的语义收尾（见两个函数的说明）：
+    #   * 告警规则转无主 —— 监控不能因删号出现真空，评估时归第一个管理员；
+    #   * 穿透规则直接删 —— 它是活的公网通道，账号没了没有保留的理由。
+    rules_detached = await alerting.detach_owner(username)
+    frp_dropped = await frp.drop_rules_of(username)
+    await security.audit(
+        request, user, "user.delete", target=username,
+        detail={
+            "owners_removed": owners_removed,
+            "alert_rules_detached": rules_detached,
+            "frp_rules_dropped": frp_dropped,
+        },
+    )
+    return {
+        "deleted": True,
+        "username": username,
+        "owners_removed": owners_removed,
+        "alert_rules_detached": rules_detached,
+        "frp_rules_dropped": frp_dropped,
+    }

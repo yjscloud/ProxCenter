@@ -40,7 +40,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import database, scheduler
+from . import database, pvecache, scheduler
 from .config import settings
 from .pve import ProxmoxError, all_connection_clients, get_client
 
@@ -102,6 +102,13 @@ _PURGE_MAX_BATCHES = 200
 
 # 查询结果行数上限（分组后的桶数 × 对象数）。命中说明降采样不够狠，
 # 由调用方按 step 参数收窄，同时用它置 truncated 标记。
+#: 单次历史查询的桶数上限（安全阀，不是分页）。
+#:
+#: 清单里建议降到 5000，这里**故意没有降**：一年视图按 1 小时一桶就是 8760 桶，
+#: 5000 会让单台机器的年视图在中途被截断，而且截断是静默的（前端只标一个
+#: 「数据被截断」，用户看到的是曲线到一半就断了）。真正的性能问题在下面的
+#: WHERE 条件（列上套函数导致索引失效），那条已经改掉了；这个阀门保持 5 万，
+#: 只用来挡异常请求。
 _QUERY_ROW_LIMIT = 50_000
 
 # 降采样档位：区间越长，桶越大。分钟级只在几小时内才有意义。
@@ -417,10 +424,25 @@ async def query(
                 "series": [],
                 "truncated": False,
             }
-        marks = ", ".join("?" for _ in refs)
-        # 与 resource_owner.ref 同一拼法：<连接或 "-">:<节点>:<VMID>
-        where.append(f"CONCAT(connection_id, ':', node, ':', vmid) IN ({marks})")
-        params.extend(refs)
+        # 与 resource_owner.ref 同一拼法：``<连接或 "-">:<节点>:<VMID>``。
+        #
+        # 原先是 ``CONCAT(connection_id, ':', node, ':', vmid) IN (...)`` ——
+        # 在列上套函数，唯一键 ``uk_metrics_point (scope, connection_id, node,
+        # vmid, ts)`` 完全用不上，等于把时间窗内的全表捞出来再逐行算字符串。
+        # 改成**行值比较**后走得到索引前缀（scope 已经单独限定了）。
+        refs = [str(ref) for ref in refs]
+        tuples = []
+        for ref in refs:
+            # 节点名里不会有冒号，从右往左切两刀即可
+            parts = ref.rsplit(":", 2)
+            if len(parts) != 3 or not parts[2].isdigit():
+                continue  # 形状不对的 ref 直接跳过，别让整个查询报 500
+            cid, node_name, vmid_text = parts
+            tuples.append((cid or "-", node_name, int(vmid_text)))
+        marks = ", ".join("(?, ?, ?)" for _ in tuples)
+        where.append(f"(connection_id, node, vmid) IN ({marks})")
+        for cid, node_name, vmid_value in tuples:
+            params.extend([cid, node_name, vmid_value])
 
     sql = (
         # name / guest_type 用 MAX() 包起来而不是进 GROUP BY：一旦窗口内改过名，
@@ -503,16 +525,28 @@ async def query(
     }
 
 
-async def coverage() -> Dict[str, Any]:
-    """历史覆盖情况：最早/最晚采样时间。用于界面提示「历史从什么时候开始」。"""
+#: 覆盖区间的缓存时长（秒）。``MIN/MAX(ts)`` 没有可用的 WHERE 条件，是整表扫描；
+#: 而它只是用来在界面上显示「历史从什么时候开始」，一分钟内不会有变化。
+COVERAGE_TTL = 60.0
+
+
+async def _coverage_range() -> Tuple[Optional[int], Optional[int]]:
     async with database.connect() as db:
         cursor = await db.execute(
             "SELECT MIN(ts) AS earliest, MAX(ts) AS latest FROM metrics_history"
         )
         row = await cursor.fetchone()
+    return (
+        _int(row["earliest"]) if row else None,
+        _int(row["latest"]) if row else None,
+    )
 
-    earliest = _int(row["earliest"]) if row else None
-    latest = _int(row["latest"]) if row else None
+
+async def coverage() -> Dict[str, Any]:
+    """历史覆盖情况：最早/最晚采样时间。用于界面提示「历史从什么时候开始」。"""
+    earliest, latest = await pvecache.cached(
+        "metrics:coverage", COVERAGE_TTL, _coverage_range
+    )
     return {
         "enabled": bool(settings.metrics_history_enabled),
         "interval": int(settings.metrics_sample_interval),

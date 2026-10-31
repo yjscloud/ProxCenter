@@ -20,8 +20,11 @@ import { Modal } from './ui/Modal';
 import { Notice } from './ui/EmptyState';
 import type { ReinstallJob } from '../api/types';
 
-/** 轮询间隔：一次重装是分钟级，5 秒够及时，也不至于把作业列表接口敲烂 */
-const POLL_MS = 5_000;
+/**
+ * 轮询间隔：重装是**分钟级**事件（建盘 + 拷贝 + 校验），15 秒足够及时；
+ * 原先 5 秒换不来任何体验，只是把作业列表接口多敲三倍。
+ */
+const POLL_MS = 15_000;
 
 export function ReinstallWatcher() {
   const t = useT();
@@ -40,8 +43,10 @@ export function ReinstallWatcher() {
     queryFn: vmReinstallApi.jobs,
     enabled: Boolean(user),
     refetchInterval: POLL_MS,
-    /* 切到别的标签页时也别停：用户正是冲着「它在后台跑」才离开这个页面的 */
-    refetchIntervalInBackground: true,
+    /* 切走的标签页不再轮询：作业结果不需要秒级到达，用户回来看时下一次 tick
+       就会带上最新状态。原先这里开着后台轮询，一个挂着的标签页等于永久占着
+       一条 5 秒一次的请求流。 */
+    refetchIntervalInBackground: false,
     retry: false,
   });
 
@@ -57,8 +62,12 @@ export function ReinstallWatcher() {
         setFailure(job);
       }
       /* 机器刚被整个重建过：它自己的详情、列表里的状态、卷与 IP 都可能变了。
-         与其猜哪些缓存键受影响，不如全量重取一次 —— 这是低频事件。 */
-      void queryClient.invalidateQueries();
+         这里**只**失效这几类 key，不写空参的 invalidateQueries()：那会把全站
+         所有已挂载 / 已缓存的 query 一起重取（含仪表盘那几条全量请求），一次
+         重装落定就变成一场请求风暴。 */
+      for (const key of ['reinstall-jobs', 'vms', 'lxc']) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
     }
   }, [jobsQuery.data, queryClient, t, toast]);
 

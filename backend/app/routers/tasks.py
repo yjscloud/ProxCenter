@@ -250,43 +250,235 @@ async def tasks_websocket(
             ws_user = row
     scope = await build_scope(ws_user)
 
-    last_signature = ""
+    # 订阅共享采集：上游只抓一次，归属过滤按本连接的 scope 在 hub 里各做各的。
+    # 仍然只推「有变化」的帧（逐帧比较由 hub 按订阅者记录）。
+    queue = _task_hub.subscribe(scope, limit)
     try:
         while True:
-            try:
-                tasks = await client.tasks(limit=limit)
-                normalized = [normalize_task(t) for t in (tasks or [])]
-                if scope is not None:
-                    normalized = scope.filter(
-                        normalized, guestguard.call_connection()
-                    )
-            except ProxmoxError as exc:
-                await websocket.send_json(
-                    {"type": "error", "message": exc.message}
-                )
-                await asyncio.sleep(interval)
-                continue
-
-            # Only transmit when the state actually changed.
-            signature = "|".join(
-                f"{t['upid']}:{t['status']}:{t.get('exitstatus') or ''}"
-                for t in normalized
-            )
-            if signature != last_signature:
-                last_signature = signature
-                await websocket.send_json(
-                    {
-                        "type": "tasks",
-                        "tasks": normalized,
-                        "running": sum(1 for t in normalized if t["running"]),
-                    }
-                )
-
-            await asyncio.sleep(interval)
+            await websocket.send_json(await queue.get())
     except WebSocketDisconnect:
         return
     except Exception:  # noqa: BLE001 - client went away
         return
+    finally:
+        # 订阅者都走光后，hub 的采集循环会自行退出（while self._subscribers）
+        _task_hub.unsubscribe(queue)
+
+
+#: 指标广播的采集节奏（秒）。与前端约定的 5 秒一致；订阅者各自的 ``interval``
+#: 只影响它自己的读取节奏，不再决定采集频率 —— 采集是全局一份。
+METRICS_TICK = 5.0
+
+
+class _MetricsHub:
+    """节点指标：**一条采集循环**，多个 WebSocket 连接共享结果。
+
+    原先每个连接各跑一个 ``while True: client.nodes() → send_json``：开 3 个
+    标签页就是 3 路独立轮询、3 份 PVE 请求，而且各自漂移，PVE 那边看到的是
+    「同一个面板在同时猛刷」。现在全局一条循环，每 tick 把同一份快照投递给
+    所有订阅者。
+
+    每个订阅者一个容量 2 的队列：消费不过来就丢最旧的帧 —— 指标只关心最新值，
+    堆积只会让页面上的读数越来越旧。
+    """
+
+    def __init__(self) -> None:
+        self._subscribers: set = set()
+        self._task: Optional[asyncio.Task] = None
+        self._last_signature = ""
+
+    def subscribe(self) -> "asyncio.Queue[Dict[str, Any]]":
+        queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(maxsize=2)
+        self._subscribers.add(queue)
+        self._ensure_task()
+        return queue
+
+    def unsubscribe(self, queue: "asyncio.Queue[Dict[str, Any]]") -> None:
+        self._subscribers.discard(queue)
+
+    def _ensure_task(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - 非事件循环环境（脚本 / 单测直接调）
+            return
+        self._task = loop.create_task(self._run())
+
+    async def _run(self) -> None:
+        try:
+            while self._subscribers:
+                payload = await self._sample()
+                self._publish(payload)
+                await asyncio.sleep(METRICS_TICK)
+        finally:
+            self._task = None
+            self._last_signature = ""
+
+    @staticmethod
+    async def _sample() -> Dict[str, Any]:
+        client = get_client()
+        try:
+            nodes = await client.nodes() or []
+        except ProxmoxError as exc:
+            return {"type": "error", "message": exc.message}
+        return {
+            "type": "metrics",
+            "ts": int(time.time()),
+            "nodes": [
+                {
+                    "node": n.get("node"),
+                    "status": n.get("status"),
+                    "cpu": n.get("cpu"),
+                    "maxcpu": n.get("maxcpu"),
+                    "mem": n.get("mem"),
+                    "maxmem": n.get("maxmem"),
+                    "loadavg": n.get("loadavg"),
+                    "uptime": n.get("uptime"),
+                }
+                for n in nodes
+                if isinstance(n, dict)
+            ],
+        }
+
+    def _publish(self, payload: Dict[str, Any]) -> None:
+        # 指标帧做变更判定：集群空转时（读数不变）不必每秒推一遍相同内容
+        if payload.get("type") == "metrics":
+            signature = repr(
+                [
+                    (
+                        item.get("node"),
+                        item.get("status"),
+                        item.get("cpu"),
+                        item.get("mem"),
+                        item.get("uptime"),
+                    )
+                    for item in payload.get("nodes") or []
+                ]
+            )
+            if signature == self._last_signature:
+                return
+            self._last_signature = signature
+
+        for queue in list(self._subscribers):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:  # pragma: no cover - 竞态，忽略
+                    pass
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:  # pragma: no cover
+                pass
+
+
+#: 进程级单例（多 worker 部署时每个 worker 各一条，互不共享）
+_metrics_hub = _MetricsHub()
+
+
+#: 任务推送的采集节奏（秒）与单次上游抓取条数。
+#:
+#: 上游一次抓 ``TASKS_HUB_LIMIT`` 条，各订阅者再按自己的 ``limit`` 截断 ——
+#: 上游取「所有订阅者里最大的需求」，只要一次请求就够所有人用。
+TASKS_TICK = 3.0
+TASKS_HUB_LIMIT = 200
+
+
+class _TaskHub:
+    """任务推送：一条采集循环，按订阅者各自的归属范围过滤后再分发。
+
+    ``/ws/tasks`` 原先每个连接自己 ``client.tasks(limit=…)`` —— 多开几个页面
+    就是几路独立的重复抓取。合成单例后上游只抓一次，代价是要为每个订阅者
+    保留它自己的 ``scope``：归属过滤**不能**在共享层做，否则一个用户的范围
+    会套到别人头上。
+    """
+
+    def __init__(self) -> None:
+        self._subscribers: Dict[Any, Dict[str, Any]] = {}
+        self._task: Optional[asyncio.Task] = None
+
+    def subscribe(self, scope: Any, limit: int) -> "asyncio.Queue[Dict[str, Any]]":
+        queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(maxsize=2)
+        self._subscribers[queue] = {"scope": scope, "limit": limit, "signature": ""}
+        self._ensure_task()
+        return queue
+
+    def unsubscribe(self, queue: Any) -> None:
+        self._subscribers.pop(queue, None)
+
+    def _ensure_task(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover
+            return
+        self._task = loop.create_task(self._run())
+
+    async def _run(self) -> None:
+        try:
+            while self._subscribers:
+                await self._tick()
+                await asyncio.sleep(TASKS_TICK)
+        finally:
+            self._task = None
+
+    async def _tick(self) -> None:
+        client = get_client()
+        try:
+            tasks = await client.tasks(limit=TASKS_HUB_LIMIT)
+            normalized = [normalize_task(t) for t in (tasks or [])]
+        except ProxmoxError as exc:
+            self._broadcast({"type": "error", "message": exc.message})
+            return
+        except Exception:  # noqa: BLE001 - 采集失败不该让循环退出
+            logger.warning("任务推送采集失败", exc_info=True)
+            return
+
+        connection = guestguard.call_connection()
+        for queue, state in list(self._subscribers.items()):
+            rows = normalized
+            scope = state.get("scope")
+            if scope is not None:
+                # 每个订阅者**各自**过滤：共享层过滤会把一个人的可见范围套给别人
+                rows = scope.filter(rows, connection)
+            limit = state.get("limit") or TASKS_HUB_LIMIT
+            rows = rows[:limit]
+
+            signature = "|".join(
+                f"{t['upid']}:{t['status']}:{t.get('exitstatus') or ''}"
+                for t in rows
+            )
+            if signature == state.get("signature"):
+                continue
+            state["signature"] = signature
+            self._offer(
+                queue,
+                {
+                    "type": "tasks",
+                    "tasks": rows,
+                    "running": sum(1 for t in rows if t["running"]),
+                },
+            )
+
+    def _broadcast(self, payload: Dict[str, Any]) -> None:
+        for queue in list(self._subscribers):
+            self._offer(queue, payload)
+
+    @staticmethod
+    def _offer(queue: Any, payload: Dict[str, Any]) -> None:
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:  # pragma: no cover
+                pass
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:  # pragma: no cover
+            pass
+
+
+_task_hub = _TaskHub()
 
 
 @router.websocket("/ws/metrics")
@@ -299,6 +491,9 @@ async def metrics_websocket(
 
     监控页各自 5 秒轮询一次 rrddata / status，浏览器开着几个页面就是几路
     独立的轮询。集中到这里轮询一次、广播给所有连接，天然去重。
+
+    采集由模块级 :class:`_MetricsHub` 单例负责（一条循环、多路投递）；
+    ``interval`` 参数仅为兼容旧前端保留，不再影响采集频率。
     """
     if not security.ws_origin_allowed(websocket):
         await _reject(websocket, 4403, i18n.tr("来源校验失败"))
@@ -321,34 +516,17 @@ async def metrics_websocket(
         return
 
     await websocket.accept()
+    # 订阅广播中心：一条采集循环打 PVE，所有标签页各收一份。原先每个连接
+    # 自己轮询，开 5 个标签页就是 5 路独立的 /nodes 请求，PVE 那边看到的是
+    # 「同一个面板在猛刷」。
+    queue = _metrics_hub.subscribe()
     try:
         while True:
-            try:
-                nodes = await client.nodes() or []
-                await websocket.send_json(
-                    {
-                        "type": "metrics",
-                        "ts": int(time.time()),
-                        "nodes": [
-                            {
-                                "node": n.get("node"),
-                                "status": n.get("status"),
-                                "cpu": n.get("cpu"),
-                                "maxcpu": n.get("maxcpu"),
-                                "mem": n.get("mem"),
-                                "maxmem": n.get("maxmem"),
-                                "loadavg": n.get("loadavg"),
-                                "uptime": n.get("uptime"),
-                            }
-                            for n in nodes
-                            if isinstance(n, dict)
-                        ],
-                    }
-                )
-            except ProxmoxError as exc:
-                await websocket.send_json({"type": "error", "message": exc.message})
-            await asyncio.sleep(interval)
+            payload = await queue.get()
+            await websocket.send_json(payload)
     except WebSocketDisconnect:
         return
     except Exception:  # noqa: BLE001 - client went away
         return
+    finally:
+        _metrics_hub.unsubscribe(queue)

@@ -19,11 +19,20 @@ early is the single most common cause of a half-built template.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import defaults, guestguard, ownership, quota, security, store, vmconfig
+from .. import (
+    defaults,
+    guestguard,
+    ownership,
+    pvecache,
+    quota,
+    security,
+    store,
+    vmconfig,
+)
 from ..formatters import pve_flag
 from ..pve import (
     ProxmoxError,
@@ -31,6 +40,7 @@ from ..pve import (
     connection_label,
     explain_clone_error,
     get_client,
+    parallel,
     requested_connection,
     set_request_connection,
 )
@@ -137,14 +147,19 @@ async def list_templates(
     else:
         targets = list(all_connection_clients()) or [(None, get_client())]
 
+    # 与 /lxc 同一取舍：连接之间彼此无关，串行等 C 个 RTT 没有意义。
+    resources_list = await parallel(
+        (client.cluster_resources("vm") for _profile, client in targets),
+        limit=max(len(targets), 1),
+    )
+
     output: List[Dict[str, Any]] = []
     failure: Optional[ProxmoxError] = None
 
-    for profile, client in targets:
-        try:
-            resources = await client.cluster_resources("vm")
-        except ProxmoxError as exc:
-            failure = failure or exc
+    for profile, resources in zip((p for p, _c in targets), resources_list):
+        if isinstance(resources, BaseException):
+            if isinstance(resources, ProxmoxError):
+                failure = failure or resources
             continue
 
         # profile 缺失时退回本次请求指定的连接 id，与记录归属用的 ref 前缀保持一致
@@ -191,8 +206,18 @@ async def list_templates(
     return output
 
 
+#: 容器系统模板的缓存时长（秒）。模板文件是人工上传的低频对象，60 秒足够；
+#: 换来的是「重复打开新建容器向导」不再每次扫盘。
+VZTMPL_TTL = 60.0
+
+#: 镜像（iso / import）列表的缓存时长。与 vztmpl 同一取舍，但镜像在「新建虚拟机
+#: 向导」的每次打开时都要扫，30 秒足够；上传路径会主动作废（见 storages.upload）。
+IMAGES_TTL = 30.0
+
+
 @router.get("/templates/vztmpl")
 async def list_ct_system_templates(
+    fresh: bool = Query(False, description="绕过 60 秒缓存，立刻重新扫描存储"),
     user: Dict[str, Any] = Depends(security.require_permission("template.view")),
 ) -> List[Dict[str, Any]]:
     """所有节点上可用的**容器系统模板**（``vztmpl``），跨连接聚合。
@@ -218,70 +243,131 @@ async def list_ct_system_templates(
     存储是不是共享的，这也是这里必须读 ``shared`` 字段的原因。
     """
     targets: List[Any] = list(all_connection_clients()) or [(None, get_client())]
-    output: List[Dict[str, Any]] = []
-    #: 已经列过的卷。键的形状随存储是否共享而变，见下面 shared 那段注释。
-    seen: set = set()
-    #: 已经成功扫过的共享存储 ``(连接, 存储名)`` —— 别的节点上不必再扫一遍
-    scanned_shared: set = set()
+    # 结果只按连接集合分档（这个接口不按用户 / 作用域过滤，口径是「全平台」），
+    # 连接增删会直接改变 key，不会拿旧连接的模板糊弄人。
+    ids = ",".join(
+        sorted(str((profile or {}).get("id") or "-") for profile, _client in targets)
+    )
 
-    for profile, client in targets:
+    async def _factory() -> List[Dict[str, Any]]:
+        # targets 直接传下去：再调一次 all_connection_clients() 会多打一次
+        # 同步 DB 读（连接配置），而它本来就是这次请求已经算好的东西。
+        return await _scan_vztmpl(targets)
+
+    return await pvecache.cached(
+        f"templates:vztmpl:{ids or '-'}", VZTMPL_TTL, _factory, fresh=fresh
+    )
+
+
+async def _scan_vztmpl(targets: List[Any]) -> List[Dict[str, Any]]:
+    """真正扫描 ``vztmpl`` 的那一段（进缓存的是它的返回值）。
+
+    并发结构（原先是「连接 → 节点 → 存储」三层串行，1–5 秒很常见）：
+
+    1. 各连接的节点清单并发；
+    2. 各节点（连接, 节点）的存储清单并发；
+    3. 各 ``vztmpl`` 存储的内容扫描并发，上限 6 —— 目录扫描是重 IO，
+       压太满会把「慢」换成 PVE 侧的 429 / 超时。
+
+    共享存储只扫一个节点：其余节点登记为**备选**，首选节点读失败再依次试，
+    「读失败不登记已扫过」的语义因此保留。
+    """
+    # 1) 节点清单
+    node_lists = await parallel(
+        [client.nodes() for _profile, client in targets],
+        limit=max(1, len(targets)),
+    )
+    entries: List[Tuple[str, str, Any, str]] = []
+    for (profile, client), nodes in zip(targets, node_lists):
+        if isinstance(nodes, BaseException):
+            continue
         # 与 /templates 同一套取值：profile 缺失时退回本次请求指定的连接 id
         cid = str(profile.get("id") or "") if profile else str(requested_connection() or "")
         label = connection_label(profile) if profile else ""
-        try:
-            nodes = await client.nodes()
-        except ProxmoxError:
-            continue
-
         for entry in nodes or []:
             node = str(entry.get("node") or "")
             if not node:
                 continue
-            try:
-                storages = await client.storages(node)
-            except ProxmoxError:
-                continue
+            entries.append((cid, label, client, node))
 
-            for storage in storages or []:
-                name = str(storage.get("storage") or "")
-                # 只扫**内容类型含 vztmpl** 的存储：别的存储上不可能有容器模板，
-                # 逐个去问一次纯属浪费（一个节点上通常只有一两个这样的池）
-                if not name or "vztmpl" not in str(storage.get("content") or "").split(","):
+    # 2) 存储清单
+    storage_lists = await parallel(
+        [client.storages(node) for _cid, _label, client, node in entries],
+        limit=8,
+    )
+
+    # 3) 候选扫描项：``(连接, 展示名, 客户端, 存储名, 是否共享, [候选节点...])``
+    scans: List[List[Any]] = []
+    index: Dict[Tuple[str, str], int] = {}
+    for (cid, label, client, node), storages in zip(entries, storage_lists):
+        if isinstance(storages, BaseException):
+            continue
+        for storage in storages or []:
+            name = str(storage.get("storage") or "")
+            # 只扫**内容类型含 vztmpl** 的存储：别的存储上不可能有容器模板，
+            # 逐个去问一次纯属浪费（一个节点上通常只有一两个这样的池）
+            if not name or "vztmpl" not in str(storage.get("content") or "").split(","):
+                continue
+            shared = pve_flag(storage.get("shared", 0)) == 1
+            if shared:
+                found = index.get((cid, name))
+                if found is not None:
+                    scans[found][5].append(node)
                     continue
-                shared = pve_flag(storage.get("shared", 0)) == 1
-                if shared and (cid, name) in scanned_shared:
-                    continue
-                try:
-                    items = await client.storage_content(node, name, content="vztmpl")
-                except ProxmoxError:
-                    # 读失败不登记「已扫过」：换个节点还有机会读到，
-                    # 登记了就会把这池模板整个漏掉
-                    continue
-                if shared:
-                    scanned_shared.add((cid, name))
-                for item in items or []:
-                    volid = str(item.get("volid") or "")
-                    # 共享存储：同一个 volid 从哪个节点看都是同一份，按 volid 去重
-                    # 本地存储：volid 相同也只是「同名」，是两份文件，键里带上节点
-                    key = (cid, volid) if shared else (cid, node, volid)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    output.append(
-                        {
-                            "node": node,
-                            "storage": name,
-                            "volid": volid,
-                            "name": volid.split("/")[-1] if "/" in volid else volid,
-                            "size": item.get("size"),
-                            "ctime": item.get("ctime"),
-                            # 共享存储上的模板在集群任何节点都能用，界面据此
-                            # 显示「共享」而不是其中一个节点名（见前端卡片）
-                            "shared": shared,
-                            "connection_id": cid,
-                            "connection_name": label,
-                        }
-                    )
+                index[(cid, name)] = len(scans)
+            scans.append([cid, label, client, name, shared, [node]])
+
+    async def _one(scan: List[Any]) -> Any:
+        cid, _label, client, name, _shared, nodes_to_try = scan
+        for node in nodes_to_try:
+            key = f"templates:vztmpl:{cid}:{node}:{name}"
+
+            async def _load(_client: Any = client, _node: str = node, _name: str = name) -> Any:
+                return await _client.storage_content(_node, _name, content="vztmpl")
+
+            try:
+                # 逐存储缓存：同一池在 60 秒内只扫一次，且失败不写缓存
+                return (node, await pvecache.cached(key, VZTMPL_TTL, _load))
+            except ProxmoxError:
+                # 读失败换下一个节点（共享存储的备选节点）
+                continue
+        return None
+
+    results = await parallel([_one(scan) for scan in scans], limit=6)
+
+    output: List[Dict[str, Any]] = []
+    #: 已经列过的卷。键的形状随存储是否共享而变，见下面 shared 那段注释。
+    seen: set = set()
+    for scan, result in zip(scans, results):
+        cid, label, _client, name, shared, _nodes = scan
+        if isinstance(result, BaseException):
+            raise result
+        if result is None:
+            continue
+        node, items = result
+        for item in items or []:
+            volid = str(item.get("volid") or "")
+            # 共享存储：同一个 volid 从哪个节点看都是同一份，按 volid 去重
+            # 本地存储：volid 相同也只是「同名」，是两份文件，键里带上节点
+            key = (cid, volid) if shared else (cid, node, volid)
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(
+                {
+                    "node": node,
+                    "storage": name,
+                    "volid": volid,
+                    "name": volid.split("/")[-1] if "/" in volid else volid,
+                    "size": item.get("size"),
+                    "ctime": item.get("ctime"),
+                    # 共享存储上的模板在集群任何节点都能用，界面据此
+                    # 显示「共享」而不是其中一个节点名（见前端卡片）
+                    "shared": shared,
+                    "connection_id": cid,
+                    "connection_name": label,
+                }
+            )
 
     output.sort(
         key=lambda i: (str(i.get("connection_name") or ""), str(i.get("name") or ""))
@@ -307,39 +393,62 @@ async def list_cloud_images(
     except ProxmoxError as exc:
         _raise(exc)
 
-    images: List[Dict[str, Any]] = []
+    # 待扫描项：每个 (存储, 内容类型) 一次 ``storage_content``。串行时
+    # 3 个存储 × 2 种内容 = 6 个往返，而这是「新建虚拟机向导」的必经一步。
+    plans: List[Tuple[str, str]] = []
     for storage in storages or []:
-        name = storage.get("storage")
+        name = str(storage.get("storage") or "")
         if not name:
             continue
         supported = {
             part.strip() for part in str(storage.get("content") or "").split(",")
         }
         for content in CLOUD_IMAGE_CONTENTS:
-            if content not in supported:
+            if content in supported:
+                plans.append((name, content))
+
+    cid = requested_connection() or "default"
+
+    async def _scan(name: str, content: str) -> Any:
+        async def _load() -> Any:
+            return await client.storage_content(node, name, content=content)
+
+        try:
+            # 逐存储缓存：镜像文件是人工上传的低频对象，30 秒里重复扫盘没有意义
+            return await pvecache.cached(
+                f"templates:images:{cid}:{node}:{name}:{content}",
+                IMAGES_TTL,
+                _load,
+            )
+        except ProxmoxError:
+            # 单个存储读不到（未挂载 / 权限不足）就跳过它：让整份列表变空
+            # 会显示成「未找到镜像」，比直接报错更难查。
+            return None
+
+    results = await parallel(
+        [_scan(name, content) for name, content in plans], limit=6
+    )
+
+    images: List[Dict[str, Any]] = []
+    for (name, content), items in zip(plans, results):
+        if isinstance(items, BaseException) or items is None:
+            continue
+        for item in items or []:
+            volid = str(item.get("volid") or "")
+            if not volid.lower().endswith(CLOUD_IMAGE_EXT):
                 continue
-            try:
-                items = await client.storage_content(node, name, content=content)
-            except ProxmoxError:
-                # 单个存储读不到（未挂载 / 权限不足）就跳过它：让整份列表变空
-                # 会显示成「未找到镜像」，比直接报错更难查。
-                continue
-            for item in items or []:
-                volid = str(item.get("volid") or "")
-                if not volid.lower().endswith(CLOUD_IMAGE_EXT):
-                    continue
-                images.append(
-                    {
-                        "volid": volid,
-                        "storage": name,
-                        "name": volid.rsplit("/", 1)[-1],
-                        "size": item.get("size"),
-                        "format": item.get("format", ""),
-                        # 标出来源目录：import 与 iso 是两回事，出了问题能一眼
-                        # 看出该去哪个目录找这个文件。
-                        "content": content,
-                    }
-                )
+            images.append(
+                {
+                    "volid": volid,
+                    "storage": name,
+                    "name": volid.rsplit("/", 1)[-1],
+                    "size": item.get("size"),
+                    "format": item.get("format", ""),
+                    # 标出来源目录：import 与 iso 是两回事，出了问题能一眼
+                    # 看出该去哪个目录找这个文件。
+                    "content": content,
+                }
+            )
     return images
 
 

@@ -163,6 +163,12 @@ class TestConnectionSecretsAtRest:
         finally:
             conn.close()
 
+        # 设置读取有一层秒级进程内缓存（见 store._read_setting_raw）：这里是**绕过
+        # 面板直接改库**，等于模拟「别的实例 / 运维手动改了 settings 表」，必须显式
+        # 作废缓存，否则读到的是缓存里那份完好的旧值。生产里正常写作走 set_setting，
+        # 那条路径自己会作废。
+        store.clear_settings_cache()
+
         conns = store.get_connections()
         assert conns[0]["host"] == "10.0.0.6"
         assert conns[0]["token_secret"] == ""   # 解不开 = 未配置，需重新填写

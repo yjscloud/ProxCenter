@@ -3584,7 +3584,7 @@ class TestSnapshotBackupIsolation:
         )
 
     def test_legacy_snapshot_backup_visible_to_vm_owner(self, api) -> None:
-        """存量（无创建者标记）的快照/备份按虚拟机归属回落可见，标记仍优先。
+        """存量（无创建者标记）的快照/备份按虚拟机归属回落可见；机器归属优先于标记。
 
         复现旧版本代码创建的资源：PVE 上有快照、notes 里没有 ``[owner:]``
         标记，``resource_owner`` 只登记了虚拟机的归属（而非快照/备份创建者）。
@@ -3642,14 +3642,17 @@ class TestSnapshotBackupIsolation:
         archives = {b["volid"]: b for b in resp.json()}
         assert legacy_volid in archives
         assert archives[legacy_volid]["owner"] == "bob"
-        # 创建者标记优先：admin 创建的归档即便机器归 bob 也不可见、动不了
-        assert admin_volid not in archives
+        # 机器归属优先：admin 创建的归档，机器归 bob 之后备份跟着机器走 ——
+        # 标记是「创建那一刻」抄下来的名字，机器改派后它不会跟着变，拿它当依据
+        # 就是「备份仍归前任、前任仍能下载别人机器的新备份」。
+        assert archives[admin_volid]["owner"] == "bob"
         resp = api.delete(
             "/api/backups",
             params={"node": "pve1", "storage": "local", "volid": admin_volid},
             headers=bob,
         )
-        assert resp.status_code == 403
+        # 归属校验通过（不是 403）；mock 未实现该 DELETE，501 属预期
+        assert resp.status_code != 403, resp.text
         # 存量归档（机器归属确认）放行：归属校验在 403 处拦截，
         # 走到 PVE 调用即为通过（mock 未实现该 DELETE，返回 501 属预期）
         resp = api.delete(

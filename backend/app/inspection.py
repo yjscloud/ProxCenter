@@ -193,10 +193,13 @@ async def persist_reports(
             "inspection_history", _HISTORY_COLUMNS, _HISTORY_CONFLICT
         )
         async with database.connect() as db:
+            # 逐条 execute 是「每条一次往返」：一次巡检几十台就是几十轮。
+            # 两条 executemany 把整批压成两轮（见 database.executemany）。
+            snapshot_params = []
+            history_params = []
             for report in rows:
                 host_id = str(report.get("host_id") or "")
-                await db.execute(
-                    snapshot_sql,
+                snapshot_params.append(
                     (
                         namespace,
                         host_id,
@@ -207,12 +210,11 @@ async def persist_reports(
                         int(duration_ms),
                         _dump(report),
                         now,
-                    ),
+                    )
                 )
                 # 同时记一条趋势桶：同一小时内重复巡检只覆盖那一行
                 metrics = _history_metrics(namespace, report)
-                await db.execute(
-                    history_sql,
+                history_params.append(
                     (
                         namespace,
                         host_id,
@@ -223,8 +225,10 @@ async def persist_reports(
                         metrics["fail_count"],
                         metrics["warn_count"],
                         metrics["issue_count"],
-                    ),
+                    )
                 )
+            await db.executemany(snapshot_sql, snapshot_params)
+            await db.executemany(history_sql, history_params)
             await db.commit()
     except Exception:  # noqa: BLE001 - 落库失败不能让真扫结果白跑（退化为改造前）
         logger.warning("巡检快照落库失败：%s（本轮跳过）", namespace, exc_info=True)

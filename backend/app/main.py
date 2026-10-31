@@ -98,6 +98,7 @@ from . import notifications
 from . import ownership
 from . import password_reset
 from . import prefs
+from . import pvecache
 from . import scheduler
 from . import security
 from . import site
@@ -122,6 +123,7 @@ from . import quorumguard
 # 资源额度：按所有者分配的核数 / 内存 / 磁盘 / 快照额度（见 app/quota.py 下半部分）
 from . import quota
 from . import database
+from . import reqmetrics
 from . import guest_created
 # 巡检快照：把「端口与进程」「安全基线」的结果落库，读接口只读快照
 from . import inspection
@@ -150,6 +152,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await alerting.init_table()
     await cert_manager.init_table()
     await ownership.init_table()
+    # 归属代际号接进 pvecache：pvecache 是进程内缓存，改派只能清掉当前进程那份，
+    # 多 worker 部署下别的进程还留着旧账。接上之后，代际号一变所有进程一起作废。
+    pvecache.set_epoch_provider(ownership.generation)
     # 用户级资源额度表（roles.quota 列由上面的 init_db 负责补）
     await quota.init_table()
     # 受管主机表：本次升级给它加了「来源虚拟机」三列（node / vmid / conn_id）。
@@ -841,6 +846,11 @@ class PanelAccessControlMiddleware:
 app.add_middleware(PanelAccessControlMiddleware)
 
 
+# 计数归零 + 响应头回写（X-PVE-Calls / X-DB-Queries）。放在最外层，被前面任何
+# 一道闸拦下的请求也带得上这两个头（都是 0），不会让人误以为「埋点没生效」。
+app.add_middleware(reqmetrics.RequestMetricsMiddleware)
+
+
 @app.exception_handler(ProxmoxError)
 async def proxmox_error_handler(request: Request, exc: ProxmoxError) -> JSONResponse:
     """Translate Proxmox failures into a consistent JSON shape."""
@@ -1253,6 +1263,17 @@ def _owners_summary(result: Any) -> str:
     return "，".join(parts)
 
 
+def _prune_summary(result: Any) -> str:
+    """删号归属清理的摘要：清了几条、账号表读没读到。"""
+    if not isinstance(result, dict):
+        return ""
+    refused = str(result.get("refused") or "")
+    if refused:
+        return f"读取账号表失败，已跳过（{refused[:40]}）"
+    removed = int(result.get("removed") or 0)
+    return f"清理 {removed} 条指向已删账号的归属" if removed else "无变化"
+
+
 def _import_summary(result: Any) -> str:
     """主机登录审计返回的是 {imported, skipped, ...}，只挑导入条数报出来。"""
     if not isinstance(result, dict):
@@ -1463,6 +1484,22 @@ scheduler.register(
         quota.reconcile_owners,
         OWNER_RECONCILE_INTERVAL,
         summarize=_owners_summary,
+        first_delay=OWNER_RECONCILE_FIRST_DELAY,
+    )
+)
+# 删号归属清理：比的是「归属账 vs 账号表」—— 人没了，记录也该删。删号的写点
+# 已经会清（见 routers/users.delete_user），这里兜的是那一步失败或存量脏数据。
+# 独立成一个作业而不是并进上面那个：对账要读 PVE，它只读两张本地表，失败面小，
+# 也不该因为一条 PVE 连接读不到就整轮跳过。
+scheduler.register(
+    _job(
+        "owner_prune",
+        "删号归属清理",
+        "数据清理",
+        "清掉归属表里指向已不存在账号的记录（删号写点失败 / 存量数据的兜底）",
+        quota.prune_deleted_owners,
+        OWNER_RECONCILE_INTERVAL,
+        summarize=_prune_summary,
         first_delay=OWNER_RECONCILE_FIRST_DELAY,
     )
 )

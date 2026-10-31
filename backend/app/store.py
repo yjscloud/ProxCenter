@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from passlib.context import CryptContext
 
-from . import crypto, database
+from . import crypto, database, pvecache
 from .config import (
     DATA_DIR,
     WEAK_ADMIN_PASSWORDS,
@@ -976,8 +976,12 @@ def audit_filters(
         where.append("username = ?")
         params.append(username)
     if action:
+        # 前缀匹配而不是 `%x%`：``action`` 上有 idx_audit_action，前置通配符会让
+        # 它彻底失效（每次翻页都是一次全表扫）。界面上的「动作」是从
+        # /audit/actions 的下拉里选的完整值，用前缀匹配完全等价；
+        # 手输 ``vm`` 也照样能命中 ``vm.create``。
         where.append("action LIKE ?")
-        params.append(f"%{action}%")
+        params.append(f"{action}%")
     if result:
         where.append("result = ?")
         params.append(result)
@@ -1043,7 +1047,15 @@ async def list_audit(
     start: Optional[float] = None,
     end: Optional[float] = None,
     search: Optional[str] = None,
+    before_id: Optional[int] = None,
 ) -> Dict[str, Any]:
+    """审计日志分页。
+
+    ``before_id`` 给的是**键集分页**（传上一页最后一条的 ``id``）：``OFFSET``
+    翻到第 20 万行时 MySQL 要先扫过前面全部记录，越翻越慢；而 ``id`` 是自增
+    主键、与写入顺序一致，``WHERE id < ? ORDER BY id DESC`` 直接定位。
+    不传 ``before_id`` 时保持原来的 offset 语义（老前端与导出脚本不受影响）。
+    """
     where, params = audit_filters(
         username=username,
         action=action,
@@ -1052,24 +1064,78 @@ async def list_audit(
         end=end,
         search=search,
     )
+
+    keyset = before_id is not None
+    if keyset:
+        where = [*where, "id < ?"]
+        params = [*params, int(before_id)]
+
     clause = f"WHERE {' AND '.join(where)}" if where else ""
 
     async with database.connect() as db:
-        cursor = await db.execute(
-            f"SELECT COUNT(*) FROM audit_log {clause}", params
-        )
-        (total,) = await cursor.fetchone()
+        # 键集分页不数总数：正是为了避开那一趟全表 COUNT。前端在键集模式下
+        # 显示「还有更多」而不是「共 N 页」。
+        total: Optional[int] = None
+        if not keyset:
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM audit_log {clause}", params
+            )
+            (total,) = await cursor.fetchone()
 
-        cursor = await db.execute(
-            f"SELECT * FROM audit_log {clause} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            [*params, limit, offset],
-        )
+        if keyset:
+            cursor = await db.execute(
+                f"SELECT * FROM audit_log {clause} ORDER BY id DESC LIMIT ?",
+                [*params, limit],
+            )
+        else:
+            cursor = await db.execute(
+                f"SELECT * FROM audit_log {clause} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            )
         rows = await cursor.fetchall()
 
     return {
         "items": [dict(r) for r in rows],
-        "total": int(total),
+        "total": int(total) if total is not None else None,
     }
+
+
+#: 动作 / 用户名清单的缓存时长（秒）。它们是「历史里出现过的值」，不需要实时：
+#: 原来为了填这两个下拉，每次都拉 1000 行审计再在 Python 里去重。
+AUDIT_FACETS_TTL = 60.0
+
+
+async def _audit_actions(username: Optional[str]) -> List[str]:
+    clause = "WHERE username = ?" if username else ""
+    params = (username,) if username else ()
+    async with database.connect() as db:
+        cursor = await db.execute(
+            f"SELECT DISTINCT action FROM audit_log {clause} ORDER BY action", params
+        )
+        rows = await cursor.fetchall()
+    return [str(r["action"]) for r in rows if r and r["action"]]
+
+
+async def _audit_users() -> List[str]:
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT DISTINCT username FROM audit_log ORDER BY username"
+        )
+        rows = await cursor.fetchall()
+    return [str(r["username"]) for r in rows if r and r["username"]]
+
+
+async def audit_facets(username: Optional[str]) -> Tuple[List[str], List[str]]:
+    """筛选下拉的候选值：``(动作列表, 用户名列表)``，各自 60 秒缓存。"""
+    actions = await pvecache.cached(
+        f"audit:actions:{username or '-'}",
+        AUDIT_FACETS_TTL,
+        lambda: _audit_actions(username),
+    )
+    users = await pvecache.cached(
+        "audit:users", AUDIT_FACETS_TTL, _audit_users
+    )
+    return actions, users
 
 
 async def stream_audit(
@@ -1140,12 +1206,15 @@ async def set_setting(key: str, value: str) -> None:
             (key, value),
         )
         await db.commit()
+    # 写完就地更新读缓存：本进程必须立刻看到刚写的值，不能等 TTL 过期。
+    _remember_setting(key, str(value or ""))
 
 
 async def delete_setting(key: str) -> None:
     async with database.connect() as db:
         await db.execute("DELETE FROM settings WHERE `key` = ?", (key,))
         await db.commit()
+    forget_setting(key)
 
 
 CONNECTION_KEY = "pve_connection"        # 旧版单连接配置（保留用于迁移）
@@ -1226,19 +1295,66 @@ async def _encrypt_stored_connection_secrets() -> None:
             logger.warning("迁移 %s 的 PVE 密钥失败", key, exc_info=True)
 
 
+#: settings 读结果的进程内缓存：``key -> (写入时刻, 原始值)``。
+#:
+#: 为什么必须有它：下面这些读发生在**异步请求路径上**（``store.get_connections``
+#: / ``get_active_connection_id``，以及 ``pve.get_client()`` 每 3 秒一次的版本
+#: 判定），而底层走的是 pymysql 的**同步**连接。一次建连就是几毫秒（DB 抖动时
+#: 上百毫秒）的整段事件循环停摆 —— 表现为「一个接口慢，所有接口一起慢」，
+#: 比单个接口慢更难定位。缓存把「每请求 1–3 次同步建连」压到「每 TTL 一次」。
+#:
+#: 一致性：所有写入都经过 :func:`set_setting` / :func:`delete_setting`，写完
+#: 就地更新缓存，本进程永远读到刚写的值；其它进程最多滞后一个 TTL。
+SETTINGS_CACHE_TTL = 5.0
+_settings_cache: Dict[str, Tuple[float, str]] = {}
+
+
+def _remember_setting(key: str, value: str) -> None:
+    _settings_cache[key] = (time.time(), value)
+
+
+def forget_setting(key: str) -> None:
+    """作废一个 key 的缓存（外部进程改过配置、测试直接改库时用）。"""
+    _settings_cache.pop(key, None)
+
+
+def clear_settings_cache() -> None:
+    _settings_cache.clear()
+
+
+def _cached_setting(key: str) -> Optional[str]:
+    hit = _settings_cache.get(key)
+    if hit is None:
+        return None
+    if time.time() - hit[0] >= SETTINGS_CACHE_TTL:
+        _settings_cache.pop(key, None)
+        return None
+    return hit[1]
+
+
 def _read_setting_raw(key: str) -> str:
-    """Synchronous single-key read.
+    """Synchronous single-key read（带进程内缓存）。
 
     Called from :func:`app.pve._load_connection`, which runs inside request
     handling where an extra event loop hop would be awkward. 具体连接方式交给
     :func:`app.database.read_setting_sync`（pymysql 同步连接），
     这里只负责把「读不到」统一成空串。
+
+    **缓存**：每次请求都要读连接配置（``get_client`` / ``get_connections`` /
+    ``connection_label`` …），旧实现每读一次就建一次 MySQL 连接，把「同步建连」
+    摊到了每个请求头上。现在同一条设置几秒内只查一次库；写入走
+    :func:`set_setting` 会立刻作废对应 key，所以面板自己改配置仍然即时生效。
+    只有**绕过面板直接改库**（运维手工 UPDATE、另一个实例）才会滞后到 TTL。
     """
+    cached = _cached_setting(key)
+    if cached is not None:
+        return cached
     try:
         value = database.read_setting_sync(key)
     except Exception:  # noqa: BLE001 - 配置读不出来时退回默认值，不要影响请求
         logging.getLogger(__name__).warning("读取设置 %s 失败", key, exc_info=True)
         return ""
+    _remember_setting(key, value or "")
     return value or ""
 
 

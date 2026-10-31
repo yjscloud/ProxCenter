@@ -145,10 +145,16 @@ export function SshSecurityConfig() {
     setOwnerBusy(true);
     try {
       const res = await sshFleetApi.assignOwner(target.id, ownerValue.trim());
+      /* 改派时把「原来归谁」写出来：覆盖式写入之后，这是唯一能说明
+         「这台主机的安全数据刚才是谁在管」的地方 */
+      const shifted =
+        res.previous && res.previous !== res.owner
+          ? ` (${t('sshConfig.ownerPrevious', { name: res.previous })})`
+          : '';
       toast.success(
         res.owner ? t('sshConfig.ownerUpdated') : t('sshConfig.ownerCleared'),
         res.owner
-          ? `${target.name} → ${res.owner}`
+          ? `${target.name} → ${res.owner}${shifted}`
           : t('sshConfig.ownerClearedDetail'),
       );
       setOwnerTarget(null);

@@ -142,7 +142,13 @@ def feishu_key(owner: str) -> str:
 
 
 def owner_of(item: Dict[str, Any]) -> str:
-    """条目的归属用户名；旧数据没有归属时为空串。"""
+    """条目的**创建人**（旧数据没有归属时为空串）。
+
+    只回答「这条规则是谁配的」—— 规则的可见性与编辑权按它划分。它**不是**
+    收件人判定的依据：告警发给谁、谁看得见，一律按目标资源**当前**的归属解析
+    （见 :class:`RecipientBook`）。机器换了主人之后，旧规则不该继续把新主人的
+    告警留在前任名下，也不该让前任继续持有「我正在告警」的状态。
+    """
     return str((item or {}).get("username") or "").strip()
 
 
@@ -173,9 +179,9 @@ class RecipientBook:
     这条告警。
 
     兜底：机器没有归属记录（面板之外创建的、对账时清掉的），或者归属记录指向一个
-    已经不存在的账号（用户被删掉时归属表不级联清理）时，回落给配规则的人。宁可
-    发给「不该收的人」，也不能让一条告警谁都不收到 —— 但这个兜底只对能看到全局
-    机器的角色成立（见 :meth:`is_supervisor`）。
+    **已经收不到告警的账号**（被删、被停用、待审批、已到期冻结）时，回落给配规则
+    的人。宁可发给「不该收的人」，也不能让一条告警谁都不收到 —— 但这个兜底只对
+    能看到全局机器的角色成立（见 :meth:`is_supervisor`）。
 
     **普通用户配的规则不走这条路**：他没有「别人的机器」可管，规则就该落到他自己
     名下（见 :meth:`is_supervisor`）。否则新建的普通账号配完规则，告警全被投到机器
@@ -196,6 +202,7 @@ class RecipientBook:
         self._hosts: Optional[Dict[str, str]] = None
         self._users: Optional[set] = None
         self._roles: Optional[Dict[str, str]] = None
+        self._reachable: Optional[set] = None
         self._supervisors: Dict[str, bool] = {}
         self._connection: Optional[str] = None
 
@@ -247,10 +254,31 @@ class RecipientBook:
         self._roles = {
             str(item.get("username") or ""): str(item.get("role") or "") for item in users
         }
+        # 「还能收到告警」的账号：存在 ∧ 未停用 ∧ 审批通过 ∧ 未过期/未冻结。
+        # 只看存在性是不够的 —— 一个被停用或已到期冻结的账号仍然在 users 表里，
+        # 但它已经登不进面板，把告警发给它等于丢进黑洞（而且没人会发现）。
+        now = time.time()
+        reachable: set = set()
+        for item in users:
+            name = str(item.get("username") or "")
+            if not name or not bool(item.get("enabled", True)):
+                continue
+            if str(item.get("status") or store.STATUS_ACTIVE) != store.STATUS_ACTIVE:
+                continue
+            try:
+                expires_at = float(item.get("expires_at") or 0)
+                frozen = float(item.get("expiry_frozen") or 0)
+            except (TypeError, ValueError):
+                expires_at, frozen = 0.0, 0.0
+            if frozen or (expires_at and expires_at <= now):
+                continue
+            reachable.add(name)
+        self._reachable = reachable
 
-    async def _known(self, username: str) -> bool:
+    async def _can_receive(self, username: str) -> bool:
+        """这个人**现在**还能不能收到告警（账号存在且可用）。"""
         await self._load_users()
-        return username in self._users
+        return username in (self._reachable or set())
 
     async def is_supervisor(self, username: str) -> bool:
         """这个人配的规则要不要按「机器归属」投递（管理员 / 区域管理员：要）。
@@ -291,13 +319,21 @@ class RecipientBook:
         )
 
     async def recipient(self, fallback: str, machine_owner: Optional[str]) -> str:
-        """合成收件人：机器归属者优先，不可用时回落给 ``fallback``（配规则的人）。"""
+        """合成收件人：机器归属者优先，不可用时回落给 ``fallback``（配规则的人）。
+
+        「不可用」比「账号不存在」更宽：被停用、待审批、已到期冻结的账号同样收不到
+        —— 它们登不进面板，告警发过去就是黑洞。这类账号的机器归属**不改**（那是不
+        可逆的资源处置），只换投递对象，并在日志里留下原因。
+        """
         owner = str(machine_owner or "").strip()
         if not owner or owner == fallback:
             return fallback
-        if not await self._known(owner):
-            # 归属记录指向一个已不存在的账号：发给它等于把告警丢进黑洞
-            logger.info("机器归属 %s 已不是有效账号，告警回落到规则归属者", owner)
+        if not await self._can_receive(owner):
+            logger.info(
+                "机器归属 %s 已不是可用账号（不存在 / 停用 / 未审批 / 已过期），"
+                "告警回落到规则归属者",
+                owner,
+            )
             return fallback
         return owner
 
@@ -2805,6 +2841,83 @@ async def adopt_active(
             active[new_key] = dict(moved, alarm_key=new_key)
             return moved
     return {}
+
+
+async def retarget_guest(
+    connection_id: str, node: str, vmid: Any, new_owner: str
+) -> int:
+    """把某台客户机还挂着的活动告警改挂到新收件人名下，返回搬动条数。
+
+    为什么改派时要搬：``alert_active`` 的主键是「收件人 | 规则 | 对象」
+    （见 :func:`alarm_key`），收件人又按机器归属算。机器换了主人之后，旧行再也
+    不会被本轮评估命中 —— 恢复流程找的是新 key，旧 key 只会一直躺在库里。表现
+    出来就是「机器已经给别人了，告警还挂在我这儿」，而接手的人看不到这台机器
+    正在告警，直到它下一次重新触发。
+
+    只动「同一个对象」的行：``target_type`` 是 vm、节点与 VMID 相同，连接两边
+    都有值时必须相等（任一为空按「未知」处理，与恢复判定的口径一致）。
+
+    ``new_owner`` 为空表示这台机器被收回了（无主）：行会挪到空收件人名下，
+    只有管理员看得到 —— 正是「无主机器由管理员兜底」的既有语义。
+    """
+    vmid_text = str(vmid if vmid is not None else "").strip()
+    if not vmid_text:
+        return 0
+    node_text = str(node or "")
+    cid = str(connection_id or "")
+    target_owner = str(new_owner or "")
+
+    active = await load_active()
+    moved = 0
+    for key, row in list(active.items()):
+        if str(row.get("target_type") or "") != "vm":
+            continue
+        if str(row.get("node") or "") != node_text:
+            continue
+        if str(row.get("vmid") or "") != vmid_text:
+            continue
+        row_cid = str(row.get("connection_id") or "")
+        if cid and row_cid and row_cid != cid:
+            continue
+        if str(row.get("username") or "") == target_owner:
+            continue
+        # key 形状固定是「收件人|规则id|对象」，只换第一段，后面整段照搬
+        rest = str(key).partition("|")[2]
+        if not rest:
+            continue
+        new_key = f"{target_owner}|{rest}"
+        await mark_active(new_key, dict(row, username=target_owner))
+        # 邮件计数不在 ACTIVE_COLUMNS 里（见 mark_mail_sent）：不搬就会从「没发过」
+        # 重新开始，接手的人立刻补收一封旧告警的副本。
+        mail_ts = int(row.get("mail_ts") or 0)
+        mail_count = int(row.get("mail_count") or 0)
+        if mail_ts or mail_count:
+            await mark_mail_sent(new_key, mail_ts, mail_count)
+        await clear_active(key)
+        moved += 1
+    return moved
+
+
+async def detach_owner(username: str) -> int:
+    """把一个已删除账号名下的告警规则转为「无主」，返回改动条数。
+
+    规则是**监控配置**，删号时一并删掉等于静默关掉一台机器的告警，而那台机器
+    可能还在（归属已随删号清空），恰恰更需要有人盯。留空的 ``username`` 在评估
+    时归第一个管理员（见 :func:`evaluate` 的 fallback），可见性也只给管理员；
+    规则本身继续生效，不会出现监控真空。
+    """
+    name = str(username or "").strip()
+    if not name:
+        return 0
+    rules = await load_rules()
+    changed = 0
+    for rule in rules:
+        if owner_of(rule) == name:
+            rule["username"] = ""
+            changed += 1
+    if changed:
+        await save_rules(rules)
+    return changed
 
 
 def _needed_connections(rules: Iterable[Dict[str, Any]]) -> Optional[set]:

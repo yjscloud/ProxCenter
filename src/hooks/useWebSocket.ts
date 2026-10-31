@@ -11,7 +11,12 @@ export type WsStatus = 'connecting' | 'open' | 'closed' | 'error';
 
 export interface UseWebSocketResult {
   status: WsStatus;
-  /** 最近收到的消息 */
+  /**
+   * 最近收到的消息（快照，不触发渲染）。
+   *
+   * 需要逐条处理请用 ``onMessage``：这里是给「打开面板时想看一眼最后一条」
+   * 这类场景的，不要拿它做数据源 —— 它只在组件因别的原因重渲染时才更新。
+   */
   lastMessage: TaskWsMessage | null;
   /** 手动重连 */
   reconnect: () => void;
@@ -45,7 +50,11 @@ export function useWebSocket(
   } = options;
 
   const [status, setStatus] = useState<WsStatus>('closed');
-  const [lastMessage, setLastMessage] = useState<TaskWsMessage | null>(null);
+  /* 最近一条消息**不进 state**：它只是「方便看一眼」的快照，没有任何消费者
+     需要靠它触发渲染（逐条处理走 onMessage）。放进 state 的代价是每条日志
+     —— 备份一个文件能刷几百条 —— 都让页面重渲染一次，正好和 F12 的批量
+     flush 互相抵消。 */
+  const lastMessageRef = useRef<TaskWsMessage | null>(null);
   const visible = useDocumentVisible();
 
   const socketRef = useRef<WebSocket | null>(null);
@@ -120,7 +129,7 @@ export function useWebSocket(
       try {
         const data = JSON.parse(event.data) as TaskWsMessage;
         if (data && typeof data.upid === 'string') {
-          setLastMessage(data);
+          lastMessageRef.current = data;
           onMessageRef.current?.(data);
         }
       } catch {
@@ -170,7 +179,7 @@ export function useWebSocket(
     };
   }, [enabled, visible, connect, disconnect]);
 
-  return { status, lastMessage, reconnect, disconnect };
+  return { status, lastMessage: lastMessageRef.current, reconnect, disconnect };
 }
 
 /* ---------------------------------------------------------------------------

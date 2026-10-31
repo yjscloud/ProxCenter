@@ -556,18 +556,33 @@ export function Alerts() {
   const hookSet: boolean = !!query.data?.hook_set;
   const hookMasked: string = String(query.data?.hook_masked ?? "");
   const hookSecretSet: boolean = !!query.data?.hook_secret_set;
-  const recoveryCount = records.filter((r) => r.kind === "recovery").length;
-  const alarmCount = records.length - recoveryCount;
-  const failCount = records.filter((r) => r.result !== "sent").length;
-  /* 同一事件的重复提醒：记录里要数出来，否则「告警 8 条」会被读成触发了 8 次 */
-  const repeatCount = records.filter((r) => Number(r.is_repeat) === 1).length;
+  /* 四个计数塞进一次遍历：原先各扫一遍 records，而这一页每几秒就拉一次历史
+     （规则多、记录多时一次上千行），四遍就是白扫三遍。 */
+  const { recoveryCount, alarmCount, failCount, repeatCount } = useMemo(() => {
+    let recovery = 0;
+    let failed = 0;
+    let repeated = 0;
+    for (const r of records) {
+      if (r.kind === "recovery") recovery += 1;
+      if (r.result !== "sent") failed += 1;
+      /* 同一事件的重复提醒：记录里要数出来，否则「告警 8 条」会被读成触发了 8 次 */
+      if (Number(r.is_repeat) === 1) repeated += 1;
+    }
+    return {
+      recoveryCount: recovery,
+      alarmCount: records.length - recovery,
+      failCount: failed,
+      repeatCount: repeated,
+    };
+  }, [records]);
 
   /* 「正在告警」与「历史条数」是两个数，混着看必然误会（「50 条待处理」里有
      一大半是早就恢复了的旧记录）。所以副标题把两者并列写出来：前者是还没解决
      的对象数（首页待办同口径，已排除静默来源），后者是这段时间发生过多少事。 */
   const activeAlarms = query.data?.active ?? [];
-  const activeTargets = new Set(
-    activeAlarms.map((a) => String(a.target || "")).filter(Boolean),
+  const activeTargets = useMemo(
+    () => new Set(activeAlarms.map((a) => String(a.target || "")).filter(Boolean)),
+    [activeAlarms],
   );
   const historySubtitle = [
     activeTargets.size > 0 ? t("alerts.activeObjects", { n: activeTargets.size }) : "",
@@ -598,23 +613,34 @@ export function Alerts() {
    * （虚拟机被关机 / 删除），此时补一条「已不在列表」的选项，
    * 避免下拉框静默变成空白导致规则看起来无故失效。
    */
+  const targetSelectCache = useMemo(() => {
+    const cache = new Map<string, Array<{ label: string; value: string }>>();
+    const build = (rule: AlertRule) => {
+      const list = targetOptions[rule.target_type === "vm" ? "vm" : "node"];
+      if (list.some((o) => o.value === rule.target)) return list;
+      const legacy = !String(rule.target || "").includes(":");
+      return [
+        {
+          label: legacy
+            ? t("alerts.legacyTarget", { name: rule.target })
+            : t("alerts.notInList", { name: rule.target }),
+          value: rule.target,
+        },
+        ...list,
+      ];
+    };
+    for (const rule of rules ?? []) {
+      cache.set(`${rule.target_type}:${rule.target}`, build(rule));
+    }
+    return cache;
+  }, [rules, targetOptions, t]);
+
   function targetSelectOptions(rule: AlertRule) {
-    const list = targetOptions[rule.target_type === "vm" ? "vm" : "node"];
-    if (list.some((o) => o.value === rule.target)) return list;
     /* 对不上有两种原因，别混成一句：
        * 目标带连接前缀（新格式）却不在列表里 —— 机器被关机 / 删除了；
        * 目标没有连接前缀 —— 规则存的是升级前的旧写法（裸 VMID / 机器名），
          后端会尽量自动归一，这里也提示「重新选择」，选完保存就完成迁移。 */
-    const legacy = !String(rule.target || "").includes(":");
-    return [
-      {
-        label: legacy
-          ? t("alerts.legacyTarget", { name: rule.target })
-          : t("alerts.notInList", { name: rule.target }),
-        value: rule.target,
-      },
-      ...list,
-    ];
+    return targetSelectCache.get(`${rule.target_type}:${rule.target}`) ?? [];
   }
 
   /* ---- 推送来源开关（全局，管理员）----
@@ -877,6 +903,16 @@ export function Alerts() {
   /* 搜索词也进 resetKey：换关键词后必须回到第一页 —— 停在第 4 页而新结果只有
      一页时，用户看到的是「搜不到」。 */
   const histPage = usePaged(sortedRecords, `${isAdmin}|${search}`);
+
+  /* ---- 告警规则：分页 ----
+     规则表是**内联编辑**的，条数一多整页就被拉长（改一条要滚动找半天）。
+     与历史表同一套分页，但 resetKey 只跟作用域走：规则内容变了（新增 / 删除 /
+     改名）不该把人从第 3 页弹回第 1 页，越界由 hook 用 Math.min 夹住。 */
+  const ruleList = rules ?? [];
+  const rulePage = usePaged(ruleList, `${isAdmin}|${canManage}`);
+  /* 分页只切显示，编辑 / 删除仍按**全量下标**操作：rows 就是从 offset 开始的
+     那一段切片，用它换算回来的索引才能对上 patch() / filter()。 */
+  const ruleOffset = (rulePage.page - 1) * rulePage.pageSize;
 
   return (
     <PageShell
@@ -1781,12 +1817,16 @@ export function Alerts() {
                 /* 普通用户没有「宿主机」这一档，就以「虚拟机」起步；管理员仍按
                    原来的默认（宿主机），只是列表读不到时也退回「虚拟机」，免得
                    先撞一次空下拉 */
-                onClick={() =>
-                  setRules([
+                onClick={() => {
+                  const next = [
                     ...(rules ?? []),
                     newRule(isAdmin && !hostListUnavailable ? "node" : "vm"),
-                  ])
-                }
+                  ];
+                  setRules(next);
+                  /* 新规则追加在末尾：不跟着翻页的话，点完「添加」当前页
+                     看不到这一行，像是没加上 */
+                  rulePage.setPage(Math.ceil(next.length / rulePage.pageSize));
+                }}
               >
                 {t("alerts.addRule")}
               </Button>
@@ -1831,6 +1871,7 @@ export function Alerts() {
           </Notice>
         ) : null}
         {rules && rules.length > 0 ? (
+          <>
           <div className="table-container">
             <table className="table table-dense">
               <thead>
@@ -1846,7 +1887,9 @@ export function Alerts() {
                 </tr>
               </thead>
               <tbody>
-                {rules.map((r, i) => {
+                {rulePage.rows.map((r, i) => {
+                  /* 页内下标 → 全量下标：patch / filter 都作用在完整的 rules 上 */
+                  const index = ruleOffset + i;
                   const readonly = isForeign(r) || !canManage;
                   return (
                   <tr key={r.id}>
@@ -1863,7 +1906,7 @@ export function Alerts() {
                           className="input"
                           value={r.name}
                           disabled={readonly}
-                          onChange={(e) => patch(i, { name: e.target.value })}
+                          onChange={(e) => patch(index, { name: e.target.value })}
                         />
                       </div>
                     </td>
@@ -1874,7 +1917,7 @@ export function Alerts() {
                         disabled={readonly}
                         onChange={(e) =>
                           // 切换对象类型后原目标不再适用，重置为「全部」
-                          patch(i, { target_type: e.target.value, target: "*" })
+                          patch(index, { target_type: e.target.value, target: "*" })
                         }
                       >
                         {/* 「宿主机」是集群基础设施的监控，只对管理员开放：普通
@@ -1894,7 +1937,7 @@ export function Alerts() {
                         className="select"
                         value={r.target}
                         disabled={readonly}
-                        onChange={(e) => patch(i, { target: e.target.value })}
+                        onChange={(e) => patch(index, { target: e.target.value })}
                       >
                         {targetSelectOptions(r).map((o) => (
                           <option key={o.value} value={o.value}>
@@ -1908,7 +1951,7 @@ export function Alerts() {
                         className="select"
                         value={r.metric}
                         disabled={readonly}
-                        onChange={(e) => patch(i, { metric: e.target.value })}
+                        onChange={(e) => patch(index, { metric: e.target.value })}
                       >
                         {metrics.map((m) => (
                           <option key={m.value} value={m.value}>
@@ -1929,7 +1972,7 @@ export function Alerts() {
                             type="number"
                             value={r.threshold}
                             disabled={readonly}
-                            onChange={(e) => patch(i, { threshold: Number(e.target.value) })}
+                            onChange={(e) => patch(index, { threshold: Number(e.target.value) })}
                           />
                         </div>
                       )}
@@ -1946,7 +1989,7 @@ export function Alerts() {
                         type="checkbox"
                         checked={r.enabled}
                         disabled={readonly}
-                        onChange={(e) => patch(i, { enabled: e.target.checked })}
+                        onChange={(e) => patch(index, { enabled: e.target.checked })}
                       />
                     </td>
                     <td>
@@ -1954,7 +1997,7 @@ export function Alerts() {
                         label={readonly ? t("alerts.deleteRuleReadonly") : t("alerts.deleteRule")}
                         variant="danger"
                         disabled={readonly}
-                        onClick={() => setRules(rules.filter((_, k) => k !== i))}
+                        onClick={() => setRules(rules.filter((_, k) => k !== index))}
                       >
                         <IconTrash size={15} />
                       </IconButton>
@@ -1965,6 +2008,10 @@ export function Alerts() {
               </tbody>
             </table>
           </div>
+          {/* 带「每页 N 条」的分页条：7 条时也显示「第 1-7 条，共 7 条」，
+              不必等超过一页才出现（见 Pagination 的 showBar 说明） */}
+          <PagerBar pager={rulePage} />
+          </>
         ) : (
           <div className="text-secondary fs-sm">{t("alerts.rulesEmpty")}</div>
         )}

@@ -12,7 +12,7 @@
    用户可以自己核对，而不是只能选择信或不信。页脚也常驻一句同样的提醒。
    ========================================================================== */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { aiApi, exportUrl, usersApi } from '../api/endpoints';
@@ -1463,7 +1463,14 @@ function ChatBubble({
   );
 }
 
-function TimelineRow({ event }: { event: AiChatStreamEvent }) {
+/* 时间线是**追加**式的：每来一条事件父组件就重渲染一次，若不加 memo，
+   前面已经画好的几十行会跟着全量重算（每行还各调一次 useT）。
+   event 对象在数组里保持同一引用，所以 memo 能真正命中，只有新行会渲染。 */
+const TimelineRow = memo(function TimelineRow({
+  event,
+}: {
+  event: AiChatStreamEvent;
+}) {
   const t = useT();
 
   if (event.type === 'stage') {
@@ -1513,7 +1520,7 @@ function TimelineRow({ event }: { event: AiChatStreamEvent }) {
     return <TimelineLine icon={<IconAlert size={13} />} text={event.message} />;
   }
   return null;
-}
+});
 
 /**
  * 过程时间线的一行。

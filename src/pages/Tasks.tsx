@@ -101,7 +101,10 @@ export function Tasks() {
 
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', nodeFilter],
-    queryFn: () => clusterApi.tasks({ node: nodeFilter || undefined, limit: 300 }),
+    /* 只取最近 150 条：这一页已是**客户端分页**（usePaged），一次渲染 20 行，
+       而每次轮询都要把整份列表搬过来。原先 300 条 × 每条约 1KB ≈ 300KB/轮，
+       多开几个标签页就是纯带宽；150 条已能覆盖最近若干小时，更早的走筛选。 */
+    queryFn: () => clusterApi.tasks({ node: nodeFilter || undefined, limit: 150 }),
     enabled: pveReady,
     refetchInterval: autoRefresh && pveReady ? refresh : false,
     staleTime: 2_000,
@@ -118,17 +121,54 @@ export function Tasks() {
     staleTime: 30_000,
   });
 
-  /* ---- WebSocket 实时日志 ---- */
+  /* ---- WebSocket 实时日志 ----
+     WS 是**逐行**推送的（备份一个文件能刷几百行）。原来每来一行就
+     `setLiveLogs(新对象 + 新数组)`：2000 行时每行都要复制 2000 个元素、
+     复制一次 upid 映射，然后整页重渲染 —— 日志滚动肉眼可见地卡。
+     现在先攒进 ref，每 80ms 冲一次：一次渲染吃掉这一批。 */
+  const pendingLogs = useRef<Record<string, string[]>>({});
+  const flushTimer = useRef<number | undefined>(undefined);
+
   const handleWsMessage = useCallback((msg: TaskWsMessage) => {
-    if (!msg.log) return;
-    setLiveLogs((prev) => {
-      const lines = prev[msg.upid] ?? [];
-      // 同一条日志可能重复推送，做一次去重
-      if (lines[lines.length - 1] === msg.log) return prev;
-      const next = [...lines, msg.log as string];
-      // 每个任务最多缓存 2000 行，避免内存膨胀
-      return { ...prev, [msg.upid]: next.length > 2000 ? next.slice(-2000) : next };
-    });
+    if (!msg.log || !msg.upid) return;
+    const batch = pendingLogs.current;
+    (batch[msg.upid] ??= []).push(msg.log);
+    if (flushTimer.current !== undefined) return;
+
+    flushTimer.current = window.setTimeout(() => {
+      flushTimer.current = undefined;
+      const merged = pendingLogs.current;
+      pendingLogs.current = {};
+      setLiveLogs((prev) => {
+        let changed = false;
+        const next: Record<string, string[]> = { ...prev };
+        for (const [upid, incoming] of Object.entries(merged)) {
+          const lines = next[upid] ?? [];
+          const appended: string[] = [];
+          for (const line of incoming) {
+            // 同一条日志可能重复推送，做一次去重（含批内相邻重复）
+            const last = appended.length > 0 ? appended[appended.length - 1] : lines[lines.length - 1];
+            if (last === line) continue;
+            appended.push(line);
+          }
+          if (appended.length === 0) continue;
+          const all = [...lines, ...appended];
+          // 每个任务最多缓存 2000 行，避免内存膨胀
+          next[upid] = all.length > 2000 ? all.slice(-2000) : all;
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }, 80);
+  }, []);
+
+  /* 组件卸载时把待冲的一批丢掉：定时器还活着的话会在卸载后 setState */
+  useEffect(() => {
+    return () => {
+      if (flushTimer.current !== undefined) window.clearTimeout(flushTimer.current);
+      flushTimer.current = undefined;
+      pendingLogs.current = {};
+    };
   }, []);
 
   const { status: wsStatus, reconnect } = useWebSocket({

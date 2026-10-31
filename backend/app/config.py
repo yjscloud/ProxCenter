@@ -251,6 +251,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     task_poll_interval: float = 2.0
     http_timeout: float = 30.0
+    # 「全量快照汇总」（/api/snapshots）的 fan-out 并发上限：每台客户机一次 PVE
+    # 请求，200 台时 6 并发要跑 34 轮。小规格 PVE 或 API 限流严格的环境可下调。
+    pve_snapshot_concurrency: int = 16
 
     # --- 监控历史落库 ------------------------------------------------------
     # 节点与虚拟机的资源指标按固定周期采样进 metrics_history：PVE 的 rrddata

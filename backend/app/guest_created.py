@@ -564,8 +564,18 @@ async def fill(
     if not groups:
         return
 
-    conn_id = str(groups[next(iter(groups))][0].get("connection_id") or "")
-    records = await _records_for(conn_id)
+    # 记录表按连接存放（主键第一段就是 conn_id），而一次列表请求可能横跨多条
+    # PVE。原先只取「第一个连接」的记录：其它连接上的机器全部查不到面板记录，
+    # 于是每次列表都退化成逐台读 config 的 meta，且克隆出来的机器拿不到纠正后的
+    # 时间（缓存键里带连接，两边的键互不冲突，合并是安全的）。
+    records: Dict[str, int] = {}
+    seen_conns: set = set()
+    for group in groups.values():
+        conn = str(group[0].get("connection_id") or "")
+        if conn in seen_conns:
+            continue
+        seen_conns.add(conn)
+        records.update(await _records_for(conn))
 
     pending: List[Tuple[str, List[Dict[str, Any]]]] = []
     without_record: List[Tuple[str, List[Dict[str, Any]]]] = []

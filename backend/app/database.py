@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator, Iterable, List, Optional, Sequence, Set, 
 import aiomysql
 import pymysql
 
+from . import reqmetrics
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,9 @@ class _Connection:
         self._cursors: List[Any] = []
 
     async def _execute_raw(self, statement: str, params: Optional[Tuple[Any, ...]]) -> Any:
+        # 计数放在最底层的执行入口：store / ownership / throttle 都从这里过，
+        # 不会漏掉任何一条业务 SQL（X-DB-Queries 断言的就是它）。
+        reqmetrics.bump_db()
         cursor = await self._raw.cursor()
         self._cursors.append(cursor)
         if params is None:
@@ -206,6 +210,26 @@ class _Connection:
         params = None if parameters is None else tuple(parameters)
         statement = translate(sql, has_params=params is not None)
         return _Cursor(await self._execute_raw(statement, params))
+
+    async def executemany(self, sql: str, seq: Iterable[Iterable[Any]]) -> int:
+        """同一条语句跑多组参数，返回提交的行数。
+
+        逐条 ``execute`` 的问题是**每条一次往返**：巡检落库、归属对账这类
+        「一次几百行」的写路径，往返开销远大于 MySQL 真正执行的时间。
+        ``aiomysql`` 的 ``executemany`` 会把参数攒起来（INSERT 系语句会合并成
+        多值语句），整批只发一轮。
+
+        计数只记 1：``X-DB-Queries`` 数的是往返，不是行数。
+        """
+        params = [tuple(p) for p in seq]
+        if not params:
+            return 0
+        reqmetrics.bump_db()
+        statement = translate(sql, has_params=True)
+        cursor = await self._raw.cursor()
+        self._cursors.append(cursor)
+        await cursor.executemany(statement, params)
+        return len(params)
 
     async def executescript(self, script: str) -> None:
         """执行多语句脚本（建表用）。MySQL 没有 executescript，按分号拆开逐条执行。"""
@@ -350,6 +374,7 @@ def read_setting_sync(key: str) -> Optional[str]:
     ``pve._load_connection`` 在同步代码路径上取连接配置，而 aiomysql 是纯异步的，
     只能另开一条同步连接（pymysql）来读。
     """
+    reqmetrics.bump_db()
     conn = pymysql.connect(
         host=settings.db_host,
         port=int(settings.db_port),

@@ -8,6 +8,14 @@
 
    调用方只负责：给一台 guest（node / vmid / type / connection_id）、给它一个
    展示名和「虚拟机 / 容器」这个名词，剩下的读写与提示都在这里。
+
+   两件容易被忽略的事，在这里集中处理：
+
+   1. **改派是有连带效果的**（快照归属、活动告警收件人、穿透规则失效），
+      而「宿主机上的 SSH / 基线 / 端口数据不会跟过来」同样重要。所以弹窗里
+      固定列出「会跟随 / 不会跟随」，不靠操作者自己记得。
+   2. **从别人名下改派要确认两次**：覆盖式写入之后没有「撤销」，而 `previous`
+      只在这一次响应里出现，误操作无法回头。
    ========================================================================== */
 
 import { useEffect, useState } from 'react';
@@ -16,6 +24,7 @@ import { guestsApi, type GuestRef } from '../api/guests';
 import { useToast } from '../hooks/useToast';
 import { useT } from '../i18n';
 import { Button } from './ui/Button';
+import { Input } from './ui/Input';
 import { Modal } from './ui/Modal';
 import { Notice } from './ui/EmptyState';
 import { UserSelect } from './ui/UserSelect';
@@ -41,28 +50,45 @@ export function OwnerAssignDialog({
   const t = useT();
   const toast = useToast();
   const [owner, setOwner] = useState('');
+  /** 读到的当前归属：既做「原归 xxx」提示，也是「这是改派」的判定依据 */
+  const [previous, setPrevious] = useState('');
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   /** 读失败时禁止保存：见 submit 里的说明 */
   const [loadError, setLoadError] = useState('');
   /** 是否动过下拉 —— 「清除」与「还没选」的唯一区别 */
   const [touched, setTouched] = useState(false);
+  /** 改派的二次确认：第一次点只是把按钮换成「确认改派」 */
+  const [confirming, setConfirming] = useState(false);
+  /** 变更理由 / 工单号：只进审计。改派是覆盖式写入，事后只有它答得了「为什么改」 */
+  const [reason, setReason] = useState('');
 
   useEffect(() => {
     if (!guest) return;
     setBusy(false);
     setTouched(false);
+    setConfirming(false);
+    setReason('');
     setLoadError('');
     setLoading(true);
     guestsApi
       .getOwner(guest, guest.connection_id ?? undefined)
-      .then((res) => setOwner(res.owner ?? ''))
+      .then((res) => {
+        const current = res.owner ?? '';
+        setOwner(current);
+        setPrevious(current);
+      })
       .catch((err) => {
         setOwner('');
+        setPrevious('');
         setLoadError(errorMessage(err));
       })
       .finally(() => setLoading(false));
   }, [guest?.node, guest?.vmid, guest?.type]);
+
+  const nextOwner = owner.trim();
+  /** 从某个人名下转到另一个人名下 —— 只有这种情况才需要二次确认 */
+  const isTransfer = Boolean(previous) && Boolean(nextOwner) && nextOwner !== previous;
 
   const submit = async () => {
     if (!guest || loading) return;
@@ -75,20 +101,41 @@ export function OwnerAssignDialog({
     /* 空值 = 清除归属。没动过下拉时空值只说明「还没选人」，不能当成清除 ——
        否则在输完用户名直接点保存（点外面会收起并丢掉搜索词）时，
        一次保存就把归属抹了，而且全程不报错。 */
-    if (!owner.trim() && !touched) {
+    if (!nextOwner && !touched) {
       toast.error(t('guestList.assignPickFirst'));
+      return;
+    }
+    /* 改派先落到确认态：覆盖式写入没有撤销，而 previous 只在这次响应里出现 */
+    if (isTransfer && !confirming) {
+      setConfirming(true);
       return;
     }
     setBusy(true);
     try {
       const res = await guestsApi.assignOwner(
         guest,
-        owner.trim() || null,
+        nextOwner || null,
         guest.connection_id ?? undefined,
+        reason.trim() || undefined,
       );
+      /* 结果里带上这次连带处理了什么：快照标记清了几条、活动告警搬了几条、
+         穿透规则失效了几条。管理员需要知道改派不是「只改一个名字」 */
+      const notes: string[] = [];
+      if (res.previous && res.previous !== (res.owner ?? '')) {
+        notes.push(t('guestList.assignPrevOwner', { name: res.previous }));
+      }
+      if (res.snapshots_removed) {
+        notes.push(t('guestList.assignSnapshotsMoved', { n: res.snapshots_removed }));
+      }
+      if (res.active_alerts_moved) {
+        notes.push(t('guestList.assignAlertsMoved', { n: res.active_alerts_moved }));
+      }
+      if (res.frp_rules_suspended) {
+        notes.push(t('guestList.assignFrpSuspended', { n: res.frp_rules_suspended }));
+      }
       toast.success(
         res.owner ? t('guestList.assignDone', { noun }) : t('guestList.assignCleared'),
-        res.owner || label,
+        notes.length ? notes.join(' · ') : res.owner || label,
       );
       onDone();
     } catch (err) {
@@ -104,7 +151,7 @@ export function OwnerAssignDialog({
       onClose={busy ? () => undefined : onClose}
       title={t('guestList.assignTitle', { noun })}
       description={t('guestList.assignDesc', { noun })}
-      size="sm"
+      size="md"
       closeOnOverlay={!busy}
       hideClose={busy}
       footer={
@@ -118,7 +165,11 @@ export function OwnerAssignDialog({
             loading={busy}
             disabled={loading || Boolean(loadError)}
           >
-            {t('common.save')}
+            {isTransfer
+              ? confirming
+                ? t('guestList.assignTransferConfirm', { to: nextOwner })
+                : t('guestList.assignTransferStart', { to: nextOwner })
+              : t('common.save')}
           </Button>
         </>
       }
@@ -138,9 +189,61 @@ export function OwnerAssignDialog({
         onChange={(next) => {
           setOwner(next);
           setTouched(true);
+          setConfirming(false);
         }}
         disabled={loading || Boolean(loadError)}
       />
+
+      {/* 理由不是必填，但它填的是「为什么改」——审计里除了 previous 之外唯一的人话 */}
+      <Input
+        label={t('guestList.assignReason')}
+        hint={t('guestList.assignReasonHint')}
+        placeholder={t('guestList.assignReasonPlaceholder')}
+        value={reason}
+        maxLength={120}
+        onChange={(e) => setReason(e.target.value)}
+        disabled={loading || Boolean(loadError)}
+      />
+
+      {isTransfer ? (
+        <Notice
+          tone={confirming ? 'danger' : 'warning'}
+          title={t('guestList.assignTransferTitle', { from: previous, to: nextOwner })}
+        >
+          {confirming
+            ? t('guestList.assignTransferArmed', { from: previous, noun })
+            : t('guestList.assignTransferBody', { from: previous, noun })}
+        </Notice>
+      ) : null}
+
+      {/* 「会跟随 / 不会跟随」固定展示：这是唯一能让人在点确认之前知道
+          宿主机上的安全数据不会跟过来的地方 */}
+      <div className="assign-scope">
+        <div className="assign-scope-col">
+          <span className="assign-scope-title assign-scope-follow">
+            {t('guestList.assignScopeFollowTitle')}
+          </span>
+          <ul className="assign-scope-list">
+            <li>{t('guestList.assignScopeFollowAccess')}</li>
+            <li>{t('guestList.assignScopeFollowQuota')}</li>
+            <li>{t('guestList.assignScopeFollowAlerts')}</li>
+            <li>{t('guestList.assignScopeFollowSnapshots')}</li>
+            <li>{t('guestList.assignScopeFollowFrp')}</li>
+          </ul>
+        </div>
+        <div className="assign-scope-col">
+          <span className="assign-scope-title assign-scope-keep">
+            {t('guestList.assignScopeKeepTitle')}
+          </span>
+          <ul className="assign-scope-list">
+            <li>{t('guestList.assignScopeKeepAudit')}</li>
+            <li>{t('guestList.assignScopeKeepHost')}</li>
+            <li>{t('guestList.assignScopeKeepLogin')}</li>
+            <li>{t('guestList.assignScopeKeepCreds')}</li>
+          </ul>
+        </div>
+      </div>
+
       {loadError ? (
         <Notice tone="danger" title={t('guestList.assignLoadFailed')}>
           {loadError}

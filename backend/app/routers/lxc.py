@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from .. import (
     defaults,
@@ -28,12 +28,13 @@ from .. import (
     guestnotify,
     guestpasswd,
     ownership,
+    pvecache,
     quota,
     security,
     store,
     vmconfig,
 )
-from ..formatters import pve_flag
+from ..formatters import guest_summary_rows, paginate_rows, pve_flag
 from ..pve import (
     ProxmoxError,
     all_connection_clients,
@@ -98,11 +99,20 @@ async def _resolve_ct_ip(client: Any, ct: Dict[str, Any]) -> str:
 
 @router.get("/lxc")
 async def list_containers(
+    response: Response,
     node: Optional[str] = None,
     with_ip: bool = Query(False),
+    # 轻量列表（与 /vms?summary=1 同一套字段）：仪表盘只要台数与占用，
+    # 不需要 tags / pool / 网络吞吐这些逐台字段。
+    summary: bool = Query(False, description="只返回轻量字段，体积约为全量的 1/5"),
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        description="只返回前 N 条（默认全量）；总数见 X-Total-Count",
+    ),
     user: Dict[str, Any] = Depends(security.require_permission("ct.view")),
 ) -> List[Dict[str, Any]]:
-    """所有容器。与 ``GET /vms`` 的口径保持一致（多连接聚合 + 归属过滤）。"""
+    """所有容器。与 ``GET /vms`` 的口径保持一致（多连接聚合 + 归属过滤 + 可选 limit）。"""
     if requested_connection():
         cid = requested_connection()
         profile = next(
@@ -113,14 +123,20 @@ async def list_containers(
     else:
         targets = list(all_connection_clients()) or [(None, get_client())]
 
+    # 每条连接一次 cluster_resources：串行时 C 条连接就是 C 个 RTT（4 条连接、
+    # 每条 300ms = 1.2 秒，全压在这一个接口上）。并发拉，失败的那条只跳过自己。
+    resources_list = await parallel(
+        (client.cluster_resources("vm") for _profile, client in targets),
+        limit=max(len(targets), 1),
+    )
+
     result: List[Dict[str, Any]] = []
     failure: Optional[ProxmoxError] = None
 
-    for profile, client in targets:
-        try:
-            resources = await client.cluster_resources("vm")
-        except ProxmoxError as exc:
-            failure = failure or exc
+    for (profile, client), resources in zip(targets, resources_list):
+        if isinstance(resources, BaseException):
+            if isinstance(resources, ProxmoxError):
+                failure = failure or resources
             continue
 
         containers = [r for r in (resources or []) if r.get("type") == "lxc"]
@@ -217,7 +233,8 @@ async def list_containers(
         item.pop("connection_region", None)
 
     result.sort(key=lambda c: (c.get("node") or "", c.get("vmid") or 0))
-    return result
+    result = guest_summary_rows(result) if summary else result
+    return paginate_rows(result, response, limit)
 
 
 @router.get("/lxc/templates")
@@ -598,20 +615,29 @@ async def set_container_owner(
 
     conn_id = payload.get("connection_id") or _op_connection()
     ref = ownership.vm_ref(conn_id, node, vmid)
-    # 一律带上 KIND_VM 一并清理：升级前容器的归属记在 KIND_VM 下，只动 KIND_CT
-    # 会留下一条「幽灵」旧记录（重新指派后旧归属人仍能看到这台容器）。
-    if username:
-        await ownership.set_owner(ownership.KIND_CT, ref, username)
-    else:
-        await ownership.delete_owner(ownership.KIND_CT, ref)
-    await ownership.delete_owner(ownership.KIND_VM, ref)
+    # 走归属变更的唯一入口：它同时负责清理升级前记在 KIND_VM 下的「幽灵」旧记录、
+    # 清掉这台容器的快照标记、作废按人分档的读缓存（见 ownership.transfer_guest）。
+    result = await ownership.transfer_guest(ownership.KIND_CT, ref, username)
 
     await security.audit(
         request, user, "ct.assign" if username else "ct.unassign",
         target=f"{node}/{vmid}",
-        detail={"username": username or None, "type": "lxc"},
+        detail={
+            "username": username or None,
+            "type": "lxc",
+            "previous": result.get("previous") or None,
+            "snapshots_removed": result.get("snapshots_removed") or 0,
+            "active_alerts_moved": result.get("active_alerts_moved") or 0,
+            "frp_rules_suspended": result.get("frp_rules_suspended") or 0,
+            "reason": str(payload.get("reason") or "").strip() or None,
+        },
     )
-    return {"node": node, "vmid": vmid, "owner": username or None}
+    return {
+        "node": node,
+        "vmid": vmid,
+        "owner": username or None,
+        "previous": result.get("previous") or None,
+    }
 
 
 # =========================================================== config / edits
@@ -1152,6 +1178,8 @@ async def create_container_snapshot(
         request, user, "snapshot.create", target=f"{node}/{vmid}/{payload.name}",
         detail={"type": "lxc"},
     )
+    # 全局快照汇总缓存 60 秒：变更后立刻作废，避免「刚建完却看不到」
+    pvecache.invalidate("snapshots:")
     return {"task": task}
 
 
@@ -1178,6 +1206,7 @@ async def rollback_container_snapshot(
     await security.audit(
         request, user, "snapshot.rollback", target=f"{node}/{vmid}/{name}"
     )
+    pvecache.invalidate("snapshots:")
     return {"task": task}
 
 
@@ -1208,4 +1237,5 @@ async def delete_container_snapshot(
     await security.audit(
         request, user, "snapshot.delete", target=f"{node}/{vmid}/{name}"
     )
+    pvecache.invalidate("snapshots:")
     return {"task": task}

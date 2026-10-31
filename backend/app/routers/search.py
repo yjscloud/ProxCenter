@@ -15,13 +15,14 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from .. import security, store
-from ..pve import ProxmoxError, all_connection_clients, get_client
+from .. import pvecache, security, store
+from ..pve import ProxmoxError, all_connection_clients, get_client, parallel
 from . import vms as vms_router
 
 logger = logging.getLogger(__name__)
@@ -84,10 +85,27 @@ def _item(
     }
 
 
+#: 搜索用到的「原料列表」缓存时长（秒）。命令面板是逐字触发的：用户打「ubun」
+#: 会发 4 次请求，每次都要 C 条连接的 cluster_resources + 节点 + 存储。原料列表
+#: 10 秒内不会变，缓存它比缓存「关键词→结果」更有用（换个词也照样命中）。
+#:
+#: 键里必须带用户名：``collect_vms`` 的输出是**按归属过滤过的**，张三的缓存
+#: 绝不能喂给李四。
+SEARCH_SOURCE_TTL = 10.0
+
+
+def _per_user_key(user: Dict[str, Any], kind: str) -> str:
+    return f"search:{kind}:{str(user.get('username') or '')}"
+
+
 async def _search_vms(
     user: Dict[str, Any], query: str, limit: int
 ) -> tuple[List[Dict[str, Any]], int]:
-    guests = await vms_router.collect_vms(user=user, guest_type="all")
+    guests = await pvecache.cached(
+        _per_user_key(user, "guests"),
+        SEARCH_SOURCE_TTL,
+        lambda: vms_router.collect_vms(user=user, guest_type="all"),
+    )
     found: List[Dict[str, Any]] = []
     for vm in guests:
         if not _matches(query, vm.get("name"), vm.get("vmid"), vm.get("node"), vm.get("tags")):
@@ -110,15 +128,39 @@ async def _search_vms(
     return found[:limit], len(found)
 
 
+async def _nodes_of(cid: str, client: Any) -> List[Dict[str, Any]]:
+    """某条连接上的节点（10 秒缓存）。单台 PVE 连不上时返回空，不抛。"""
+    try:
+        return await pvecache.cached(
+            f"search:nodes:{cid}", SEARCH_SOURCE_TTL, lambda: client.nodes()
+        ) or []
+    except ProxmoxError:
+        return []
+
+
+async def _storages_of(cid: str, client: Any) -> List[Dict[str, Any]]:
+    """某条连接上的存储（10 秒缓存）。"""
+    try:
+        return await pvecache.cached(
+            f"search:storages:{cid}", SEARCH_SOURCE_TTL, lambda: client.storages()
+        ) or []
+    except ProxmoxError:
+        return []
+
+
 async def _search_nodes(
     query: str, limit: int
 ) -> tuple[List[Dict[str, Any]], int]:
     found: List[Dict[str, Any]] = []
     seen: set = set()
-    for _profile, client in _targets():
-        try:
-            nodes = await client.nodes() or []
-        except ProxmoxError:
+    targets = _targets()
+    # 各连接的 nodes() 并发拉（串行时 C 条连接就是 C 个 RTT）
+    node_lists = await parallel(
+        (_nodes_of(_cid_of(profile), client) for profile, client in targets),
+        limit=max(len(targets), 1),
+    )
+    for nodes in node_lists:
+        if isinstance(nodes, BaseException):
             # 单台 PVE 连不上时其余主机的结果照常返回
             continue
         for node in nodes:
@@ -155,10 +197,13 @@ async def _search_storages(
 ) -> tuple[List[Dict[str, Any]], int]:
     found: List[Dict[str, Any]] = []
     seen: set = set()
-    for _profile, client in _targets():
-        try:
-            storages = await client.storages() or []
-        except ProxmoxError:
+    targets = _targets()
+    storage_lists = await parallel(
+        (_storages_of(_cid_of(profile), client) for profile, client in targets),
+        limit=max(len(targets), 1),
+    )
+    for storages in storage_lists:
+        if isinstance(storages, BaseException):
             continue
         for storage in storages:
             name = str(storage.get("storage") or "")
@@ -218,6 +263,11 @@ async def _search_users(
     return found[:limit], len(found)
 
 
+def _cid_of(profile: Optional[Dict[str, Any]]) -> str:
+    """连接 id；未分区 / 单连接回落到 ``default``（缓存键需要稳定的一段）。"""
+    return str((profile or {}).get("id") or "default")
+
+
 def _targets() -> List[Any]:
     """要遍历的 PVE 连接；一条都没配时回落到默认连接。"""
     targets = list(all_connection_clients())
@@ -249,18 +299,26 @@ async def global_search(
         "user": _search_users,
     }
 
-    total = 0
+    # 四组彼此无关，串行等就是 4 个 RTT 相加；命令面板要求「边打边出结果」，
+    # 所以并发跑，再按固定顺序拼回去（顺序决定分组展示次序，不能跟着完成顺序走）。
+    keys: List[str] = []
+    tasks: List[Any] = []
     for key, searcher in searchers.items():
         if not security.has_user_permission(user, GROUP_PERMISSIONS[key]):
             continue
-        try:
-            if key == "vm":
-                items, count = await searcher(user, query, limit)
-            else:
-                items, count = await searcher(query, limit)
-        except Exception:  # noqa: BLE001 - 某一类查不动不该让整个面板空掉
-            logger.exception("全局搜索：分组 %s 查询失败", key)
+        keys.append(key)
+        if key == "vm":
+            tasks.append(searcher(user, query, limit))
+        else:
+            tasks.append(searcher(query, limit))
+
+    total = 0
+    for key, outcome in zip(keys, await asyncio.gather(*tasks, return_exceptions=True)):
+        if isinstance(outcome, BaseException):
+            # 某一类查不动不该让整个面板空掉
+            logger.error("全局搜索：分组 %s 查询失败", key, exc_info=outcome)
             continue
+        items, count = outcome
         if not items:
             continue
         total += count

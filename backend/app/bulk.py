@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, Request
 
-from . import ownership, quota, security, vm_scope
+from . import frp, ownership, quota, security, store, vm_scope
 from .pve import (
     ProxmoxError,
     client_for_connection,
@@ -49,6 +49,7 @@ ACTION_PERMISSION: Dict[str, str] = {
     "migrate": "vm.migrate",
     "balloon": "vm.config",
     "snapshot": "vm.snapshot",
+    "assign": "vm.assign",
 }
 
 # action -> 需要的权限（**容器**侧）。与上面逐项对应：容器是独立的一套权限，
@@ -60,6 +61,7 @@ ACTION_PERMISSION_CT: Dict[str, str] = {
     "migrate": "ct.migrate",
     "balloon": "ct.config",  # 容器不支持气球，会逐台报错；权限点仍需占位
     "snapshot": "ct.snapshot",
+    "assign": "ct.assign",
 }
 
 
@@ -83,7 +85,15 @@ ACTION_LABELS: Dict[str, str] = {
     "migrate": "迁移",
     "balloon": "设置内存气球",
     "snapshot": "创建快照",
+    "assign": "指派归属",
 }
+
+
+def _audit_action(action: str, prefix: str, params: BulkParams) -> str:
+    """审计里的动作名：指派与收回分开记（与单机接口的 ``vm.assign``/``vm.unassign`` 对齐）。"""
+    if action == "assign":
+        return f"{prefix}.{'assign' if (params.username or '').strip() else 'unassign'}"
+    return f"{prefix}.{action}"
 
 
 def _op_connection() -> str:
@@ -217,6 +227,7 @@ async def _run_one(
     # 审计动作前缀随类型走（vm.* / ct.*）。先按已知类型取初值，探测出真实类型后
     # 再覆盖 —— 让异常分支（含权限拒绝）也能用到它。
     action_prefix = "ct" if target.type == "lxc" else "vm"
+    audit_name = _audit_action(action, action_prefix, params)
 
     try:
         owner = security.visible_owner(user)
@@ -229,6 +240,7 @@ async def _run_one(
         )
         item["type"] = gtype
         action_prefix = "ct" if gtype == "lxc" else "vm"
+        audit_name = _audit_action(action, action_prefix, params)
 
         permission = permission_for(action, gtype)
         if permission and not security.has_user_permission(user, permission):
@@ -236,7 +248,11 @@ async def _run_one(
                 f"没有执行「{ACTION_LABELS.get(action, action)}」的权限（需要 {permission}）"
             )
 
-        await _ensure_access(user, node, vmid, conn_id, ownership.kind_for_type(gtype))
+        # 指派不做「这台是不是你的」判定：它的语义就是改一笔归属账，能改谁由
+        # vm.assign / ct.assign 这个角色门槛决定（与单机接口一致）。其余动作仍然
+        # 逐台判归属，批量不等于绕过隔离。
+        if action != "assign":
+            await _ensure_access(user, node, vmid, conn_id, ownership.kind_for_type(gtype))
 
         result: Any = None
         if action in POWER_ACTIONS:
@@ -308,17 +324,41 @@ async def _run_one(
                     node, vmid, name, params.description
                 )
 
+        elif action == "assign":
+            # 归属变更走唯一入口：连带清快照标记、搬活动告警、复核穿透规则。
+            # notify/restart 交给 run_bulk 在整批末尾统一做一次 —— 200 台如果每台
+            # 都全量失效缓存、重启一次 frpc，代价是 200 个隧道空窗（见 ownership）。
+            moved = await ownership.transfer_guest(
+                ownership.kind_for_type(gtype),
+                ownership.vm_ref(conn_id, node, vmid),
+                str(params.username or ""),
+                notify=False,
+                restart=False,
+            )
+            item["previous"] = moved.get("previous") or ""
+            item["snapshots_removed"] = int(moved.get("snapshots_removed") or 0)
+            item["active_alerts_moved"] = int(moved.get("active_alerts_moved") or 0)
+            item["frp_rules_suspended"] = int(moved.get("frp_rules_suspended") or 0)
+
         item["task"] = _task_of(result)
         item["ok"] = True
         await security.audit(
-            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
-            detail={"bulk": True, "type": gtype},
+            request, user, audit_name, target=f"{node}/{vmid}",
+            detail={
+                "bulk": True,
+                "type": gtype,
+                # 指派/收回：把「从谁到什么」和变更理由记下来
+                **({"username": (params.username or "").strip() or None,
+                    "previous": item.get("previous") or None,
+                    "reason": (params.reason or "").strip() or None}
+                   if action == "assign" else {}),
+            },
         )
 
     except ProxmoxError as exc:
         item["error"] = exc.message
         await security.audit(
-            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
+            request, user, audit_name, target=f"{node}/{vmid}",
             result="failed", detail={"bulk": True, "error": exc.message},
         )
     except HTTPException as exc:
@@ -326,13 +366,13 @@ async def _run_one(
         # 原样带出去；掉到下面那个通用分支里会变成「403: …」这种没人读的东西。
         item["error"] = str(exc.detail)
         await security.audit(
-            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
+            request, user, audit_name, target=f"{node}/{vmid}",
             result="denied", detail={"bulk": True, "error": str(exc.detail)},
         )
     except PermissionError as exc:
         item["error"] = str(exc)
         await security.audit(
-            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
+            request, user, audit_name, target=f"{node}/{vmid}",
             result="denied", detail={"bulk": True, "error": str(exc)},
         )
     except asyncio.CancelledError:
@@ -341,7 +381,7 @@ async def _run_one(
         logger.warning("批量操作 %s 在 %s/%s 失败", action, node, vmid, exc_info=True)
         item["error"] = str(exc) or exc.__class__.__name__
         await security.audit(
-            request, user, f"{action_prefix}.{action}", target=f"{node}/{vmid}",
+            request, user, audit_name, target=f"{node}/{vmid}",
             result="failed", detail={"bulk": True, "error": item["error"]},
         )
 
@@ -370,6 +410,16 @@ async def run_bulk(
             status_code=403,
             detail=f"没有执行「{ACTION_LABELS.get(action, action)}」的权限",
         )
+
+    # 指派：与单机接口同一道门槛。vm.assign / ct.assign 在权限目录里只发给管理员 /
+    # 区域管理员，但库里可能留着「授予过普通角色」的历史角色，光靠界面挡不住。
+    if action == "assign":
+        for perm in candidates:
+            if security.has_user_permission(user, perm):
+                security.ensure_permission_role(user, perm)
+        target_user = (payload.params.username or "").strip()
+        if target_user and not await store.get_user(target_user):
+            raise HTTPException(status_code=404, detail=f"用户 {target_user} 不存在")
 
     # 不可逆动作整批要求一次二次确认，而不是每台弹一次
     if action in STEP_UP_ACTIONS:
@@ -402,6 +452,14 @@ async def run_bulk(
         results.append(item)
 
     ok_count = sum(1 for r in results if r["ok"])
+
+    if action == "assign" and ok_count:
+        # 整批只做一次：逐台作废缓存会把同一份缓存反复打成冷启动，逐台重启 frpc
+        # 则会制造 N 个 1.5 秒的隧道空窗（见 ownership.transfer_guest 的 notify/restart）。
+        await ownership.invalidate_caches()
+        if any(item.get("frp_rules_suspended") for item in results):
+            await frp.restart_if_running()
+
     return {
         "action": action,
         "total": len(results),

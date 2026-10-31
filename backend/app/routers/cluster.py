@@ -14,6 +14,7 @@ from ..pve import (
     all_connection_clients,
     connection_label,
     get_client,
+    parallel,
     requested_connection,
 )
 from ..task_scope import build_scope
@@ -315,19 +316,25 @@ async def list_nodes(
     # 自己机器所在宿主机是否吃紧，属于「只看自己机器」的必要上下文。
     is_admin = security.visible_owner(user) is None
 
-    for profile, client in targets:
-        try:
-            nodes = await client.nodes() or []
-        except ProxmoxError as exc:
-            failure = failure or exc
+    # 每条连接一次 nodes()，并发拉：串行时 C 条连接就是 C 个 RTT，而节点列表在
+    # 建机向导、总览、下拉框里都要用，是最常见的首屏请求之一。
+    nodes_list = await parallel(
+        (client.nodes() for _profile, client in targets),
+        limit=max(len(targets), 1),
+    )
+    # 连接元数据一次取全：原来在循环里为拼 connection_name 逐条扫一遍连接列表
+    profiles_by_id = {str(c.get("id") or ""): c for c in _store.get_connections()}
+
+    for (profile, _client), nodes in zip(targets, nodes_list):
+        if isinstance(nodes, BaseException):
+            if isinstance(nodes, ProxmoxError):
+                failure = failure or nodes
             continue
+        nodes = nodes or []
 
         cid = str(profile.get("id") or "") if profile else str(active_id or "")
         label = connection_label(profile) if profile else connection_label(
-            next(
-                (c for c in _store.get_connections() if str(c.get("id")) == cid),
-                {},
-            )
+            profiles_by_id.get(cid, {})
         )
         # 节点级可见性：被限制的节点（特殊项目专用机）对普通用户整条消失，
         # 建机向导的下拉来自这里，所以「看不到」同时等于「选不到」。
@@ -463,9 +470,15 @@ async def cluster_fleet_status(
     """
     # 地址只给管理员：这个接口有 node.view 就能访问，而它会把每条连接的主机
     # 列出来 —— 连接配置属于管理信息，与 /connections 同一口径。
-    return await fleetstatus.collect(
-        can_manage=security.has_user_permission(user, "settings.manage")
-    )
+    # 走带缓存的入口（30 秒）：/health 也用同一个 key，顶栏两条入口不会各探测一遍。
+    can_manage = security.has_user_permission(user, "settings.manage")
+    result = await fleetstatus.panel_fleet(can_manage)
+    if result is None:
+        # 探测整体超时 / 失败（单条连接失败不会走到这里，那种情况 collect 会
+        # 正常返回 ok=false 的条目）。宁可回 503，也不回一份看起来「一台都
+        # 没连上」的假数据 —— 前端对 503 显示「未知」，对空列表会显示红色故障。
+        raise HTTPException(status_code=503, detail="机队状态暂时不可用（探测超时）")
+    return result
 
 
 @router.get("/connections/status")

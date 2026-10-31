@@ -40,6 +40,7 @@ const ACTION_LABEL_KEYS: Record<string, MessageKey> = {
   tag: 'bulk.tag',
   migrate: 'bulk.migrate',
   snapshot: 'bulk.snapshot',
+  assign: 'bulk.assign',
 };
 
 /** 动作对应的词条键；未知动作回退到「未知」，免得把 key 露在界面上 */

@@ -166,12 +166,14 @@ def apply_display_names(
             row["host_name"] = current
 
 
-async def set_host_owner(host_id: str, username: str) -> None:
-    """管理员指派归属。``username`` 为空 = 收回，收回后仅管理员可见。"""
-    if username:
-        await ownership.set_owner(ownership.KIND_SSH_HOST, host_id, username)
-    else:
-        await ownership.delete_owner(ownership.KIND_SSH_HOST, host_id)
+async def set_host_owner(host_id: str, username: str) -> Dict[str, Any]:
+    """管理员指派归属。``username`` 为空 = 收回，收回后仅管理员可见。
+
+    交给 :func:`ownership.transfer_host`：改归属之外还要作废按人分档的读缓存
+    （四套安全数据的可见范围都是读时现算的，缓存不清就会有十几秒的旧账），
+    并把改派前的归属带回来给审计留痕。
+    """
+    return await ownership.transfer_host(host_id, str(username or ""))
 
 
 # ---------------------------------------------------------------- FastAPI 依赖

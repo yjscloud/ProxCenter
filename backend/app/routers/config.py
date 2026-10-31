@@ -15,6 +15,7 @@ from .. import (
     captcha,
     defaults,
     faq,
+    fleetstatus,
     mailer,
     panel_url,
     quota,
@@ -103,6 +104,16 @@ async def health(
         result["error"] = exc.message
     except Exception as exc:  # noqa: BLE001
         result["error"] = str(exc)
+
+    # 机队状态并入这一条：顶栏「控制台状态」原本同时轮询 /health 与
+    # /cluster/fleet-status，后者逐条连接真实探活（C×(2~4) 次上游请求）。
+    # 合并后顶栏每 tick 只发一条，探活由 30 秒缓存统一削峰。没有 node.view
+    # 的账号拿不到这块明细（与 /cluster/fleet-status 同一道守卫）。
+    if security.has_user_permission(user, "node.view"):
+        # 只读缓存、过期在后台刷新：健康检查不能被一次慢探测拖住（见 fleetstatus）
+        result["fleet"] = fleetstatus.panel_fleet_cached(
+            security.has_user_permission(user, "settings.manage")
+        )
 
     return result
 

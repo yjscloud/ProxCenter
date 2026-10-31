@@ -22,6 +22,7 @@ from ..pve import (
     all_connection_clients,
     client_for_connection,
     get_client,
+    parallel,
     requested_connection,
 )
 
@@ -52,6 +53,123 @@ def _scope_pairs() -> List[Tuple[Dict[str, Any], Any]]:
 #: 只读集群数据的缓存时长（秒）。短到几乎不影响观感，又能把「同一时刻的重复拉取」
 #: 合并成一次 PVE 请求。
 DASHBOARD_TTL = 10.0
+
+
+@router.get("/dashboard/summary")
+async def dashboard_summary(
+    # 手机数与榜单合在一起：仪表盘每 tick 原本要发 /vms、/lxc、/dashboard/top
+    # 三条（普通用户还要再多一条），三份数据却来自同一批 cluster/resources。
+    user: Dict[str, Any] = Depends(
+        security.require_any_permission("vm.view", "ct.view")
+    ),
+) -> Dict[str, Any]:
+    """仪表盘首屏所需的**客户机口径**汇总：台数 + 资源占用 + 榜单。
+
+    * 台数与占用：一次 ``collect_vms`` 算完，返回的是聚合计数值而不是整份列表
+      —— 500 台机器时列表有 0.5–1.5 MB，仪表盘只用到几个计数；
+    * 榜单：与 ``/dashboard/top`` 同一套排序（CPU 占用 / 内存占用率），
+      但复用这次已经取到的列表，不再单独打一遍 ``cluster_resources``；
+    * 权限：只看 ``vm.view`` / ``ct.view`` 里**实际持有**的那一类。此前前端
+      用 ``/vms`` 取虚拟机、``/lxc`` 取容器，后端各有一道守卫；这里保持同一口径，
+      只有 ``ct.view`` 的账号不会因为走了汇总接口就多看到虚拟机。
+    """
+    can_vm = security.has_user_permission(user, "vm.view")
+    can_ct = security.has_user_permission(user, "ct.view")
+    if can_vm and can_ct:
+        guest_type = "all"
+    elif can_vm:
+        guest_type = "qemu"
+    else:
+        guest_type = "lxc"
+
+    owner = security.visible_owner(user)
+    viewer = str(user.get("username") or "") if owner is not None else "-"
+    # 与 /dashboard/top 同一套分档：用户 + 连接作用域
+    key = (
+        f"dashboard:summary:{guest_type}:{requested_connection() or '-'}:"
+        f"{owner or '-'}:{viewer}"
+    )
+
+    async def _build() -> Dict[str, Any]:
+        # 局部 import：routers 之间互相引用会绕成环（vms 也依赖 pve/ownership）
+        from .vms import collect_vms
+
+        guests = await collect_vms(user=user, guest_type=guest_type, lightweight=True)
+        real = [g for g in guests if not g.get("template")]
+        qemu = [g for g in real if (g.get("type") or "qemu") == "qemu"]
+        cts = [g for g in real if g.get("type") == "lxc"]
+
+        def running(rows: List[Dict[str, Any]]) -> int:
+            return sum(1 for g in rows if g.get("status") == "running")
+
+        def stopped(rows: List[Dict[str, Any]]) -> int:
+            return sum(1 for g in rows if g.get("status") == "stopped")
+
+        vm_running = running(qemu)
+        vm_stopped = stopped(qemu)
+
+        total_cores = sum(int(g.get("maxcpu") or 0) for g in real)
+        # PVE 的 cpu 是 0..1 的占用比例（相对该机器自己的 vCPU 数）——
+        # 换算成「已用物理核数」要与 /dashboard/top 的口径一致
+        used_cores = sum(
+            float(g.get("cpu") or 0) * int(g.get("maxcpu") or 0) for g in real
+        )
+
+        running_qemu = [g for g in qemu if g.get("status") == "running"]
+
+        def entry(g: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "node": g.get("node"),
+                "vmid": g.get("vmid"),
+                "name": g.get("name"),
+                "cpu": g.get("cpu") or 0,
+                "maxcpu": g.get("maxcpu") or 1,
+                "mem": g.get("mem") or 0,
+                "maxmem": g.get("maxmem") or 1,
+                "uptime": g.get("uptime"),
+                "connection_id": g.get("connection_id") or "",
+            }
+
+        by_cpu = sorted(
+            running_qemu,
+            key=lambda g: g.get("cpu") or 0,
+            reverse=True,
+        )[:8]
+        by_mem = sorted(
+            running_qemu,
+            key=lambda g: (g.get("mem") or 0) / max(g.get("maxmem") or 1, 1),
+            reverse=True,
+        )[:8]
+
+        return {
+            "as_of": int(time.time()),
+            "guests": {
+                "total": len(real),
+                "running": running(real),
+                "stopped": sum(1 for g in real if g.get("status") == "stopped"),
+                "vms": len(qemu),
+                "cts": len(cts),
+                "vm_running": vm_running,
+                "ct_running": running(cts),
+                "vm_stopped": vm_stopped,
+                # 「其余状态」（paused / suspended / unknown）：资源分布卡按
+                # 运行 / 停止 / 其他三档画环，别把暂停的机器并进「已停止」
+                "vm_other": len(qemu) - vm_running - vm_stopped,
+                "used_cores": round(used_cores, 3),
+                "total_cores": total_cores,
+                "used_mem": sum(int(g.get("mem") or 0) for g in real),
+                "total_mem": sum(int(g.get("maxmem") or 0) for g in real),
+                "used_disk": sum(int(g.get("disk") or 0) for g in real),
+                "total_disk": sum(int(g.get("maxdisk") or 0) for g in real),
+            },
+            "top": {
+                "by_cpu": [entry(g) for g in by_cpu],
+                "by_memory": [entry(g) for g in by_mem],
+                "total_running": len(running_qemu),
+            },
+        }
+
+    return await pvecache.cached(key, DASHBOARD_TTL, _build)
 
 #: 容量预测的缓存时长（秒）。它优先读本地历史（便宜），但历史不足时会逐节点拉
 #: PVE 的 rrddata，那一步很重，缓存价值更高。
@@ -243,41 +361,53 @@ async def dashboard_capacity(
         series: Dict[int, float] = {}  # time -> 集群已用字节（跨节点求和）
         capacity = 0.0  # 当前集群根分区总容量（字节）
 
-        for _profile, client in _scope_pairs():
-            try:
-                nodes = await client.nodes() or []
-            except ProxmoxError:
+        # 这条回落通道是「历史点还不够」时才走的 —— 也就是刚部署、或刚清了历史。
+        # 那时它同时是**首次打开仪表盘**的必经之路：原来按「连接 → 节点 → rrddata」
+        # 三层串行，20 个节点就是 20 次往返排成一队。现在连接并发、rrd 采样并发，
+        # 整块压到 1~2 个 RTT。
+        pairs = list(_scope_pairs())
+        node_lists = await parallel(
+            (client.nodes() for _profile, client in pairs), limit=max(len(pairs), 1)
+        )
+        work: List[Tuple[Any, Dict[str, Any]]] = []  # (client, node)
+        for (_profile, client), nodes in zip(pairs, node_lists):
+            if isinstance(nodes, BaseException):
                 # 某一台 PVE 连不上只跳过它，不影响其它主机
                 continue
-            for n in nodes:
-                name = n.get("node")
-                if not name:
-                    continue
-                try:
-                    rrd = await client.node_rrddata(name, timeframe) or []
-                except ProxmoxError:
-                    # 取不到历史时，至少把节点静态容量计入分母
-                    capacity += n.get("maxdisk") or 0
-                    continue
-                if not rrd:
-                    capacity += n.get("maxdisk") or 0
-                    continue
-                # 容量以该节点最后一条采样里的根分区总量为准（最稳定）
-                last = rrd[-1]
-                node_total = (
-                    last.get("roottotal")
-                    or last.get("maxdisk")
-                    or n.get("maxdisk")
-                    or 0
-                )
-                capacity += node_total
-                for point in rrd:
-                    t = point.get("time")
-                    raw = point.get("rootused")
-                    if raw is None:
-                        raw = point.get("disk")
-                    if isinstance(t, (int, float)) and isinstance(raw, (int, float)):
-                        series[t] = series.get(t, 0.0) + raw
+            for n in nodes or []:
+                if n.get("node"):
+                    work.append((client, n))
+
+        rrd_list = await parallel(
+            (client.node_rrddata(n.get("node"), timeframe) for client, n in work),
+            limit=8,
+        )
+        for (_client, n), rrd in zip(work, rrd_list):
+            name = n.get("node")
+            if isinstance(rrd, BaseException):
+                # 取不到历史时，至少把节点静态容量计入分母
+                capacity += n.get("maxdisk") or 0
+                continue
+            rrd = rrd or []
+            if not rrd:
+                capacity += n.get("maxdisk") or 0
+                continue
+            # 容量以该节点最后一条采样里的根分区总量为准（最稳定）
+            last = rrd[-1]
+            node_total = (
+                last.get("roottotal")
+                or last.get("maxdisk")
+                or n.get("maxdisk")
+                or 0
+            )
+            capacity += node_total
+            for point in rrd:
+                t = point.get("time")
+                raw = point.get("rootused")
+                if raw is None:
+                    raw = point.get("disk")
+                if isinstance(t, (int, float)) and isinstance(raw, (int, float)):
+                    series[t] = series.get(t, 0.0) + raw
 
         # 最小二乘与空预测的判定都收在 _predict 里：历史通道与 PVE 回落通道
         # 用同一套算法，两条路径给出的天数口径才一致。

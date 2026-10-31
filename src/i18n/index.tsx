@@ -23,7 +23,6 @@ import {
   type ReactNode,
 } from 'react';
 import { zhCN, type MessageKey } from './locales/zh-CN';
-import { en } from './locales/en';
 
 export type { MessageKey };
 
@@ -53,10 +52,34 @@ export interface I18nValue {
 
 const I18nContext = createContext<I18nValue | null>(null);
 
-const DICTS: Record<Lang, Partial<Record<MessageKey, string>>> = {
+type Dict = Partial<Record<MessageKey, string>>;
+
+/* 英文词典**按需加载**：两个语言的词条合起来 775KB（gzip 242KB），而默认用户
+   是中文界面 —— 英文那半份（约 380KB 源码）此前每次首屏都要下载，却用不上。
+
+   ``zhCN`` 必须留在主包里：它既是 ``MessageKey`` 的类型来源，也是「英文缺词条」
+   时逐条回退的兜底（见下面的 t()）。所以省下的只是英文表本身。
+
+   加载失败或尚未加载时 ``en`` 读到空表 → 所有文案回退中文，不会露出 key。 */
+let enDict: Dict | null = null;
+
+const DICTS: Record<Lang, Dict> = {
   'zh-CN': zhCN,
-  en,
+  get en() {
+    return enDict ?? {};
+  },
 };
+
+/** 预拉某语言的词典（英文才需要）。重复调用只会加载一次。 */
+export async function preloadLang(lang: Lang): Promise<void> {
+  if (lang !== 'en' || enDict) return;
+  try {
+    const mod = await import('./locales/en');
+    enDict = mod.en;
+  } catch {
+    /* 拉不到就用中文兜底：界面仍是完整可用的 */
+  }
+}
 
 export function isLang(value: unknown): value is Lang {
   return value === 'zh-CN' || value === 'en';
@@ -124,6 +147,8 @@ function interpolate(text: string, vars?: TVars): string {
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(detectLang);
+  /* 词典是异步加载的：加载完成后自增一次，让下面的 t 重新生成、整棵树换文案 */
+  const [dictVersion, setDictVersion] = useState(0);
 
   /* 同步模块级快照（tStatic）：在返回 children 之前赋值，所以本轮渲染里子组件
      调 tStatic 读到的就是新语言。幂等，StrictMode 下重复执行无副作用。 */
@@ -141,6 +166,18 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     }
   }, [lang]);
 
+  /* 切到英文时把词典拉下来；已经在加载 / 已加载则直接返回 */
+  useEffect(() => {
+    if (lang !== 'en' || enDict) return;
+    let alive = true;
+    void preloadLang('en').then(() => {
+      if (alive) setDictVersion((v) => v + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [lang, dictVersion]);
+
   const setLang = useCallback((next: Lang) => {
     setLangState((current) => (current === next ? current : next));
   }, []);
@@ -151,7 +188,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       const text = DICTS[lang][key] ?? zhCN[key];
       return interpolate(text, vars);
     },
-    [lang],
+    // dictVersion 参与依赖：英文表加载完成后 t 的引用要变，才能触发重渲染
+    [lang, dictVersion],
   );
 
   const value = useMemo<I18nValue>(() => ({ lang, setLang, t }), [lang, setLang, t]);

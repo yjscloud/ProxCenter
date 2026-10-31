@@ -28,6 +28,67 @@ export interface NodeMetric {
 const BASE_DELAY_MS = 5_000;
 const MAX_DELAY_MS = 300_000;
 
+/* 节点指标里会变的字段。比较这几个就够了：任何一个变了才替换那一项，
+   其余节点保持原对象引用 —— 图表的 memo / useMemo 才能真的命中。 */
+const VOLATILE_FIELDS = [
+  'status',
+  'cpu',
+  'maxcpu',
+  'mem',
+  'maxmem',
+  'loadavg',
+  'uptime',
+] as const;
+
+/** loadavg 可能是数字、字符串或三元数组 —— 按值比较，别拿引用比。 */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => String(v) === String(b[i]));
+  }
+  return a === b;
+}
+
+function sameNode(a: NodeMetric | undefined, b: NodeMetric): boolean {
+  if (!a) return false;
+  return VOLATILE_FIELDS.every((key) => sameValue(a[key], b[key]));
+}
+
+/**
+ * 把一帧指标合并进上一份状态，只替换**真的变了**的节点。
+ *
+ * 服务端每 2~3 秒推一次全量，而实际上每次只有一两个节点的 cpu/mem 在动。
+ * 原来每次都 `setMetrics(全新对象)`：所有 `metrics[name]` 的引用都变了，
+ * 挂着这个 hook 的卡片、迷你曲线会跟着全量重渲染 —— 节点越多越像卡顿。
+ * 没有任何变化时直接返回原对象，React 会跳过这次渲染。
+ */
+function mergeMetrics(
+  prev: Record<string, NodeMetric>,
+  incoming: NodeMetric[],
+): Record<string, NodeMetric> {
+  let changed = false;
+  const next: Record<string, NodeMetric> = { ...prev };
+
+  for (const item of incoming) {
+    if (!item?.node) continue;
+    if (sameNode(prev[item.node], item)) continue;
+    next[item.node] = item;
+    changed = true;
+  }
+
+  /* 节点被移出集群：从状态里剔掉，避免旧读数一直挂在界面上 */
+  if (Object.keys(prev).length > 0) {
+    const alive = new Set(incoming.map((item) => item?.node).filter(Boolean));
+    for (const name of Object.keys(prev)) {
+      if (!alive.has(name)) {
+        delete next[name];
+        changed = true;
+      }
+    }
+  }
+
+  return changed ? next : prev;
+}
+
 export function useMetricsStream(enabled: boolean): {
   metrics: Record<string, NodeMetric>;
   connected: boolean;
@@ -60,11 +121,7 @@ export function useMetricsStream(enabled: boolean): {
             nodes?: NodeMetric[];
           };
           if (data.type === 'metrics' && Array.isArray(data.nodes)) {
-            const next: Record<string, NodeMetric> = {};
-            for (const item of data.nodes) {
-              if (item?.node) next[item.node] = item;
-            }
-            setMetrics(next);
+            setMetrics((prev) => mergeMetrics(prev, data.nodes ?? []));
           }
         } catch {
           /* 忽略无法解析的帧 */

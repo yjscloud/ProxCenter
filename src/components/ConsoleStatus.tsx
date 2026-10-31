@@ -18,7 +18,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { clusterApi, healthApi } from '../api/endpoints';
+import { healthApi } from '../api/endpoints';
 import { useAuth } from '../hooks/useAuth';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { Badge } from './ui/Badge';
@@ -39,7 +39,7 @@ export function ConsoleStatus() {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const { hasPermission, isAdmin } = useAuth();
+  const { isAdmin } = useAuth();
   /* 轮询间隔跟「设置 → 面板设置 → 数据刷新间隔」走（见 useRefreshInterval） */
   const refresh = useRefreshInterval();
 
@@ -50,18 +50,13 @@ export function ConsoleStatus() {
     retry: false,
   });
 
-  /* 全站合计：/health 只能读「默认连接」那一套，多连接部署下它的 node_count
-     只是其中一台的节点数，直接显示会让人以为面板只连了一台机器。
+  /* 全站合计：取自 `/api/health` 里的 `fleet` 明细（见 routers/config.health）。
+     早先这里是独立的一条 `/cluster/fleet-status`，于是顶栏每 tick 要发两条，
+     而那条接口是**逐连接真实探活**的。现在两个入口共用同一份 30 秒缓存的数据。
      拿不到（没权限 / 接口失败）时静默回落到 /health 的读数。 */
-  const fleet = useQuery({
-    queryKey: ['cluster', 'fleet-status'],
-    queryFn: clusterApi.fleetStatus,
-    refetchInterval: refresh,
-    retry: false,
-    enabled: hasPermission('node.view'),
-  });
+  const fleet = health.data?.fleet;
 
-  const totals = fleet.data?.totals;
+  const totals = fleet?.totals;
   const backendUp = !health.isError;
   const connected = health.data?.pve_connected ?? false;
   const offline = totals ? totals.connections - totals.online : 0;
@@ -98,7 +93,7 @@ export function ConsoleStatus() {
   const versions = (() => {
     const list = Array.from(
       new Set(
-        (fleet.data?.connections ?? []).map((row) => row.version).filter(Boolean),
+        (fleet?.connections ?? []).map((row) => row.version).filter(Boolean),
       ),
     );
     if (!list.length) return health.data?.pve_version || '';

@@ -9,10 +9,8 @@ import {
   clusterApi,
   connectionsApi,
   dashboardApi,
-  lxcApi,
   nodesApi,
   storagesApi,
-  vmsApi,
 } from '../api/endpoints';
 import { guestPath } from '../api/guests';
 import { PageShell } from '../components/Layout';
@@ -27,7 +25,7 @@ import { Table, type Column } from '../components/ui/Table';
 import { ErrorState, EmptyState } from '../components/ui/EmptyState';
 import { Modal } from '../components/ui/Modal';
 import { PveQueryError } from '../components/SetupRequired';
-import { isNotConfigured } from '../api/client';
+import { isNotConfigured, isNotImplemented } from '../api/client';
 import { usePveReady } from '../hooks/usePveStatus';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { DonutChart, CHART_COLORS } from '../components/MetricChart';
@@ -74,9 +72,17 @@ import {
 import { useT } from '../i18n';
 
 /* 仪表盘各卡片的自动刷新间隔取自「设置 → 面板设置 → 数据刷新间隔」
-   （见 useRefreshInterval）：这里是全站接口最集中的一页（虚拟机 / 节点 / 集群 /
-   存储 / 任务 / TopN 一起轮询），间隔调小要清楚代价。原先写死 30 秒。
+   （见 useRefreshInterval）：这里是全站接口最集中的一页（汇总 / 节点 / 集群 /
+   存储 / 任务 / 容量一起轮询），间隔调小要清楚代价。原先写死 30 秒。
    节点 KPI 那条实时曲线走 WebSocket，不受这个设置影响。 */
+
+/**
+ * 同一 tick 里几条请求会同时发出，后端的 PVE 调用与 SQL 也就叠在一起。
+ * 给每条加一点**固定**偏移（不用随机值：随机值会在每次渲染变数，定时器
+ * 被反复重置，反而更糟），错开成一条细流。
+ */
+const stagger = (ms: number | false, offset: number): number | false =>
+  ms === false ? false : ms + offset;
 
 /* 「集群节点」卡片最多列几个节点。
    节点一多，卡片里再一行行堆下去就是半屏滚动条 —— 这块是「扫一眼健康度」
@@ -118,8 +124,8 @@ const WIDGET_META: WidgetMeta[] = [
     id: 'distribution',
     nameKey: 'dashboard.widget.distribution',
     span: 'half',
-    /* 统计口径只算虚拟机（vmsApi.list → vm.view）：这张图讲的是虚拟机分布，
-       不跟着「虚拟机或容器任一类」放宽到 ct.view */
+    /* 统计口径只算虚拟机（summary.guests 的 vm_* 字段 → vm.view）：这张图讲的
+       是虚拟机分布，不跟着「虚拟机或容器任一类」放宽到 ct.view */
     permissions: ['vm.view'],
   },
   {
@@ -262,7 +268,6 @@ export function Dashboard() {
   const loadNodes = isAdmin && canNode;
   const loadStorages = isAdmin && canStorage;
   const loadTasks = isAdmin && canTask;
-  const loadTop = canVm;
 
   /* 未配置连接时后端对每个请求都回 428，轮询只会刷一屏没人看的报错
      （配好之后自动恢复） */
@@ -282,28 +287,24 @@ export function Dashboard() {
      连加载骨架都不会闪一下，这也是「自适应」需要的一半。
      刷新间隔跟「设置 → 面板设置 → 数据刷新间隔」走。 */
   const refresh = useRefreshInterval();
-  const vmsQuery = useQuery({
-    queryKey: ['vms', 'all'],
-    queryFn: () => vmsApi.list(),
-    refetchInterval: pveReady ? refresh : false,
-    enabled: canVm,
-  });
 
-  /* 容器是**另一套接口与权限**（/lxc → ct.view），不搭 /vms 的车：那条接口的
-     守卫是 vm.view，用它取容器等于绕开了 ct.view。
-     只有普通用户需要它 —— 管理员的指标行读的是宿主机与集群容量，
-     跟「我名下的容器」无关。 */
-  const ctsQuery = useQuery({
-    queryKey: ['lxc', 'dashboard'],
-    queryFn: () => lxcApi.list(),
+  /* ---- 客户机口径汇总：一条顶三条 ----
+     台数 / 占用 / TopN 原本是三条独立请求（/vms、/lxc、/dashboard/top），
+     前两条还是**全量列表** —— 500 台时单 tick 就是 0.5–1.5 MB，而页面只用
+     其中几个计数。现在后端一次算完（权限口径由后端按 vm.view / ct.view
+     的具体持有情况决定，只有 ct.view 的账号不会因为走了汇总接口就多看到虚拟机）。 */
+  const summaryQuery = useQuery({
+    queryKey: ['dashboard', 'summary'],
+    queryFn: dashboardApi.summary,
     refetchInterval: pveReady ? refresh : false,
-    enabled: !isAdmin && canCt,
+    enabled: canGuest,
   });
+  const guestStats = summaryQuery.data?.guests;
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
-    refetchInterval: pveReady ? refresh : false,
+    refetchInterval: pveReady ? stagger(refresh, 250) : false,
     enabled: canNode,
   });
 
@@ -318,7 +319,7 @@ export function Dashboard() {
   const fleetQuery = useQuery({
     queryKey: ['cluster', 'fleet-status'],
     queryFn: clusterApi.fleetStatus,
-    refetchInterval: refresh,
+    refetchInterval: stagger(refresh, 1000),
     retry: false,
     enabled: loadNodes,
   });
@@ -546,14 +547,14 @@ export function Dashboard() {
   const storagesQuery = useQuery({
     queryKey: ['storages', 'all'],
     queryFn: () => storagesApi.list(),
-    refetchInterval: pveReady ? refresh : false,
+    refetchInterval: pveReady ? stagger(refresh, 750) : false,
     enabled: loadStorages,
   });
 
   const tasksQuery = useQuery({
     queryKey: ['cluster', 'tasks', 8],
     queryFn: () => clusterApi.tasks({ limit: 8 }),
-    refetchInterval: refresh,
+    refetchInterval: stagger(refresh, 1500),
     retry: false,
     enabled: loadTasks,
   });
@@ -566,18 +567,9 @@ export function Dashboard() {
   const capacityQuery = useQuery({
     queryKey: ['dashboard', 'capacity', capacityTimeframe],
     queryFn: () => dashboardApi.capacity(capacityTimeframe),
-    refetchInterval: refresh,
+    refetchInterval: stagger(refresh, 2250),
     retry: false,
     enabled: loadNodes,
-  });
-
-  /* Top N 资源占用排行（CPU / 内存），后端按指标排序 */
-  const topQuery = useQuery({
-    queryKey: ['dashboard', 'top', 8],
-    queryFn: () => dashboardApi.top(8),
-    refetchInterval: refresh,
-    retry: false,
-    enabled: loadTop,
   });
 
   /* 实时节点指标流：后端把逐页轮询集中到一条 WebSocket 上，
@@ -588,51 +580,36 @@ export function Dashboard() {
      结果就是这类账号在后台一直空转握手、服务端日志一路刷 403。 */
   const metrics = useMetricsStream(loadNodes);
 
-  /* ---- 统计计算 ---- */
-  const stats = useMemo(() => {
-    const vms = vmsQuery.data ?? [];
-    // 排除模板
-    const realVms = vms.filter((v) => !v.template);
-    const running = realVms.filter((v) => v.status === 'running');
-    const stopped = realVms.filter((v) => v.status === 'stopped');
-    const other = realVms.length - running.length - stopped.length;
-
-    return {
-      total: realVms.length,
-      running: running.length,
-      stopped: stopped.length,
-      other,
-    };
-  }, [vmsQuery.data]);
+  /* ---- 统计计算 ----
+     台数不再由前端在整份列表上 filter：后端在算汇总时已经分好类
+     （vm_* / ct_*），这里只做展示映射。 */
+  const stats = useMemo(
+    () => ({
+      total: guestStats?.vms ?? 0,
+      running: guestStats?.vm_running ?? 0,
+      stopped: guestStats?.vm_stopped ?? 0,
+      other: guestStats?.vm_other ?? 0,
+    }),
+    [guestStats],
+  );
 
   /* 普通用户指标行的读数：**我名下**的虚拟机 + 容器一起算。
      与上面的 stats 分开是有意的 —— 那个口径只统计虚拟机，要跟「资源分布」
      那张卡（运行状态、中心读数）对齐；这里要的是「我这些机器一共占了多少」。
      CPU 按核数加权，与集群那张同一口径：逐台简单平均会在机器核数悬殊时失真。 */
   const myStats = useMemo(() => {
-    const vmList = (vmsQuery.data ?? []).filter((g) => !g.template);
-    const ctList = (ctsQuery.data ?? []).filter((g) => !g.template);
-    const all = [...vmList, ...ctList];
-    const sumOf = (list: typeof all, field: 'maxcpu' | 'maxmem' | 'maxdisk') =>
-      list.reduce((sum, g) => sum + (g[field] ?? 0), 0);
-    const runningCount = (list: typeof all) =>
-      list.filter((g) => g.status === 'running').length;
-
-    const totalCores = sumOf(all, 'maxcpu');
-    const usedCores = all.reduce(
-      (sum, g) => sum + (toPercent(g.cpu) / 100) * (g.maxcpu ?? 0),
-      0,
-    );
-    const totalMem = sumOf(all, 'maxmem');
-    const usedMem = all.reduce((sum, g) => sum + (g.mem ?? 0), 0);
-    const totalDisk = sumOf(all, 'maxdisk');
-    const usedDisk = all.reduce((sum, g) => sum + (g.disk ?? 0), 0);
+    const totalCores = guestStats?.total_cores ?? 0;
+    const usedCores = guestStats?.used_cores ?? 0;
+    const totalMem = guestStats?.total_mem ?? 0;
+    const usedMem = guestStats?.used_mem ?? 0;
+    const totalDisk = guestStats?.total_disk ?? 0;
+    const usedDisk = guestStats?.used_disk ?? 0;
 
     return {
-      vms: vmList.length,
-      cts: ctList.length,
-      vmRunning: runningCount(vmList),
-      ctRunning: runningCount(ctList),
+      vms: guestStats?.vms ?? 0,
+      cts: guestStats?.cts ?? 0,
+      vmRunning: guestStats?.vm_running ?? 0,
+      ctRunning: guestStats?.ct_running ?? 0,
       cpuPercent: totalCores > 0 ? (usedCores / totalCores) * 100 : 0,
       usedCores,
       totalCores,
@@ -648,21 +625,23 @@ export function Dashboard() {
          「磁盘是空的」—— 那种情况改报已分配容量，别显示成 0.0%。 */
       diskUsageKnown: usedDisk > 0,
     };
-  }, [vmsQuery.data, ctsQuery.data]);
+  }, [guestStats]);
 
-  /* 三张占用读数的加载态：两份列表**任一份**还在路上就得转圈。
-     只盯 vmsQuery 的话，只有 ct.view 的账号（vms 那路没发出去 → isLoading 恒
-     false）会先看到一片 0%，随后数字才跳上来。 */
-  const myLoading = vmsQuery.isLoading || ctsQuery.isLoading;
+  /* 三张占用读数的加载态：汇总还没回来就得转圈，否则会先闪一片 0% */
+  const myLoading = summaryQuery.isLoading;
 
   /* ---- Top N 资源占用排行（CPU / 内存）----
-     用后端 /dashboard/top 排序，比前端按单次采样排更稳：
-     CPU 峰值波动大，内存吃紧更难靠感觉发现。 */
+     排序在后端做（CPU 峰值波动大，内存吃紧更难靠感觉发现），榜单与台数来自
+     同一次汇总，不再单独发一条 /dashboard/top。 */
   const [topTab, setTopTab] = useState<'cpu' | 'mem'>('mem');
   const topList = useMemo(() => {
-    const data = (topQuery.data ?? { by_cpu: [], by_memory: [] }) as DashboardTop;
+    const data: DashboardTop = summaryQuery.data?.top ?? {
+      by_cpu: [],
+      by_memory: [],
+      total_running: 0,
+    };
     return topTab === 'mem' ? data.by_memory : data.by_cpu;
-  }, [topQuery.data, topTab]);
+  }, [summaryQuery.data, topTab]);
 
   /* ---- 实时节点指标合并 ----
      WebSocket 在线时，用它覆盖轮询拿到的 cpu/mem/状态，让 KPI 与节点行
@@ -900,27 +879,39 @@ export function Dashboard() {
      （enabled=false 的查询 isError 恒为 false）。照原样要求三路同时失败，
      普通用户在真拿不到数据时就只会看到一片 0，连一句「加载失败」都等不到。 */
   const dataQueries = [
-    vmsQuery,
+    summaryQuery,
     ...(loadNodes ? [nodesQuery] : []),
     ...(loadStorages ? [storagesQuery] : []),
   ];
   const hasError = dataQueries.every((query) => query.isError);
+  /* 404 不是「后端挂了」，而是「后端还没有这个接口」——多半是前端已更新、
+     后端进程还跑着旧代码（升级时忘了重启）。这时提示用户去查网络/Proxmox 完全
+     帮不上忙，反而让人以为集群出问题了。 */
+  const staleBackend = dataQueries.some((query) => isNotImplemented(query.error));
 
   if (hasError) {
     return (
       <PageShell title={t('nav.dashboard')}>
         <PveQueryError
-          title={t('dashboard.loadErrorTitle')}
-          message={t('dashboard.loadErrorMsg')}
+          title={
+            staleBackend
+              ? t('dashboard.loadErrorOutdatedTitle')
+              : t('dashboard.loadErrorTitle')
+          }
+          message={
+            staleBackend
+              ? t('dashboard.loadErrorOutdated')
+              : t('dashboard.loadErrorMsg')
+          }
           /* 只要有一路是「还没配连接」（428），就按未配置渲染引导：
-             挑第一路 428 而不是固定拿 vms 的那份 —— 三路同时失败时，谁先返回
-             428 并不确定，固定取 vms 会在它恰好是 5xx 时把用户丢进红色报错。 */
+             挑第一路 428 而不是固定拿汇总的那份 —— 三路同时失败时，谁先返回
+             428 并不确定，固定取汇总会在它恰好是 5xx 时把用户丢进红色报错。 */
           error={
             dataQueries.find((query) => isNotConfigured(query.error))?.error ??
-            vmsQuery.error
+            summaryQuery.error
           }
           onRetry={() => {
-            void vmsQuery.refetch();
+            void summaryQuery.refetch();
             void nodesQuery.refetch();
             void storagesQuery.refetch();
           }}
@@ -958,7 +949,7 @@ export function Dashboard() {
             value={stats.total}
             icon={<IconVm size={16} />}
             tone="accent"
-            loading={vmsQuery.isLoading}
+            loading={summaryQuery.isLoading}
             hint={
               <>
                 <span className="text-success">
@@ -1073,8 +1064,8 @@ export function Dashboard() {
       </div>
     ) : (
       /* 普通用户那一行：只回答「我有什么、占了多少」。
-         两类机器的台数来自两份**已按归属过滤**的列表（/vms 与 /lxc），
-         后端已经把别人的机器拿掉了 —— 这里不需要前端再筛一遍。 */
+         两类机器的台数来自后端**已按归属过滤**的汇总（/dashboard/summary），
+         别人的机器在那一层就被拿掉了 —— 这里不需要前端再筛一遍。 */
       <div className={`grid ${kpiCols}`}>
         {canVm ? (
           <KpiCard
@@ -1082,7 +1073,7 @@ export function Dashboard() {
             value={myStats.vms}
             icon={<IconVm size={16} />}
             tone="accent"
-            loading={vmsQuery.isLoading}
+            loading={summaryQuery.isLoading}
             hint={
               <>
                 <span className="text-success">
@@ -1105,7 +1096,7 @@ export function Dashboard() {
             value={myStats.cts}
             icon={<IconServer size={16} />}
             tone="accent"
-            loading={ctsQuery.isLoading}
+            loading={summaryQuery.isLoading}
             hint={
               <>
                 <span className="text-success">
@@ -1360,7 +1351,7 @@ export function Dashboard() {
         <CardHeader
           title={t('dashboard.top.title')}
           subtitle={
-            topQuery.isLoading
+            summaryQuery.isLoading
               ? t('common.loading')
               : isAdmin
                 ? t('dashboard.top.subtitle', { n: topList.length || 8 })
@@ -1380,7 +1371,7 @@ export function Dashboard() {
           }
         />
         <div className="top-vms">
-          {topQuery.isLoading ? (
+          {summaryQuery.isLoading ? (
             <div className="flex flex-col gap-16">
               {[0, 1, 2, 3, 4].map((i) => (
                 <div key={i} className="skeleton skeleton-text" style={{ width: '70%' }} />

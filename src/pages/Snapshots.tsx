@@ -33,34 +33,6 @@ import { useT } from '../i18n';
 import type { Snapshot } from '../api/types';
 
 /* ---------------------------------------------------------------------------
-   带并发限制的批量请求
-   --------------------------------------------------------------------------- */
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
-
-  async function worker() {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await fn(items[index]);
-    }
-  }
-
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    () => worker(),
-  );
-  await Promise.all(workers);
-  return results;
-}
-
-/* ---------------------------------------------------------------------------
    页面
    --------------------------------------------------------------------------- */
 
@@ -102,47 +74,30 @@ export function Snapshots() {
     ];
   }, [vms]);
 
-  const targetVms = useMemo(
-    () => (nodeFilter ? vms.filter((v) => v.node === nodeFilter) : vms),
-    [vms, nodeFilter],
-  );
 
-  /* 并发拉取各 VM 快照（限制 6 并发）。轮询间隔跟「设置 → 面板设置 → 数据刷新
-     间隔」走（见 useRefreshInterval） */
+  /* 一次向后端要**全量**快照。原先是「前端按 VM 逐台发请求」（并发 6），
+     200 台机器就是 200 个浏览器请求，开两个标签页翻倍，而且每台都要等 PVE
+     扫一遍快照元数据。后端 ``/api/snapshots`` 已经把这几件事一起做了：
+     服务端并发（上限可配）+ 归属过滤 + 60 秒缓存，且变更路径会主动作废。
+     轮询间隔仍跟「设置 → 面板设置 → 数据刷新间隔」走。 */
   const refresh = useRefreshInterval();
   const snapshotsQuery = useQuery({
-    queryKey: [
-      'snapshots',
-      'all',
-      targetVms.map((v) => `${v.node}/${v.vmid}`).join(','),
-    ],
+    queryKey: ['snapshots', 'all'],
     queryFn: async () => {
-      const results = await mapWithConcurrency(targetVms, 6, async (vm) => {
-        try {
-          const list = await vmsApi.snapshots(vm.node, vm.vmid);
-          return list
-            .filter((s) => s.name !== 'current')
-            .map<Snapshot>((s) => ({
-              ...s,
-              vmid: vm.vmid,
-              node: vm.node,
-              vmname: vm.name,
-            }));
-        } catch {
-          /* 单个 VM 失败不影响整体 */
-          return [] as Snapshot[];
-        }
-      });
-      return results.flat();
+      const rows = await vmsApi.allSnapshots();
+      // 后端字段叫 vm_name，页面与列定义里用的是 vmname，这里对齐一次
+      return rows.map<Snapshot>((s) => ({ ...s, vmname: s.vmname ?? s.vm_name }));
     },
-    enabled: targetVms.length > 0,
+    enabled: pveReady,
     refetchInterval: pveReady ? refresh : false,
     retry: false,
   });
 
   /* 过滤 */
   const snapshots = useMemo(() => {
-    const list = snapshotsQuery.data ?? [];
+    const all = snapshotsQuery.data ?? [];
+    // 节点筛选在聚合结果上做：接口一次给全量，切节点不必重新请求
+    const list = nodeFilter ? all.filter((s) => s.node === nodeFilter) : all;
     const q = search.trim().toLowerCase();
     const filtered = q
       ? list.filter(
@@ -157,7 +112,7 @@ export function Snapshots() {
     return [...filtered].sort(
       (a, b) => (b.snaptime ?? 0) - (a.snaptime ?? 0),
     );
-  }, [snapshotsQuery.data, search]);
+  }, [snapshotsQuery.data, search, nodeFilter]);
 
   /* 快照会越攒越多（每台机器若干条），和其它列表一样分页。
      切片放在上面那份「已过滤 + 已按时间排序」的列表之后，翻到哪一页都是

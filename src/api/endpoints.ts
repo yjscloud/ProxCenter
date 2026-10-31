@@ -2313,11 +2313,14 @@ export const sshFleetApi = {
   /**
    * 指派受管主机的归属（管理员）。``username`` 留空 = 收回，
    * 收回后这台主机只有管理员可见。
+   *
+   * ``reason`` 只进审计：主机改派会连带改变 SSH 安全 / 基线 / 端口 / 登录审计
+   * 四套数据的可见范围，事后要能答「为什么把这台主机交出去」。
    */
-  assignOwner: (id: string, username: string) =>
+  assignOwner: (id: string, username: string, reason?: string) =>
     put<{ ok: boolean; host_id: string; owner: string; previous?: string | null }>(
       `/ssh/hosts/${id}/owner`,
-      { username },
+      { username, ...(reason ? { reason } : {}) },
     ),
   /**
    * 确认并记住主机指纹（首次连接后必须做一次）。

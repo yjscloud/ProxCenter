@@ -422,6 +422,20 @@ class TestBulkAssignWiring:
         assert params.username == " bob "  # 去空格在编排层做，schema 只负责类型
         assert params.reason == " OPS-1 "
 
+    def test_empty_target_is_rejected(self) -> None:
+        """空用户名在归属语义里是「收回」：批量不清归属，服务端自己拦住。
+
+        界面上的提交按钮已按「必须选人」禁用，但接口是公开的（脚本 / 第三方），
+        没有这道校验时一次调用就能抹掉整批机器的归属。
+        """
+        from app import bulk
+        from app.schemas import BulkParams
+
+        assert bulk.assign_target_error(BulkParams(username="")) != ""
+        assert bulk.assign_target_error(BulkParams(username="   ")) != ""
+        assert bulk.assign_target_error(BulkParams(username=None)) != ""
+        assert bulk.assign_target_error(BulkParams(username=" bob ")) == ""
+
 
 class TestBackupOwner:
     def test_machine_owner_wins_over_the_marker(self) -> None:

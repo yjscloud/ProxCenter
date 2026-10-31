@@ -61,6 +61,7 @@ import { usePveReady } from '../hooks/usePveStatus';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { ConfirmDialog, useConfirm } from '../components/ui/ConfirmDialog';
 import { UserSelect } from '../components/ui/UserSelect';
+import { OwnerAssignDialog } from '../components/OwnerAssignDialog';
 import { useAiAssistantEntry } from '../components/AskAiButton';
 import { useSnapshotQuota } from '../hooks/useSnapshotQuota';
 import { useNodeStorages } from '../hooks/useNodeStorages';
@@ -178,155 +179,6 @@ function useKindLabels(kind: GuestKind): {
       cloneName: t(`${prefix}.cloneName`),
     }),
     [t, prefix],
-  );
-}
-
-/* ---------------------------------------------------------------------------
-   指派归属：管理员把 guest 交给某个用户
-   存量 guest 在创建时没有记录归属，严格隔离下普通用户看不到它们，
-   管理员可以用这个操作把某台机器交给指定用户（或清除归属）。
-   --------------------------------------------------------------------------- */
-
-function AssignOwnerDialog({
-  vm,
-  noun,
-  onClose,
-  onDone,
-}: {
-  vm: VmSummary | null;
-  /** 「虚拟机」/「容器」，用于对话框文案 */
-  noun: string;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const t = useT();
-  const toast = useToast();
-  const [username, setUsername] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
-  /** 打开时读到的归属。与 `username` 分开：它回答的是「本来是谁」 */
-  const [current, setCurrent] = useState('');
-  /** 读失败的原因。读不到当前归属时**不允许保存**（见下面的 submit） */
-  const [loadError, setLoadError] = useState('');
-  /**
-   * 管理员是否动过这个下拉。
-   *
-   * 它是「清除归属」与「还没选人」之间唯一的区别 —— 后端把空 username 当成
-   * 「清除」，而清空这个框只需要一次误点（或者输了用户名直接点保存，点外面
-   * 收起时搜索词被丢掉、value 根本没变）。没有这个标记的话，一次保存就能把
-   * 已经设好的归属抹掉，而且**全程不报错**，toast 还会说「归属已清除」。
-   */
-  const [touched, setTouched] = useState(false);
-
-  /* 打开时读取当前归属 */
-  useEffect(() => {
-    if (!vm) return;
-    setBusy(false);
-    setTouched(false);
-    setLoadError('');
-    setLoading(true);
-    guestsApi
-      .getOwner(vm, vm.connection_id)
-      .then((res) => {
-        setCurrent(res.owner ?? '');
-        setUsername(res.owner ?? '');
-      })
-      /* 读失败**不能**静默当成「本来就没有归属」：那会让管理员在一个未知的
-         状态上做决定 —— 界面上是空的，他若随手一存就是把别人的归属清掉。 */
-      .catch((err) => {
-        setCurrent('');
-        setUsername('');
-        setLoadError(errorMessage(err));
-      })
-      .finally(() => setLoading(false));
-  }, [vm]);
-
-  const submit = async () => {
-    if (!vm || loading) return;
-    if (loadError) {
-      toast.error(t('guestList.assignLoadFailed'), loadError);
-      return;
-    }
-    /* 没动过下拉且结果为空 —— 不当作「清除」。要清除得明确选那一项，
-       那一下点击本身就是确认（选项文案也写清了后果，见 emptyLabel）。 */
-    if (!username && !touched) {
-      toast.error(t('guestList.assignPickFirst'));
-      return;
-    }
-    setBusy(true);
-    try {
-      const res = await guestsApi.assignOwner(
-        vm,
-        username || null,
-        vm.connection_id,
-      );
-      toast.success(
-        res.owner ? t('guestList.assignDone', { noun }) : t('guestList.assignCleared'),
-        res.owner
-          ? `${vm.name || `${noun} ${vm.vmid}`} → ${res.owner}`
-          : vm.name || `${noun} ${vm.vmid}`,
-      );
-      onDone();
-    } catch (err) {
-      toast.error(t('guestList.assignFailed'), errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal
-      open={Boolean(vm)}
-      onClose={onClose}
-      title={t('guestList.assignTitle', { noun })}
-      description={t('guestList.assignDesc', { noun })}
-      size="sm"
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            {t('common.cancel')}
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => void submit()}
-            loading={busy}
-            /* 读失败时禁止保存：在一个未知的当前状态上保存，等于赌一把
-               「反正它也没有归属」。 */
-            disabled={loading || Boolean(loadError)}
-          >
-            {t('common.save')}
-          </Button>
-        </>
-      }
-    >
-      {/* 可搜索的用户下拉：账号一多，原生下拉靠按键逐项跳根本找不到人；
-          归属在库里就是用户名字符串，手打拼错一个字母等于「指派给一个不存在的人」 */}
-      <UserSelect
-        label={t('guestList.assignField')}
-        hint={
-          loading
-            ? t('guestList.assignLoading')
-            : /* 把「本来是谁」也摆出来：空输入框在别处常表示「没填」，
-                 而这里它表示「清除」，不写明当前值就得靠管理员自己记。 */
-              current
-              ? t('guestList.assignCurrent', { name: current })
-              : undefined
-        }
-        value={username}
-        /* 空项的含义要说清：它不是「不填」，而是「让这台机器变回无人认领」 */
-        emptyLabel={t('guestList.assignEmpty')}
-        onChange={(next) => {
-          setUsername(next);
-          setTouched(true);
-        }}
-        disabled={loading || Boolean(loadError)}
-      />
-      {loadError ? (
-        <Notice tone="danger" title={t('guestList.assignLoadFailed')}>
-          {loadError}
-        </Notice>
-      ) : null}
-    </Modal>
   );
 }
 
@@ -2289,8 +2141,22 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
         }}
       />
 
-      <AssignOwnerDialog
-        vm={assignTarget}
+      {/* 与虚拟机 / 容器详情页共用同一个弹窗（见 components/OwnerAssignDialog）：
+          「会跟随 / 不会跟随」清单、改派二次确认、连带处理明细只有一份实现。
+          列表页此前自己写了一个精简版 —— 从列表点进来看到的就只有「下拉 + 保存」，
+          同一个功能在两个入口长得不一样。 */}
+      <OwnerAssignDialog
+        guest={
+          assignTarget
+            ? {
+                node: assignTarget.node,
+                vmid: assignTarget.vmid,
+                type: guestTypeOf(assignTarget),
+                connection_id: assignTarget.connection_id,
+              }
+            : null
+        }
+        label={assignTarget ? assignTarget.name || String(assignTarget.vmid) : ''}
         noun={L.noun}
         onClose={() => setAssignTarget(null)}
         onDone={() => {

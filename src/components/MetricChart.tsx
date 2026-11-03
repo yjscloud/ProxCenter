@@ -174,7 +174,9 @@ export function ChartCard({
           compact
         />
       ) : (
-        <div style={{ width: '100%', height }}>{children}</div>
+        <div className="chart-frame" style={{ width: '100%', height }}>
+          {children}
+        </div>
       )}
     </div>
   );

@@ -1159,6 +1159,9 @@
     radial-gradient(120% 90% at 12% 0%, rgba(0, 164, 255, 0.16), transparent 58%),
     linear-gradient(158deg, #071628 0%, #0c2544 52%, #08192f 100%);
   overflow: hidden;
+  /* 与 .lp-section 同一套离屏跳过策略（见 landing.css） */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 720px;
 }
 
 /* 深色区里铺一层更暗的点阵，与页面顶部的底纹同构 */

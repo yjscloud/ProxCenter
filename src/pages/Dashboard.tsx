@@ -3,6 +3,8 @@
    ========================================================================== */
 
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -35,9 +37,22 @@ import { PveQueryError } from '../components/SetupRequired';
 import { isNotConfigured, isNotImplemented } from '../api/client';
 import { usePveReady } from '../hooks/usePveStatus';
 import { useRefreshInterval } from '../hooks/useRefreshInterval';
-import { DonutChart, CHART_COLORS } from '../components/MetricChart';
-import { CapacityCard } from '../components/CapacityCard';
+import { CHART_COLORS } from '../utils/chartColors';
+import { ChartSkeleton } from '../components/ui/Spinner';
 import type { CapacityTimeframe } from '../components/CapacityCard';
+
+/* recharts 是体积最大的依赖（打包后约 390KB）。仪表盘是登录后的默认页，
+   静态 import 会让首屏先等它下载并解析完才渲染。改成懒加载后，KPI 与列表先出、
+   图表随后补上——移动端弱网时首屏可用时间的差别最明显。
+
+   CHART_COLORS 从 utils/chartColors 取而不是 MetricChart：后者会连带把
+   recharts 拉进本页的依赖图，懒加载就白做了。 */
+const DonutChart = lazy(() =>
+  import('../components/MetricChart').then((m) => ({ default: m.DonutChart })),
+);
+const CapacityCard = lazy(() =>
+  import('../components/CapacityCard').then((m) => ({ default: m.CapacityCard })),
+);
 import { ProgressBar } from '../components/ui/ProgressBar';
 import {
   IconVm,
@@ -1405,14 +1420,16 @@ export function Dashboard() {
           />
           <div className="dist-body">
             <div className="dist-chart">
-              <DonutChart
-                data={donutData}
-                height="100%"
-                showLegend={false}
-                centerLabel={t('dashboard.dist.center')}
-                centerValue={stats.total}
-                onDatumClick={(datum) => drillToStatus(datum.id)}
-              />
+              <Suspense fallback={<ChartSkeleton height={180} />}>
+                <DonutChart
+                  data={donutData}
+                  height="100%"
+                  showLegend={false}
+                  centerLabel={t('dashboard.dist.center')}
+                  centerValue={stats.total}
+                  onDatumClick={(datum) => drillToStatus(datum.id)}
+                />
+              </Suspense>
             </div>
 
             <ul className="dist-legend">
@@ -1453,14 +1470,16 @@ export function Dashboard() {
 
     /* ---- 磁盘容量预测 ---- */
     capacity: (
-      <CapacityCard
-        forecast={capacityQuery.data}
-        loading={capacityQuery.isLoading}
-        error={capacityQuery.isError}
-        timeframe={capacityTimeframe}
-        onTimeframeChange={setCapacityTimeframe}
-        onRetry={() => void capacityQuery.refetch()}
-      />
+      <Suspense fallback={<ChartSkeleton height={260} />}>
+        <CapacityCard
+          forecast={capacityQuery.data}
+          loading={capacityQuery.isLoading}
+          error={capacityQuery.isError}
+          timeframe={capacityTimeframe}
+          onTimeframeChange={setCapacityTimeframe}
+          onRetry={() => void capacityQuery.refetch()}
+        />
+      </Suspense>
     ),
 
     /* ---- Top N 资源占用排行（CPU / 内存双 Tab）---- */

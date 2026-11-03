@@ -1427,6 +1427,11 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
          用户只会以为面板坏了 */
       locked: true,
       width: 210,
+      /* 类名给窄屏兜底用：触屏上图标按钮是 44px，五个排下来比 210 宽，
+         而 table-layout: fixed 不会让单元格撑开 —— 超出部分被表格的
+         横向滚动容器裁掉，最后一个「更多」只剩几个像素。
+         见 responsive.css 里 .col-actions 的宽度覆盖。 */
+      className: 'col-actions',
       render: (vm) => {
         const running = isRunning(vm.status);
         const stopped = isStopped(vm.status);

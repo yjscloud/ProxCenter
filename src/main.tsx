@@ -87,9 +87,11 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <ErrorBoundary>
-      {/* 语言放在最外层：登录页、路由错误页这些「还没有用户」的界面也要能切换语言 */}
-      <I18nProvider>
+    {/* I18nProvider 必须在 ErrorBoundary **外**：兜底 UI（ErrorFallback）自己要取词，
+        放在里面会在崩溃时二次抛错（useI18n 找不到 Provider），把整棵树连兜底页一起
+        抹成白屏，原始错误也被盖掉。 */}
+    <I18nProvider>
+      <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
           {/* 后端按 Accept-Language 本地化的接口（作业名、权限目录、角色名…）
               其 queryKey 不含语言，切语言后必须重取，否则一直显示旧语言 */}
@@ -108,7 +110,7 @@ createRoot(container).render(
             </ToastProvider>
           </BrowserRouter>
         </QueryClientProvider>
-      </I18nProvider>
-    </ErrorBoundary>
+      </ErrorBoundary>
+    </I18nProvider>
   </StrictMode>,
 );

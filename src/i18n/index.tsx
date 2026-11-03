@@ -19,10 +19,12 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
-import { zhCN, type MessageKey } from './locales/zh-CN';
+import { zhCore } from './locales/zh-CN.core';
+import type { MessageKey } from './locales/zh-CN';
 
 export type { MessageKey };
 
@@ -54,28 +56,118 @@ const I18nContext = createContext<I18nValue | null>(null);
 
 type Dict = Partial<Record<MessageKey, string>>;
 
-/* 英文词典**按需加载**：两个语言的词条合起来 775KB（gzip 242KB），而默认用户
-   是中文界面 —— 英文那半份（约 380KB 源码）此前每次首屏都要下载，却用不上。
-
-   ``zhCN`` 必须留在主包里：它既是 ``MessageKey`` 的类型来源，也是「英文缺词条」
-   时逐条回退的兜底（见下面的 t()）。所以省下的只是英文表本身。
-
-   加载失败或尚未加载时 ``en`` 读到空表 → 所有文案回退中文，不会露出 key。 */
+/* 词典按「什么时候需要」分两类加载，中英各有一整套：
+     · core 随主包：首屏、侧边栏、顶栏、通知、登录注册；
+     · app / 各业务域 / landing 随路由懒加载，页面只取自己需要的那一份。
+   core 之外的模块由 ensureDict 按当前语言选择中文还是英文表；切换语言时补拉
+   新语言的全部补充表。英文表是完整的（check:i18n 强制与中文逐键对齐），任何
+   一层缺失时都回退到 core / 中文原文，不会露出 key。 */
 let enDict: Dict | null = null;
 
+/* 业务页 / 官网的补充词条按路由懒加载：中文进 zhExtra，英文进 enExtra。
+   加载完成前页面 chunk 也不会渲染（lazyPage 会等词典），所以不存在「先渲染
+   出一片空白文案」的窗口。 */
+let zhExtra: Dict = {};
+let enExtra: Dict = {};
+
+/** 词典到位时通知 Provider 重渲染，让已挂载的组件也拿到新词条。 */
+let onDictChange: (() => void) | null = null;
+
+export function setDictChangeHandler(fn: (() => void) | null): void {
+  onDictChange = fn;
+}
+
+/**
+ * 页面按需加载的词典分组。core 已在主包，不需要等。
+ * app = 后台共享词条；其余按业务域拆分，中英各一份、同组同路由加载。
+ */
+export type DictGroup =
+  | 'core'
+  | 'app'
+  | 'landing'
+  | 'compute'
+  | 'node'
+  | 'security'
+  | 'monitor'
+  | 'settings'
+  | 'ai';
+
+type ExtraGroup = Exclude<DictGroup, 'core'>;
+
+/** 分组 → 词典模块。中英各一张表；写死 import 才能让打包器拆出独立 chunk。 */
+const ZH_LOADERS: Record<ExtraGroup, () => Promise<Dict>> = {
+  app: () => import('./locales/zh-CN.app').then((m) => m.zhApp),
+  landing: () => import('./locales/zh-CN.landing').then((m) => m.zhLanding),
+  compute: () => import('./locales/zh-CN.compute').then((m) => m.zhCompute),
+  node: () => import('./locales/zh-CN.node').then((m) => m.zhNode),
+  security: () => import('./locales/zh-CN.security').then((m) => m.zhSecurity),
+  monitor: () => import('./locales/zh-CN.monitor').then((m) => m.zhMonitor),
+  settings: () => import('./locales/zh-CN.settings').then((m) => m.zhSettings),
+  ai: () => import('./locales/zh-CN.ai').then((m) => m.zhAi),
+};
+
+const EN_LOADERS: Record<ExtraGroup, () => Promise<Dict>> = {
+  app: () => import('./locales/en.app').then((m) => m.enApp),
+  landing: () => import('./locales/en.landing').then((m) => m.enLanding),
+  compute: () => import('./locales/en.compute').then((m) => m.enCompute),
+  node: () => import('./locales/en.node').then((m) => m.enNode),
+  security: () => import('./locales/en.security').then((m) => m.enSecurity),
+  monitor: () => import('./locales/en.monitor').then((m) => m.enMonitor),
+  settings: () => import('./locales/en.settings').then((m) => m.enSettings),
+  ai: () => import('./locales/en.ai').then((m) => m.enAi),
+};
+
+/* 键里带语言：中英各加载一次，切语言后不能复用上一种语言的 pending。 */
+const pendingDicts: Record<string, Promise<void>> = {};
+
+/**
+ * 取回某个分组的词条（按当前语言决定取中文还是英文）。
+ *
+ * 由 App.tsx 的 lazyPage 调用：页面模块与词典一起 await，页面渲染时文案已就绪。
+ * 加载失败时静默回退（界面仍可操作，只是该组文案可能缺失）——不因为词典请求
+ * 失败把整页带崩。
+ */
+export function ensureDict(group: DictGroup): Promise<void> {
+  if (group === 'core') return Promise.resolve();
+  const lang = activeLang;
+  const cacheKey = `${lang}:${group}`;
+  pendingDicts[cacheKey] ??= (lang === 'en' ? EN_LOADERS[group] : ZH_LOADERS[group])()
+    .then((dict) => {
+      if (lang === 'en') enExtra = { ...enExtra, ...dict };
+      else zhExtra = { ...zhExtra, ...dict };
+    })
+    .catch(() => {
+      /* 拉不到就保持现状：仍可回退 core / 中文原文 */
+    })
+    .then(() => {
+      onDictChange?.();
+    });
+  return pendingDicts[cacheKey];
+}
+
+/* zhCore 是 as const 的字面量对象：直接用全量 MessageKey 去索引会因为没有
+   对应键而报类型错。先按 Dict 收口，再参与回退。 */
+const CORE_DICT: Dict = zhCore;
+
 const DICTS: Record<Lang, Dict> = {
-  'zh-CN': zhCN,
+  'zh-CN': CORE_DICT,
   get en() {
     return enDict ?? {};
   },
 };
 
-/** 预拉某语言的词典（英文才需要）。重复调用只会加载一次。 */
+/** 当前语言 → 该语言的补充表 → 中文补充表 → 中文 core。 */
+function lookup(key: MessageKey): string | undefined {
+  const extra = activeLang === 'en' ? enExtra : zhExtra;
+  return DICTS[activeLang][key] ?? extra[key] ?? zhExtra[key] ?? CORE_DICT[key];
+}
+
+/** 预拉某语言的 core 词典（英文才需要）。重复调用只会加载一次。 */
 export async function preloadLang(lang: Lang): Promise<void> {
   if (lang !== 'en' || enDict) return;
   try {
-    const mod = await import('./locales/en');
-    enDict = mod.en;
+    const mod = await import('./locales/en.core');
+    enDict = mod.enCore;
   } catch {
     /* 拉不到就用中文兜底：界面仍是完整可用的 */
   }
@@ -126,7 +218,7 @@ let activeLang: Lang = detectLang();
 
 /** 模块级取词；语义与 useT() 返回的 t 完全一致 */
 export function tStatic(key: MessageKey, vars?: TVars): string {
-  return interpolate(DICTS[activeLang][key] ?? zhCN[key], vars);
+  return interpolate(lookup(key) ?? key, vars);
 }
 
 /** 当前语言的快照；给拿不到 hook 的工具函数用（如 utils/format 的本地化） */
@@ -178,6 +270,24 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     };
   }, [lang, dictVersion]);
 
+  /* 懒加载的中文词典到位时也重渲染一次：页面自己会等词典，但顶栏 / 通知这类
+     已挂载的组件可能在此之前就渲染过（例如用户先停在某个页面再切过来）。 */
+  useEffect(() => {
+    setDictChangeHandler(() => setDictVersion((v) => v + 1));
+    return () => setDictChangeHandler(null);
+  }, []);
+
+  /* 切语言时补拉新语言的懒加载词典：中英现在都是分域加载的，不补齐就会在
+     当前页露出键名。一次把全部分组拉齐 —— 切语言时不知道用户接下来会去哪一页，
+     而这是低频操作，多下几百 KB 比「某页文案突然变键名」可接受。 */
+  const prevLangRef = useRef<Lang>(lang);
+  useEffect(() => {
+    if (prevLangRef.current === lang) return;
+    prevLangRef.current = lang;
+    (['app', 'compute', 'node', 'security', 'monitor', 'settings', 'ai', 'landing'] as DictGroup[])
+      .forEach((group) => void ensureDict(group));
+  }, [lang]);
+
   const setLang = useCallback((next: Lang) => {
     setLangState((current) => (current === next ? current : next));
   }, []);
@@ -185,10 +295,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const t = useCallback<TFunc>(
     (key, vars) => {
       /* 英文表是 Partial：没翻的键回退中文原文，而不是露出 key */
-      const text = DICTS[lang][key] ?? zhCN[key];
+      const text = lookup(key) ?? key;
       return interpolate(text, vars);
     },
-    // dictVersion 参与依赖：英文表加载完成后 t 的引用要变，才能触发重渲染
+    // dictVersion 参与依赖：英文表 / 懒加载词典到位后 t 的引用要变，才能触发重渲染
     [lang, dictVersion],
   );
 

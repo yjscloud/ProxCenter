@@ -2,7 +2,15 @@
    pvecenter — 控制台（noVNC）
    ========================================================================== */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent as ReactFormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import { useNavigate } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { guestsApi } from '../api/guests';
@@ -51,6 +59,8 @@ export interface VncHandle {
   pasteText: (text: string) => void;
   /** 逐字符键入（不依赖客户机剪贴板；只支持 ASCII） */
   typeText: (text: string) => Promise<{ typed: number; skipped: number }>;
+  /** 移动端按键条：直接发一个 X11 keysym（Ctrl 组合靠 down/up 两次调用） */
+  sendKey?: (keysym: number, code?: string, down?: boolean) => void;
 }
 
 /* 控制台高度档位（标准 / 紧凑）的本地记忆键 */
@@ -68,6 +78,95 @@ type ConsoleMode = 'vnc' | 'term';
  * 不需要知道底下是哪一种。
  */
 type ConsoleHandle = VncHandle | ConsoleTermHandle;
+
+/* ---------------------------------------------------------------------------
+   移动端按键条
+   ---------------------------------------------------------------------------
+   手机软键盘没有 Esc / Tab / 方向键 / Ctrl 组合，而运维操作恰好离不开它们。
+   这里提供一排常驻按钮：VNC 走 RFB 的 keysym，终端走原始字符序列。
+   桌面端由 CSS 隐藏（只在 ≤767px 显示）。 */
+type MobileKeyId =
+  | 'esc'
+  | 'tab'
+  | 'enter'
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'ctrlC'
+  | 'ctrlD';
+
+const VNC_KEYSYM: Record<Exclude<MobileKeyId, 'ctrlC' | 'ctrlD'>, number> = {
+  esc: 0xff1b,
+  tab: 0xff09,
+  enter: 0xff0d,
+  up: 0xff52,
+  down: 0xff54,
+  left: 0xff51,
+  right: 0xff53,
+};
+
+const TERM_SEQ: Record<MobileKeyId, string> = {
+  esc: '\x1b',
+  tab: '\t',
+  enter: '\r',
+  up: '\x1b[A',
+  down: '\x1b[B',
+  left: '\x1b[D',
+  right: '\x1b[C',
+  ctrlC: '\x03',
+  ctrlD: '\x04',
+};
+
+const MOBILE_KEYS: Array<{ id: MobileKeyId; label: string }> = [
+  { id: 'esc', label: 'Esc' },
+  { id: 'tab', label: 'Tab' },
+  { id: 'up', label: '↑' },
+  { id: 'down', label: '↓' },
+  { id: 'left', label: '←' },
+  { id: 'right', label: '→' },
+  { id: 'ctrlC', label: 'Ctrl+C' },
+  { id: 'ctrlD', label: 'Ctrl+D' },
+  { id: 'enter', label: 'Enter' },
+];
+
+function MobileKeyBar({
+  label,
+  onSend,
+  onOpenKeyboard,
+  keyboardLabel,
+}: {
+  label: string;
+  onSend: (id: MobileKeyId) => void;
+  /** 仅 VNC 需要：点它把焦点交给隐藏输入框，唤起系统软键盘 */
+  onOpenKeyboard?: () => void;
+  keyboardLabel?: string;
+}) {
+  return (
+    <div className="console-keybar" role="toolbar" aria-label={label}>
+      {onOpenKeyboard ? (
+        <button
+          type="button"
+          className="console-keybar-btn console-keybar-btn--keyboard"
+          onClick={onOpenKeyboard}
+          aria-label={keyboardLabel}
+        >
+          ⌨
+        </button>
+      ) : null}
+      {MOBILE_KEYS.map((k) => (
+        <button
+          key={k.id}
+          type="button"
+          className="console-keybar-btn"
+          onClick={() => onSend(k.id)}
+        >
+          {k.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export interface ConsoleTabProps {
   node: string;
@@ -160,6 +259,9 @@ export function ConsoleTab({
   const consoleHandle = useRef<ConsoleHandle | null>(null);
   /* 键入是逐字符排队发的：连点两次会让两段文本交错打进终端 */
   const typingRef = useRef(false);
+  /* VNC 的软键盘桥：canvas 点一下不会弹系统键盘，只能借一个隐藏 textarea
+     承接输入，再把字符折算成按键事件发过去。 */
+  const vncInputRef = useRef<HTMLTextAreaElement | null>(null);
   /* 「启用串口登录」进行中：按钮期间不可重复点（会重复起 getty） */
   const [serialBusy, setSerialBusy] = useState(false);
 
@@ -318,6 +420,67 @@ export function ConsoleTab({
     },
     [state, t, toast],
   );
+
+  /* ---- 移动端按键条：VNC 发 keysym，终端发原始序列 ---- */
+  const sendMobileKey = useCallback(
+    (id: MobileKeyId) => {
+      const handle = consoleHandle.current;
+      if (!handle) return;
+      if (mode === 'term') {
+        (handle as ConsoleTermHandle).sendKey?.(TERM_SEQ[id]);
+        return;
+      }
+      const vnc = handle as VncHandle;
+      if (id === 'ctrlC' || id === 'ctrlD') {
+        /* Ctrl 组合：按住 Ctrl → 敲字母 → 松开。RFB 没有「组合键」概念，
+           必须拆成三次键盘事件，否则远端收到的只是一个孤立的字母。 */
+        vnc.sendKey?.(0xffe3, 'ControlLeft', true);
+        vnc.sendKey?.(id === 'ctrlC' ? 0x63 : 0x64);
+        vnc.sendKey?.(0xffe3, 'ControlLeft', false);
+        return;
+      }
+      vnc.sendKey?.(VNC_KEYSYM[id]);
+    },
+    [mode],
+  );
+
+  /* ---- VNC 软键盘桥：隐藏 textarea 承接输入 → 折算成按键发送 ---- */
+  const openVncKeyboard = useCallback(() => {
+    vncInputRef.current?.focus();
+  }, []);
+
+  const handleVncInput = useCallback((e: ReactFormEvent<HTMLTextAreaElement>) => {
+    /* 输入法组合中（拼音、日文假名…）先不发：中间态既不该打进客户机，
+       也会把 textarea 的值搅乱。组合结束后会再来一次 input。 */
+    if ((e.nativeEvent as InputEvent).isComposing) return;
+    const el = vncInputRef.current;
+    if (!el) return;
+    const text = el.value;
+    if (!text) return;
+    /* 清空，避免连续输入时字符越积越多、下次重复发送 */
+    el.value = '';
+    const handle = consoleHandle.current as VncHandle | null;
+    if (!handle?.typeText) return;
+    /* 换行按 Enter 键发；其余分段逐字符键入（typeText 只支持 ASCII） */
+    text.split('\n').forEach((part, i) => {
+      if (i > 0) handle.sendKey?.(0xff0d);
+      if (part) void handle.typeText(part);
+    });
+  }, []);
+
+  const handleVncKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    const map: Record<string, number> = {
+      Backspace: 0xff08,
+      Delete: 0xffff,
+      Enter: 0xff0d,
+      Tab: 0xff09,
+      Escape: 0xff1b,
+    };
+    const keysym = map[e.key];
+    if (keysym === undefined) return;
+    e.preventDefault();
+    (consoleHandle.current as VncHandle | null)?.sendKey?.(keysym);
+  }, []);
 
   /* Ctrl+Shift+V：把本机剪贴板直接送到客户机。
      必须用**捕获阶段**并 stopPropagation —— noVNC 在 canvas 上绑了 keydown，
@@ -562,6 +725,32 @@ export function ConsoleTab({
         />
       )}
 
+      {/* ---- 移动端按键条：连接成功后才显示，桌面端由 CSS 隐藏 ---- */}
+      {state === 'connected' ? (
+        <MobileKeyBar
+          label={t('console.keyBar')}
+          onSend={sendMobileKey}
+          onOpenKeyboard={mode === 'vnc' ? openVncKeyboard : undefined}
+          keyboardLabel={t('console.keyboard')}
+        />
+      ) : null}
+
+      {/* VNC 软键盘桥：不可见但可聚焦。点按键条上的 ⌨ 后把焦点交给它，
+          系统才会弹出软键盘；输入内容由 handleVncInput 折算成按键发送。 */}
+      {mode === 'vnc' ? (
+        <textarea
+          ref={vncInputRef}
+          className="console-vnc-input"
+          aria-label={t('console.keyboard')}
+          tabIndex={-1}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onInput={handleVncInput}
+          onKeyDown={handleVncKeyDown}
+        />
+      ) : null}
+
       {/* ---- 剪贴板 / 文件上传面板（挂在控制台外壳里，全屏时也在） ---- */}
       {running ? (
         <ConsoleAssist
@@ -756,6 +945,13 @@ function VncConsole({
             }
           },
           typeText: (text) => typeViaKeys(session, text),
+          sendKey: (keysym, code, down) => {
+            try {
+              session.sendKey?.(keysym, code, down);
+            } catch {
+              /* 连接已断：下次重连会重建句柄 */
+            }
+          },
         });
 
         /* 握手超时兜底。

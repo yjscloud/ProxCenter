@@ -7,6 +7,11 @@
 
    断点沿用项目既有的 767px（与 Layout.tsx 的 MOBILE_BREAKPOINT 一致），
    不再引入新的断点，避免出现「某个宽度下两边规则打架」的空档。
+
+   层叠契约：本文件最后引入，767px 规则覆盖前面各表的窄屏规则。其它文件里的
+   640px 媒体查询只允许做「密度微调」（字号、内边距、按钮留白），不得改动
+   布局结构（栅格列数、显隐、定位）—— 那些一律放在这里的 767px 下，否则会被
+   本文件覆盖成半套样式。新增 640px 规则前请先确认不触碰结构属性。
    ========================================================================== */
 
 /* ---------------------------------------------------------------------------
@@ -39,47 +44,85 @@
 }
 
 /* ---------------------------------------------------------------------------
-   2. iOS 输入框自动缩放
+   2. 字号与 iOS 输入框自动缩放
    ---------------------------------------------------------------------------
-   Safari 在聚焦 font-size < 16px 的输入框时会把整页放大，且失焦后不会自动
-   缩回 —— 用户点一次搜索框，整个面板就一直糊着。项目基准字号是 13px，
-   必然触发，所以这里抬到 16px。
+   移动端把基准字号抬一档：13px 在手机上偏小，长段正文（审计日志、说明文案）
+   读起来吃力。只动字号令牌，不碰行高与内边距 —— 密度由下面各节的收紧规则
+   负责，两件事分开调才不会互相打架。 */
 
-   用 @supports (-webkit-touch-callout: none) 限定为触屏 Safari：Android 没有
-   这个问题，没必要跟着把表单字号撑大、平白牺牲一屏的信息密度。 */
+@media (max-width: 767px) {
+  :root {
+    --font-size-base: 14px;
+    --font-size-sm: 13px;
+    --field-label-line: 20px;
+  }
+}
 
-@supports (-webkit-touch-callout: none) {
-  @media (max-width: 767px) {
-    .input,
-    .select,
-    .textarea {
-      font-size: 16px;
-    }
+@media (max-width: 767px) {
+  /* Safari 在聚焦 font-size < 16px 的输入框时会把整页放大，且失焦后不会
+     自动缩回 —— 用户点一次搜索框，整个面板就一直糊着。项目基准字号是 13px，
+     必然触发，所以这里抬到 16px。
+
+     不再只用 @supports 限定 Safari：Android 虽不自动缩放，但 16px 在触屏上
+     更好读、也更好点，代价只是表单略高一点，可以接受。 */
+  .input,
+  .select,
+  .textarea {
+    font-size: 16px;
   }
 }
 
 /* ---------------------------------------------------------------------------
    3. 触控目标
    ---------------------------------------------------------------------------
-   手指的可靠点击面积约 36–44px。桌面上的 .btn-sm 只有 28px、图标按钮 30px，
-   在手机上点起来很别扭（尤其表格行内的操作按钮）。 */
+   手指的可靠点击面积按 44px 取（Apple HIG 的 44pt / Material 的 48dp 取下限）。
+   桌面上的 .btn-sm 只有 28px、图标按钮 32px，在手机上点起来很别扭
+   （尤其表格行内的操作按钮）。
+   - 文字按钮有横向内边距补足宽度，高度给到 40px；
+   - 纯图标按钮没有横向富余，直接 44×44。 */
 
-@media (max-width: 767px) {
-  .btn-sm {
-    height: 34px;
-    padding: 0 12px;
-  }
+   @media (max-width: 767px) {
+   .btn-sm {
+     height: 40px;
+     padding: 0 14px;
+   }
 
-  .btn-icon-only {
-    width: 34px;
-    height: 34px;
-  }
+   .btn-icon-only {
+     width: 44px;
+     height: 44px;
+   }
 
-  /* 图标按钮之间留出间距，避免误触到相邻的那个 */
-  .btn-group {
-    gap: 6px;
-  }
-}
+   /* 表格单元格里的小图标按钮（复制 / 就地编辑）保持 32px：
+      单元格带 overflow: hidden，用伪元素外扩命中区会被裁掉，而 44px 又会把
+      行高顶起来。32px 是在「不撑破行高」与「点得到」之间能取到的较大值。 */
+   .copy-cell .btn-icon-only,
+   .info-editable .btn-icon-only {
+     width: 32px;
+     height: 32px;
+   }
+
+   /* 列表行内的操作按钮取 40px，不到 44px。
+      原因不是「密度」而是**列宽就是天花板**：表格是 table-layout: fixed，
+      单元格 overflow: hidden，一行里最多五个按钮（启/停/重启/控制台/更多），
+      44px × 5 + 间距 = 228px，比多数操作列（190–210）还宽 —— 超出部分被裁掉，
+      最后一个「更多」只剩几个像素，手指根本点不到。40px 是常见列宽里能完整
+      放下的较大值（见下方 .col-actions 对列表页操作列的加宽）。 */
+   .row-actions .btn-icon-only {
+     width: 40px;
+     height: 40px;
+   }
+
+   /* 兜底：万一某个页面的操作列比按钮总和还窄，宁可折成两行，也不要让按钮
+      被裁到只剩一个角（裁掉的部分既看不见也点不到，用户只会觉得「点不动」） */
+   .row-actions {
+     flex-wrap: wrap;
+   }
+
+   /* 图标按钮之间留出间距，避免误触到相邻的那个 */
+   .btn-group {
+     gap: 6px;
+   }
+   }
 
 /* ---------------------------------------------------------------------------
    4. 控制台骨架
@@ -93,8 +136,36 @@
     width: min(272px, 80vw);
   }
 
+  /* 手机上不存在「收起成图标条」这一态（Layout 会强制按展开态渲染抽屉），
+     留着折叠按钮只会出现「按了没反应、下次上桌面却变窄」的怪事 */
+  .sidebar-footer .collapse-btn {
+    display: none;
+  }
+
   .topbar {
     gap: 8px;
+  }
+
+  /* 顶栏两栏在手机上会「抢宽」：右侧（状态点 / 搜索 / 通知 / 刷新 / 语言 /
+     头像）的自然宽度加起来已经超过一屏，而 .topbar 是 space-between，
+     右侧不肯收缩，左侧就被压成 0 宽 —— 汉堡按钮仍画在左上角，但它的位置
+     已被右侧那一排盖住，点上去命中的是状态点，抽屉永远打不开。
+     这里把左侧按内容定宽、不参与收缩，让右侧去让位。 */
+  .topbar-left {
+    flex: 0 0 auto;
+  }
+
+  .topbar-right {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  /* 「刷新全部数据」在手机上让位：它一次失效所有查询，而顶栏这点宽度
+     留给导航入口、搜索与头像更划算（各页本身也都有刷新） */
+  .topbar-refresh {
+    display: none;
   }
 
   /* 状态文案在手机上收掉（900px 起就已经隐藏），只留一个状态点：
@@ -102,6 +173,24 @@
      这一点比文字提示更值得留在顶栏。 */
   .topbar-stat-label {
     display: none;
+  }
+
+  /* 控制台状态面板：桌面上是 `absolute; right: 0`，从按钮右缘往左长。
+     手机上那个按钮已经被顶栏挤到最左边（汉堡之后第一个），往左长就直接
+     长到视口外面，「1/1 条连接在线」这类较长的一行左半截被裁掉。
+     窄屏改成贴在顶栏下沿的一整条：左右各留 12px，宽度跟着视口走。 */
+  .cs-panel {
+    position: fixed;
+    top: calc(var(--topbar-height) + 8px);
+    left: auto;
+    right: 12px;
+    /* 定宽而不是铺满：767px 上铺满会变成横贯整屏的一条，读起来像通知栏。
+       靠右对齐：手机上状态按钮位于顶栏右半部分，面板右缘与它大致对齐，
+       视线才接得上；靠左会落在大标题那一侧，看着像另一个控件的东西。 */
+    width: min(288px, calc(100vw - 24px));
+    max-height: calc(100vh - var(--topbar-height) - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .topbar-title {
@@ -136,6 +225,30 @@
   .card-header {
     padding-bottom: 10px;
     margin-bottom: 10px;
+
+    /* 标题栏允许折行：右侧操作区是 flex-shrink: 0，手机上一排按钮/分段控件
+       加起来常常比整张卡还宽，标题就只能被压成「一列单字」，纵向排出
+       二三十行、把卡片撑成半屏空白（容量预测卡就是这样）。
+       折行的判据是 flex-basis 之和，所以标题按 12rem 报价，放不下就整块
+       换到下一行，而不是继续挤成一竖条。 */
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+
+  .card-header-main {
+    flex: 1 1 12rem;
+  }
+
+  .card-header-actions {
+    /* 折行后独占一行时靠右，与桌面上的位置保持一致 */
+    margin-left: auto;
+    justify-content: flex-end;
+    /* 桌面规则是 flex-shrink: 0（宁可挤标题也不压按钮）。手机上标题已经
+       独占一行，操作区自己就是那一行的全部宽度，再不许收缩就会顶出卡片，
+       所以这里放开收缩并允许它内部再折一次（分段控件一行、徽章一行）。 */
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
   }
 
   /* 四列 / 五列栅格在窄屏下排两列，而不是塌成单列。
@@ -177,6 +290,18 @@
 
   .table tbody td {
     padding: 9px 10px;
+  }
+
+  /* 操作列按触屏按钮的实际尺寸放宽。
+     列宽是各页 Column 定义里写死的 210px（那是按鼠标用的 32px 按钮算的），
+     而触屏上一行最多五个按钮（启/停/重启/控制台/更多），每个 40px 加间距要
+     208px 内容宽 —— 210 减去单元格左右内边距只剩 190，第五个按钮被
+     table-layout: fixed + overflow: hidden 裁掉大半，正好是最右边那个
+     「更多操作」，手指点上去命中不了。
+     需要 !important：宽度是行内样式（Table 组件把 col.width 写在 <th> 上）。 */
+  .table thead th.col-actions,
+  .table tbody td.col-actions {
+    width: 232px !important;
   }
 
   /* 提示这一列还能往右滑：在容器右内缘压一道极淡的阴影。
@@ -493,6 +618,13 @@
   .notfound {
     padding-bottom: calc(24px + env(safe-area-inset-bottom));
   }
+
+  /* iOS Safari 对 background-attachment: fixed 支持很差（常被当成 scroll，
+     滚动时还会触发重绘抖动）。移动端退回 scroll：插画只铺一屏，滚动登录页时
+     不再跟着抖。 */
+  .login-page {
+    background-attachment: scroll;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -611,6 +743,54 @@
     padding-bottom: calc(8px + env(safe-area-inset-bottom));
   }
 
+  /* 容量预测的三个读数：一排排不下三个（「181 GB / 2 TB」本身就要 150px），
+     挤在一行会让数字折成两三行、或把第三项孤零零甩到下一行。
+     改成「标签左、数值右」的竖排，三行读完，也不用再猜哪一行对应哪个指标。
+     row-reverse 是因为 DOM 里数值在前、标签在后（桌面是上下排列）。 */
+  .capacity-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-bottom: 10px;
+  }
+
+  .capacity-stat {
+    flex-direction: row-reverse;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border-muted);
+  }
+
+  .capacity-stat:last-child {
+    border-bottom: 0;
+  }
+
+  .capacity-stat-value {
+    font-size: var(--font-size-base);
+  }
+
+  /* 顶栏再挤一档：语言控件去掉球图标、保住完整语言名，头像收起展开箭头。
+     原生 select 没法用省略号截断，硬压宽度会把「English」切成「Engl」，
+     看着像坏了；图标只是装饰（title / aria-label 都还在），
+     省下的宽度刚好够放下语言名。 */
+  .lang-select.is-topbar > svg {
+    display: none;
+  }
+
+  .lang-select.is-topbar {
+    padding: 6px 4px;
+  }
+
+  .lang-select.is-topbar select {
+    max-width: 74px;
+  }
+
+  .user-trigger > svg {
+    display: none;
+  }
+
   /* 页脚三栏在 360px 一线会挤，收紧间距并降一档字号，
      免得「React 18 + TypeScript」这种长条目折成三行 */
   .lp-footer-grid {
@@ -620,5 +800,96 @@
   .lp-footer-title,
   .lp-footer-link {
     font-size: 12px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   12. 触屏没有 hover：把「悬停才显形」的操作按钮改为常显
+   ---------------------------------------------------------------------------
+   桌面端把行内按钮压暗、鼠标移上去才恢复，是为了让表格安静；但触屏根本没有
+   hover，这些按钮会一直停在 45%–55% 的透明度上，用户很难发现「这里能点」。
+   用 (hover: none) 兜底——带上鼠标的设备（含二合一笔记本）不受影响。
+
+   注意：这里只覆盖「靠透明度弱化的按钮」，不是把 :hover 全部禁掉；
+   真正依赖 hover 才出现的菜单另有触屏逻辑，不在本条范围内。 */
+@media (hover: none) {
+  .ip-cell .btn-icon-only,
+  .info-editable .btn-icon-only,
+  .vm-name-line > button {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   13. 控制台移动端按键条
+   ---------------------------------------------------------------------------
+   手机软键盘没有 Esc / Tab / 方向键 / Ctrl 组合，而运维操作离不开它们。
+   按键条只在 ≤767px 显示；桌面端保持原样，不占控制台高度。 */
+.console-keybar {
+  display: none;
+}
+
+/* VNC 软键盘承接框：必须「可聚焦且没有被 display/visibility 隐藏」，否则
+   iOS 不会弹键盘。放在视口角落、透明、不接收指针事件，看起来不存在但可用。 */
+.console-vnc-input {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  font-size: 16px;
+}
+
+@media (max-width: 767px) {
+  .console-keybar {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--bg-elevated);
+    border-top: 1px solid var(--border-muted);
+  }
+
+  .console-keybar-btn {
+    flex: 0 0 auto;
+    min-width: 44px;
+    height: 40px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    touch-action: manipulation;
+  }
+
+  .console-keybar-btn:active {
+    background: var(--bg-hover);
+  }
+
+  .console-keybar-btn--keyboard {
+    min-width: 44px;
+    font-family: var(--font-sans);
+    font-size: 17px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   14. 图表高度收敛
+   ---------------------------------------------------------------------------
+   各图表把高度写死在 props 里（120–320px 不等），小屏上偏高的趋势图会把
+   首屏内容顶下去。这里用 max-height 压住上限——max-height 能约束内联的
+   height，不需要改每个调用点；ResponsiveContainer 读到的是压完后的高度。 */
+@media (max-width: 767px) {
+  .chart-frame {
+    max-height: 240px;
   }
 }

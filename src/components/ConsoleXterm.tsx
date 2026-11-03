@@ -50,6 +50,11 @@ export interface ConsoleTermHandle {
    * 结构，避免调用方为了两种模式各写一套。
    */
   typeText: (text: string) => Promise<{ typed: number; skipped: number }>;
+  /**
+   * 移动端按键条：把一段原始输入序列直接送给 pty（如 Esc `\x1b`、方向键
+   * `\x1b[A`）。终端本身就是字符流，不需要像 VNC 那样折算成 keysym。
+   */
+  sendKey?: (seq: string) => void;
 }
 
 interface ConsoleXtermProps {
@@ -302,6 +307,11 @@ export function ConsoleXterm({
           sendData(text);
           term?.focus();
           return { typed: text.length, skipped: 0 };
+        },
+        sendKey: (seq: string) => {
+          if (!seq || !ready) return;
+          sendData(seq);
+          term?.focus();
         },
       });
     }

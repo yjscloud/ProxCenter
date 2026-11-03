@@ -238,6 +238,10 @@
   position: relative;
   padding: 92px 0;
   background: var(--lp-card);
+  /* 官网是超长单页：首屏之外的区块先跳过布局与绘制，滚动到附近再渲染。
+     contain-intrinsic-size 用 auto 记住上次的高度，避免滚动条来回跳。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 680px;
 }
 
 /* 冷灰蓝底的区块，与白底区块交替，制造纵向节奏 */

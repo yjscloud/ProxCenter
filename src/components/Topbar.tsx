@@ -138,6 +138,7 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, title }: TopbarProps) {
             查询在取数」判断，否则点了要等好几秒、界面却毫无反应。 */}
         <IconButton
           label={t('topbar.refreshAll')}
+          className="topbar-refresh"
           disabled={refreshing}
           onClick={() => {
             setRefreshing(true);

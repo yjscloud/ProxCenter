@@ -6150,46 +6150,14 @@ body.is-col-resizing * {
   height: 220px;
 }
 
-.capacity-mobile-summary {
-  display: none;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 0 2px;
-}
-
-.capacity-mobile-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 0;
-  border-bottom: 1px solid var(--border-muted);
-}
-
-.capacity-mobile-row:last-child {
-  border-bottom: 0;
-}
-
-.capacity-mobile-label {
-  flex-shrink: 0;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-}
-
-.capacity-mobile-value {
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
-  text-align: right;
-}
-
-/* 窄屏上图表刻度会挤成一团：换成「结论式」文字摘要 */
+/* 窄屏不再藏图表，只压高度。
+   原先的做法是「藏起来换一块文字摘要」，但那三条摘要里：当前已用、日均增长
+   与上方的三个数字完全重复，预测结论又已经写在标题栏的徽章上 —— 净收益是
+   把同一份数据再说一遍，且卡片上半截留下一大块空白。
+   压到 180px 后 X 轴剩下 3–4 个日期刻度，趋势仍然读得出来。 */
 @media (max-width: 640px) {
   .capacity-chart-shell {
-    display: none;
-  }
-
-  .capacity-mobile-summary {
-    display: flex;
+    height: 180px;
   }
 }
 

@@ -24,8 +24,31 @@ import { join, relative } from 'node:path';
 import ts from 'typescript';
 
 const ROOT = process.cwd();
-const ZH_FILE = 'src/i18n/locales/zh-CN.ts';
-const EN_FILE = 'src/i18n/locales/en.ts';
+/* 中文与英文词条都按加载时机拆成多份（core / app / 各业务域 / landing）。
+   一致性检查必须把同语言的所有分组合起来比对，否则会把另一份里的几千个键
+   误报成「不存在」。 */
+const ZH_FILES = [
+  'src/i18n/locales/zh-CN.core.ts',
+  'src/i18n/locales/zh-CN.app.ts',
+  'src/i18n/locales/zh-CN.compute.ts',
+  'src/i18n/locales/zh-CN.node.ts',
+  'src/i18n/locales/zh-CN.security.ts',
+  'src/i18n/locales/zh-CN.monitor.ts',
+  'src/i18n/locales/zh-CN.settings.ts',
+  'src/i18n/locales/zh-CN.ai.ts',
+  'src/i18n/locales/zh-CN.landing.ts',
+];
+const EN_FILES = [
+  'src/i18n/locales/en.core.ts',
+  'src/i18n/locales/en.app.ts',
+  'src/i18n/locales/en.compute.ts',
+  'src/i18n/locales/en.node.ts',
+  'src/i18n/locales/en.security.ts',
+  'src/i18n/locales/en.monitor.ts',
+  'src/i18n/locales/en.settings.ts',
+  'src/i18n/locales/en.ai.ts',
+  'src/i18n/locales/en.landing.ts',
+];
 const BACKEND_I18N = 'backend/app/i18n.py';
 
 const failures = [];
@@ -40,8 +63,8 @@ function messageKeys(file) {
   return keys;
 }
 
-const zhKeys = messageKeys(ZH_FILE);
-const enKeys = messageKeys(EN_FILE);
+const zhKeys = new Set(ZH_FILES.flatMap((file) => [...messageKeys(file)]));
+const enKeys = new Set(EN_FILES.flatMap((file) => [...messageKeys(file)]));
 
 /* ---- 1 / 2：两表对齐 ---- */
 const missingInEn = [...zhKeys].filter((key) => !enKeys.has(key));
@@ -77,7 +100,7 @@ const referenced = new Map(); // key -> [文件]
 for (const file of walk(join(ROOT, 'src'))) {
   // 词条文件本身不参与（里面是定义，不是引用）
   const rel = relative(ROOT, file);
-  if (rel === ZH_FILE || rel === EN_FILE) continue;
+  if (ZH_FILES.includes(rel) || EN_FILES.includes(rel)) continue;
 
   const source = readFileSync(file, 'utf8');
   for (const match of source.matchAll(/\bt\(\s*'([a-zA-Z][\w-]*\.[\w.]+)'/g)) {
@@ -117,7 +140,7 @@ if (backendBroken.length) {
 }
 
 /* ---- 5：词条占位符必须都传了值 ---- */
-const zhText = readFileSync(join(ROOT, ZH_FILE), 'utf8');
+const zhText = ZH_FILES.map((file) => readFileSync(join(ROOT, file), 'utf8')).join('\n');
 
 /* 词条值都是单引号字符串（可能多行用 + 拼接）：把同一个键的片段拼起来再找 {name}。
    注意占位符只认 ASCII 标识符，`{变量}` 这类说明性文本不会被误当成占位符。 */
@@ -246,7 +269,7 @@ function objectKeys(argText) {
 const missingArgs = [];
 for (const file of walk(join(ROOT, 'src'))) {
   const rel = relative(ROOT, file);
-  if (rel === ZH_FILE || rel === EN_FILE) continue;
+  if (ZH_FILES.includes(rel) || EN_FILES.includes(rel)) continue;
   const source = stripComments(readFileSync(file, 'utf8'));
 
   for (const match of source.matchAll(/\bt\(\s*'/g)) {

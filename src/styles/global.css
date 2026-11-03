@@ -25,6 +25,26 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  /* 移动端点击链接 / 按钮时不要闪一块灰底；面板密度高，灰块会显得很脏 */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 触屏交互基线：
+   - touch-action: manipulation 去掉双击缩放带来的约 300ms 点击延迟，
+     同时保留单指滚动与捏合缩放（不写 none，那会连滚动一起禁掉）；
+   - text-size-adjust 固定文本缩放，避免 iOS 横屏时整页字号被自动放大。 */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+a,
+button,
+[role='button'],
+select,
+summary,
+label {
+  touch-action: manipulation;
 }
 
 h1,

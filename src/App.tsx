@@ -26,7 +26,7 @@ import { useAuth } from './hooks/useAuth';
 import { useMaintenance } from './hooks/useMaintenance';
 import type { PermissionKey } from './api/permissions';
 import { useSiteInfo } from './hooks/useSiteInfo';
-import { useT } from './i18n';
+import { ensureDict, useT, type DictGroup } from './i18n';
 
 import { NotFound } from './pages/NotFound';
 import { Maintenance } from './pages/Maintenance';
@@ -38,64 +38,110 @@ import { Maintenance } from './pages/Maintenance';
  * default，所以这里补一层。`name` 受模块自身键的约束 —— 导出名写错，编译期就
  * 会报错，不用等到运行时白屏。
  *
+ * 第三个参数是该页面需要的中文词条分组（见 i18n/index.tsx 的 ensureDict）：
+ * 页面模块与词典一起 await，渲染时文案已就绪，不会闪一片空白。
+ * 后台页 = `app`（共享）+ 本业务域；登录注册只依赖 core，官网加载 landing。
+ * 域划分见 locales/zh-CN.<domain>.ts，归属由 scripts/check-i18n.mjs 之外的分析
+ * 脚本校验过（外壳只用 core、官网不用业务域、页面不跨域引用）。
+ *
  * 没有写成四十多条 `import(…).then(…)`：既吵，又每条都要重抄一遍类型。
  */
-function lazyPage<T extends object>(load: () => Promise<T>, name: keyof T & string) {
+function lazyPage<T extends object>(
+  load: () => Promise<T>,
+  name: keyof T & string,
+  /* 该页面需要的词典分组：页面模块与词典一起 await，渲染时文案已就绪。
+     默认只取共享词典；业务页再追加本域（见下方各页的第二个分组）。 */
+  dicts: DictGroup[] = ['app'],
+) {
   return lazy(async () => {
-    const mod = await load();
+    /* 页面模块与词典并行取回：先发起 load，再等词典，最后拿模块 —— 比串行少
+       一个 RTT。写成两步而不是 Promise.all 解构，是因为动态分组数量不固定，
+       解构出来的类型会退化成 (T | void)[]。 */
+    const modPromise = load();
+    await Promise.all(dicts.map((d) => ensureDict(d)));
+    const mod = await modPromise;
     return { default: mod[name] as ComponentType };
   });
 }
 
-const Login = lazyPage(() => import('./pages/Login'), 'Login');
-const Register = lazyPage(() => import('./pages/Register'), 'Register');
-const ForgotPassword = lazyPage(() => import('./pages/ForgotPassword'), 'ForgotPassword');
-const ResetPassword = lazyPage(() => import('./pages/ResetPassword'), 'ResetPassword');
-const Dashboard = lazyPage(() => import('./pages/Dashboard'), 'Dashboard');
-const VirtualMachines = lazyPage(() => import('./pages/VirtualMachines'), 'VirtualMachines');
-const Containers = lazyPage(() => import('./pages/Containers'), 'Containers');
-const VmDetail = lazyPage(() => import('./pages/VmDetail'), 'VmDetail');
-const LxcDetail = lazyPage(() => import('./pages/LxcDetail'), 'LxcDetail');
-const Templates = lazyPage(() => import('./pages/Templates'), 'Templates');
-const Nodes = lazyPage(() => import('./pages/Nodes'), 'Nodes');
+/* 公开页只依赖 core 词典：让它们等业务页词典纯属拖慢首屏 */
+const Login = lazyPage(() => import('./pages/Login'), 'Login', ['core']);
+const Register = lazyPage(() => import('./pages/Register'), 'Register', ['core']);
+const ForgotPassword = lazyPage(
+  () => import('./pages/ForgotPassword'),
+  'ForgotPassword',
+  ['core'],
+);
+const ResetPassword = lazyPage(() => import('./pages/ResetPassword'), 'ResetPassword', [
+  'core',
+]);
+
+/* 后台各页：共享词典 app + 本业务域。域划分见 locales/zh-CN.<domain>.ts */
+const Dashboard = lazyPage(() => import('./pages/Dashboard'), 'Dashboard', ['app', 'monitor']);
+const VirtualMachines = lazyPage(
+  () => import('./pages/VirtualMachines'),
+  'VirtualMachines',
+  ['app', 'compute'],
+);
+const Containers = lazyPage(() => import('./pages/Containers'), 'Containers', [
+  'app',
+  'compute',
+]);
+const VmDetail = lazyPage(() => import('./pages/VmDetail'), 'VmDetail', ['app', 'compute']);
+const LxcDetail = lazyPage(() => import('./pages/LxcDetail'), 'LxcDetail', ['app', 'compute']);
+const Templates = lazyPage(() => import('./pages/Templates'), 'Templates', ['app', 'compute']);
+const Nodes = lazyPage(() => import('./pages/Nodes'), 'Nodes', ['app', 'node']);
 const NodesConnections = lazyPage(
   () => import('./pages/NodesConnections'),
   'NodesConnections',
+  ['app', 'node'],
 );
-const NodeDetail = lazyPage(() => import('./pages/NodeDetail'), 'NodeDetail');
-const Storages = lazyPage(() => import('./pages/Storages'), 'Storages');
-const Networks = lazyPage(() => import('./pages/Networks'), 'Networks');
-const Firewall = lazyPage(() => import('./pages/Firewall'), 'Firewall');
-const SshSecurity = lazyPage(() => import('./pages/SshSecurity'), 'SshSecurity');
+const NodeDetail = lazyPage(() => import('./pages/NodeDetail'), 'NodeDetail', ['app', 'node']);
+const Storages = lazyPage(() => import('./pages/Storages'), 'Storages', ['app', 'node']);
+const Networks = lazyPage(() => import('./pages/Networks'), 'Networks', ['app', 'node']);
+const Firewall = lazyPage(() => import('./pages/Firewall'), 'Firewall', ['app', 'security']);
+const SshSecurity = lazyPage(() => import('./pages/SshSecurity'), 'SshSecurity', [
+  'app',
+  'security',
+]);
 const SshSecurityConfig = lazyPage(
   () => import('./pages/SshSecurityConfig'),
   'SshSecurityConfig',
+  ['app', 'security'],
 );
-const AiAssistant = lazyPage(() => import('./pages/AiAssistant'), 'AiAssistant');
+const AiAssistant = lazyPage(() => import('./pages/AiAssistant'), 'AiAssistant', ['app', 'ai']);
 const SecurityBaseline = lazyPage(
   () => import('./pages/SecurityBaseline'),
   'SecurityBaseline',
+  ['app', 'security'],
 );
-const PortGuard = lazyPage(() => import('./pages/PortGuard'), 'PortGuard');
+const PortGuard = lazyPage(() => import('./pages/PortGuard'), 'PortGuard', ['app', 'security']);
 const IncidentResponse = lazyPage(
   () => import('./pages/IncidentResponse'),
   'IncidentResponse',
+  ['app', 'compute'],
 );
-const HostAudit = lazyPage(() => import('./pages/HostAudit'), 'HostAudit');
-const Snapshots = lazyPage(() => import('./pages/Snapshots'), 'Snapshots');
-const Backups = lazyPage(() => import('./pages/Backups'), 'Backups');
-const Tasks = lazyPage(() => import('./pages/Tasks'), 'Tasks');
-const Frp = lazyPage(() => import('./pages/Frp'), 'Frp');
-const Alerts = lazyPage(() => import('./pages/Alerts'), 'Alerts');
-const Notifications = lazyPage(() => import('./pages/Notifications'), 'Notifications');
-const Certificates = lazyPage(() => import('./pages/Certificates'), 'Certificates');
-const Users = lazyPage(() => import('./pages/Users'), 'Users');
-const AuditLog = lazyPage(() => import('./pages/AuditLog'), 'AuditLog');
-const Settings = lazyPage(() => import('./pages/Settings'), 'Settings');
-const Scheduler = lazyPage(() => import('./pages/Scheduler'), 'Scheduler');
-const Profile = lazyPage(() => import('./pages/Profile'), 'Profile');
-const Landing = lazyPage(() => import('./pages/Landing'), 'Landing');
-const FeishuBot = lazyPage(() => import('./pages/FeishuBot'), 'FeishuBot');
+const HostAudit = lazyPage(() => import('./pages/HostAudit'), 'HostAudit', ['app', 'security']);
+const Snapshots = lazyPage(() => import('./pages/Snapshots'), 'Snapshots', ['app', 'compute']);
+const Backups = lazyPage(() => import('./pages/Backups'), 'Backups', ['app', 'compute']);
+const Tasks = lazyPage(() => import('./pages/Tasks'), 'Tasks', ['app', 'node']);
+const Frp = lazyPage(() => import('./pages/Frp'), 'Frp', ['app', 'monitor']);
+const Alerts = lazyPage(() => import('./pages/Alerts'), 'Alerts', ['app', 'monitor']);
+const Notifications = lazyPage(() => import('./pages/Notifications'), 'Notifications', [
+  'app',
+  'monitor',
+]);
+const Certificates = lazyPage(() => import('./pages/Certificates'), 'Certificates', [
+  'app',
+  'settings',
+]);
+const Users = lazyPage(() => import('./pages/Users'), 'Users', ['app', 'settings']);
+const AuditLog = lazyPage(() => import('./pages/AuditLog'), 'AuditLog', ['app', 'settings']);
+const Settings = lazyPage(() => import('./pages/Settings'), 'Settings', ['app', 'settings']);
+const Scheduler = lazyPage(() => import('./pages/Scheduler'), 'Scheduler', ['app', 'monitor']);
+const Profile = lazyPage(() => import('./pages/Profile'), 'Profile', ['app', 'settings']);
+const Landing = lazyPage(() => import('./pages/Landing'), 'Landing', ['landing']);
+const FeishuBot = lazyPage(() => import('./pages/FeishuBot'), 'FeishuBot', ['app', 'settings']);
 
 /* ---------------------------------------------------------------------------
    全屏加载态
@@ -263,6 +309,24 @@ export function App() {
   }, [user, maintenance.data]);
 
   const location = useLocation();
+
+  /* 登录页空闲时预取业务页词典：仪表盘渲染要等它，提前在用户输入账号的这几秒
+     里下完，登录成功后切页就不用再等。预取共享词典 + 仪表盘所在的 monitor 域
+     （登录后的默认落地页）。只在 /login 触发 —— 官网访客不该为后台词典买单。 */
+  useEffect(() => {
+    if (location.pathname !== '/login') return;
+    const run = () => {
+      void ensureDict('app');
+      void ensureDict('monitor');
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(run, { timeout: 3000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(run, 1500);
+    return () => window.clearTimeout(id);
+  }, [location.pathname]);
+
   /* 登录页与公告页本身要能打开：前者是管理员唯一的入口，后者是这条提示的落点。
      放行登录页也顺带解掉一个死循环 —— 覆盖渲染会盖住 /login，点「管理员登录」
      等于什么都没发生。 */

@@ -362,37 +362,6 @@ export function CapacityCard({
               </ComposedChart>
             </ResponsiveContainer>
           </div>
-
-          {/* 窄屏降级：图表压扁后刻度会挤成一团，改成「结论式」文字摘要。
-              与图表同时渲染、由 CSS 二选一显示，避免 JS 侧判断窗口宽度。 */}
-          <div className="capacity-mobile-summary">
-            <div className="capacity-mobile-row">
-              <span className="capacity-mobile-label">{t('capacity.currentUsed')}</span>
-              <span className="capacity-mobile-value mono">
-                {formatBytes(used, 0)} / {formatBytes(total, 0)} · {usedPct.toFixed(1)}%
-              </span>
-            </div>
-            <div className="capacity-mobile-row">
-              <span className="capacity-mobile-label">
-                {rate != null && rate < 0 ? t('capacity.avgDrop') : t('capacity.avgGrow')}
-              </span>
-              <span
-                className="capacity-mobile-value mono"
-                style={{ color: rate != null && rate !== 0 ? trendColor(rate) : undefined }}
-              >
-                {rate == null
-                  ? '—'
-                  : t('capacity.perDay', {
-                      sign: rate >= 0 ? '+' : '-',
-                      size: formatBytes(Math.abs(rate), 0),
-                    })}
-              </span>
-            </div>
-            <div className="capacity-mobile-row">
-              <span className="capacity-mobile-label">{t('capacity.mobileVerdict')}</span>
-              <span className="capacity-mobile-value">{verdict.text}</span>
-            </div>
-          </div>
         </>
       )}
     </Card>

@@ -62,6 +62,12 @@ export function Layout() {
       return false;
     }
   });
+  /* 窄屏标记：「折叠成图标条」是桌面的概念，手机上是 272px 的抽屉，
+     图标条那一套（无文字、居中、分组只剩分隔线）放到抽屉里就是一团看不懂的
+     符号 —— 见下方传给 Sidebar 的 collapsed。 */
+  const [isMobile, setIsMobile] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT,
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -95,6 +101,7 @@ export function Layout() {
   useEffect(() => {
     const apply = () => {
       const w = window.innerWidth;
+      setIsMobile(w < MOBILE_BREAKPOINT);
       if (w < MOBILE_BREAKPOINT) {
         setMobileOpen(false);
       } else if (w < TABLET_BREAKPOINT) {
@@ -126,10 +133,14 @@ export function Layout() {
   const canAccess = (item: { permission?: PermissionKey; adminOnly?: boolean }) =>
     canAccessNav(item, user);
 
+  /* 窄屏一律按展开态渲染：抽屉本身就是「展开的侧边栏」，不需要图标条形态。
+     偏好本身（collapsed）不动 —— 回到宽屏时该折叠还折叠。 */
+  const sidebarCollapsed = collapsed && !isMobile;
+
   return (
-    <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <Sidebar
-        collapsed={collapsed}
+        collapsed={sidebarCollapsed}
         onToggleCollapse={() => setCollapsed((v) => !v)}
         mobileOpen={mobileOpen}
         onCloseMobile={() => setMobileOpen(false)}

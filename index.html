@@ -4,10 +4,13 @@
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover 让 env(safe-area-inset-*) 生效，刘海屏下内容才不会被压住。
          刻意不加 maximum-scale：禁用缩放会伤害可访问性，输入框的放大问题
-         由 responsive.css 里把表单字号抬到 16px 来解决。 -->
+         由 responsive.css 里把表单字号抬到 16px 来解决。
+
+         interactive-widget=resizes-content：Android Chrome 弹出软键盘时收缩布局
+         视口，而不是把页面顶上去盖住输入框。iOS 不认这个值、行为保持原样。 -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="theme-color" content="#f3f6f9" />
     <meta name="description" content="pvecenter - Proxmox VE 集群管理面板" />

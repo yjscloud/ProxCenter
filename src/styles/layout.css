@@ -44,6 +44,9 @@
   overflow-x: hidden;
   padding: var(--content-pad-top) var(--content-padding) var(--content-padding);
   min-height: 0;
+  /* 滚到顶/底时不要把滚动链传给 body（移动端否则会触发整页回弹或下拉刷新），
+     弹层自己滚动时也不会把背后的页面带着走。 */
+  overscroll-behavior: contain;
 }
 
 /* 按需加载页面的等待态（见 Layout 的 PageLoading）。
@@ -4473,17 +4476,20 @@
    认证页（登录 / 注册 / 找回密码）— 腾讯云登录页式布局
    整屏 column：顶栏品牌条 → 居中白卡 → 底部版权页脚。
    背景与腾讯云登录页同款配置：浅灰蓝底（#eaebef）+ 3D 等距电路板插画
-   （public/auth-bg.png），图片靠右居中、cover 铺满、fixed 固定。
+   （public/auth-bg.webp，PNG 兜底），图片靠右居中、cover 铺满、fixed 固定。
    插画本身极浅，不需要任何遮罩。
-   --------------------------------------------------------------------------- */
 
+   只保留 WebP：原图 1536×955 的 PNG 有 1.5MB，登录页首屏在移动端要白等
+   好几秒；同图 WebP 只有约 32KB。WebP 在 iOS 14 / Android 4.4 起全面支持，
+   再挂一份 PNG 兜底只会让仓库和旧设备白白多一份 376KB —— 背景本身是纯装饰，
+   真遇到不支持的浏览器，退到 background-color 也不影响可用性。 */
 .login-page {
   position: relative;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
   background-color: #eaebef;
-  background-image: url('/auth-bg.png');
+  background-image: url('/auth-bg.webp');
   background-repeat: no-repeat;
   background-size: cover;
   background-position: 100% 50%;

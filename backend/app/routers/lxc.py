@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from .. import (
+    batchcreate,
     defaults,
     guest_created,
     guestip,
@@ -47,6 +48,7 @@ from ..schemas import (
     GuestPasswordRequest,
     LxcAddMount,
     LxcAddNetwork,
+    LxcBatchCreateRequest,
     LxcCloneRequest,
     LxcConfigUpdate,
     LxcCreateRequest,
@@ -413,6 +415,16 @@ async def create_container(
         },
     )
 
+    return await _create_lxc_core(payload, request, user, client)
+
+
+async def _create_lxc_core(
+    payload: LxcCreateRequest,
+    request: Request,
+    user: Dict[str, Any],
+    client: Any,
+) -> Dict[str, Any]:
+    """单台容器创建主体（不含范围 / 额度预检），供单台与批量入口共用。"""
     # 与虚拟机同口径：没单独填 DNS 就套面板默认 DNS，免得容器起来后
     # 只拿到路由器 RA 下发的「假 IPv6」DNS，域名全解析不了。
     if payload.setup:
@@ -490,6 +502,52 @@ async def create_container(
         "node": payload.node,
         "type": "lxc",
     }
+
+
+@router.post("/lxc/batch")
+async def create_containers_batch(
+    payload: LxcBatchCreateRequest,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("ct.create")),
+) -> Dict[str, Any]:
+    """一次下发多台容器。语义与虚拟机的 ``/vms/batch`` 完全一致。"""
+    username = str(user.get("username") or "")
+    batch_id = payload.batch_id or batchcreate.new_batch_id()
+    cached = batchcreate.cached_batch(username, batch_id)
+    if cached is not None:
+        return cached
+
+    client = get_client()
+    connection_id = _op_connection()
+    security.ensure_region_allowed(user, connection_id)
+    for item in payload.items:
+        await security.ensure_node_allowed(user, connection_id, item.node)
+
+    await quota.enforce_for_create(user, request, "lxc", count=len(payload.items))
+    specs = [
+        {
+            "cores": item.cores,
+            "memory_mb": item.memory,
+            "disk_gb": item.rootfs + sum(mount.size for mount in item.mounts),
+        }
+        for item in payload.items
+    ]
+    await quota.enforce_batch_create(user, request, "ct", specs)
+
+    try:
+        await batchcreate.allocate_vmids(client, payload.items)
+    except ProxmoxError as exc:
+        _raise(exc)
+
+    result = await batchcreate.run_batch(
+        batch_id=batch_id,
+        kind="lxc",
+        items=payload.items,
+        create_one=lambda item: _create_lxc_core(item, request, user, client),
+        stop_on_error=payload.stop_on_error,
+    )
+    batchcreate.remember_batch(username, batch_id, result)
+    return result
 
 
 # ============================================================== power paths

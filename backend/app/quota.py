@@ -133,39 +133,116 @@ async def count_guests(kind: str = "vm") -> Tuple[int, Optional[str]]:
 
 
 async def usage(user: Dict[str, Any], kind: str = "vm") -> Dict[str, Any]:
-    """给前端的读数：配额 / 已用 / 可下发 / 当前用户能不能建。"""
+    """给前端的读数：配额 / 已用 / 可下发 / 当前用户能不能建。
+
+    **口径按当前用户作用域**（BUG-014）：普通用户看到的 ``used`` 是**自己名下**的
+    台数，``quota`` / ``remaining`` 是**按人分配**给他的那份；集群全局护栏
+    （``get_quota``）只用来判定 ``can_create``，不把全集群已用台数暴露给他 ——
+    否则「剩余 13 台」既是假数（他名下只剩 4 台），又泄露了集群规模。
+
+    能管理面板设置的人（``settings.manage``，含管理员）看到的仍是全局读数：
+    设置页要用它回显「全平台已用 / 上限」。此时响应带 ``scope="global"``，并把
+    同一份数字放进 ``global`` 子对象，前端据此明确标注「平台」而不是混作个人额度。
+
+    ``can_create`` 永远是**两层取最严**：全局护栏满了或者个人额度用尽都返回
+    ``false`` —— 这是创建按钮唯一的判据，不能因为展示口径变了而放宽。
+    """
     name = normalise_kind(kind)
+    group = GROUP_GUEST_KIND[name]
     quota = await get_quota(name)
-    used, error = await count_guests(name)
+
+    # 一次读数同时供「全局」与「按人」两个视角使用：两次分别拉 cluster_resources
+    # 既浪费，又可能在两次之间隔了几秒而给出互相矛盾的数字。
+    rows, error = await guest_rows()
+    wanted = RESOURCE_TYPES[name]
+    global_used = sum(1 for row in rows if row.get("type") in wanted)
+    global_remaining = None if quota is None else max(0, quota - global_used)
+    global_room = quota is None or global_used < quota
+
+    is_admin = security.is_admin(user)
+    can_manage = security.has_user_permission(user, "settings.manage")
+    username = str(user.get("username") or "")
+    role = str(user.get("role") or "")
+
+    # 名下用量与按人额度：管理员不受限，但仍要把读数算出来给 can_create 用
+    if is_admin:
+        personal_count: Optional[int] = None
+        personal_used = global_used
+        personal_room = True
+        limits_source = SOURCE_NONE
+    else:
+        refs = await owned_refs_for(username)
+        personal_used = int(summarise_usage(rows, refs)[group].get("count") or 0)
+        limits, limits_source = await effective_limits(username, role)
+        personal_count = limits[group].get("count")
+        personal_room = personal_count is None or personal_used < int(personal_count)
+
+    can_create = (is_admin or global_room) and personal_room
+
+    if can_manage:
+        # 管理视角：顶层就是平台读数（设置页 / 管理员浮层直接使用）
+        return {
+            "kind": name,
+            "label": label(name),
+            "scope": "global",
+            "quota": quota,
+            "used": global_used,
+            "remaining": global_remaining,
+            "limited": quota is not None,
+            "can_create": can_create,
+            "count_error": error,
+            # 显式标注作用域：即便顶层已经是全局，前端也不必靠「当前登录人是不是
+            # 管理员」去猜这个数字是谁的
+            "global": {
+                "quota": quota,
+                "used": global_used,
+                "remaining": global_remaining,
+                "limited": quota is not None,
+            },
+        }
+
+    # 普通用户：只回自己名下那一份。个人额度没配 = 这一层不限制（None），
+    # 但全局护栏仍然通过 can_create 生效，并且不把护栏的数字带出去。
+    personal_remaining = (
+        None
+        if personal_count is None
+        else max(0, int(personal_count) - personal_used)
+    )
+    if not global_room:
+        # 全局已经满了：即便个人额度不限，此刻也建不出来。给 0 而不是 None，
+        # 让「还能建几台」给出一个明确的 0（不泄露集群总数）。
+        personal_remaining = 0
     return {
         "kind": name,
         "label": label(name),
-        "quota": quota,
-        "used": used,
-        # None = 不限制；否则下限截到 0，避免出现负数
-        "remaining": None if quota is None else max(0, quota - used),
-        "limited": quota is not None,
-        "can_create": _can_create(security.is_admin(user), quota, used),
+        "scope": "user",
+        "quota": None if personal_count is None else int(personal_count),
+        "used": personal_used,
+        "remaining": personal_remaining,
+        "limited": personal_count is not None or quota is not None,
+        "can_create": can_create,
         "count_error": error,
+        # 全局护栏单独标注，但只对能管理它的人展示数字；普通用户这里是 null
+        "global": None,
+        # 额度的来源（user / role / none），便于前端解释「这个 4 台是哪来的」
+        "source": limits_source,
     }
 
 
-def _can_create(is_admin: bool, quota: Optional[int], used: int) -> bool:
-    if is_admin:
-        return True
-    if quota is None:
-        return True
-    return quota - used > 0
-
-
 async def enforce_for_create(
-    user: Dict[str, Any], request: Request, kind: str = "vm"
+    user: Dict[str, Any],
+    request: Request,
+    kind: str = "vm",
+    count: int = 1,
 ) -> None:
     """创建该类 guest 前调用；普通用户超限时抛 403。
 
-    只在「确实要新增一台」的入口调用（``POST /vms`` / ``POST /lxc`` 与单台克隆）。
+    ``count`` 是本次要新增的台数：单台入口默认 1，批量入口传 N。全局台数护栏
+    必须按「已用 + N」判断 —— 单台口径下 ``quota - used > 0`` 会让一批 50 台
+    在只剩 1 个空位时整体放行（BUG 之外的批量超卖点）。
     """
     name = normalise_kind(kind)
+    need = max(1, int(count or 1))
     if security.is_admin(user):
         return
 
@@ -174,7 +251,7 @@ async def enforce_for_create(
         return
 
     used, _ = await count_guests(name)
-    if quota - used > 0:
+    if quota - used >= need:
         return
 
     noun = label(name)
@@ -183,11 +260,25 @@ async def enforce_for_create(
         user,
         f"{'lxc' if name == 'lxc' else 'vm'}.create",
         result="denied",
-        detail={"reason": "quota", "kind": name, "quota": quota, "used": used},
+        detail={
+            "reason": "quota",
+            "kind": name,
+            "quota": quota,
+            "used": used,
+            "requested": need,
+        },
     )
     if quota <= 0:
         raise HTTPException(
             status_code=403, detail=f"管理员当前没有开放{noun}下发额度"
+        )
+    if need > 1:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"可下发{noun}数量不足：上限 {quota} 台，当前 {used} 台，"
+                f"本次需要 {need} 台，请联系管理员"
+            ),
         )
     raise HTTPException(
         status_code=403,
@@ -1025,6 +1116,148 @@ async def enforce_create(
             "reason": "quota",
             "group": group,
             "spec": effective,
+            "usage": usage,
+            "limits": group_limits,
+        },
+    )
+    raise HTTPException(status_code=403, detail=problem)
+
+
+def check_batch_limits(
+    group: str,
+    limits: Optional[Dict[str, Any]],
+    usage: Optional[Dict[str, Any]],
+    specs: List[Dict[str, Any]],
+) -> Optional[str]:
+    """校验「本批新增的 N 台」是否越界；返回人话说明，``None`` = 通过。
+
+    与 :func:`check_limits` 的差别只有两处：
+
+    * **单台封顶**逐台看（``max_cores`` 是「每台不能超过」，不是 N 台之和）；
+    * **名下总量**看整批之和（``count`` = N，核数 / 内存 / 磁盘累加）。
+
+    某一项在任意一台里「不知道」（例如克隆时来源规格还没读到）时，这一项的
+    总量检查整体跳过 —— 只累加已知的几台会低估需求，比不检查更危险。
+    """
+    limits = limits or {}
+    usage = usage or {}
+    total_need: Dict[str, int] = {"count": len(specs)}
+    all_known: Dict[str, bool] = {field: True for field in TOTAL_FIELDS}
+
+    for spec in specs:
+        for field in TOTAL_FIELDS:
+            if field == "count":
+                continue
+            value = spec.get(field)
+            if value is None:
+                all_known[field] = False
+                continue
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                all_known[field] = False
+                continue
+
+            # ① 单台封顶：逐台判断，与整批数量无关
+            cap_field = _PER_GUEST_CAP.get(field)
+            cap = limits.get(cap_field) if cap_field else None
+            if cap is not None and number > int(cap):
+                return _cap_message(group, field, cap, number)
+
+            total_need[field] = total_need.get(field, 0) + number
+
+    # ② 名下总量：已用 + 整批之和
+    for field in TOTAL_FIELDS:
+        total = limits.get(field)
+        if total is None:
+            continue
+        if field != "count" and not all_known.get(field):
+            continue
+        need = total_need.get(field)
+        if need is None:
+            continue
+        used = int(usage.get(field) or 0)
+        if used + int(need) > int(total):
+            return _total_message(group, field, total, used, need)
+    return None
+
+
+async def enforce_batch_create(
+    user: Dict[str, Any],
+    request: Optional[Request],
+    group: str,
+    specs: List[Dict[str, Any]],
+    sources: Optional[List[Optional[Tuple[Any, Any]]]] = None,
+) -> None:
+    """批量新增客户机之前的**总量**预检。越界抛 403，统计不了抛 503。
+
+    逐台调用 :func:`enforce_create` 会做 N 次全量扫描，而且在「只剩 1 个额度」
+    时可能让后面的台数蒙混过关。这里只扫一次，把 N 台的规格求和后统一判断。
+    """
+    if not specs:
+        return
+    if security.is_admin(user):
+        return
+
+    username = str(user.get("username") or "")
+    role = str(user.get("role") or "")
+    limits, _source = await effective_limits(username, role)
+    group_limits = limits[group]
+    if all(value is None for value in group_limits.values()):
+        return
+
+    invalidate()
+    rows, error = await guest_rows()
+    action = "vm" if group == "vm" else "ct"
+    if error:
+        await security.audit(
+            request,
+            user,
+            f"{action}.create",
+            result="denied",
+            detail={"reason": "quota_stats", "group": group, "error": error},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"暂时统计不到资源用量（{error}），已按额度策略拒绝本次下发；"
+                "请稍后重试，或联系管理员。"
+            ),
+        )
+
+    effective_specs: List[Dict[str, Any]] = []
+    for index, spec in enumerate(specs):
+        effective: Dict[str, Any] = {}
+        source = sources[index] if sources and index < len(sources) else None
+        if source is not None:
+            effective.update(
+                spec_from_source(rows, source[0], source[1], _current_connection())
+            )
+        effective.update(
+            {
+                key: value
+                for key, value in (spec or {}).items()
+                if value is not None and key != "source"
+            }
+        )
+        effective_specs.append(effective)
+
+    refs = await owned_refs_for(username)
+    usage = summarise_usage(rows, refs)[group]
+    problem = check_batch_limits(group, group_limits, usage, effective_specs)
+    if not problem:
+        return
+
+    await security.audit(
+        request,
+        user,
+        f"{action}.create",
+        result="denied",
+        detail={
+            "reason": "quota",
+            "group": group,
+            "batch": len(effective_specs),
+            "spec": effective_specs,
             "usage": usage,
             "limits": group_limits,
         },

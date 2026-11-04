@@ -67,10 +67,32 @@ async def feishu_event(request: Request) -> Dict[str, Any]:
         payload = json.loads(body.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=400, detail="事件内容不是合法 JSON") from exc
+    if not isinstance(payload, dict) or not payload:
+        raise HTTPException(status_code=400, detail="事件内容为空或结构不合法")
 
-    # 首次配置回调地址时飞书会发来 url_verification
+    # 首次配置回调地址时飞书会发来 url_verification。挑战值必须显式存在，
+    # 不能被一个 ``{}`` 或 ``{"type":"url_verification"}`` 骗成成功（BUG-011）。
     if payload.get("type") == "url_verification":
-        return {"challenge": str(payload.get("challenge") or "")}
+        challenge = payload.get("challenge")
+        if not isinstance(challenge, str) or not challenge:
+            raise HTTPException(status_code=400, detail="url_verification 缺少 challenge")
+        # 首次校验也要过 Verification Token，否则任何人都能拿回调地址试通。
+        ok, reason = feishu_bot.check_token(payload, cfg)
+        if not ok:
+            raise HTTPException(status_code=403, detail=reason)
+        return {"challenge": challenge}
+
+    # 事件订阅（v2 schema）：header.event_id / event_type 与 event 体缺一不可。
+    # 原先只要 JSON 能解析就往下走，空对象会在「机器人未启用」分支直接 200，
+    # 看起来像回调成功，实际什么都没处理。
+    header = payload.get("header")
+    if not (
+        isinstance(header, dict)
+        and str(header.get("event_id") or "")
+        and str(header.get("event_type") or "")
+        and isinstance(payload.get("event"), dict)
+    ):
+        raise HTTPException(status_code=400, detail="事件结构不合法：缺少 header.event_id / event_type / event")
 
     if payload.get("encrypt"):
         raise HTTPException(
@@ -78,12 +100,18 @@ async def feishu_event(request: Request) -> Dict[str, Any]:
             detail="事件已加密：请在飞书开放平台关闭 Encrypt Key（或改用明文事件），当前版本不支持解密。",
         )
 
-    if not cfg.get("enabled"):
-        return {"code": 0, "msg": "机器人未启用"}
-
     ok, reason = feishu_bot.check_token(payload, cfg)
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
+
+    # 防重放：同一 event_id 只处理一次。飞书超时重试时直接 ACK，不重复执行
+    # 关机 / 创建这类写操作。
+    if feishu_bot.is_duplicate_event(str(header.get("event_id") or "")):
+        logger.info("忽略重复的飞书事件：%s", header.get("event_id"))
+        return {"code": 0, "msg": "duplicate"}
+
+    if not cfg.get("enabled"):
+        return {"code": 0, "msg": "机器人未启用"}
 
     asyncio.create_task(_process_event(payload, cfg))
     return {"code": 0}

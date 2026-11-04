@@ -829,6 +829,36 @@ async def revoke_user_refresh_tokens(username: str) -> int:
         return int(cursor.rowcount or 0)
 
 
+async def trim_refresh_tokens(username: str, keep: int) -> int:
+    """只保留最新的 ``keep`` 个有效会话，其余标记撤销，返回撤销数量。
+
+    ``keep <= 0`` 表示不限制。并发登录时两个进程可能同时执行，但「保留最新的
+    N 个」是幂等的：多跑一次只会把已经不该存在的旧会话再撤一遍。
+    """
+    if keep <= 0:
+        return 0
+    async with database.connect() as db:
+        cursor = await db.execute(
+            "SELECT jti FROM refresh_tokens"
+            " WHERE username = ? AND revoked = 0 AND expires_at > ?"
+            " ORDER BY created DESC, jti DESC",
+            (username, time.time()),
+        )
+        rows = await cursor.fetchall()
+        stale = [str(row["jti"]) for row in rows[keep:]]
+        if not stale:
+            return 0
+        for start in range(0, len(stale), 500):
+            chunk = stale[start : start + 500]
+            marks = ", ".join("?" for _ in chunk)
+            await db.execute(
+                f"UPDATE refresh_tokens SET revoked = 1 WHERE jti IN ({marks})",
+                chunk,
+            )
+        await db.commit()
+    return len(stale)
+
+
 async def list_refresh_tokens(username: str) -> List[Dict[str, Any]]:
     """列出某人仍然有效的会话（个人中心「登录设备」）。"""
     async with database.connect() as db:

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -178,6 +179,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await guestip.init_table()
     # 站内通知表：告警发生时由 alerting.record 往里写未读消息
     await notifications.init_table()
+    # 启动时清一遍「链接指向的机器已不属于收件人」的存量消息：升级前的告警规则
+    # 没有按机器归属过滤，那些行会一直躺在普通用户的铃铛里（BUG-013）。失败只记日志，
+    # 不影响启动；以后新产生的消息由 notifications.push_alert 在写入口拦住。
+    try:
+        await notifications.purge_foreign_guest_items()
+    except Exception:  # noqa: BLE001 - 清理失败不能让面板起不来
+        logger.warning("清理归属不符的站内消息失败，忽略", exc_info=True)
     # 个人 API Token 表（脚本 / 外部系统用的长期凭据，见 app.apitokens）
     await apitokens.init_table()
     # 信任设备表（登录两步验证的「7 天内免二次校验」，见 app.trusteddevices）
@@ -549,7 +557,8 @@ class HttpsEnforcementMiddleware:
 
     * 明文请求 → ``308`` 到 ``https://<Host>``，跳转目标会去掉本面板监听端口 ——
       后端自己不提供 TLS，必须跳到反代的 443；
-    * HTTPS 请求 → 回响应加 HSTS（``max-age=31536000``），浏览器一年内只走 https。
+    * HTTPS 请求 → 回响应加 HSTS（``max-age=31536000; includeSubDomains``），
+      浏览器一年内对本站及其子域都只走 https。
 
     是否 https 只信 uvicorn 改写过的 ``scope["scheme"]``：``X-Forwarded-Proto``
     仅对 ``FORWARDED_ALLOW_IPS`` 内的对端生效，公网请求自称「我是 https」无效。
@@ -559,7 +568,10 @@ class HttpsEnforcementMiddleware:
     """
 
     LOOPBACK = {"127.0.0.1", "::1", "localhost"}
-    HSTS = b"max-age=31536000"
+    # includeSubDomains：面板常挂在 panel.example.com，而同一张证书 / 同一个
+    # 站点下的子域（api.example.com、console.example.com）不该还能走明文 HTTP。
+    # 只写 max-age 的 HSTS 对子域不生效，等于给降级攻击留了一个旁路（BUG-007）。
+    HSTS = b"max-age=31536000; includeSubDomains"
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -674,8 +686,10 @@ class SecurityHeadersMiddleware:
     * ``/api/docs``、``/api/redoc``：Swagger UI / ReDoc 从 cdn.jsdelivr.net 取
       资源、且页面里有内联启动脚本，只对这两条路径放宽（它们默认还不存在）。
 
-    ``connect-src`` 收在同源 + ws/wss：控制台、实时指标、VNC 都是同源
-    WebSocket；写显式 scheme 是为了兼容只认 scheme 的旧浏览器。
+    ``connect-src`` 只留 ``'self'``：控制台、实时指标、任务流、VNC 全部连接
+    **当前页面的同源** WebSocket（``new WebSocket(...)`` 用的是相对/同源地址），
+    不需要任何跨主机权限。原先写 ``ws: wss:`` 等于允许页面脚本连接任意主机，
+    与「同源」的实际需求不符，也会给被注入脚本提供外带通道（BUG-008）。
     """
 
     CSP = (
@@ -684,7 +698,7 @@ class SecurityHeadersMiddleware:
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
         "font-src 'self' data:; "
-        "connect-src 'self' ws: wss:; "
+        "connect-src 'self'; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'; "
@@ -851,6 +865,29 @@ app.add_middleware(PanelAccessControlMiddleware)
 app.add_middleware(reqmetrics.RequestMetricsMiddleware)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """422 只回「哪个字段、为什么错」，不回显提交内容（BUG-009）。
+
+    FastAPI 默认会在每个错误项里带 ``input``（原始提交值）与 ``ctx``（校验器
+    上下文）。登录 / 注册这类接口的 ``input`` 里就是**明文口令**，一个字段长度
+    不合规的 422 会把口令原样回给调用方，也顺手进了反向代理的访问日志。
+    这里只保留定位与原因两个信息，前端仍可按原有的 ``detail[].loc/msg`` 渲染。
+    """
+    detail: List[Dict[str, Any]] = []
+    for error in exc.errors():
+        detail.append(
+            {
+                "loc": list(error.get("loc") or []),
+                "msg": str(error.get("msg") or ""),
+                "type": str(error.get("type") or ""),
+            }
+        )
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
 @app.exception_handler(ProxmoxError)
 async def proxmox_error_handler(request: Request, exc: ProxmoxError) -> JSONResponse:
     """Translate Proxmox failures into a consistent JSON shape."""
@@ -1004,7 +1041,7 @@ async def version(
     }
 
 
-# 未知的 /api/* 路径一律回 404（**所有方法**）。
+# 未知的 /api/* 路径一律回 404（**所有方法**），但**先过鉴权**。
 #
 # 为什么非加不可：下面的 SPA 兜底是 ``GET /{full_path:path}``，它匹配**任何**路径。
 # POST 到一个不存在的接口时，Starlette 于是发现「路径有匹配、方法不对」，回
@@ -1012,25 +1049,91 @@ async def version(
 # Allowed」，会去翻请求方法写错了没有，而真相通常是后端还跑着旧版本、这个接口
 # 根本没发布。405 在这里说了假话，404 才是实话。
 #
+# 鉴权依赖（BUG-005）：未登录时「存在但需要登录的接口」与「根本不存在的接口」
+# 必须同样回 401。否则匿名扫描器只要看 401 还是 404，就能零成本把全部 API 路径
+# 枚举出来。把 ``get_current_user`` 挂在兜底路由上，未知路径也先要求身份；
+# 登录之后才回 404，路由表因此只对已认证用户可见。
+#
 # 必须注册在**所有**真实路由之后：FastAPI 按注册顺序匹配，先注册的赢。
+def _api_404_detail() -> str:
+    """通用 404 文案：不回显路径 / 版本状态 / 运维动作（BUG-003）。"""
+    return i18n.pick("请求的接口不存在", "Endpoint not found")
+
+
+def _api_allowed_methods(path: str) -> List[str]:
+    """这个路径在路由表里存在时，允许哪些方法（用于 405 + ``Allow``）。
+
+    兜底路由把 ``/api/*`` 的所有方法都接了，因此 Starlette 没有机会自己回
+    405 —— 必须在兜底里替它算一次。只扫 ``/api`` 路由，并用预编译的正则匹配；
+    未知路径才会走到这里，正常请求没有额外开销（BUG-010）。
+
+    跳过兜底自身，避免「所有方法都允许」把 405 又吃回去。
+    """
+    methods: set = set()
+    for route in app.router.routes:
+        route_path = str(getattr(route, "path", "") or "")
+        if not route_path.startswith("/api"):
+            continue
+        if route_path in ("/api", "/api/{rest:path}"):
+            continue
+        regex = getattr(route, "path_regex", None)
+        if regex is None or not regex.match(path):
+            continue
+        for method in getattr(route, "methods", ()) or ():
+            methods.add(str(method).upper())
+    methods.discard("OPTIONS")
+    if "GET" in methods:
+        methods.add("HEAD")
+    return sorted(methods)
+
+
+@app.api_route(
+    "/api",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+)
 @app.api_route(
     "/api/{rest:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
     include_in_schema=False,
 )
-async def api_not_found(rest: str) -> JSONResponse:
-    # detail 要自己把话说全 —— 前端是**原样显示**它的。只说 "Not Found" 的话用户
-    # 拿不到任何线索，而这里最常见的原因恰恰是「后端还跑着旧版本，这个接口根本
-    # 还没发布」，那句话必须出现，否则排查方向会整个跑偏。
+async def api_not_found(
+    request: Request,
+    rest: str = "",
+    _user: Optional[Dict[str, Any]] = Depends(security.get_current_user_optional),
+) -> JSONResponse:
+    # 已知路径但方法不对：405 + Allow，不再伪装成 404（BUG-010）。这一判断
+    # 放在鉴权之前 —— 方法与路径的组合是公开的 HTTP 语义，不需要身份。
+    allowed = _api_allowed_methods(request.url.path)
+    if allowed and request.method not in allowed:
+        return JSONResponse(
+            status_code=405,
+            content={
+                "detail": i18n.pick("请求方法不被允许", "Method Not Allowed"),
+                "code": "method_not_allowed",
+            },
+            headers={"Allow": ", ".join(allowed)},
+        )
+
+    # 未登录时未知路径统一 401（BUG-005）；只有已认证用户才看得到 404。
+    if _user is None:
+        raise HTTPException(
+            status_code=401,
+            detail=i18n.pick("未登录或登录状态已失效", "Not authenticated"),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 排查所需的信息只进日志：响应体里不再回显路径、版本状态或「重启」这类
+    # 运维动作（BUG-003）。扫描器拿到的统一是一个没有语义的 not_found。
+    logger.info(
+        "未匹配的 API 路径：%s %s（已认证用户=%s）",
+        request.method,
+        request.url.path,
+        _user.get("username") or "-",
+    )
     return JSONResponse(
         status_code=404,
-        content={
-            "detail": i18n.pick(
-                f"接口不存在：/api/{rest}（后端可能还在跑旧版本，重启后再试）",
-                f"No such endpoint: /api/{rest} (the backend may still be running "
-                "an older build — restart and retry)",
-            )
-        },
+        content={"detail": _api_404_detail(), "code": "not_found"},
     )
 
 
@@ -1039,6 +1142,28 @@ async def api_not_found(rest: str) -> JSONResponse:
 # 额外的静态服务器 / Nginx，也避免了反向代理 WebSocket 的配置——VNC
 # 控制台因此可以开箱即用。
 DIST_DIR = BASE_DIR.parent / "dist"
+
+
+def _looks_like_static_file(path: str) -> bool:
+    """路径是否在要一个**静态文件**（而不是前端路由）。
+
+    SPA 兜底必须区分这两类，否则 ``/robots.txt``、``/favicon.ico``、
+    ``/.well-known/security.txt`` 这类路径会拿到 200 + ``index.html`` ——
+    扫描器看到「软 404」，缓存/CDN 也会把首页当成这些文件缓存起来（BUG-006）。
+
+    判据只有两条，足够覆盖真实静态资源，又不会误伤前端路由：
+
+    * 最后一段带扩展名（``.txt`` / ``.ico`` / ``.map`` …）；
+    * 第一段以 ``.`` 开头（``/.well-known/*``、``/.env`` 等隐藏路径）。
+    """
+    if not path or path.endswith("/"):
+        return False
+    first, _, rest = path.partition("/")
+    if first.startswith("."):
+        return True
+    last = rest.rsplit("/", 1)[-1] if rest else first
+    return "." in last
+
 
 if (DIST_DIR / "index.html").is_file():
     if (DIST_DIR / "assets").is_dir():
@@ -1050,14 +1175,21 @@ if (DIST_DIR / "index.html").is_file():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str) -> FileResponse:
-        """返回 dist/ 中的静态文件，未命中的路径回退到 index.html。"""
+        """返回 dist/ 中的静态文件；其余路径回退到 index.html（前端路由）。
+
+        但「像静态文件」的路径不能回退：``/robots.txt`` 之类没命中真实文件时
+        必须 404，而不是把首页当 robots.txt 回给爬虫。
+        """
         if full_path.startswith("api/"):
             # 未知的 API 路径保持 404 语义，不要伪装成前端页面。
-            raise HTTPException(status_code=404, detail="Not Found")
+            raise HTTPException(status_code=404, detail=_api_404_detail())
 
         candidate = (DIST_DIR / full_path).resolve()
         if full_path and candidate.is_file() and DIST_DIR in candidate.parents:
             return FileResponse(candidate)
+        if _looks_like_static_file(full_path):
+            logger.info("静态资源不存在，拒绝回退到首页：/%s", full_path)
+            raise HTTPException(status_code=404, detail=_api_404_detail())
         return FileResponse(DIST_DIR / "index.html")
 
 else:

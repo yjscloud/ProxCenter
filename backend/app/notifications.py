@@ -35,7 +35,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import database, i18n
+from . import database, i18n, ownership
 
 logger = logging.getLogger(__name__)
 
@@ -318,15 +318,64 @@ def alert_message(entry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+async def _guest_belongs_to(entry: Dict[str, Any], username: str) -> bool:
+    """这条资源告警的虚拟机是不是 ``username`` 名下的（BUG-013 的最后一道闸）。
+
+    归属判定在 ``alerting.evaluate`` 里已经做过一次（普通用户的规则只覆盖自己名下
+    的机器），但站内消息是**唯一会出现机器名称与指标值**的落点，值得在写入口再
+    核一遍：上游任何一条路径（旧规则、手工写进 settings 的规则、账号清单读失败的
+    回落）算错了收件人，这里都能拦住，而不是把别人的机器名写进他的铃铛。
+
+    三种情况放行，只有「明确属于别人」才丢弃：
+
+    * 不是虚拟机告警（宿主机 / 备份 / 登录告警没有 guest 归属可言）；
+    * 归属表里查不到（机器在面板之外创建，或已删除）：这类告警由管理员的规则
+      兜底，收件人通常就是管理员，不能一刀切丢掉；
+    * 归属表读失败：宁可保留告警，也不能因为一次数据库抖动把该发的告警吞掉
+      （告警丢失比一条多发的消息严重得多）。
+    """
+    if str(entry.get("target_type") or "") != "vm":
+        return True
+    vmid = entry.get("vmid")
+    if vmid is None or not str(vmid):
+        return True
+    try:
+        owners = await ownership.guest_owners_map()
+    except Exception:  # noqa: BLE001 - 读不到归属时按旧行为放行
+        logger.warning("校验告警归属失败，按原收件人投递", exc_info=True)
+        return True
+    owner = ownership.vm_owner_from(
+        owners,
+        entry.get("node"),
+        vmid,
+        str(entry.get("connection_id") or ""),
+    )
+    return not owner or owner == username
+
+
 async def push_alert(entry: Dict[str, Any], created: Optional[int] = None) -> None:
     """把一条告警 / 恢复记录投递到这条告警**收件人**的站内消息里。
 
     ``entry["username"]`` 由调用方决定是谁：资源告警填机器归属者（不是配规则的人，
     见 :class:`app.alerting.RecipientBook`），其余来源填各自策略里的接收人。
+
+    资源告警在落库前再按**当前归属**复核一次（见 :func:`_guest_belongs_to`）：
+    收件人不是这台机器的主人时直接丢弃并记一条 warning，避免任何上游口径偏差把
+    别人的虚拟机名称 / 监控数据写进这个账号的消息中心。
     """
+    username = str(entry.get("username") or "")
+    if username and not await _guest_belongs_to(entry, username):
+        logger.warning(
+            "丢弃归属不符的告警消息：收件人=%s target=%s node=%s vmid=%s",
+            username,
+            entry.get("target"),
+            entry.get("node"),
+            entry.get("vmid"),
+        )
+        return
     message = alert_message(entry)
     await push(
-        str(entry.get("username") or ""),
+        username,
         title=message["title"],
         body=message["body"],
         link=message["link"],
@@ -334,3 +383,78 @@ async def push_alert(entry: Dict[str, Any], created: Optional[int] = None) -> No
         level=message["level"],
         created=created,
     )
+
+
+async def purge_foreign_guest_items() -> int:
+    """清掉「消息里的虚拟机已经不属于收件人」的存量站内消息，返回删除条数。
+
+    为什么需要它：BUG-013 里那批消息是**旧版本**生成的（升级前的规则没有按机器
+    归属过滤），代码修好之后它们仍会留在铃铛里 90 天 —— 普通用户照样能读到别人
+    的机器名。启动时跑一遍，把「链接指向的机器明确归别人」的消息删掉；历史审计
+    不受影响（``alert_history`` 是另一张表，且刻意不迁移）。
+
+    三条边界，都是为了不误删：
+
+    * 只看 ``/vms/<节点>/<vmid>`` 与 ``/lxc/<节点>/<vmid>`` 两种链接，其余消息
+      （更新提醒、登录告警、宿主机告警）一概不碰；
+    * 管理员 / 区域管理员的消息不碰 —— 他们本来就有全局视野，收到别人的告警是
+      权限内的正常结果；
+    * 归属查不到、或同一 (节点, VMID) 在多条连接上指向不同人时跳过（无法判定）。
+    """
+    try:
+        async with database.connect() as db:
+            cursor = await db.execute(
+                "SELECT id, username, link FROM notifications"
+                " WHERE link LIKE '/vms/%' OR link LIKE '/lxc/%'"
+            )
+            rows = await cursor.fetchall()
+        if not rows:
+            return 0
+        owners = await ownership.guest_owners_map()
+        from . import store  # noqa: PLC0415 - 只在清理路径需要账号表
+
+        users = await store.list_users()
+    except Exception:  # noqa: BLE001 - 清理失败不该影响启动 / 其它作业
+        logger.warning("清理越界站内消息失败，跳过本轮", exc_info=True)
+        return 0
+
+    supervisors = {
+        str(item.get("username") or "")
+        for item in users or []
+        if str(item.get("role") or "") in ("admin", "region_admin")
+    }
+
+    # (节点, VMID) → 这套机器在归属表里出现过的全部主人。同一对键出现在多条
+    # 连接上且主人不同时无法判定（见 ownership.vm_owner_from 的同款取舍）。
+    by_guest: Dict[str, set] = {}
+    for ref, value in owners.items():
+        parts = str(ref or "").rsplit(":", 2)
+        if len(parts) != 3 or not str(value or ""):
+            continue
+        by_guest.setdefault(f":{parts[1]}:{parts[2]}", set()).add(str(value))
+
+    doomed: List[int] = []
+    for row in rows:
+        owner = str(row["username"] or "")
+        if not owner or owner in supervisors:
+            continue
+        parts = [part for part in str(row["link"] or "").split("/") if part]
+        if len(parts) != 3 or parts[0] not in ("vms", "lxc"):
+            continue
+        found = by_guest.get(f":{parts[1]}:{parts[2]}") or set()
+        if len(found) == 1 and owner not in found:
+            doomed.append(int(row["id"]))
+
+    removed = 0
+    async with database.connect() as db:
+        for start in range(0, len(doomed), 500):
+            chunk = doomed[start : start + 500]
+            marks = ", ".join("?" for _ in chunk)
+            cursor = await db.execute(
+                f"DELETE FROM notifications WHERE id IN ({marks})", chunk
+            )
+            removed += max(cursor.rowcount, 0)
+        await db.commit()
+    if removed:
+        logger.info("清理归属不符的存量站内消息 %d 条", removed)
+    return removed

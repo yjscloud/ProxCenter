@@ -322,6 +322,8 @@ export const enSettings: Partial<Record<MessageKey, string>> = {
   'profile.tfaDisabledDetail': 'The password alone is enough to sign in now',
   'profile.sessionsTitle': 'Signed-in devices',
   'profile.sessionsSubtitle': 'Revoking a session signs that device out immediately',
+  'profile.sessionsLimitHint':
+    'Each account keeps at most {n} signed-in devices; older ones are signed out automatically. If you suspect account compromise, use “Sign out all devices” below.',
   'profile.sessionsLoadFailed': 'Failed to load the device list',
   'profile.noSessions': 'No signed-in device records.',
   'profile.unknownSource': 'Unknown source',

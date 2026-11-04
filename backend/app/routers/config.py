@@ -121,8 +121,19 @@ async def health(
 @router.get("/config/connection")
 async def get_connection(
     request: Request,
-    user: Dict[str, Any] = Depends(security.get_current_user),
+    user: Dict[str, Any] = Depends(security.require_permission("settings.manage")),
 ) -> Dict[str, Any]:
+    """当前连接（兜底连接）的完整配置。
+
+    **只给能管理连接的人**（``settings.manage``）：即便不回传密钥明文，这份读数
+    仍然带着内网地址、端口、PVE root 令牌标识、控制台账号、是否关闭证书校验与
+    集群 CA 全文 —— 足以拼出一张内网拓扑，也是横向攻击最有价值的情报。普通用户
+    不需要它：想认「哪台 PVE 上有哪些节点」有 ``GET /api/connections`` 的裁剪版
+    （只有 id / 名称 / 区域 / 是否可达）。
+
+    写操作本来就要 ``settings.manage`` + 二次确认；读操作此前只要求登录，导致
+    普通用户能把写接口挡在门外，却照样读到同一份内容 —— 这里与写收成同一档。
+    """
     # 读操作也留痕：连接配置虽然不回传密钥明文，但它描述了面板能碰哪些集群，
     # 「谁在什么时候看了这份配置」是事后追溯的关键线索。
     await security.audit_read(request, user, "config.connection.read")

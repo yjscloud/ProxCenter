@@ -1786,6 +1786,15 @@
   gap: 16px;
 }
 
+/* 三列、第一列更宽（2:1:1）：快速部署的「名称 / 数量 / 标签」。
+   名称要放得下 web-prod-01 这类完整机器名，数量只是两位数字、标签是逗号
+   分隔的短串，等宽三分会把名字挤到看不见后半截。 */
+.form-grid-3-wide {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
 /* 栅格里放一个「只有开关、没有输入框」的字段（如快速部署的「完整克隆」）。
    它要跟**旁边那个输入框**对齐，而不是跟自己那一行的顶部对齐：上面还有一行
    字段标签（.field-label），所以按 .field-row 里行内按钮同一套算法跳过标签
@@ -1802,7 +1811,8 @@
 }
 
 @media (max-width: 640px) {
-  .form-grid-2 {
+  .form-grid-2,
+  .form-grid-3-wide {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -2539,6 +2549,51 @@
 /* 快速部署：网卡的「IP 获取方式」独占一行时别把分段控件拉满整行 */
 .qd-nic-mode {
   max-width: 360px;
+}
+
+/* 批量下发时这一格不是分段控件，而是一句「固定 DHCP」的说明：不再限宽，
+   否则中文说明会被挤成两三行，反而不如让它与上面的网桥行一样宽 */
+.qd-nic-mode-wide {
+  max-width: none;
+}
+
+/* 批量静态时这一行只剩「网段」一个下拉（IP / 网关由池子按台分配）：
+   .dyn-row 是 auto-fit 栅格，独生子会被拉满整行，一个网段下拉不需要那么宽 */
+.qd-nic-batch-pool {
+  max-width: 460px;
+}
+
+/* 批量静态的逐台地址：系统按池子预填，允许改单台。
+   台数多时限高滚动 —— 50 台排下来会把整张卡撑到看不见后面的字段。 */
+.qd-batch-ips {
+  margin-top: 12px;
+}
+
+.qd-batch-ip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding-right: 4px;
+}
+
+.qd-batch-ip-row {
+  display: grid;
+  grid-template-columns: minmax(0, 240px) minmax(0, 200px);
+  align-items: center;
+  gap: 12px;
+}
+
+/* 机器名可能很长：省略而不是把输入框挤窄 */
+.qd-batch-ip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
 }
 
 /* 快速部署：网卡的「网桥 / VLAN 标签 / 速率上限」固定一行三列。

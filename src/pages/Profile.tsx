@@ -920,6 +920,13 @@ export function Profile() {
             icon={<IconKey size={16} />}
           />
           <div className="dyn-list">
+            {sessionsQuery.data?.limit ? (
+              <Notice tone="info">
+                {t('profile.sessionsLimitHint', {
+                  n: sessionsQuery.data.limit,
+                })}
+              </Notice>
+            ) : null}
             {sessionsQuery.isError ? (
               <Notice tone="warning" title={t('profile.sessionsLoadFailed')}>
                 {errorMessage(sessionsQuery.error)}

@@ -724,6 +724,9 @@ ROUTES = {
     ("POST", "/api2/json/nodes/pve1/qemu"): lambda: (
         "UPID:pve1:0000A1B2:00C3D4E5:65F00001:qmcreate:105:root@pam:"
     ),
+    ("POST", "/api2/json/nodes/pve1/lxc"): lambda: (
+        "UPID:pve1:0000A1B6:00C3D4E9:65F00005:vzcreate:105:root@pam:"
+    ),
     ("POST", "/api2/json/nodes/pve1/qemu/100/status/start"): lambda: (
         "UPID:pve1:0000A1B3:00C3D4E6:65F00002:qmstart:100:root@pam:"
     ),

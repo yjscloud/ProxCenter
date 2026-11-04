@@ -840,6 +840,82 @@ class TestWriteRoutes:
         assert body["node"] == "pve1"
         assert body["task"].startswith("UPID:pve1:")
 
+    def test_batch_create_vms_returns_per_item_results(self, api) -> None:
+        """一次下发 3 台：逐台结果、VMID 不重复、每台都有 PVE 任务。"""
+        base = {
+            "node": "pve1",
+            "memory": 1024,
+            "cores": 1,
+            "disks": [
+                {"storage": "local-lvm", "size": 20, "interface": "scsi0"}
+            ],
+            "networks": [{"bridge": "vmbr0", "model": "virtio"}],
+        }
+        payload = {
+            "batch_id": "batch-test-1",
+            "items": [
+                {**base, "name": "batch-vm-1"},
+                {**base, "name": "batch-vm-2"},
+                {**base, "name": "batch-vm-3"},
+            ],
+        }
+        resp = api.post("/api/vms/batch", json=payload, headers=auth_headers(api))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["action"] == "create"
+        assert body["total"] == 3
+        assert body["ok"] == 3
+        assert body["failed"] == 0
+        assert [item["vmid"] for item in body["results"]] == [105, 106, 107]
+        assert all(item["ok"] for item in body["results"])
+        assert all(item["task"].startswith("UPID:pve1:") for item in body["results"])
+
+        # 同一 batch_id 重提：命中进程内幂等缓存，不会又建 3 台
+        again = api.post("/api/vms/batch", json=payload, headers=auth_headers(api))
+        assert again.status_code == 200
+        assert again.json()["results"] == body["results"]
+
+    def test_batch_create_vm_rejects_duplicate_vmid(self, api) -> None:
+        base = {
+            "node": "pve1",
+            "name": "dup",
+            "memory": 1024,
+            "cores": 1,
+            "disks": [],
+            "networks": [],
+        }
+        resp = api.post(
+            "/api/vms/batch",
+            json={"items": [{**base, "vmid": 105}, {**base, "vmid": 105}]},
+            headers=auth_headers(api),
+        )
+        assert resp.status_code == 400
+
+    def test_batch_create_containers_returns_per_item_results(self, api) -> None:
+        base = {
+            "node": "pve1",
+            "ostemplate": "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst",
+            "storage": "local-lvm",
+            "rootfs": 8,
+            "memory": 512,
+            "cores": 1,
+        }
+        payload = {
+            "batch_id": "batch-lxc-1",
+            "items": [
+                {**base, "name": "batch-ct-1"},
+                {**base, "name": "batch-ct-2"},
+            ],
+        }
+        resp = api.post("/api/lxc/batch", json=payload, headers=auth_headers(api))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 2
+        assert body["ok"] == 2
+        assert [item["vmid"] for item in body["results"]] == [105, 106]
+        assert all(item["type"] == "lxc" for item in body["results"])
+        assert all(item["task"].startswith("UPID:pve1:") for item in body["results"])
+
     def test_create_vm_validates_name(self, api) -> None:
         resp = api.post(
             "/api/vms",
@@ -1719,6 +1795,38 @@ class TestVmQuota:
         assert data["limited"] is False
         assert data["can_create"] is True
 
+    def test_batch_quota_counts_the_whole_batch(self, api) -> None:
+        """全局台数护栏必须按「已用 + N」判断，不能只看还有没有空位。
+
+        mock 里已用 2 台：上限 4 只剩 2 个空位，本次要 3 台必须整批 403；
+        调到 5 才放行。
+        """
+        operator = self._operator(api, "op-batch-quota")
+        payload = {
+            "items": [
+                {
+                    "node": "pve1",
+                    "name": f"batch-quota-{index}",
+                    "memory": 512,
+                    "cores": 1,
+                    "disks": [
+                        {"storage": "local-lvm", "size": 8, "interface": "scsi0"}
+                    ],
+                    "networks": [],
+                }
+                for index in range(3)
+            ]
+        }
+        self._set_quota(api, 4)
+        denied = api.post("/api/vms/batch", json=payload, headers=operator)
+        assert denied.status_code == 403, denied.text
+        assert "本次需要 3 台" in denied.json()["detail"]
+
+        self._set_quota(api, 5)
+        allowed = api.post("/api/vms/batch", json=payload, headers=operator)
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["ok"] == 3
+
     def test_operator_sees_cannot_create_at_zero(self, api) -> None:
         """前端靠 can_create 提前禁用「创建」按钮。"""
         self._set_quota(api, 0)
@@ -1726,6 +1834,53 @@ class TestVmQuota:
         data = api.get("/api/vms/quota", headers=operator).json()
         assert data["can_create"] is False
         assert data["remaining"] == 0
+
+    def test_operator_reads_its_own_scope_not_the_cluster(self, api) -> None:
+        """BUG-014：普通用户的额度读数只描述**自己名下**，且与 /quota/me 一致。
+
+        改前 /vms/quota 返回全集群「已用 17」，既把一个只能建 4 台的人误导成
+        「还剩 13 台」，又泄露了集群规模。这里让 op-scope 只拥有 1 台（全局另有
+        一台模板 + 一台别人的机器），个人额度 1 台 —— 三个数字必须都指向他本人。
+        """
+        operator = self._operator(api, "op-scope")
+        admin = auth_headers(api)
+        assert (
+            api.put(
+                "/api/vms/pve1/100/owner",
+                json={"username": "op-scope"},
+                headers=admin,
+            ).status_code
+            == 200
+        )
+        assert (
+            api.put(
+                "/api/users/op-scope/quota",
+                json={"quota": {"vm": {"count": 1}}},
+                headers=admin,
+            ).status_code
+            == 200
+        )
+
+        data = api.get("/api/vms/quota", headers=operator).json()
+        assert data["scope"] == "user"
+        assert data["quota"] == 1
+        assert data["used"] == 1  # 自己名下 1 台；不是全集群的 2 台
+        assert data["remaining"] == 0
+        assert data["can_create"] is False
+        # 全局护栏的数字不下发给普通用户（避免泄露集群规模）
+        assert data["global"] is None
+        assert data["source"] == "user"
+
+        # 与「我的额度」同一口径：两处都必须是 1 台已用 / 1 台上限
+        mine = api.get("/api/quota/me", headers=operator).json()
+        assert mine["groups"]["vm"]["limits"]["count"] == 1
+        assert mine["groups"]["vm"]["usage"]["count"] == 1
+
+        # 管理员仍是全局视角（设置页要用它回显「全平台已用」）
+        admin_data = api.get("/api/vms/quota", headers=admin).json()
+        assert admin_data["scope"] == "global"
+        assert admin_data["used"] == 2  # VM 100 + 模板 9000
+        assert admin_data["global"]["used"] == 2
 
 
 # ------------------------------------------------------------------- RBAC
@@ -1814,6 +1969,24 @@ class TestRbac:
             headers=ops,
         )
         assert resp.status_code == 403
+
+    def test_operator_cannot_read_connection_config(self, api) -> None:
+        """BUG-012：连接配置的**读**与写必须同一档权限。
+
+        即使不回传密钥明文，这份读数里仍有内网地址、root 令牌标识、控制台账号、
+        是否关闭证书校验与 CA 全文 —— 普通用户读到它就等于拿到一张内网拓扑图。
+        """
+        ops = self._make_user(api, "o-read", "operator")
+        assert api.get("/api/config/connection", headers=ops).status_code == 403
+
+        # 裁剪版连接列表仍然可用：普通用户要认得出「节点属于哪台 PVE」
+        listed = api.get("/api/connections", headers=ops)
+        assert listed.status_code == 200
+        for item in listed.json():
+            assert "token_id" not in item
+            assert "token_secret_set" not in item
+            assert "console_user" not in item
+            assert "ca_cert" not in item
 
     def test_viewer_cannot_open_console(self, api) -> None:
         viewer = self._make_user(api, "v4", "viewer")

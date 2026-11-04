@@ -18,8 +18,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main, pvecache
+from app.config import settings
 
 from test_api_routes import api, auth_headers  # noqa: E402,F401  fixture 复用
+
+
+@pytest.fixture(autouse=True)
+def _debug_metrics_headers(monkeypatch):
+    """这一组用例断言的就是 DEBUG 下的内部计数头（BUG-004 之后默认不下发）。"""
+    monkeypatch.setattr(settings, "debug", True)
 
 
 # ------------------------------------------------------------------ 埋点本身

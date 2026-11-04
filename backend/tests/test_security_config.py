@@ -237,7 +237,10 @@ class TestHttpsEnforcement:
         sent = _call_middleware(_http_scope(scheme="https"))
         assert sent[0]["status"] == 200
         headers = dict(sent[0]["headers"])
-        assert headers[b"strict-transport-security"] == b"max-age=31536000"
+        # includeSubDomains 必须带上：只锁 apex、不锁子域，等于留一条降级旁路
+        assert headers[b"strict-transport-security"] == (
+            b"max-age=31536000; includeSubDomains"
+        )
 
     def test_loopback_health_check_exempt(self, https_on) -> None:
         for peer in ("127.0.0.1", "::1"):

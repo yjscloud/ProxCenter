@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from .. import (
+    batchcreate,
     bulk,
     defaults,
     guest_created,
@@ -59,6 +60,7 @@ from ..schemas import (
     SnapshotCreate,
     VmAddDisk,
     VmAddNetwork,
+    VmBatchCreateRequest,
     VmConfigUpdate,
     VmCreateRequest,
     VmOwnerIn,
@@ -1008,6 +1010,21 @@ async def create_vm(
         else None,
     )
 
+    return await _create_vm_core(payload, request, user, client)
+
+
+async def _create_vm_core(
+    payload: VmCreateRequest,
+    request: Request,
+    user: Dict[str, Any],
+    client: Any,
+) -> Dict[str, Any]:
+    """单台创建主体（不含范围 / 额度预检）。
+
+    批量入口先做一次总量预检，再逐台调用这里；单台入口在两个预检之后调用这里。
+    归属、审计、通知、创建时间、克隆覆盖全部留在这条路径上，避免批量版本成为
+    第二套实现而慢慢长歪。
+    """
     # --- 未单独指定 DNS 时套用面板默认 DNS -------------------------------
     # 模板机多为 DHCP，客户机的 NetworkManager 常被路由器 RA 下发的 DNS 带跑；
     # 局域网是"假 IPv6"时那组 DNS 不可达，虚拟机就会完全解析不了域名。
@@ -1146,6 +1163,66 @@ async def create_vm(
         "post_steps": post_steps,
         "template": payload.template_mode,
     }
+
+
+@router.post("/vms/batch")
+async def create_vms_batch(
+    payload: VmBatchCreateRequest,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("vm.create")),
+) -> Dict[str, Any]:
+    """一次下发多台虚拟机（逐台结果，单台失败不整批报错）。
+
+    只做三件单台没有的事：全局限额按 N 台预检、一次分好 N 个 VMID、逐台调用
+    ``_create_vm_core`` 并把成功/失败摊平成 ``results[]``。批量结果不落库，
+    前端用每台的 ``task``（UPID）继续轮询进度（方案 A）。
+    """
+    username = str(user.get("username") or "")
+    batch_id = payload.batch_id or batchcreate.new_batch_id()
+    cached = batchcreate.cached_batch(username, batch_id)
+    if cached is not None:
+        return cached
+
+    client = get_client()
+    connection_id = _op_connection()
+    security.ensure_region_allowed(user, connection_id)
+    for item in payload.items:
+        await security.ensure_node_allowed(user, connection_id, item.node)
+        if item.clone_from and item.clone_from.node:
+            await security.ensure_node_allowed(
+                user, connection_id, item.clone_from.node
+            )
+
+    # 全局限额按「已用 + N」判断；资源额度把 N 台规格求和后只扫一次 PVE。
+    await quota.enforce_for_create(user, request, "vm", count=len(payload.items))
+    specs = [
+        {
+            "cores": item.cores * item.sockets,
+            "memory_mb": item.memory,
+            "disk_gb": sum(disk.size for disk in item.disks) or None,
+        }
+        for item in payload.items
+    ]
+    sources = [
+        (item.clone_from.node, item.clone_from.vmid) if item.clone_from else None
+        for item in payload.items
+    ]
+    await quota.enforce_batch_create(user, request, "vm", specs, sources)
+
+    try:
+        await batchcreate.allocate_vmids(client, payload.items)
+    except ProxmoxError as exc:
+        _raise(exc)
+
+    result = await batchcreate.run_batch(
+        batch_id=batch_id,
+        kind="vm",
+        items=payload.items,
+        create_one=lambda item: _create_vm_core(item, request, user, client),
+        stop_on_error=payload.stop_on_error,
+    )
+    batchcreate.remember_batch(username, batch_id, result)
+    return result
 
 
 def _audit_detail(fields: Dict[str, Any]) -> str:

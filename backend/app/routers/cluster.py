@@ -312,9 +312,13 @@ async def list_nodes(
     failure: Optional[ProxmoxError] = None
     # SSL 指纹是连接凭据的一部分，只给管理员（安全审计 L-1）。它对 operator
     # 侧的任何一个界面都不参与展示，却是「指纹有没有被换过 / 是不是同一个
-    # 集群」的现成侦察素材。容量与 uptime 保留 —— operator 需要据此判断
-    # 自己机器所在宿主机是否吃紧，属于「只看自己机器」的必要上下文。
+    # 集群」的现成侦察素材。
     is_admin = security.visible_owner(user) is None
+    # 节点监控读数（CPU / 内存 / 磁盘 / uptime）与 /nodes/{node}/status 同权限：
+    # 后者要 node.view，前者不能因为「建机向导要选宿主机」就顺带泄露。只有
+    # vm.create / ct.create 的账号仍然拿得到节点名与在线状态（选机器够用），
+    # 但容量与负载字段不下发 —— 列表与详情从此口径一致（BUG-017）。
+    can_view_metrics = security.has_user_permission(user, "node.view")
 
     # 每条连接一次 nodes()，并发拉：串行时 C 条连接就是 C 个 RTT，而节点列表在
     # 建机向导、总览、下拉框里都要用，是最常见的首屏请求之一。
@@ -343,14 +347,20 @@ async def list_nodes(
             {
                 "node": n.get("node"),
                 "status": n.get("status", "unknown"),
-                "cpu": n.get("cpu"),
-                "maxcpu": n.get("maxcpu"),
-                "mem": n.get("mem"),
-                "maxmem": n.get("maxmem"),
-                "disk": n.get("disk"),
-                "maxdisk": n.get("maxdisk"),
-                "uptime": n.get("uptime"),
                 "level": n.get("level", ""),
+                **(
+                    {
+                        "cpu": n.get("cpu"),
+                        "maxcpu": n.get("maxcpu"),
+                        "mem": n.get("mem"),
+                        "maxmem": n.get("maxmem"),
+                        "disk": n.get("disk"),
+                        "maxdisk": n.get("maxdisk"),
+                        "uptime": n.get("uptime"),
+                    }
+                    if can_view_metrics
+                    else {}
+                ),
                 **(
                     {"ssl_fingerprint": n.get("ssl_fingerprint")} if is_admin else {}
                 ),

@@ -4,8 +4,8 @@
 「全局限流」共用一张 ``rate_limits`` 表：
 
 * ``bucket``         计数桶，形如 ``login:user:alice`` / ``api-auth:ip:1.2.3.4``
-* ``window_start``   当前固定窗口的起点（unix 秒）
-* ``count``          窗口内计数
+* ``window_start``   当前固定窗口的起点（unix 秒）；令牌桶里记上次补充时间
+* ``hits``           窗口内计数；令牌桶里记放大 1000 倍的剩余令牌
 * ``blocked_until``  锁定截止时间，0 表示未锁定
 
 计数用**一条 UPSERT** 完成（MySQL 的 ``ON DUPLICATE KEY UPDATE`` 是原子的），
@@ -180,6 +180,70 @@ async def allow(bucket: str, limit: int, window_seconds: int = 60) -> Tuple[bool
     window_start = float(row["window_start"] or now)
     retry_after = max(1, int(window_start + window_seconds - now))
     return count <= limit, retry_after
+
+
+async def allow_token(
+    bucket: str, capacity: int, per_minute: int, now: float | None = None
+) -> Tuple[bool, int]:
+    """令牌桶限流：容量 ``capacity``，每分钟补充 ``per_minute`` 个令牌。
+
+    与 :func:`allow` 的固定窗口不同，令牌桶不会在窗口边界「攒满再放」：
+    容量 6 的桶最多允许 6 次瞬时突发，之后按 6/分钟 匀速恢复。验证码签发
+    要绘图 / 出题，适合这种既能容忍登录页正常换图、又不会被脚本连刷打满的
+    形状（BUG-002）。
+
+    状态仍落 ``rate_limits`` 表（重启不清零、多进程一致）：``window_start``
+    记上次补充时间，``hits`` 记**放大了 1000 倍的令牌数**。``SELECT ... FOR
+    UPDATE`` 把同一 IP 的并发请求串行化，避免两个进程同时看到「还有一个
+    令牌」而都放行。
+
+    时钟回拨 / 行被手工改坏时按「桶满」处理，不能把用户永久卡死。
+    """
+    scale = 1000
+    safe_capacity = max(1, int(capacity))
+    refill_per_second = max(0.0, float(per_minute)) / 60.0
+    capacity_units = safe_capacity * scale
+    moment = _now() if now is None else float(now)
+    tokens = capacity_units
+    try:
+        async with database.connect() as db:
+            await db.execute(
+                "INSERT INTO rate_limits"
+                " (bucket, window_start, hits, blocked_until) VALUES (?, ?, ?, 0)"
+                " ON DUPLICATE KEY UPDATE bucket = bucket",
+                (bucket, moment, capacity_units),
+            )
+            cursor = await db.execute(
+                "SELECT window_start, hits FROM rate_limits WHERE bucket = ? FOR UPDATE",
+                (bucket,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                last = float(row["window_start"] or moment)
+                stored = max(0, int(row["hits"] or 0))
+                elapsed = max(0.0, moment - last)
+                tokens = min(
+                    capacity_units,
+                    stored + int(elapsed * refill_per_second * scale),
+                )
+            allowed = tokens >= scale
+            if allowed:
+                tokens -= scale
+            await db.execute(
+                "UPDATE rate_limits SET window_start = ?, hits = ?, blocked_until = 0"
+                " WHERE bucket = ?",
+                (moment, tokens, bucket),
+            )
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 - 数据库故障时放行，见模块说明
+        logger.warning("令牌桶限流不可用（放行）：%s", exc)
+        return True, 0
+
+    if allowed:
+        return True, 0
+    missing = max(0, scale - tokens)
+    wait = missing / max(1e-9, refill_per_second * scale)
+    return False, max(1, int(wait) + (1 if wait % 1 else 0))
 
 
 async def cleanup(days: int = 7) -> None:

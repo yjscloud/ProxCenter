@@ -32,6 +32,33 @@ logger = logging.getLogger(__name__)
 
 SETTING_KEY = "feishu_bot"
 OPEN_API = "https://open.feishu.cn/open-apis"
+# 签名时间戳允许的偏差：超过 5 分钟视为重放。飞书回调正常在秒级到达，
+# 留足时钟漂移余量即可。
+SIGNATURE_MAX_SKEW = 300
+# 事件去重窗口（秒）：飞书超时会重试同一事件，重复投递不能再执行一次指令。
+_REPLAY_TTL = 600
+_seen_events: Dict[str, float] = {}
+
+
+def is_duplicate_event(key: str) -> bool:
+    """同一事件是否已经处理过（进程内 TTL 去重）。
+
+    飞书在 3 秒内没收到响应就会重试，而回调里可能包含关机 / 创建这类写操作。
+    用 ``header.event_id`` 去重；没有 event_id 时调用方退化为「签名 + nonce」
+    或请求体哈希，同样能挡住原样重放。多进程部署下每个进程各一份，最坏情况
+    是一次重试落到另一个 worker —— 与原先完全不去重相比仍是净收益。
+    """
+    if not key:
+        return False
+    moment = time.time()
+    if len(_seen_events) > 4096:
+        for old, deadline in list(_seen_events.items()):
+            if deadline <= moment:
+                _seen_events.pop(old, None)
+    if _seen_events.get(key, 0.0) > moment:
+        return True
+    _seen_events[key] = moment + _REPLAY_TTL
+    return False
 
 DEFAULT_BOT: Dict[str, Any] = {
     "enabled": False,
@@ -110,12 +137,27 @@ async def save_config(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 # --------------------------------------------------------------- 校验与鉴权
 def verify_signature(headers: Dict[str, str], body: bytes, cfg: Dict[str, Any]) -> Tuple[bool, str]:
-    """校验飞书事件签名（配置了 Encrypt Key 时飞书才会带签名）。"""
+    """校验飞书事件签名与时间戳（配置了 Encrypt Key 时飞书才会带签名）。
+
+    配置了 Encrypt Key 就必须带签名与时间戳：原先「没有签名就放行」等于把
+    签名校验做成可选项，攻击者只要省掉这个头就绕过去了。时间戳再限一个
+    5 分钟窗口，超过即视为重放（BUG-011）。
+    """
     encrypt_key = str(cfg.get("encrypt_key") or "")
-    signature = str(headers.get("x-lark-signature") or "")
-    if not encrypt_key or not signature:
+    if not encrypt_key:
         return True, ""
+    signature = str(headers.get("x-lark-signature") or "")
+    if not signature:
+        return False, "缺少飞书事件签名"
     timestamp = str(headers.get("x-lark-request-timestamp") or "")
+    if not timestamp:
+        return False, "缺少飞书事件时间戳"
+    try:
+        stamp = float(timestamp)
+    except ValueError:
+        return False, "飞书事件时间戳不合法"
+    if abs(time.time() - stamp) > SIGNATURE_MAX_SKEW:
+        return False, "飞书事件已过期（可能是重放）"
     nonce = str(headers.get("x-lark-request-nonce") or "")
     raw = (timestamp + nonce + encrypt_key).encode("utf-8") + body
     expected = hashlib.sha256(raw).hexdigest()
@@ -125,12 +167,19 @@ def verify_signature(headers: Dict[str, str], body: bytes, cfg: Dict[str, Any]) 
 
 
 def check_token(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Tuple[bool, str]:
+    """Verification Token 校验。
+
+    配置了 token 时**必须**在事件里带上且一致：原先 ``got and ...`` 的写法
+    让「完全不带 token」直接通过，等于没配。
+    """
     token = str(cfg.get("verification_token") or "")
     if not token:
         return True, ""
     header = payload.get("header") or {}
     got = str(payload.get("token") or header.get("token") or "")
-    if got and not hmac.compare_digest(got, token):
+    if not got:
+        return False, "事件缺少 Verification Token"
+    if not hmac.compare_digest(got, token):
         return False, "Verification Token 不匹配"
     return True, ""
 

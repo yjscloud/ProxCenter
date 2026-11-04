@@ -122,6 +122,8 @@ import type {
   InspectionStreamEvent,
   InspectionTrend,
   BaselineReport,
+  BatchCreateRequest,
+  BatchCreateResponse,
   BulkRequest,
   BulkResponse,
   PortDisposition,
@@ -323,7 +325,8 @@ export const authApi = {
   myPermissions: () => get<MyPermissions>('/auth/my-permissions'),
 
   /* ---- 已登录设备（服务端会话）---- */
-  sessions: () => get<{ sessions: AuthSession[] }>('/auth/sessions'),
+  sessions: () =>
+    get<{ sessions: AuthSession[]; limit: number }>('/auth/sessions'),
   /** 把某一台设备踢下线（只允许操作自己的会话） */
   revokeSession: (id: string) =>
     del<{ ok: boolean; message: string }>(`/auth/sessions/${id}`),
@@ -452,7 +455,10 @@ export const configApi = {
   getUiPrefs: () => get<UiPrefs>('/config/ui'),
   saveUiPrefs: (prefs: UiPrefs) => put<UiPrefs>('/config/ui', prefs),
   /**
-   * 虚拟机下发总配额（全局容量上限）。
+   * 虚拟机下发总配额。
+   *
+   * 读数的口径取决于调用者：能管理设置的人（含管理员）拿到的是**全平台**护栏，
+   * 普通用户拿到的是**自己名下**那一份（见 `VmQuotaInfo.scope`）。
    * `quota` 传 null 表示「不限制」；传 0 表示普通用户完全不能下发。
    */
   getVmQuota: () => get<VmQuotaInfo>('/config/vm-quota'),
@@ -797,6 +803,12 @@ export const vmsApi = {
     }),
   create: (body: VmCreateRequest, connectionId?: string) =>
     post<VmCreateResponse>('/vms', body, scoped(connectionId)),
+  /** 一次下发多台（逐台结果；每台的 task 由前端继续轮询） */
+  createBatch: (
+    body: BatchCreateRequest<VmCreateRequest>,
+    connectionId?: string,
+  ) =>
+    post<BatchCreateResponse>('/vms/batch', body, scoped(connectionId)),
   /** 下发配额读数：还能建几台（创建向导用它把数量摆在明面上） */
   quota: () => get<VmQuotaInfo>('/vms/quota'),
   /**
@@ -1024,6 +1036,12 @@ export const lxcApi = {
 
   create: (body: LxcCreateRequest, connectionId?: string) =>
     post<LxcCreateResponse>('/lxc', body, scoped(connectionId)),
+  /** 一次下发多台容器（逐台结果；每台的 task 由前端继续轮询） */
+  createBatch: (
+    body: BatchCreateRequest<LxcCreateRequest>,
+    connectionId?: string,
+  ) =>
+    post<BatchCreateResponse>('/lxc/batch', body, scoped(connectionId)),
 
   detail: (node: string, vmid: number) => get<LxcDetail>(`/lxc/${node}/${vmid}`),
 

@@ -1,6 +1,7 @@
 """Authentication endpoints."""
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, Optional
 
@@ -38,6 +39,8 @@ from ..schemas import (
     TotpDisableIn,
     UserOut,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -117,6 +120,22 @@ async def _issue_session(
         ip=security.client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
     )
+    # 并发会话上限：超过就踢掉最旧的那几台（当前这枚一定在 keep 内）。
+    # 不这样做的话，知道口令的人可以无限累积有效期 7 天的会话，而用户
+    # 只有在「登录设备」里一条条手动踢（BUG-019）。
+    try:
+        trimmed = await store.trim_refresh_tokens(
+            user["username"], int(settings.session_max_per_user)
+        )
+    except Exception:  # noqa: BLE001 - 清理失败不能把登录一起弄挂
+        logger.warning("修剪旧会话失败，保留本次登录", exc_info=True)
+        trimmed = 0
+    if trimmed:
+        logger.info(
+            "账号 %s 的并发会话超过上限，已撤销最旧的 %d 个",
+            user["username"],
+            trimmed,
+        )
     access = security.create_access_token(
         user["username"], user["role"], version, session_id=jti
     )
@@ -187,13 +206,36 @@ async def _notify_admins_registration(
 
 
 @router.get("/captcha")
-async def get_captcha() -> Dict[str, Any]:
+async def get_captcha(request: Request) -> Dict[str, Any]:
     """登录页验证。三种方式：关闭 / 图形验证码 / 拖动滑块。
 
     ``mode`` 一并返回，前端据此决定渲染输入框、滑块还是什么都不渲染 ——
     拿到挑战再回头问一次「这是什么模式」会让登录页多一次往返。
     关闭时只有 ``{"required": false, "mode": "off"}``。
+
+    按来源 IP 令牌桶限流（BUG-002）：签发一张图要跑一次绘图/随机题，滑块也要
+    生成题目；接口又必须匿名开放，不设上限就是一条现成的 CPU 放大链。桶容量
+    与恢复速度都取 ``CAPTCHA_RATE_LIMIT_PER_MINUTE``（默认 6）：允许登录页正常
+    换图，脚本连刷第 7 次开始就 429，且窗口边界不会攒满再放。计数落统一限流表
+    （重启不清零、多进程一致），且在读取模式**之前**，关闭验证码时也照样限。
     """
+    ip = security.client_ip(request) or "unknown"
+    limit = max(1, int(settings.captcha_rate_limit_per_minute))
+    allowed, retry_after = await throttle.allow_token(
+        f"auth:captcha:ip:{ip}",
+        capacity=limit,
+        per_minute=limit,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=i18n.pick(
+                "验证码请求过于频繁，请稍后再试",
+                "Too many captcha requests. Please try again later.",
+            ),
+            headers={"Retry-After": str(max(1, retry_after))},
+        )
+
     mode = await captcha.get_mode()
     if mode == captcha.MODE_OFF:
         return {"required": False, "mode": mode}
@@ -863,7 +905,10 @@ async def list_sessions(
                 "current": r.get("jti") == current,
             }
             for r in rows
-        ]
+        ],
+        # 上限一并返回：个人中心的「登录设备」据此说明「最多保留几台」，
+        # 并引导用户怀疑泄露时用一键下线（BUG-019）。
+        "limit": max(0, int(settings.session_max_per_user)),
     }
 
 

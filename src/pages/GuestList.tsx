@@ -675,8 +675,9 @@ export function GuestListPage({ kind }: { kind: GuestKind }) {
   const quota = quotaQuery.data;
 
   /* ---- 按人分配的额度（资源池）----
-     与上面那份**全局**台数上限是两层：那份是整个集群的护栏，这份是「我名下还能用
-     多少」。两层取最严：任一层用尽都不能再建。 */
+     与上面那份台数读数是两层：上面那份对普通用户只回「自己名下」的口径（全局
+     护栏的数字不下发），这份是资源池里的「我名下还能用多少」；后端 can_create
+     已经把两层取最严，任一层用尽都不能再建。 */
   const myQuotaQuery = useQuery({
     queryKey: ['quota', 'me'],
     queryFn: quotaApi.mine,

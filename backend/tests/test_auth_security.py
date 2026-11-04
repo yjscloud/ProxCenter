@@ -200,6 +200,22 @@ class TestSessionsAndLogout:
         assert api.get("/api/auth/me", headers=_bearer(first)).status_code == 401
         assert api.get("/api/auth/me", headers=_bearer(second)).status_code == 200
 
+    def test_session_limit_drops_the_oldest(self, api, monkeypatch) -> None:
+        """BUG-019：同一账号的活跃会话有上限，新登录踢最旧的一台。
+
+        13 次登录不该留下 13 个有效期 7 天的会话。这里把上限压到 3，连登 5 次，
+        最早的 2 枚 access token 必须立刻失效，列表最多 3 条。
+        """
+        monkeypatch.setattr(settings, "session_max_per_user", 3)
+        tokens = [_token(api) for _ in range(5)]
+
+        data = api.get("/api/auth/sessions", headers=_bearer(tokens[-1])).json()
+        assert data["limit"] == 3
+        assert len(data["sessions"]) == 3
+        assert api.get("/api/auth/me", headers=_bearer(tokens[0])).status_code == 401
+        assert api.get("/api/auth/me", headers=_bearer(tokens[1])).status_code == 401
+        assert api.get("/api/auth/me", headers=_bearer(tokens[-1])).status_code == 200
+
     def test_change_password_kicks_other_devices(self, api) -> None:
         other = _token(api)  # 另一台设备
         assert api.get("/api/auth/me", headers=_bearer(other)).status_code == 200

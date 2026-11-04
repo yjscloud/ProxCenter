@@ -205,6 +205,9 @@ class RecipientBook:
         self._reachable: Optional[set] = None
         self._supervisors: Dict[str, bool] = {}
         self._connection: Optional[str] = None
+        # 账号表读取失败标记：失败时不能把每个规则主人都当成「账号已删除」，
+        # 那条回落分支会把普通用户升级成「全局规则」的评估者（见 is_supervisor）。
+        self._users_unavailable = False
 
     async def _guest_owners(self) -> Dict[str, str]:
         if self._guests is None:
@@ -250,6 +253,12 @@ class RecipientBook:
             users = await store.list_users()
         except Exception:  # noqa: BLE001
             users = []
+            self._users_unavailable = True
+            logger.warning(
+                "读取账号表失败：本轮普通用户的规则按「只看自己名下」评估，"
+                "不会以全局规则的身份评估别人的机器",
+                exc_info=True,
+            )
         self._users = {str(item.get("username") or "") for item in users}
         self._roles = {
             str(item.get("username") or ""): str(item.get("role") or "") for item in users
@@ -291,9 +300,17 @@ class RecipientBook:
             await self._load_users()
             role = (self._roles or {}).get(name)
             if role is None:
-                # 账号已不存在（规则的主人被删了）：保持旧口径 —— 按机器归属投递，
-                # 不能因为查不到角色就把这批规则改成「发给自己」而没人收到。
-                self._supervisors[name] = True
+                if self._users_unavailable:
+                    # 读不到账号表 ≠ 账号被删了。此时「按机器归属投递」会让一个
+                    # 普通用户的 ``*`` 规则重新覆盖全平台机器，告警里出现别人的
+                    # 虚拟机名（BUG-013 的成因之一）。失败方向必须是收紧：
+                    # 只按规则归属投递给自己，宁可少报也不越权。
+                    self._supervisors[name] = False
+                else:
+                    # 账号确实已不存在（规则的主人被删了）：保持旧口径 —— 按机器
+                    # 归属投递，不能因为查不到角色就把这批规则改成「发给自己」
+                    # 而没人收到。
+                    self._supervisors[name] = True
             else:
                 self._supervisors[name] = role in self.SUPERVISOR_ROLES
         return self._supervisors[name]

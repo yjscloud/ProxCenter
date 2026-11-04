@@ -221,11 +221,16 @@ export function Workbench() {
           title: exhausted
             ? t('wb.todo.quotaExhausted')
             : t('wb.todo.quotaLow', { n: quota.remaining }),
-          detail: t('wb.todo.quotaDetail', {
-            used: quota.used,
-            quota: quota.quota,
-            hint: exhausted ? '' : t('wb.todo.quotaAdjust'),
-          }),
+          /* 普通用户可能只受全局限额约束（个人额度没配），此时后端不下发
+             上限数字（quota 为 null）—— 别拼出「上限 null」，直接给出路。 */
+          detail:
+            quota.quota == null
+              ? t('quota.askAdmin')
+              : t('wb.todo.quotaDetail', {
+                  used: quota.used,
+                  quota: quota.quota,
+                  hint: exhausted ? '' : t('wb.todo.quotaAdjust'),
+                }),
           to: isAdmin ? '/settings' : '/vms',
           icon: <IconVm size={16} />,
         });

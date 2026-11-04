@@ -153,15 +153,16 @@ class TestAiPlaybooks:
 
 # ------------------------------------------------------------------ 角色目录
 class TestRoleCatalog:
-    def test_permission_matrix_is_management_only(self, api) -> None:
+    def test_role_catalog_is_management_only(self, api) -> None:
+        """BUG-018：角色模型本身就是管理面信息，普通账号连目录都不该拿到。
+
+        原先只裁掉 permissions，仍回 admin / operator / region_admin / viewer
+        四个角色名与说明 —— 足够让攻击者判断该拿哪个角色、收益多大。自己的
+        角色与生效权限在 /api/auth/my-permissions 里已有只读视图。
+        """
         admin = auth_headers(api)
         roles = api.get("/api/users/roles", headers=admin).json()
         assert roles and all("permissions" in item for item in roles)
 
         user = user_with_permissions(api, ["vm.view"], "role-viewer")
-        roles = api.get("/api/users/roles", headers=user).json()
-        assert roles
-        for item in roles:
-            # 名字与说明还在（下拉 / 展示要用），权限矩阵不在
-            assert item["name"]
-            assert "permissions" not in item
+        assert api.get("/api/users/roles", headers=user).status_code == 403

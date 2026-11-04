@@ -20,9 +20,8 @@
    ========================================================================== */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useAuth } from '../hooks/useAuth';
 import { useT } from '../i18n';
-import type { QuotaGroupReport, VmQuotaInfo } from '../api/types';
+import type { GlobalQuotaInfo, QuotaGroupReport, VmQuotaInfo } from '../api/types';
 
 export interface QuotaChipProps {
   /** 平台台数上限的读数（``GET /vms/quota`` 或 ``/lxc/quota``）；还没读到就是 undefined */
@@ -81,8 +80,12 @@ const DIMENSIONS: Array<{
 
 export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
   const t = useT();
-  const { isAdmin } = useAuth();
   const [open, setOpen] = useState(false);
+
+  /* 平台那层只对「能管理面板设置」的人展示明细（后端 scope=global 时才有
+     ``global``）。普通用户拿到的是自己名下的口径，平台数字根本不下发 —— 这里
+     不再用「是不是 admin」去猜，避免自定义 settings.manage 角色反而看不到。 */
+  const platform: GlobalQuotaInfo | null = quota?.global ?? null;
   const wrapRef = useRef<HTMLSpanElement>(null);
 
   /* 点外面 / 滚动 / 改窗口大小都收起：浮层贴着胶囊绝对定位，滚动后位置会歪
@@ -155,7 +158,9 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
     return out;
   }, [mine, t, unit]);
 
-  const platformRemaining = quota?.limited ? (asNumber(quota.remaining) ?? 0) : null;
+  /* 平台剩余：只有拿得到 ``global`` 的人才有这个数（普通用户的顶层是个人口径，
+     不能再拿来算「平台还剩几台」，否则又把全局数字绕回来了）。 */
+  const platformRemaining = platform?.limited ? (asNumber(platform.remaining) ?? 0) : null;
   const remaining = tighter(platformRemaining, asNumber(mine?.remaining?.count));
 
   /* 只要有一项（含平台台数）见底就是「用尽」—— 用户关心的是还能不能建，而不是
@@ -202,12 +207,16 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
             <span>{t('quota.canCreate')}</span>
             <strong>
               {remaining === null
-                ? t('quota.unlimitedShort')
+                ? /* 个人额度没配、全局护栏又刚好满了时 remaining 是 null，
+                     但 can_create 已经是 false —— 不能在这里说「不限」 */
+                  exhausted
+                  ? t('quota.leftOfTotal', { n: 0, unit })
+                  : t('quota.unlimitedShort')
                 : t('quota.leftOfTotal', { n: Math.max(0, remaining), unit })}
             </strong>
           </div>
 
-          {isAdmin ? (
+          {platform ? (
             <div className="quota-popover-block">
               <div className="quota-popover-block-title">{t('quota.platformLabel')}</div>
               <div className="quota-popover-line">
@@ -217,10 +226,10 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
                 {/* 平台这层只有这一个值，它就是这一行的重点 —— 用「还剩」那格
                     的样式（右对齐 + 加重），而不是当注解用灰色 */}
                 <span className="quota-popover-left">
-                  {quota?.limited
+                  {platform.limited
                     ? t('quota.usedOfTotal', {
-                        used: quota.used,
-                        total: quota.quota ?? 0,
+                        used: platform.used,
+                        total: platform.quota ?? 0,
                         unit,
                       })
                     : t('quota.noLimit')}
@@ -257,7 +266,11 @@ export function QuotaChip({ quota, mine, unit, noun }: QuotaChipProps) {
           <div className="quota-popover-note">{t('quota.usageBasis')}</div>
 
           <div className="quota-popover-foot">
-            {isAdmin ? t('quota.adminWhere') : exhausted ? t('quota.askAdmin') : t('quota.byAdmin')}
+            {platform
+              ? t('quota.adminWhere')
+              : exhausted
+                ? t('quota.askAdmin')
+                : t('quota.byAdmin')}
           </div>
         </div>
       ) : null}

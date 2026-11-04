@@ -23,9 +23,10 @@
      里自动挑一个空闲地址（可改）。池子为空时退回 DHCP，而不是让用户卡在
      一个选不出东西的下拉框前。
 
-   刻意**不做**新的后端下单接口：规格在这里被翻译成现有的 POST /api/vms 与
-   POST /api/lxc 入参，配额判定、归属记录、创建时间、审计这些都已经在那条
-   链路上跑通了，另起一条只会让两边的行为慢慢分叉。
+   下单走两条路，但只有一层业务逻辑：数量 1 仍发 POST /api/vms / /api/lxc；
+   数量 > 1 发 POST /api/vms/batch / /api/lxc/batch。后端批量入口只在外面加
+   「总量配额预检 + VMID 分配 + 逐台结果」，每台仍调用与单台相同的创建主体，
+   归属、创建时间、审计、通知不会分成两套实现。
 
    客户机类型（虚拟机 / 容器）由外层向导决定，本组件不再自选 —— 用户点的就是
    「创建虚拟机」或「创建容器」。
@@ -48,6 +49,7 @@ import { invalidateQuota } from '../hooks/quotaCache';
 import { getGlobalScope } from '../api/scope';
 import { checkGuestSpec, remainingSummary, type QuotaViolation } from '../utils/quotaSpec';
 import { Card, CardHeader } from './ui/Card';
+import { Badge } from './ui/Badge';
 import { Button, IconButton } from './ui/Button';
 import {
   Field,
@@ -68,7 +70,12 @@ import { useNodeStorages } from '../hooks/useNodeStorages';
 import { useT, type MessageKey } from '../i18n';
 import { formatBytes } from '../utils/format';
 import { fitsPools } from '../utils/ippool';
-import type { VmCreateRequest } from '../api/types';
+import { BatchCreateProgress } from './BatchCreateProgress';
+import type {
+  BatchCreateResponse,
+  LxcCreateRequest,
+  VmCreateRequest,
+} from '../api/types';
 
 /** 客户机类型：与向导的 kind 对齐（qemu = 虚拟机，lxc = 容器） */
 export type QuickDeployKind = 'qemu' | 'lxc';
@@ -142,6 +149,17 @@ function vlanInvalid(value: string): boolean {
   return Boolean(value.trim()) && parseVlan(value) === undefined;
 }
 
+/** 批量命名的序号从 1 开始；``{i:02}`` 表示至少两位、不足补零 */
+function expandName(pattern: string, base: string, index: number): string {
+  return pattern
+    .replace(/\{name\}/g, base)
+    .replace(/\{i(?::(\d+))?\}/g, (_match, width: string | undefined) => {
+      const digits = Number(width || 0);
+      return digits > 0 ? String(index).padStart(digits, '0') : String(index);
+    })
+    .trim();
+}
+
 export interface QuickDeployFormProps {
   /** 弹窗是否打开：关闭时停掉所有取数，打开时把表单重置为干净状态 */
   open: boolean;
@@ -172,6 +190,11 @@ export function QuickDeployForm({
 
   /* ---- 选择项 ---- */
   const [name, setName] = useState('');
+  /* 批量下发：1 = 保持原来的单台表单与单台接口；>1 才走 /vms/batch。
+     命名模板只在前端展开，后端收到的仍是完整、互不相同的 name。 */
+  const [quantity, setQuantity] = useState(1);
+  const [namePattern, setNamePattern] = useState('{name}-{i:02}');
+  const [batchResult, setBatchResult] = useState<BatchCreateResponse | null>(null);
   const [tags, setTags] = useState('');
   const [specId, setSpecId] = useState('');
   const [targetConn, setTargetConn] = useState('');
@@ -211,6 +234,9 @@ export function QuickDeployForm({
   /** 主网卡：IP 池自动挑地址那套只作用于它 */
   const primaryNic = nics[0];
 
+  /* 批量下发：N 台共用同一份网络配置，静态地址会让它们撞在同一个 IP 上 */
+  const batchMode = quantity > 1;
+
   const updateNic = (index: number, patch: Partial<QuickNic>) => {
     setNics((prev) => prev.map((n, i) => (i === index ? { ...n, ...patch } : n)));
   };
@@ -229,6 +255,9 @@ export function QuickDeployForm({
   useEffect(() => {
     if (!open) return;
     setName('');
+    setQuantity(1);
+    setNamePattern('{name}-{i:02}');
+    setBatchResult(null);
     setTags('');
     setSpecId('');
     setNode('');
@@ -474,6 +503,52 @@ export function QuickDeployForm({
     if (usablePools.length === 0) updateNic(0, { ipMode: 'dhcp' });
   }, [open, primaryNic, poolsQuery.data, usablePools]);
 
+  /* 批量下发时每台拿到的是同一份网络配置。主网卡可以静态，但地址必须由 IP 池
+     按台分配；附加网卡没有第二套池可用，统一走 DHCP —— 否则 N 台会在第二张
+     网卡上撞同一个地址。 */
+  useEffect(() => {
+    if (!open || !batchMode) return;
+    setNics((prev) => {
+      const next = prev.map((nic, index) =>
+        index > 0 && nic.ipMode !== 'dhcp'
+          ? { ...nic, ipMode: 'dhcp' as IpMode }
+          : nic,
+      );
+      return next.some((nic, index) => nic !== prev[index]) ? next : prev;
+    });
+  }, [open, batchMode]);
+
+  /* 批量静态：N 台要 N 个不同地址，默认从所选网段的空闲表里按台序预填前 N 个。
+     用户可以逐台改（池子里没有他要的地址、或想留一段给别的用途），所以真正
+     下发的是「预填 + 覆盖表」，表单里那个 IP 输入框这时不参与下发（见 nicIp）。 */
+  const batchPool =
+    batchMode && primaryNic?.ipMode === 'static'
+      ? (poolsQuery.data?.pools ?? []).find((p) => p.id === primaryNic.poolId)
+      : undefined;
+  const batchIps = batchPool ? batchPool.free.slice(0, quantity) : [];
+
+  /** 逐台手改的地址：只记被改过的那几台，没改的继续用池子预填 */
+  const [batchIpEdits, setBatchIpEdits] = useState<Record<number, string>>({});
+
+  /* 换网段：旧地址多半不属于新网段，整份丢掉重新预填 */
+  useEffect(() => {
+    setBatchIpEdits((prev) => (Object.keys(prev).length ? {} : prev));
+  }, [primaryNic?.poolId]);
+
+  /* 改数量：只保留还在范围内的手改值 —— 3 台减到 2 台不该把前两台的修改
+     一起清掉，加台时新行自动用池子的预填值 */
+  useEffect(() => {
+    setBatchIpEdits((prev) => {
+      const kept = Object.fromEntries(
+        Object.entries(prev).filter(([key]) => Number(key) < quantity),
+      );
+      return Object.keys(kept).length === Object.keys(prev).length ? prev : kept;
+    });
+  }, [quantity]);
+
+  /** 某一台最终用的地址（未 trim，输入框要按用户敲的原样显示） */
+  const batchIpRaw = (index: number) => batchIpEdits[index] ?? batchIps[index] ?? '';
+
   const quota = quotaQuery.data;
 
   /* 按人分配的额度（资源池）：与上面那份全局台数上限是两层。
@@ -593,8 +668,48 @@ export function QuickDeployForm({
      所以那条路不出现存储下拉 —— 摆一个必填框只会让人以为必须选。 */
   const storageNeeded = !isVm || fullClone;
 
+  /* 批量命名的展开结果：数量为 1 时保持原名称，不强迫用户理解模板 */
+  const batchNames = useMemo(() => {
+    const base = name.trim();
+    const count = Math.max(1, Math.floor(Number(quantity) || 1));
+    if (count <= 1) return [base];
+    return Array.from({ length: count }, (_, index) =>
+      expandName(namePattern, base, index + 1),
+    );
+  }, [name, quantity, namePattern]);
+
   const error = useMemo(() => {
     if (!name.trim()) return t('quickDeploy.errName');
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
+      return t('batchCreate.errQuantity');
+    }
+    if (quantity > 1) {
+      if (
+        batchNames.some((item) => !item) ||
+        new Set(batchNames).size !== batchNames.length
+      ) {
+        return t('batchCreate.errPattern');
+      }
+      /* 批量可以静态，但每台必须拿到不同地址：默认由池子预填、用户可逐台改，
+         所以这里校验最终名单 —— 有空位或两台撞同一地址都不放行。 */
+      if (primaryNic?.ipMode === 'static') {
+        if (!primaryNic.poolId) return t('quickDeploy.errBatchPool');
+        const ips = Array.from({ length: quantity }, (_, i) =>
+          batchIpRaw(i).trim(),
+        );
+        const emptyAt = ips.findIndex((ip) => !ip);
+        if (emptyAt >= 0) {
+          return t('quickDeploy.errBatchIpEmpty', { n: emptyAt + 1 });
+        }
+        if (new Set(ips).size !== ips.length) {
+          return t('quickDeploy.errBatchIpDup');
+        }
+      }
+      const remaining = quota?.remaining;
+      if (remaining !== null && remaining !== undefined && quantity > remaining) {
+        return t('batchCreate.errQuota', { n: remaining });
+      }
+    }
     if (!spec) return t('quickDeploy.errSpec');
     if (!node) return t('quickDeploy.errNode');
     if (isVm && !templateRef) return t('quickDeploy.errTemplate');
@@ -616,6 +731,9 @@ export function QuickDeployForm({
     return '';
   }, [
     name,
+    quantity,
+    namePattern,
+    batchNames,
     spec,
     nics,
     node,
@@ -626,6 +744,10 @@ export function QuickDeployForm({
     storage,
     quotaBlocked,
     quota,
+    /* 批量静态的最终名单参与校验：换网段、改数量、手改地址都要重算 */
+    primaryNic,
+    batchIps.length,
+    batchIpEdits,
     t,
   ]);
 
@@ -634,59 +756,149 @@ export function QuickDeployForm({
     setBusy(true);
     try {
       /* 静态时补 /24（云镜像默认掩码），网关留空就交给 DHCP/RA —— 后端对空
-         网关不下发 gw=，与面板其它地方一致 */
-      const nicIp = (nic: QuickNic) =>
-        nic.ipMode === 'static'
-          ? {
-              ip: nic.ip.includes('/') ? nic.ip : `${nic.ip}/24`,
-              gateway: nic.gateway || '',
-            }
-          : { ip: 'dhcp', gateway: '' };
+         网关不下发 gw=，与面板其它地方一致。
+
+         批量时的主网卡不能用表单里那一个地址（N 台会撞车），改成「这台该拿的
+         那个」：池子空闲表里的第 batchIndex 个，网关默认取池子的，用户手填的
+         优先。附加网卡没有第二套池，effect 已把它们固定在 DHCP。 */
+      const nicIp = (nic: QuickNic, nicIndex: number, batchIndex: number) => {
+        if (nic.ipMode !== 'static') return { ip: 'dhcp', gateway: '' };
+        /* 批量的网关固定取池子里那一份：这时网关输入框是收起的，沿用上一次
+           单台填过的值会让整批静默走错网关，而用户看不到、也改不了 */
+        if (batchMode && nicIndex === 0) {
+          const ip = batchIpRaw(batchIndex) || nic.ip;
+          return {
+            ip: ip.includes('/') ? ip : `${ip}/24`,
+            gateway: batchPool?.gateway ?? '',
+          };
+        }
+        return {
+          ip: nic.ip.includes('/') ? nic.ip : `${nic.ip}/24`,
+          gateway: nic.gateway || '',
+        };
+      };
 
       const nicRate = (nic: QuickNic) =>
         nic.rate.trim() ? Number(nic.rate) : undefined;
 
-      if (isVm) {
-        const [tplNode, tplVmid] = templateRef.split('/');
-        const payload: VmCreateRequest = {
-          node,
-          /* 0 = 交给后端取下一个可用 VMID（PVE 的 VMID 空间每台主机各自独立） */
-          vmid: 0,
-          name: name.trim(),
-          memory: spec.memory,
-          cores: spec.cores,
-          sockets: 1,
-          disks: [],
-          networks: nics.map((nic) => ({
+      const [tplNode, tplVmid] = templateRef.split('/');
+
+      const buildVmPayload = (
+        instanceName: string,
+        batchIndex: number,
+      ): VmCreateRequest => ({
+        node,
+        /* 0 = 交给后端取下一个可用 VMID（PVE 的 VMID 空间每台主机各自独立） */
+        vmid: 0,
+        name: instanceName,
+        memory: spec.memory,
+        cores: spec.cores,
+        sockets: 1,
+        disks: [],
+        networks: nics.map((nic) => ({
+          bridge: nic.bridge,
+          model: 'virtio',
+          /* 留空 = 不划 VLAN。克隆后由后端把 net0/net1… 整体重写成
+             bridge=…,tag=…,rate=…（见 vmconfig.format_network_spec） */
+          vlan_tag: parseVlan(nic.vlan) ?? null,
+          rate: nicRate(nic),
+        })),
+        tags: tags || undefined,
+        cloudinit: {
+          enabled: true,
+          user: ciUser || 'root',
+          password: password || undefined,
+          ip_configs: nics.map((nic, nicIndex) => nicIp(nic, nicIndex, batchIndex)),
+        },
+        manage: manageOn,
+        clone_from: {
+          node: tplNode,
+          vmid: Number(tplVmid),
+          /* 克隆方式由「系统镜像」卡里的开关决定：
+             链接克隆（默认）：磁盘留在模板所在存储，秒级完成、不额外占空间；
+             完整克隆：整份复制到所选存储（要带 target_storage），创建慢、
+             多占一份空间，换来的是这台机器与模板彻底脱钩。 */
+          full: fullClone,
+          target_storage: fullClone ? storage : undefined,
+          /* 规格里的磁盘是给新机器用的：模板盘更小时由后端扩容系统盘 */
+          disk_size: spec.disk > 0 ? spec.disk : undefined,
+        },
+      });
+
+      const buildLxcPayload = (
+        instanceName: string,
+        batchIndex: number,
+      ): LxcCreateRequest => ({
+        node,
+        ostemplate: osTemplate,
+        storage,
+        name: instanceName,
+        rootfs: spec.disk,
+        memory: spec.memory,
+        /* 交换分区沿用后端默认量级：容器很少需要单独调它 */
+        swap: 512,
+        cores: spec.cores,
+        unprivileged: true,
+        start: true,
+        tags: tags || undefined,
+        networks: nics.map((nic, nicIndex) => {
+          const addr = nicIp(nic, nicIndex, batchIndex);
+          return {
+            name: `eth${nicIndex}`,
             bridge: nic.bridge,
-            model: 'virtio',
-            /* 留空 = 不划 VLAN。克隆后由后端把 net0/net1… 整体重写成
-               bridge=…,tag=…,rate=…（见 vmconfig.format_network_spec） */
+            ip: addr.ip,
+            gateway:
+              nic.ipMode === 'static' ? addr.gateway || undefined : undefined,
+            firewall: true,
+            /* 容器同样支持 VLAN 标签（后端 LxcNetworkSpec.vlan_tag → tag=） */
             vlan_tag: parseVlan(nic.vlan) ?? null,
             rate: nicRate(nic),
-          })),
-          tags: tags || undefined,
-          cloudinit: {
-            enabled: true,
-            user: ciUser || 'root',
-            password: password || undefined,
-            ip_configs: nics.map(nicIp),
-          },
-          manage: manageOn,
-          clone_from: {
-            node: tplNode,
-            vmid: Number(tplVmid),
-            /* 克隆方式由「系统镜像」卡里的开关决定：
-               链接克隆（默认）：磁盘留在模板所在存储，秒级完成、不额外占空间；
-               完整克隆：整份复制到所选存储（要带 target_storage），创建慢、
-               多占一份空间，换来的是这台机器与模板彻底脱钩。 */
-            full: fullClone,
-            target_storage: fullClone ? storage : undefined,
-            /* 规格里的磁盘是给新机器用的：模板盘更小时由后端扩容系统盘 */
-            disk_size: spec.disk > 0 ? spec.disk : undefined,
-          },
-        };
-        const result = await vmsApi.create(payload, targetConn);
+          };
+        }),
+        setup: {
+          password: password || undefined,
+        },
+      });
+
+      /* 批量：一次请求交给后端做总量预检与 VMID 分配，返回逐台 UPID；
+         表单留在原地，由 BatchCreateProgress 继续轮询每台任务（方案 A）。 */
+      if (quantity > 1) {
+        const batchId =
+          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID().replace(/-/g, '')
+            : `batch${Date.now()}`;
+        const result = isVm
+          ? await vmsApi.createBatch(
+              {
+                items: batchNames.map((item, index) => buildVmPayload(item, index)),
+                batch_id: batchId,
+                stop_on_error: true,
+              },
+              targetConn,
+            )
+          : await lxcApi.createBatch(
+              {
+                items: batchNames.map((item, index) => buildLxcPayload(item, index)),
+                batch_id: batchId,
+                stop_on_error: true,
+              },
+              targetConn,
+            );
+        setBatchResult(result);
+        queryClient.invalidateQueries({ queryKey: [isVm ? 'vms' : 'lxc'] });
+        invalidateQuota(queryClient);
+        toast.success(
+          t('batchCreate.toastAccepted', { n: result.total }),
+          t('batchCreate.toastAcceptedHint'),
+        );
+        return;
+      }
+
+      if (isVm) {
+        const result = await vmsApi.create(
+          buildVmPayload(name.trim(), 0),
+          targetConn,
+        );
         /* 扩容结果如实带出来：「模板盘 20G ≥ 规格 20G」和「已扩到 100G」
            必须让人看到，否则规格是否生效只能靠猜 */
         toast.success(
@@ -703,34 +915,7 @@ export function QuickDeployForm({
         onClose();
       } else {
         const result = await lxcApi.create(
-          {
-            node,
-            ostemplate: osTemplate,
-            storage,
-            name: name.trim(),
-            rootfs: spec.disk,
-            memory: spec.memory,
-            /* 交换分区沿用后端默认量级：容器很少需要单独调它 */
-            swap: 512,
-            cores: spec.cores,
-            unprivileged: true,
-            start: true,
-            tags: tags || undefined,
-            networks: nics.map((nic, index) => ({
-              name: `eth${index}`,
-              bridge: nic.bridge,
-              ip: nic.ipMode === 'static' ? nicIp(nic).ip : 'dhcp',
-              gateway:
-                nic.ipMode === 'static' ? nic.gateway || undefined : undefined,
-              firewall: true,
-              /* 容器同样支持 VLAN 标签（后端 LxcNetworkSpec.vlan_tag → tag=） */
-              vlan_tag: parseVlan(nic.vlan) ?? null,
-              rate: nicRate(nic),
-            })),
-            setup: {
-              password: password || undefined,
-            },
-          },
+          buildLxcPayload(name.trim(), 0),
           targetConn,
         );
         toast.success(
@@ -759,6 +944,21 @@ export function QuickDeployForm({
         disk: t('quickDeploy.summaryDisk', { n: spec.disk }),
       })
     : '';
+
+  /* 批量提交后不再显示表单：保留结果页，让每台的 PVE 任务在这里跑完 */
+  if (batchResult) {
+    const firstVmid = batchResult.results.find((item) => item.ok)?.vmid ?? 0;
+    return (
+      <BatchCreateProgress
+        response={batchResult}
+        onClose={() => {
+          setBatchResult(null);
+          onCreated?.(firstVmid);
+          onClose();
+        }}
+      />
+    );
+  }
 
   return (
     <div className="wizard-body">
@@ -824,7 +1024,9 @@ export function QuickDeployForm({
                 : t('quickDeploy.nameSubtitleLxc')
             }
           />
-          <div className="form-grid-2">
+          {/* 名称 / 数量 / 标签同一行：名称要装得下完整机器名，数量与标签都是
+              短串，按 2:1:1 分列，而不是让数量独占半行、标签掉到下一行 */}
+          <div className="form-grid-3-wide">
             <Input
               label={t('quickDeploy.labelName')}
               required
@@ -837,12 +1039,41 @@ export function QuickDeployForm({
               }
             />
             <Input
+              label={t('batchCreate.quantity')}
+              type="number"
+              min={1}
+              max={50}
+              value={quantity}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                setQuantity(Number.isFinite(next) ? Math.floor(next) : 1);
+              }}
+              hint={t('batchCreate.quantityHint')}
+            />
+            <Input
               label={t('quickDeploy.labelTags')}
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder={t('quickDeploy.tagsPlaceholder')}
             />
           </div>
+          {quantity > 1 ? (
+            <div className="form-grid-2">
+              <Input
+                label={t('batchCreate.pattern')}
+                value={namePattern}
+                onChange={(e) => setNamePattern(e.target.value)}
+                hint={t('batchCreate.patternHint')}
+              />
+            </div>
+          ) : null}
+          {quantity > 1 ? (
+            <div className="fs-sm text-secondary">
+              {t('batchCreate.preview', {
+                names: batchNames.join(', '),
+              })}
+            </div>
+          ) : null}
         </Card>
 
         {/* ---- 2. 资源规格 ---- */}
@@ -891,22 +1122,18 @@ export function QuickDeployForm({
             title={t('quickDeploy.sectionLocation')}
             subtitle={t('quickDeploy.locationSubtitle')}
           />
-          {connectionOptions.length > 0 ? (
-            <div className="form-grid-2">
-              {/* 限宽要包在外层：直接给 Select 传 style 只会缩窄内层输入框，
-                  箭头（相对外层容器定位）会飘到框外 */}
-              <div className="field-compact">
-                <Select
-                  label={t('quickDeploy.labelConn')}
-                  value={targetConn}
-                  onChange={(e) => setTargetConn(e.target.value)}
-                  options={connectionOptions}
-                  hint={t('quickDeploy.connHint')}
-                />
-              </div>
-            </div>
-          ) : null}
-          <div className="field-compact">
+          {/* 「连到哪套 PVE」和「落在哪个节点」是同一个决定的两半，并排一行；
+              只有一套连接时不给节点留半行空位，让它独占整行 */}
+          <div className={connectionOptions.length > 0 ? 'form-grid-2' : undefined}>
+            {connectionOptions.length > 0 ? (
+              <Select
+                label={t('quickDeploy.labelConn')}
+                value={targetConn}
+                onChange={(e) => setTargetConn(e.target.value)}
+                options={connectionOptions}
+                hint={t('quickDeploy.connHint')}
+              />
+            ) : null}
             <Field
               label={t('quickDeploy.labelNode')}
               required
@@ -1012,9 +1239,11 @@ export function QuickDeployForm({
           <CardHeader
             title={t('quickDeploy.sectionNetwork')}
             subtitle={
-              isVm
-                ? t('quickDeploy.networkSubtitleVm')
-                : t('quickDeploy.networkSubtitleLxc')
+              batchMode
+                ? t('quickDeploy.networkSubtitleBatch')
+                : isVm
+                  ? t('quickDeploy.networkSubtitleVm')
+                  : t('quickDeploy.networkSubtitleLxc')
             }
             actions={
               <Button
@@ -1075,22 +1304,41 @@ export function QuickDeployForm({
                     />
                   </div>
 
-                  <div className="dyn-row mt-12 qd-nic-mode">
+                  <div
+                    className={`dyn-row mt-12 qd-nic-mode${
+                      batchMode && index > 0 ? ' qd-nic-mode-wide' : ''
+                    }`}
+                  >
                     <Field label={t('quickDeploy.labelIpMode')}>
-                      <SegmentedControl<IpMode>
-                        value={nic.ipMode}
-                        onChange={(next) => pickIpMode(index, next)}
-                        ariaLabel={t('quickDeploy.labelIpMode')}
-                        options={[
-                          { label: t('quickDeploy.ipModeStatic'), value: 'static' },
-                          { label: 'DHCP', value: 'dhcp' },
-                        ]}
-                      />
+                      {batchMode && index > 0 ? (
+                        /* 附加网卡没有第二套池可分配，批量时只能是 DHCP：
+                           不给一个点不动的静态按钮，直接说清原因 */
+                        <div className="flex items-center gap-8 flex-wrap">
+                          <Badge variant="info">DHCP</Badge>
+                          <span className="fs-sm text-muted">
+                            {t('quickDeploy.batchDhcpOnly')}
+                          </span>
+                        </div>
+                      ) : (
+                        <SegmentedControl<IpMode>
+                          value={nic.ipMode}
+                          onChange={(next) => pickIpMode(index, next)}
+                          ariaLabel={t('quickDeploy.labelIpMode')}
+                          options={[
+                            { label: t('quickDeploy.ipModeStatic'), value: 'static' },
+                            { label: 'DHCP', value: 'dhcp' },
+                          ]}
+                        />
+                      )}
                     </Field>
                   </div>
 
                   {nic.ipMode === 'static' ? (
-                    <div className="dyn-row mt-12">
+                    <div
+                      className={`dyn-row mt-12${
+                        batchMode && index === 0 ? ' qd-nic-batch-pool' : ''
+                      }`}
+                    >
                       {/* 只有主网卡能自动挑 IP 池：附加网卡手填地址 */}
                       {index === 0 ? (
                         <Select
@@ -1126,21 +1374,79 @@ export function QuickDeployForm({
                           }
                         />
                       ) : null}
-                      <Input
-                        label={t('quickDeploy.labelIp')}
-                        required
-                        value={nic.ip}
-                        onChange={(e) => updateNic(index, { ip: e.target.value })}
-                        placeholder={t('quickDeploy.ipPlaceholder')}
-                      />
-                      <Input
-                        label={t('quickDeploy.labelGateway')}
-                        value={nic.gateway}
-                        onChange={(e) => updateNic(index, { gateway: e.target.value })}
-                        placeholder={t('quickDeploy.gatewayPlaceholder')}
-                      />
+                      {/* 批量时主网卡的地址由池子按台分配，手填一个地址只会
+                          误导（它不会生效）—— 这一格改成展示本批的分配结果 */}
+                      {batchMode && index === 0 ? null : (
+                        <>
+                          <Input
+                            label={t('quickDeploy.labelIp')}
+                            required
+                            value={nic.ip}
+                            onChange={(e) => updateNic(index, { ip: e.target.value })}
+                            placeholder={t('quickDeploy.ipPlaceholder')}
+                          />
+                          <Input
+                            label={t('quickDeploy.labelGateway')}
+                            value={nic.gateway}
+                            onChange={(e) =>
+                              updateNic(index, { gateway: e.target.value })
+                            }
+                            placeholder={t('quickDeploy.gatewayPlaceholder')}
+                          />
+                        </>
+                      )}
                     </div>
                   ) : null}
+
+                  {batchMode && index === 0 && nic.ipMode === 'static'
+                    ? nic.poolId
+                      ? /* 已选网段：逐台列出系统预填的地址，允许改单台 */
+                        (
+                          <div className="qd-batch-ips">
+                            <div className="fs-sm text-muted">
+                              {batchIps.length < quantity
+                                ? t('quickDeploy.batchIpScarce', {
+                                    n: batchIps.length,
+                                  })
+                                : t('quickDeploy.batchIpHint')}
+                            </div>
+                            <div className="qd-batch-ip-list">
+                              {Array.from({ length: quantity }, (_, i) => (
+                                <div className="qd-batch-ip-row" key={i}>
+                                  <span
+                                    className="qd-batch-ip-name"
+                                    title={batchNames[i]}
+                                  >
+                                    {batchNames[i]}
+                                  </span>
+                                  <Input
+                                    mono
+                                    value={batchIpRaw(i)}
+                                    onChange={(e) =>
+                                      setBatchIpEdits((prev) => ({
+                                        ...prev,
+                                        [i]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder={t('quickDeploy.ipPlaceholder')}
+                                    aria-label={`${batchNames[i]} ${t(
+                                      'quickDeploy.labelIp',
+                                    )}`}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      : /* 还没选网段：先引导，不摆一排空输入框 */
+                        (
+                          <div className="fs-sm text-secondary mt-8">
+                            {t('quickDeploy.batchIpPickPool', {
+                              count: quantity,
+                            })}
+                          </div>
+                        )
+                    : null}
                 </div>
 
                 {nics.length > 1 ? (

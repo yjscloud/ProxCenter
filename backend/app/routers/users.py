@@ -52,15 +52,17 @@ router = APIRouter(prefix="/api", tags=["users"])
 # would match "roles" as a username.
 @router.get("/users/roles")
 async def list_roles(
-    user: Dict[str, Any] = Depends(security.get_current_user),
+    user: Dict[str, Any] = Depends(security.require_permission("users.view")),
 ) -> List[Dict[str, Any]]:
     """角色目录（含 admin 自建的角色），用于用户界面的下拉与权限预勾选。
 
-    **权限矩阵只给能管用户的人**（``users.view``，即 /api/roles 的门槛）。
-    普通登录用户拿角色名与说明就够了；完整的权限清单是管理面的信息，交出去
-    等于把「这个面板有哪些能力、谁能做什么」整套摊开（V2-04）。
+    **只给能管用户的人**（``users.view``，与 /api/roles 同一道门）。角色模型
+    本身就是管理面信息：即便只回「名字 + 说明」，一整套 admin / operator /
+    region_admin / viewer 的四层分工也足够让普通账号判断该攻击谁、拿到哪个
+    角色收益最大。普通用户自己的角色与生效权限在 ``/api/auth/my-permissions``
+    里已经有只读视图，不需要这份目录（BUG-018）。
     """
-    can_see_permissions = security.has_user_permission(user, "users.view")
+    can_see_permissions = True
     roles = await store.list_roles()
     items: List[Dict[str, Any]] = []
     for item in roles:

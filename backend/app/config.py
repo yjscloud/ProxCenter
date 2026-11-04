@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # 改回 127.0.0.1，让 8080 只对反代开放。
     host: str = "0.0.0.0"
     port: int = 8080
+    # 调试模式：只影响「排查辅助」的可见性，不改变任何权限或业务行为。
+    # 目前唯一用途是给每个响应加回 X-PVE-Calls / X-DB-Queries 两个内部计数头
+    # （BUG-004）：生产环境把后端调用次数和 SQL 条数逐请求暴露出去，等于给
+    # 扫描器一份「哪里重、哪里能压」的说明书。默认关闭，排查时临时设 DEBUG=1。
+    debug: bool = False
 
     # 面板自身不提供 TLS（终结在前面的 Nginx/Caddy）。开启后：所有明文 HTTP
     # 一律 308 到 https://<Host>（本机回环例外，留给健康检查/运维脚本），并且
@@ -155,6 +160,10 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 12
     # refresh token 有效期：真正的登录时长上限（默认 14 天）。
     refresh_token_expire_days: int = 14
+    # 同一账号最多保留多少台「已登录设备」（有效 refresh token）。0 = 不限制。
+    # 新登录把最旧的会话踢掉，避免「知道口令的人反复登录、旧会话永远留着」；
+    # 也让 /auth/sessions 的设备列表有上界。用户仍可随时「退出所有设备」。
+    session_max_per_user: int = 10
     # 两步验证待验证凭据（mfa_token）的有效期，只够走完一次验证。
     mfa_token_expire_minutes: int = 5
     # refresh cookie 是否带 Secure（只有 https 才回传）。留空 = 跟随 FORCE_HTTPS。
@@ -218,6 +227,10 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 300
     # 匿名/敏感入口（登录、注册、找回密码、刷新、2FA）：单独一条更紧的线。
     rate_limit_auth_per_minute: int = 30
+    # 验证码签发是「像素图 / 滑块题」这类 CPU 活，而它又必须匿名可访问。
+    # 单靠上面那条 30 次/分钟的认证线，脚本仍可连刷 30 张图把 CPU 打满；
+    # 这里按来源 IP 再收一道更紧的线（默认 6 次/分钟，够登录页正常换图）。
+    captcha_rate_limit_per_minute: int = 6
 
     # --- Default Proxmox connection (can be overridden at runtime via UI) --
     pve_host: str = ""

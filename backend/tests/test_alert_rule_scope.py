@@ -283,6 +283,85 @@ def test_new_account_rule_only_covers_its_own_machines(db, monkeypatch) -> None:
     assert _run(alerting.history(50, "admin")) == []
 
 
+def test_user_list_failure_does_not_widen_the_rule_scope(db, monkeypatch) -> None:
+    """账号表读失败时不能把普通用户升级成「全局规则」（BUG-013 的失控方向）。
+
+    历史实现把「查不到角色」一律当成「账号已删除」，回落到「按机器归属投递」；
+    一旦 ``store.list_users`` 抛错，每个普通用户都会走到这条分支，他的一条 ``*``
+    规则就会重新覆盖全平台 —— 无主机器的告警直接落到他名下，消息里带别人的
+    机器名。失败必须往收紧的方向走：只覆盖自己名下。
+    """
+    _make_user("bob")
+    _own("bob", 101)
+
+    sent: List[str] = []
+    resources = [_vm(101, "bob-vm"), _vm(102, "orphan-vm")]
+    _wire_evaluate(monkeypatch, resources, [_rule(id="b1", username="bob")], sent)
+
+    async def boom() -> List[Dict[str, Any]]:
+        raise RuntimeError("users table unavailable")
+
+    monkeypatch.setattr(alerting.store, "list_users", boom)
+
+    fired = _run(alerting.evaluate())
+
+    assert [row["target"] for row in fired] == ["bob-vm"]
+    assert sent == ["bob"]
+    # 自己的告警照常进铃铛；无主机器一条都不该出现
+    assert _run(notifications.unread_count("bob")) == 1
+
+
+def test_push_alert_verifies_the_guest_owner(db) -> None:
+    """写入口的最后一道闸：收件人不是机器主人时，不落这条消息。"""
+    _make_user("alice")
+    _make_user("bob")
+    _own("alice", 101)
+
+    entry = {
+        "username": "bob",
+        "target_type": "vm",
+        "target": "alice-vm",
+        "node": "pve",
+        "vmid": 101,
+        "connection_id": "",
+        "metric": "cpu",
+        "value": 95,
+        "threshold": 80,
+        "kind": "alarm",
+    }
+    _run(notifications.push_alert(entry))
+    assert _run(notifications.unread_count("bob")) == 0
+
+    # 真正的归属者收得到
+    entry["username"] = "alice"
+    _run(notifications.push_alert(entry))
+    assert _run(notifications.unread_count("alice")) == 1
+
+
+def test_purge_foreign_guest_items_removes_legacy_leaks(db) -> None:
+    """升级前生成的消息会一直留在铃铛里：启动清理必须删掉越界的那几条。"""
+    _make_user("admin", "admin")
+    _make_user("alice")
+    _make_user("bob")
+    _own("alice", 101)
+
+    _run(notifications.push("bob", title="别人的机器", link="/vms/pve/101"))
+    _run(notifications.push("alice", title="我的机器", link="/vms/pve/101"))
+    _run(notifications.push("admin", title="管理视角", link="/vms/pve/101"))
+    # 无主机器：无法判定归属，不能误删
+    _run(notifications.push("bob", title="无主机器", link="/vms/pve/102"))
+    # 非客户机链接：不属于本清理的范围
+    _run(notifications.push("bob", title="节点告警", link="/nodes/pve"))
+
+    assert _run(notifications.purge_foreign_guest_items()) == 1
+    assert [i["title"] for i in _run(notifications.list_for("bob"))] == [
+        "节点告警",
+        "无主机器",
+    ]
+    assert [i["title"] for i in _run(notifications.list_for("alice"))] == ["我的机器"]
+    assert [i["title"] for i in _run(notifications.list_for("admin"))] == ["管理视角"]
+
+
 def test_new_account_rule_skips_machines_without_an_owner(db, monkeypatch) -> None:
     """没有归属记录的机器不属于任何人，更不属于规则创建者：普通用户不报。
 

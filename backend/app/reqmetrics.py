@@ -12,6 +12,11 @@
 独立任务，contextvar 的写入就传不进处理函数了（与
 :class:`app.main.PveConnectionScopeMiddleware` 同一取舍）。
 
+**响应头只在 ``DEBUG`` 模式下回写**（BUG-004）：生产环境把「这个请求打了几次
+PVE、查了几条 SQL」逐请求告诉调用方，等于免费提供一份内部实现与容量情报。
+计数本身仍照常累计（开销只是两个整数自增），排查时打开 ``DEBUG=1`` 即可看到
+与原来完全一致的读数。
+
 **为什么存的是可变计数器而不是 int**：``asyncio.gather`` 里的每个子任务跑在
 context 的**副本**上，子任务里 ``ContextVar.set()`` 只在它自己那份里生效，父
 任务看不到 —— 一开始就写成 int，结果 fan-out 出去的请求（``pve.parallel``）
@@ -22,6 +27,8 @@ from __future__ import annotations
 
 import contextvars
 from typing import Any, Tuple
+
+from .config import settings
 
 
 class _Counter:
@@ -83,10 +90,11 @@ def snapshot() -> Tuple[int, int]:
 
 
 class RequestMetricsMiddleware:
-    """归零计数并在响应头回写本次请求的两个数字。
+    """归零计数，并在 ``DEBUG`` 模式下把本次请求的两个数字写进响应头。
 
-    ``/api/health`` 这类探针也会带上（值都是 0），这样「有没有埋点」本身就是
-    一眼可见的，不需要翻日志确认。
+    默认（非 DEBUG）完全不改响应：两个内部计数头属于实现细节，不该出现在
+    生产响应里。打开 ``DEBUG=1`` 后 ``/api/health`` 这类探针也会带上（值都是
+    0），「有没有埋点」仍然一眼可见。
     """
 
     HEADER_PVE = b"x-pve-calls"
@@ -103,7 +111,7 @@ class RequestMetricsMiddleware:
         previous, token = reset()
 
         async def send_with_metrics(message: Any) -> None:
-            if message.get("type") == "http.response.start":
+            if message.get("type") == "http.response.start" and settings.debug:
                 pve, db = snapshot()
                 headers = list(message.get("headers") or [])
                 headers.append((self.HEADER_PVE, str(pve).encode()))

@@ -1725,6 +1725,28 @@ export const enCompute: Partial<Record<MessageKey, string>> = {
   'quickDeploy.quotaSpecTitle': '{label} exceeds your own resource quota',
   'quickDeploy.quotaSpecBody':
     'This spec would exceed the quota your administrator set ({over}). You have left: {summary}. Pick a smaller spec, or ask an administrator to raise the limit.',
+  'batchCreate.title': 'Batch creation results',
+  'batchCreate.summary': '{done}/{total} finished, {failed} failed',
+  'batchCreate.progress': 'Overall progress',
+  'batchCreate.pendingHint':
+    'Accepted items continue running on PVE; per-instance status is tracked here.',
+  'batchCreate.runningOne': 'Creating',
+  'batchCreate.doneOne': 'Done',
+  'batchCreate.failedOne': 'Failed',
+  'batchCreate.close': 'Done',
+  'batchCreate.quantity': 'Quantity',
+  'batchCreate.quantityHint': '1–50; values above 1 use batch creation',
+  'batchCreate.pattern': 'Name pattern',
+  'batchCreate.patternHint': 'Supports [name], [i], [i:02]; e.g. web-[i:02]',
+  'batchCreate.preview': 'Will create: {names}',
+  'batchCreate.errQuantity': 'Quantity must be between 1 and 50',
+  'batchCreate.errPattern': 'The name pattern produces an empty or duplicate name',
+  'batchCreate.errStatic':
+    'Static IPs cannot be used for batch creation (they would collide); use DHCP',
+  'batchCreate.errQuota': 'Quantity exceeds the remaining quota ({n} left)',
+  'batchCreate.toastAccepted': 'Accepted {n} instances',
+  'batchCreate.toastAcceptedHint':
+    'Tasks submitted; per-instance progress is shown below',
   'quickDeploy.created': 'Creation submitted',
   'quickDeploy.createdVmHint': 'VMID {vmid}; follow the progress in the task queue',
   'quickDeploy.createdLxcHint': 'CT {vmid}; follow the progress in the task queue',
@@ -1776,6 +1798,8 @@ export const enCompute: Partial<Record<MessageKey, string>> = {
   'quickDeploy.sectionNetwork': 'Network',
   'quickDeploy.networkSubtitleVm': 'Add as many NICs as you need; static addresses are auto-picked from “Network → IP pools”',
   'quickDeploy.networkSubtitleLxc': 'Add as many NICs as you need; IPs are written on netN',
+  'quickDeploy.networkSubtitleBatch':
+    'Add as many NICs as you need; in batch mode the primary NIC gets one pool address per guest, extra NICs use DHCP',
   'quickDeploy.labelBridge': 'Bridge',
   'quickDeploy.labelVlan': 'VLAN tag',
   'quickDeploy.vlanPlaceholder': 'Blank = untagged',
@@ -1786,6 +1810,18 @@ export const enCompute: Partial<Record<MessageKey, string>> = {
   'quickDeploy.nicTitle': 'NIC {index}',
   'quickDeploy.labelIpMode': 'IP assignment',
   'quickDeploy.ipModeStatic': 'Static',
+  'quickDeploy.batchDhcpOnly':
+    'Extra NICs always use DHCP in batch creation — there is no second address pool to split across guests',
+  'quickDeploy.errBatchPool':
+    'Pick a subnet first — batch creation needs a different address for each guest',
+  'quickDeploy.batchIpPickPool':
+    'Pick a subnet first; {count} free addresses will be assigned from it in order',
+  'quickDeploy.batchIpHint':
+    'Pre-filled with free addresses from the pool — edit any row as needed',
+  'quickDeploy.batchIpScarce':
+    'Only {n} free addresses left in this pool; fill the rest manually',
+  'quickDeploy.errBatchIpEmpty': 'Guest #{n} has no address yet',
+  'quickDeploy.errBatchIpDup': 'Two guests in this batch share the same address',
   'quickDeploy.labelPool': 'Subnet',
   'quickDeploy.poolHint': 'Selected based on the bridge',
   'quickDeploy.labelIp': 'IP address',

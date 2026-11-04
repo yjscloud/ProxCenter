@@ -1058,13 +1058,15 @@ export interface NodeInfo {
   connection_id?: string;
   connection_name?: string;
   status: 'online' | 'offline' | 'unknown' | string;
-  cpu: number;
+  /* 监控读数只在具备 node.view 时下发；仅有建机权限的账号靠节点名与在线状态
+     选宿主机，不需要（也不该拿到）容量与负载。见 BUG-017。 */
+  cpu?: number;
   maxcpu?: number;
-  mem: number;
-  maxmem: number;
-  disk: number;
-  maxdisk: number;
-  uptime: number;
+  mem?: number;
+  maxmem?: number;
+  disk?: number;
+  maxdisk?: number;
+  uptime?: number;
   level?: string;
   /** 补充信息（部分后端会返回） */
   ssl_fingerprint?: string;
@@ -1440,6 +1442,37 @@ export interface BulkResponse {
   ok: number;
   failed: number;
   results: BulkItemResult[];
+}
+
+/* ---------------------------------------------------------------------------
+   批量下发（create）：一次请求建 N 台，逐台返回 UPID。
+   HTTP 200 只表示批次已受理；每台的 PVE 任务还要前端继续轮询（方案 A）。
+   --------------------------------------------------------------------------- */
+
+export interface BatchCreateItemResult extends BulkItemResult {
+  index: number;
+  /** PVE 任务 UPID；创建请求被拒时为 null */
+  task: string | null;
+  post_steps?: string[];
+  disk_note?: string;
+  template?: boolean;
+}
+
+export interface BatchCreateResponse {
+  action: 'create';
+  batch_id: string;
+  kind: 'vm' | 'lxc';
+  total: number;
+  ok: number;
+  failed: number;
+  results: BatchCreateItemResult[];
+}
+
+export interface BatchCreateRequest<T> {
+  items: T[];
+  /** 幂等键：同一账号重复提交同一个键不会重复建机 */
+  batch_id?: string;
+  stop_on_error?: boolean;
 }
 
 export interface VmDiskConfig {
@@ -1933,23 +1966,51 @@ export interface LxcConfigUpdate {
    虚拟机与容器**各有一份额度**，互不占用：容器堆满不会吃掉虚拟机的额度。
    --------------------------------------------------------------------------- */
 
+/**
+ * 平台全局护栏的读数（只有能管理面板设置的人会拿到数字）。
+ *
+ * 与顶层字段的关系：``scope === 'global'`` 时顶层就是这份数；普通用户的顶层
+ * 是「自己名下」的口径，``global`` 为 ``null``（不泄露集群规模）。
+ */
+export interface GlobalQuotaInfo {
+  /** 全平台总配额；null = 不限制 */
+  quota: number | null;
+  /** 全平台现有数量（跨所有 PVE 连接，含模板） */
+  used: number;
+  /** 全平台还能下发几台；null = 不限制 */
+  remaining: number | null;
+  /** 是否启用了全局配额 */
+  limited: boolean;
+}
+
 export interface VmQuotaInfo {
   /** vm = 虚拟机额度；lxc = 容器额度 */
   kind?: 'vm' | 'lxc';
   /** 该类 guest 的中文名（"虚拟机" / "容器"），直接用于文案 */
   label?: string;
-  /** 总配额：最多能下发多少台。null = 不限制 */
+  /**
+   * 读数口径：
+   * * ``user`` —— 普通用户：顶层 ``quota/used/remaining`` 只描述**自己名下**；
+   * * ``global`` —— 能管理面板设置的人（含管理员）：顶层是**全平台**读数，
+   *   设置页回显「已用 / 上限」用它。
+   */
+  scope?: 'user' | 'global';
+  /** 总配额：最多能下发多少台。null = 不限制（口径见 ``scope``） */
   quota: number | null;
-  /** 现有数量（跨所有 PVE 连接，含模板） */
+  /** 现有数量（口径见 ``scope``；user 口径下是自己名下、含模板） */
   used: number;
   /** 还能下发几台；null = 不限制 */
   remaining: number | null;
-  /** 是否启用了配额限制 */
+  /** 是否启用了配额限制（任一层） */
   limited: boolean;
-  /** 当前用户此刻能否创建（管理员不受配额限制，恒为 true） */
+  /** 当前用户此刻能否创建（全局护栏与个人额度取最严；管理员恒为 true） */
   can_create: boolean;
   /** 统计现有台数时的错误（例如某条 PVE 连不上）；null = 正常 */
   count_error: string | null;
+  /** 全局护栏明细；只有能管理设置的人有值，普通用户为 null */
+  global?: GlobalQuotaInfo | null;
+  /** 个人额度的来源（user / role / none），仅 user 口径返回 */
+  source?: 'user' | 'role' | 'none';
 }
 
 /* ---------------------------------------------------------------------------

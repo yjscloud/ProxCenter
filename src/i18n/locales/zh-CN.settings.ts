@@ -305,6 +305,8 @@ export const zhSettings = {
   'profile.tfaDisabledDetail': '只用密码即可登录了',
   'profile.sessionsTitle': '登录设备',
   'profile.sessionsSubtitle': '撤销某台设备的会话即可让它立刻下线',
+  'profile.sessionsLimitHint':
+    '同一账号最多保留 {n} 台已登录设备，超出时最早的一台会自动下线。怀疑账号泄露时，请点下方「退出所有设备」。',
   'profile.sessionsLoadFailed': '设备列表加载失败',
   'profile.noSessions': '没有已登录的设备记录。',
   'profile.unknownSource': '未知来源',

@@ -515,6 +515,24 @@ class VmCreateRequest(BaseModel):
         return cleaned
 
 
+#: 单批下发上限。既防误点「数量 500」，也给前端进度面板一个明确的边界。
+BATCH_CREATE_MAX = 50
+
+
+class VmBatchCreateRequest(BaseModel):
+    """一次下发多台虚拟机。
+
+    ``items`` 与单台接口的请求体完全一致（同一套字段、同一套校验），批量入口
+    只在外面加「总量预检 / VMID 分配 / 逐台结果」这三件事。``batch_id`` 是前端
+    生成的幂等键：同一账号重复提交同一个键，直接拿回上次的逐台结果，不会重复
+    建机；``stop_on_error`` 控制某台失败后是否继续。
+    """
+
+    items: List[VmCreateRequest] = Field(min_length=1, max_length=BATCH_CREATE_MAX)
+    batch_id: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    stop_on_error: bool = True
+
+
 class VmConfigUpdate(BaseModel):
     """Arbitrary PVE config keys; validated by Proxmox itself."""
 
@@ -728,6 +746,14 @@ class LxcCreateRequest(BaseModel):
     def _features_valid(cls, value: List[str]) -> List[str]:
         allowed = {"nesting", "keyctl", "fuse", "mknod", "mount"}
         return [v for v in value if v in allowed]
+
+
+class LxcBatchCreateRequest(BaseModel):
+    """一次下发多台容器，语义与 :class:`VmBatchCreateRequest` 相同。"""
+
+    items: List[LxcCreateRequest] = Field(min_length=1, max_length=BATCH_CREATE_MAX)
+    batch_id: Optional[str] = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    stop_on_error: bool = True
 
 
 class LxcConfigUpdate(BaseModel):

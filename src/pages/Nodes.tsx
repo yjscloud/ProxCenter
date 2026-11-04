@@ -735,8 +735,8 @@ export function Nodes() {
 function nodePercents(node: NodeInfo) {
   return {
     cpu: toPercent(node.cpu),
-    mem: node.maxmem > 0 ? ((node.mem ?? 0) / node.maxmem) * 100 : 0,
-    disk: node.maxdisk > 0 ? ((node.disk ?? 0) / node.maxdisk) * 100 : 0,
+    mem: (node.maxmem ?? 0) > 0 ? ((node.mem ?? 0) / (node.maxmem ?? 0)) * 100 : 0,
+    disk: (node.maxdisk ?? 0) > 0 ? ((node.disk ?? 0) / (node.maxdisk ?? 0)) * 100 : 0,
   };
 }
 

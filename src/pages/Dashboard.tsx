@@ -1950,12 +1950,12 @@ function DashboardNodeRow({
     },
     {
       key: 'mem',
-      pct: node.maxmem > 0 ? ((node.mem ?? 0) / node.maxmem) * 100 : 0,
+      pct: (node.maxmem ?? 0) > 0 ? ((node.mem ?? 0) / (node.maxmem ?? 0)) * 100 : 0,
       sub: formatBytes(node.maxmem, 0),
     },
     {
       key: 'disk',
-      pct: node.maxdisk > 0 ? ((node.disk ?? 0) / node.maxdisk) * 100 : 0,
+      pct: (node.maxdisk ?? 0) > 0 ? ((node.disk ?? 0) / (node.maxdisk ?? 0)) * 100 : 0,
       sub: formatBytes(node.maxdisk, 0),
     },
   ];

@@ -540,6 +540,38 @@ class ProxmoxClient:
         )
         return data or []
 
+    async def storage_download_url(
+        self,
+        node: str,
+        storage: str,
+        *,
+        url: str,
+        content: str,
+        filename: Optional[str] = None,
+        checksum: Optional[str] = None,
+        checksum_algorithm: Optional[str] = None,
+        verify_certificates: bool = True,
+    ) -> Any:
+        """让 **PVE** 自己把镜像从 URL 下载进存储，返回任务 UPID。
+
+        面板不代理字节：几十 GB 的镜像不该经过面板进程，也不需要额外内存。
+        PVE 下载完才落盘，所以返回值是 UPID，调用方要自己等任务结束。
+        """
+        data: Dict[str, Any] = {
+            "url": url,
+            "content": content,
+            "verify-certificates": 1 if verify_certificates else 0,
+        }
+        if filename:
+            data["filename"] = filename
+        if checksum:
+            data["checksum"] = checksum
+            if checksum_algorithm:
+                data["checksum-algorithm"] = checksum_algorithm
+        return await self.post(
+            f"/nodes/{node}/storage/{storage}/download-url", data=data
+        )
+
     async def storage_content_set_protected(
         self, node: str, storage: str, volume: str, protected: bool = True
     ) -> None:

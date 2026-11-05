@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
-from .. import guestguard, ownership, pvecache, security, store
+from .. import guestguard, ownership, pvecache, security, store, vmconfig
 from ..pve import (
     ProxmoxClient,
     ProxmoxError,
@@ -20,6 +22,7 @@ from ..pve import (
     set_request_connection,
 )
 from ..formatters import normalize_storage, pve_flag
+from ..schemas import StorageDownloadUrl
 from ..vm_scope import resolve_node_connection
 from .backups import assert_backup_access
 
@@ -29,6 +32,25 @@ logger = logging.getLogger(__name__)
 #: 这个内容类型接受哪些格式 —— 用户在浏览器里等了几十分钟的几 GB ISO，
 #: 最后收到一句 ``filename: wrong file extension``，只能靠猜。
 _UPLOAD_EXT_ERR = ("wrong extension", "invalid filename")
+
+#: 磁盘镜像容器的 magic（文件前 4 字节）。扩展名不可信，这是唯一可靠的依据。
+#:
+#: Ubuntu 官方的 ``*-cloudimg-amd64.img`` 就是一只 qcow2 套着 ``.img`` 外壳
+#: （3.5 GiB 虚拟 / 248 MiB 实际）。而 PVE 的 ``file_size_info`` 只对
+#: ``.qcow2/.qed/.raw/.vmdk/.vdi/.vpc`` 这几种扩展名跑 ``qemu-img info``，
+#: 其余（``.img`` 或自定义后缀）一律 ``stat`` 当裸盘 —— 于是 qcow2 容器会被
+#: **整块当成 raw 复制**成系统盘，第一扇区是 ``QFI\xfb`` 而不是 ``55 aa``，
+#: 开机就停在 ``Boot failed: not a bootable disk``。
+#:
+#: 上传是面板唯一拿得到文件字节的时刻，格式在这里判，别留给 PVE 按名字猜。
+_IMAGE_MAGIC: Dict[bytes, str] = {
+    b"QFI\xfb": "qcow2",
+    b"KDMV": "vmdk",
+}
+
+#: PVE 会去 ``qemu-img info`` 的扩展名。不在这张表里的名字，PVE 不解析容器，
+#: 直接按裸盘处理。判断只有一份，见 ``vmconfig.PVE_IMAGE_EXT``。
+_PVE_RECOGNISED_EXT = vmconfig.PVE_IMAGE_EXT
 
 #: 各内容类型常见的文件扩展名。仅用于出错时提示，真正的裁决者是 PVE ——
 #: 所以这里宁含糊不过窄：写窄了会挡住用户，写宽了顶多少一句提示。
@@ -41,6 +63,45 @@ _UPLOAD_EXT_HINT: Dict[str, str] = {
     "backup": "备份文件（.vma / .vma.gz / .vma.lzo / .tar 系列）",
     "snippets": "片段文件（.yaml / .sh 等文本）",
 }
+
+
+def _probe_image_format(file: UploadFile) -> str:
+    """读前 4 字节判断磁盘镜像的容器格式，认不出返回空串。
+
+    只认 ``qcow2`` / ``vmdk`` 两种：ISO 安装盘、容器模板、备份归档都不是
+    这两种 magic，返回空串即「照旧上传」。读不到（流不可 seek）也返回空串 ——
+    宁可漏判，不能因为探测把一次正常上传拦下来。
+    """
+    try:
+        file.file.seek(0)
+        head = file.file.read(4)
+    except Exception:  # noqa: BLE001 - 探测失败不阻断上传
+        head = b""
+    finally:
+        # 无论成败都要把指针放回开头：探测动了读位置却没还原，后面就会
+        # 少传几个字节，PVE 拿到一个坏文件还报「成功」。
+        try:
+            file.file.seek(0)
+        except Exception:  # noqa: BLE001
+            return ""
+    for magic, fmt in _IMAGE_MAGIC.items():
+        if head.startswith(magic):
+            return fmt
+    return ""
+
+
+def _image_container_error(filename: str, fmt: str) -> str:
+    """扩展名与容器格式对不上时给用户的话：说清后果，给出两条能走通的路。"""
+    return (
+        f"{filename} 实际是 {fmt} 磁盘镜像，扩展名却不在 PVE 会解析的那几种之内"
+        f"（{'/'.join(_PVE_RECOGNISED_EXT)}）。对这种文件 PVE 不解析容器，直接按裸盘"
+        "整块复制 —— 系统盘第一扇区就不是引导扇区，建出来的模板开机只会停在 "
+        "“Boot failed: not a bootable disk”。\n"
+        "两条可行做法：\n"
+        f"① 上传到内容类型含 import 的存储，文件名以 {fmt} 结尾"
+        "（面板会替你改好后缀，PVE 也能正确识别）；\n"
+        f"② 先在宿主机上转成裸盘再上传：qemu-img convert -O raw {filename} 目标文件名.img。"
+    )
 
 
 def _upload_error_text(raw: str, content: str) -> str:
@@ -368,6 +429,32 @@ async def upload_to_storage(
     filename = file.filename or "upload.bin"
     endpoint = f"{client.conn.api_url}/nodes/{node}/storage/{storage}/upload"
 
+    # 先按字节认清容器格式，再看名字对不对得上。
+    #
+    # 名字与内容不一致时不能放行：PVE 会按裸盘复制 qcow2 容器，建出来的模板
+    # 开机就是「not a bootable disk」，而 PVE 那边整条任务都是成功的 ——
+    # 故障会一路拖到开机那一刻才暴露（见 _IMAGE_MAGIC）。
+    renamed_to = ""
+    if content in ("iso", "import"):
+        probed = _probe_image_format(file)
+        if probed and not filename.lower().endswith(_PVE_RECOGNISED_EXT):
+            if content != "import":
+                # iso 目录不收 .qcow2 / .vmdk（PVE 会以扩展名为由拒掉），
+                # 改名上传照样失败 —— 只能当场说清楚该怎么处理。
+                await security.audit(
+                    request, user, "storage.upload",
+                    target=f"{node}/{storage}/{filename}",
+                    result="failed", detail=f"image container mismatch: {probed}",
+                )
+                raise HTTPException(
+                    status_code=400, detail=_image_container_error(filename, probed)
+                )
+            # import 目录收 .qcow2/.vmdk：把后缀换对，PVE 就会去 qemu-img info，
+            # 虚拟容量与容器格式都对，import-from 才能把盘建对。
+            stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+            filename = f"{stem}.{probed}"
+            renamed_to = filename
+
     # Stream the incoming file body to PVE as multipart form-data.
     try:
         files = {"filename": (filename, file.file, "application/octet-stream")}
@@ -415,7 +502,197 @@ async def upload_to_storage(
         pvecache.invalidate("templates:images")
 
     payload = resp.json().get("data")
-    return {"task": payload if isinstance(payload, str) else "", "filename": filename}
+    return {
+        "task": payload if isinstance(payload, str) else "",
+        "filename": filename,
+        # 非空表示文件名被改过：前端据此提示「已按内容识别为 qcow2，存成 xxx.qcow2」，
+        # 免得用户在列表里找不到自己刚传的那个名字。
+        "renamed_to": renamed_to,
+    }
+
+
+#: 压缩包后缀。PVE 的 download-url 不会解压，存进去就是一个没人能用的文件，
+#: 等用户在建模板时才发现「镜像无效」比当场拒绝难查得多。
+_COMPRESSED_SUFFIX = (".gz", ".xz", ".bz2", ".zip", ".zst", ".7z", ".tar")
+
+#: ``iso`` 内容收的文件：安装盘。磁盘镜像一律走 import —— 放进 iso 目录时
+#: PVE 不会解析容器（典型：Ubuntu 官方的 ``.img`` 其实是 qcow2）。
+_ISO_IMAGE_SUFFIX = (".iso", ".dmg")
+
+#: ``import`` 内容收的文件。``.img`` 不在这里：它会被 PVE 当裸盘整块复制，
+#: 进来之前先改成 ``.qcow2``（见 _download_filename）。
+_IMPORT_IMAGE_SUFFIX = vmconfig.PVE_IMAGE_EXT + (".ova",)
+
+#: PVE 对存储文件名的安全字符集（``$SAFE_CHAR_CLASS_RE``）。对不上会在传完之后
+#: 才报 ``invalid filename``，所以先自己拦。
+_SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+
+def _download_filename(url_path: str, wanted: str, content: str) -> str:
+    """按内容类型校正下载后的文件名，返回最终名字。
+
+    ``import`` 下的 ``.img`` 改成 ``.qcow2``：PVE 只对白名单后缀跑
+    ``qemu-img info``，``.img`` 会被按裸盘整块复制 —— 如果那其实是一只 qcow2
+    （Ubuntu 官方镜像就是这样），系统盘第一扇区就没有引导签名，模板开机停在
+    ``Boot failed: not a bootable disk``。改成 ``.qcow2`` 后 PVE 会去解析内容，
+    真 raw 的镜像也会被正确识别成 raw，两种情形都安全。
+    """
+    name = (wanted or "").strip() or unquote(url_path.rsplit("/", 1)[-1])
+    if not name:
+        raise HTTPException(
+            status_code=400,
+            detail="无法从链接推断文件名，请显式填写 filename（例如 ubuntu-24.04.qcow2）",
+        )
+    lowered = name.lower()
+
+    if lowered.endswith(_COMPRESSED_SUFFIX):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{name} 是压缩包，PVE 的下载任务不会解压，存进去也用不了。"
+                "请换未压缩的镜像链接（.qcow2 / .raw / .iso），"
+                "或在宿主机上 gunzip 之后再导入。"
+            ),
+        )
+
+    if content == "import":
+        if lowered.endswith(".img"):
+            return f"{name[: -len('.img')]}.qcow2"
+        if not lowered.endswith(_IMPORT_IMAGE_SUFFIX):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{name} 不能放进 import 目录：那里收磁盘镜像"
+                    f"（{'/'.join(_IMPORT_IMAGE_SUFFIX)}）。"
+                    "ISO 安装盘请选内容类型为 iso 的存储。"
+                ),
+            )
+        return name
+
+    if not lowered.endswith(_ISO_IMAGE_SUFFIX):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{name} 不能放进 iso 目录：那里只收安装盘（{'/'.join(_ISO_IMAGE_SUFFIX)}）。"
+                "磁盘镜像（.qcow2 / .raw / .img）请下载到内容类型含 import 的存储 —— "
+                "iso 目录里的磁盘镜像 PVE 不解析容器，会被当裸盘整块复制，建出来的模板开不了机。"
+            ),
+        )
+    return name
+
+
+@router.post("/storages/download-url")
+async def download_image_from_url(
+    payload: StorageDownloadUrl,
+    request: Request,
+    user: Dict[str, Any] = Depends(security.require_permission("storage.manage")),
+) -> Dict[str, Any]:
+    """让 **PVE** 直接把镜像从 URL 下载进存储，返回任务 UPID。
+
+    这件事不该由面板代理字节来做：几百 MB 到几十 GB 的镜像走面板进程既占内存、
+    又容易在反向代理那层超时；PVE 的 ``download-url`` 是原生任务，进度、限速、
+    失败重试都由它管，面板只负责校验参数并等 UPID。
+
+    校验的三件事都在「开始下载之前」做完，避免让用户等半小时才失败：
+    链接协议、目标存储的内容类型、以及**文件名**（决定 PVE 会不会去解析容器）。
+
+    边界：请求是 **PVE 节点**发出的，所以面板所在网段 / 节点内网的地址它也够得着
+    （内网镜像站正是常见用法），不额外做地址黑白名单。能调用它的是持
+    ``storage.manage`` 的账号 —— 与「往这台存储上传任意文件」等价。
+    """
+    parts = urlsplit(str(payload.url or "").strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise HTTPException(
+            status_code=400, detail="下载链接只支持 http / https，且必须带主机名"
+        )
+
+    content = payload.content if payload.content in ("iso", "import") else ""
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="content 只能是 import（磁盘镜像）或 iso（安装盘）",
+        )
+
+    original = (payload.filename or "").strip() or unquote(
+        parts.path.rsplit("/", 1)[-1]
+    )
+    name = _download_filename(parts.path, payload.filename or "", content)
+    if not _SAFE_FILENAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"文件名 {name} 含 PVE 不接受的字符：只能用字母、数字与 . _ + - ，"
+                "且要以字母或数字开头（中文、空格会让 PVE 存进去之后列不出来）。"
+            ),
+        )
+
+    client = get_client()
+    try:
+        storages = await client.storages(payload.node)
+    except ProxmoxError as exc:
+        _raise(exc)
+
+    entry = next(
+        (s for s in storages or [] if str(s.get("storage") or "") == payload.storage),
+        None,
+    )
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"节点 {payload.node} 上没有名为 {payload.storage} 的存储",
+        )
+    supported = {
+        part.strip() for part in str(entry.get("content") or "").split(",")
+    }
+    if content not in supported:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"存储 {payload.storage} 的内容类型是「{entry.get('content') or '未设置'}」，"
+                f"收不了 {content}。换个存储，或在 PVE 里给它加上这个内容类型。"
+            ),
+        )
+    if pve_flag(entry.get("active", 1)) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"存储 {payload.storage} 当前不可用（未挂载或节点离线）",
+        )
+
+    # 审计里不写整条链接：对象存储的预签名 URL 本身就带凭据，落库等于扩散
+    safe_url = f"{parts.scheme}://{parts.netloc}{parts.path}"
+    try:
+        upid = await client.storage_download_url(
+            payload.node,
+            payload.storage,
+            url=str(payload.url).strip(),
+            content=content,
+            filename=name,
+            checksum=payload.checksum,
+            checksum_algorithm=payload.checksum_algorithm,
+            verify_certificates=payload.verify_certificates,
+        )
+    except ProxmoxError as exc:
+        await security.audit(
+            request, user, "storage.download",
+            target=f"{payload.node}/{payload.storage}/{name}",
+            result="failed", detail=f"{safe_url} → {exc.message}",
+        )
+        _raise(exc)
+
+    await security.audit(
+        request, user, "storage.download",
+        target=f"{payload.node}/{payload.storage}/{name}",
+        detail={"url": safe_url, "content": content},
+    )
+
+    return {
+        "task": upid if isinstance(upid, str) else "",
+        # 下载完成后就是这一卷：前端据此直接选中它，不必等列表刷新
+        "volid": f"{payload.storage}:{content}/{name}",
+        "filename": name,
+        # 非空表示后缀被校正过（典型：.img → .qcow2）
+        "renamed_to": name if name != original else "",
+    }
 
 
 def httpx_timeout_long() -> Any:

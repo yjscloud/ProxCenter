@@ -336,13 +336,24 @@ ssl_verify_client on;   # 或 optional + 下面的 if 判断
 
 ### 模板（cloud-init 流水线）
 
-从 cloud 镜像一键建模板，后端按序执行、每步之间等任务完成：建空壳虚拟机 → `importdisk` 导入
-镜像 → 定位卷 → 挂成 `scsi0` 并配置启动顺序 → 挂 cloud-init 驱动 → 按需扩容 → 转模板。任何
-一步失败都会自动删掉临时虚拟机，不留半成品。建好之后可用「从模板部署」批量开机，克隆时自动
-注入主机名、SSH 公钥和 IP。
+从 cloud 镜像一键建模板，后端按序执行、每步之间等任务完成：建虚拟机（系统盘在配置里用
+`import-from=<镜像>` 由 PVE 直接导入，不再走已被 PVE 9.2 移除的 `importdisk`）→ 配置启动顺序
+与 cloud-init 驱动 → 按需扩容 → 转模板。任何一步失败都会自动删掉临时虚拟机，不留半成品。
+建好之后可用「从模板部署」批量开机，克隆时自动注入主机名、SSH 公钥和 IP。
 
-> 镜像必须放在 dir / NFS / CIFS 类型的存储上（`importdisk` 要求文件级访问）。LVM、ZFS 这类
-> 块存储不能当来源，但可以当导入后的目标。
+> **镜像的扩展名必须和它的真实格式一致**：`.qcow2` / `.raw` / `.vmdk` / `.vdi` / `.vpc` /
+> `.qed`。PVE 只对这几种后缀去解析容器，其余一律当裸盘整块复制 —— 典型是 Ubuntu 官方的
+> `*-cloudimg-amd64.img`：它其实是一只 qcow2（3.5 GiB 虚拟、248 MiB 实际），被当裸盘复制后
+> 系统盘第一扇区是 `QFI\xfb` 而不是引导签名，模板建得出来、开机却停在
+> `Boot failed: not a bootable disk`。面板上传时会按文件头自动识别并把后缀改对（会给出提示）；
+> 直接用 PVE 网页或命令行传进来的文件拦不到，请自己改名，或先
+> `qemu-img convert -O raw 源文件 目标.raw` 转成裸盘再导入。
+>
+> 镜像放 dir / NFS / CIFS 或块存储都行：来源只需该节点读得到，目标存储支持 `images`。
+>
+> 也可以不手动下载：向导里填「镜像下载链接」，面板把链接交给 **PVE 自己**下载到所选存储的
+> import 目录（面板不中转字节，几十 GB 的镜像也不会占内存或撑爆反向代理），下完自动选为
+> 镜像来源。文件名会被校正成 PVE 能解析的后缀（`.img` → `.qcow2`）。
 
 ### 网络与防火墙
 
@@ -604,11 +615,22 @@ pveum acl modify / --tokens 'root@pam!panel' --roles PVEAuditor   # 节点指标
 重启。Proxmox 不可达不会阻止面板启动，只在日志里留一条警告，这样才有机会进界面改回来。
 
 **控制台打不开**：Proxmox 的设计限制，API Token 访问不了 `vncproxy`，要在设置里补一个 PVE
-账号密码（建议只给 `PVEVMUser`）。**连上但黑屏**：云镜像默认不向图形控制台输出启动日志，
-面板建的模板会自动配 `serial0` 和 `vga: serial0`，手工建的模板要在 PVE 里补上。
+账号密码（建议只给 `PVEVMUser`）。**连上但黑屏**：面板建的模板只挂 `serial0`、**不会**把
+`vga` 指过去 —— 指过去 VNC 里就只剩串口输出，而没配 `console=ttyS0` 的镜像从 GRUB 之后
+一片全黑。要串口日志就在控制台里切到 xterm，别改 `vga`。
 
-**模板构建卡在 importdisk**：镜像必须放在 dir / NFS / CIFS 存储上，放在 LVM 或 ZFS 会失败，
-失败时面板会自动清理临时虚拟机。
+**模板建好了，克隆出来的机器停在 `Boot failed: not a bootable disk`**：镜像的扩展名和真实格式
+对不上。Ubuntu 官方的 `*-cloudimg-amd64.img` 实际是 qcow2，PVE 认不出这种后缀，把容器按裸盘
+整块复制成了系统盘 —— 第一扇区不是引导扇区。用 `qemu-img info <镜像>` 看一眼格式，转成裸盘
+（`qemu-img convert -O raw`）或把后缀改成 `.qcow2` 后重建模板。想看盘本身对不对：
+
+```bash
+qemu-img info <卷路径>        # 虚拟容量应是镜像的虚拟大小（Ubuntu 云镜像 3.5G），不是文件字节数
+qemu-img dd -f qcow2 if=<卷路径> bs=512 count=1 of=/tmp/mbr.bin && hexdump -C /tmp/mbr.bin | tail -2
+```
+
+末两字节应当是 `55 aa`（开头 `eb 63 90` 是 GRUB 的 MBR）；出现 `51 46 49 fb` 说明整只 qcow2
+容器被原样写进了盘。
 
 **Docker 部署，容器起不来或反复重启**：多半是数据库口令对不上。`docker compose logs panel |
 tail -30` 找 `Access denied` / `Can't connect`，改法见 [Docker 部署](#docker-部署) 里那两条

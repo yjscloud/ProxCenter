@@ -229,6 +229,8 @@ import type {
   DashboardSummary,
   DashboardTop,
   IsoItem,
+  StorageDownloadRequest,
+  StorageDownloadResult,
   AlertRecord,
   AlertRule,
   AlertsOverview,
@@ -734,6 +736,13 @@ export const storagesApi = {
     del<TaskResponse & { deleted?: string }>('/storages/content', {
       params: body,
     }),
+  /**
+   * 让 PVE 自己把镜像从 URL 下载进存储（云镜像模板的第一步）。
+   *
+   * 返回的是任务 UPID —— 下载完成前文件不存在，调用方要等任务结束再刷新列表。
+   */
+  downloadUrl: (body: StorageDownloadRequest) =>
+    post<StorageDownloadResult>('/storages/download-url', body),
   /** 上传（后端可能未实现，调用方需容错）*/
   upload: (
     params: { node: string; storage: string; content: string },
@@ -745,7 +754,7 @@ export const storagesApi = {
     fd.append('node', params.node);
     fd.append('storage', params.storage);
     fd.append('content', params.content);
-    return upload<{ volid?: string; task?: string }>(
+    return upload<{ volid?: string; task?: string; filename?: string; renamed_to?: string }>(
       '/storages/upload',
       fd,
       onProgress,

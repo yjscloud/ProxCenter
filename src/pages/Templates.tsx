@@ -10,6 +10,7 @@ import {
   configApi,
   lxcApi,
   nodesApi,
+  storagesApi,
   templatesApi,
   vmsApi,
 } from '../api/endpoints';
@@ -31,6 +32,7 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { CardSkeleton } from '../components/ui/Spinner';
+import { ProgressBar } from '../components/ui/ProgressBar';
 import { CollapsibleCard, EmptyState, Notice } from '../components/ui/EmptyState';
 import { PveQueryError } from '../components/SetupRequired';
 import { usePveReady } from '../hooks/usePveStatus';
@@ -46,9 +48,10 @@ import {
   IconCloud,
   IconVm,
   IconDisk,
+  IconDownload,
 } from '../components/Icons';
 import { LxcCreateWizard } from '../components/LxcCreateWizard';
-import { formatBytes, formatUptimeShort, parseTags } from '../utils/format';
+import { formatBytes, formatUptime, formatUptimeShort, parseTags } from '../utils/format';
 import { ostypeLabel } from '../utils/status'
 import { useT } from '../i18n';
 import { ostypeOptions, cpuTypeOptions } from '../utils/status';
@@ -57,7 +60,12 @@ import { useRefreshInterval } from '../hooks/useRefreshInterval';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useNodeStorages } from '../hooks/useNodeStorages';
-import type { CtSystemTemplate, TemplateItem, VmSummary } from '../api/types';
+import type {
+  CtSystemTemplate,
+  StorageDownloadResult,
+  TemplateItem,
+  VmSummary,
+} from '../api/types';
 
 /** 模板类型标签页：虚拟机模板与容器模板分开看，混在一屏里不好区分 */
 type TemplateTab = 'qemu' | 'lxc';
@@ -1429,9 +1437,12 @@ function TemplateCreateWizard({
 }) {
   const t = useT();
   const toast = useToast();
+  const runner = useTaskRunner();
   const { hasPermission } = useAuth();
   /* 新建 / 导入模板属于模板管理 */
   const canManage = hasPermission('template.manage');
+  /* 「从链接下载镜像」会往存储里写文件，要的是 storage.manage（另一把钥匙） */
+  const canManageStorage = hasPermission('storage.manage');
 
   const [mode, setMode] = useState<CreateMode>('image');
 
@@ -1457,6 +1468,13 @@ function TemplateCreateWizard({
   const [ciUser, setCiUser] = useState('ubuntu');
   const [sshKey, setSshKey] = useState('');
   const [imageVolId, setImageVolId] = useState('');
+  /** 从链接下载镜像：链接、落点存储（只列 import 内容的池）、下载中 */
+  const [dlUrl, setDlUrl] = useState('');
+  const [dlStorage, setDlStorage] = useState('');
+  const [dlBusy, setDlBusy] = useState(false);
+  /** 下载开始的时刻与已用秒数：拿不到百分比时，这是唯一诚实的「还在动」证据 */
+  const [dlStarted, setDlStarted] = useState<number | null>(null);
+  const [dlElapsed, setDlElapsed] = useState(0);
   const [ciEnabled, setCiEnabled] = useState(true);
   const [tags, setTags] = useState('template');
   const [submitting, setSubmitting] = useState(false);
@@ -1500,6 +1518,15 @@ function TemplateCreateWizard({
     retry: false,
   });
 
+  /* 选中的镜像扩展名不在 PVE 会解析的清单里（典型：Ubuntu 官方的 *.img，
+     内容其实是 qcow2）。这种文件 PVE 会按裸盘整块复制，系统盘第一扇区就没有
+     引导签名 —— 模板建得出来，开机永远停在 Boot failed: not a bootable disk。
+     判断在后端算好了（import_risk），这里只负责把话说在点「创建」之前。 */
+  const pickedImage = useMemo(
+    () => (imagesQuery.data ?? []).find((img) => img.volid === imageVolId),
+    [imagesQuery.data, imageVolId],
+  );
+
   const bridgesQuery = useQuery({
     queryKey: ['nodes', nodeConn, node, 'network'],
     queryFn: () => nodesApi.network(node, nodeConn),
@@ -1519,7 +1546,23 @@ function TemplateCreateWizard({
     setDiskStorage('');
     setImageVolId('');
     setSshKey('');
+    setDlUrl('');
+    setDlStorage('');
+    setDlBusy(false);
+    setDlStarted(null);
+    setDlElapsed(0);
   }, [open]);
+
+  /* 下载计时：PVE 的 download-url 是 wget 在跑，进度只写在 wget 自己的 stderr 里，
+     任务状态与任务日志都拿不到百分比（见 ProgressBar 的 indeterminate 注释）。
+     所以这里只数已用时间，界面不编造完成度。 */
+  useEffect(() => {
+    if (!dlStarted) return undefined;
+    const timer = window.setInterval(() => {
+      setDlElapsed(Math.floor((Date.now() - dlStarted) / 1000));
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [dlStarted]);
 
   useEffect(() => {
     if (!open) return;
@@ -1539,6 +1582,28 @@ function TemplateCreateWizard({
         .filter(
           (s) =>
             s.active && s.content.split(/[,;]/).some((c) => c.trim() === 'images'),
+        )
+        .map((s) => ({
+          label: t('templates.storageAvail', {
+            storage: s.storage,
+            avail: formatBytes(s.avail),
+          }),
+          value: s.storage,
+        })),
+    ],
+    [storagesQuery.data, t],
+  );
+
+  /* 下载镜像的落点：必须是**这个节点上**内容含 import 的存储。
+     不放 iso 目录 —— 磁盘镜像放在那里时 PVE 不解析容器（Ubuntu 官方的 .img
+     其实是 qcow2），会被按裸盘整块复制，建出来的模板开不了机。 */
+  const importStorageOptions = useMemo(
+    () => [
+      { label: t('templates.wizStoragePlaceholder'), value: '' },
+      ...(storagesQuery.data ?? [])
+        .filter(
+          (s) =>
+            s.active && s.content.split(/[,;]/).some((c) => c.trim() === 'import'),
         )
         .map((s) => ({
           label: t('templates.storageAvail', {
@@ -1580,6 +1645,57 @@ function TemplateCreateWizard({
     cores >= 1 &&
     /* 内存气球：留空 = 不回收；填了就必须低于内存上限 */
     (!balloon.trim() || (Number(balloon) >= 128 && Number(balloon) < memory));
+
+  /* ---- 从链接下载镜像 ----
+     让 PVE 自己去拉（download-url），面板只等 UPID：几十 GB 的镜像走面板转发
+     既占内存又容易在反向代理那层超时。下完直接把 volid 选进「镜像来源」，
+     省掉「传完再回来找一遍」这一步。 */
+  const downloadImage = async () => {
+    const url = dlUrl.trim();
+    if (!node || !dlStorage || !url || dlBusy) return;
+    setDlBusy(true);
+    setDlStarted(Date.now());
+    setDlElapsed(0);
+    /* runner 只回报任务，拿不到接口返回值 —— 用一个 holder 把响应带出来 */
+    const holder: { res: StorageDownloadResult | null } = { res: null };
+    try {
+      const task = await runner.run(
+        storagesApi
+          .downloadUrl({ node, storage: dlStorage, url, content: 'import' })
+          .then((res) => {
+            holder.res = res;
+            return res;
+          }),
+        {
+          title: t('templates.dlTask', {
+            name: url.split('/').pop() || url,
+          }),
+          node,
+          /* 云镜像几百 MB 起，慢链路上十几分钟很正常 */
+          timeout: 1_800_000,
+          invalidate: [
+            /* 新文件要立刻出现在「镜像来源」下拉里 */
+            ['templates', 'images', nodeConn, node],
+            ['storages', nodeConn || '', node],
+          ],
+        },
+      );
+      if (task?.exitstatus === 'OK' && holder.res) {
+        const done = holder.res;
+        setImageVolId(done.volid);
+        setDlUrl('');
+        if (done.renamed_to) {
+          toast.info(
+            t('templates.dlRenamed'),
+            t('templates.dlRenamedDetail', { name: done.renamed_to }),
+          );
+        }
+      }
+    } finally {
+      setDlBusy(false);
+      setDlStarted(null);
+    }
+  };
 
   /* ---- 提交（模式 A） ---- */
   const submitImage = async () => {
@@ -1637,6 +1753,12 @@ function TemplateCreateWizard({
         t('templates.wizSubmitted'),
         t('templates.wizSubmittedDesc', { vmid: res.vmid ?? vmid }),
       );
+      /* 后端在「任务成功但结果注定不可用」时回一条警告（目前只有镜像格式
+         与扩展名对不上这一种）。此时模板已经建出来了，再不让用户看到，
+         就只能等开机停在 not a bootable disk 时回来猜。 */
+      if (res.warnings?.length) {
+        toast.warning(t('templates.wizImageRisk'), res.warnings[0]);
+      }
       onCreated();
       onClose();
     } catch (err) {
@@ -1766,15 +1888,79 @@ function TemplateCreateWizard({
               })),
             ]}
             hint={
-              !node
-                ? t('templates.fieldImagePickNode')
-                : imagesQuery.isLoading
-                  ? t('templates.fieldImageScanning')
-                  : (imagesQuery.data ?? []).length === 0
-                    ? t('templates.fieldImageNoneFound')
-                    : t('templates.fieldImageHint')
+              pickedImage?.import_risk
+                ? t('templates.fieldImageRisk')
+                : !node
+                  ? t('templates.fieldImagePickNode')
+                  : imagesQuery.isLoading
+                    ? t('templates.fieldImageScanning')
+                    : (imagesQuery.data ?? []).length === 0
+                      ? t('templates.fieldImageNoneFound')
+                      : t('templates.fieldImageHint')
             }
           />
+
+          {/* 直接从这个节点的存储里「拉」一个镜像：PVE 下载，面板只等任务。
+              下完自动选进上面的「镜像来源」，不用再回列表里翻。
+              下载接口要 storage.manage（等价于「往这台存储写文件」），没这权限
+              就别把按钮摆出来 —— 点了也是 403。 */}
+          {canManageStorage ? (
+            <>
+              <div className="form-grid mt-12">
+                <Input
+                  label={t('templates.fieldDlUrl')}
+                  value={dlUrl}
+                  onChange={(e) => setDlUrl(e.target.value)}
+                  placeholder="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
+                  hint={t('templates.fieldDlUrlHint')}
+                />
+                <Select
+                  label={t('templates.fieldDlStorage')}
+                  value={dlStorage}
+                  onChange={(e) => setDlStorage(e.target.value)}
+                  options={importStorageOptions}
+                  hint={
+                    importStorageOptions.length <= 1
+                      ? t('templates.dlNoImportStorage')
+                      : t('templates.fieldDlStorageHint')
+                  }
+                />
+              </div>
+              <div className="flex gap-8 mt-8">
+                <Button
+                  variant="secondary"
+                  icon={<IconDownload size={15} />}
+                  loading={dlBusy}
+                  disabled={!node || !dlStorage || !dlUrl.trim() || dlBusy}
+                  onClick={() => void downloadImage()}
+                >
+                  {t('templates.dlStart')}
+                </Button>
+              </div>
+
+              {/* 进度条：PVE 的 download-url 不回报百分比，所以画的是不确定态
+                  + 已用时间。别改成按时间猜的百分比 —— 200M 和 3G 的镜像速度
+                  完全两回事，猜出来的数字只会在「卡住了」和「快完了」之间说谎。 */}
+              {dlBusy ? (
+                <div className="mt-8">
+                  <ProgressBar
+                    value={0}
+                    indeterminate
+                    height={6}
+                    label={t('templates.dlRunning', {
+                      time: formatUptime(dlElapsed),
+                    })}
+                  />
+                  <div
+                    className="text-muted mt-8"
+                    style={{ fontSize: 'var(--font-size-sm)' }}
+                  >
+                    {t('templates.dlNoPercent')}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : null}
 
           <div className="wizard-section-title">{t('templates.secSpecs')}</div>
           <div className="form-grid">

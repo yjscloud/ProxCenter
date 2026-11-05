@@ -1222,6 +1222,25 @@ export const enCompute: Partial<Record<MessageKey, string>> = {
     'No usable cloud-init image (.img / .qcow2) found. Upload a disk image to an import directory on the Storage page, or under “Virtual Machines → Import a VM”.',
   'templates.fieldImageHint':
     'From the import and iso directories of the node storages, filtered to .img / .qcow2 / .raw',
+  'templates.fieldImageRisk':
+    'Careful: this file extension is not one PVE parses as a container (Ubuntu’s official .img is really a qcow2). PVE copies it verbatim as a raw disk, so the template boots to “Boot failed: not a bootable disk”. Convert it to a raw image on the host first: qemu-img convert -O raw source.img target.raw.',
+  'templates.wizImageRisk': 'Image format looks wrong; this template probably will not boot',
+  'templates.fieldDlUrl': 'Image URL',
+  'templates.fieldDlUrlHint':
+    'PVE downloads it itself (the panel never proxies the bytes). http / https only; official Ubuntu and Debian cloud image links work as-is.',
+  'templates.fieldDlStorage': 'Download to',
+  'templates.fieldDlStorageHint':
+    'Saved into the import directory of that storage and selected as the image source when done. The file name is corrected by content type (.img → .qcow2).',
+  'templates.dlNoImportStorage':
+    'No storage on this node has the import content type. Add it to a directory storage on the Storage page first.',
+  'templates.dlStart': 'Start download',
+  'templates.dlRunning': 'PVE is downloading · {time} elapsed',
+  'templates.dlNoPercent':
+    'The PVE download task only reports the outcome at the end, never a percentage, so this bar only says “still downloading”. The image is selected automatically when it finishes.',
+  'templates.dlTask': 'Downloading image {name}',
+  'templates.dlRenamed': 'File name corrected to match the image format',
+  'templates.dlRenamedDetail':
+    'Saved as {name}: PVE only parses the container for those extensions, while .img is copied verbatim as a raw disk and the resulting template will not boot.',
   'templates.secSpecs': 'Specs',
   'templates.fieldOstype': 'OS type',
   'templates.fieldBalloon': 'Balloon minimum memory (MB)',

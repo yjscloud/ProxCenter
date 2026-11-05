@@ -19,6 +19,14 @@ export interface ProgressBarProps {
   className?: string;
   /** 无障碍描述 */
   ariaLabel?: string;
+  /**
+   * 不确定态：**知道有事在跑，但拿不到完成度**。
+   *
+   * 典型是 PVE 的 download-url —— 它用 wget 下载，进度只写进 wget 自己的
+   * stderr，任务状态与任务日志里都没有百分比。这种时候宁可画一条来回扫的条，
+   * 也不按时间编一个百分比：编出来的数字会在「卡住」和「快好了」之间说谎。
+   */
+  indeterminate?: boolean;
 }
 
 import { usageColor } from '../../utils/format';
@@ -34,32 +42,39 @@ export function ProgressBar({
   segments,
   className,
   ariaLabel,
+  indeterminate = false,
 }: ProgressBarProps) {
   const t = useT();
   const pct = Math.min(100, Math.max(0, value));
   const animated = useAnimatedNumber(pct);
-  const fill = color ?? usageColor(pct);
+  const fill = color ?? (indeterminate ? 'var(--accent)' : usageColor(pct));
 
   return (
     <div className={`progress-wrap ${className ?? ''}`}>
       {label || showValue ? (
         <div className="progress-meta">
           {label ? <span className="progress-label">{label}</span> : null}
-          {showValue ? (
+          {showValue && !indeterminate ? (
             <span className="progress-value mono">{animated.toFixed(1)}%</span>
           ) : null}
         </div>
       ) : null}
       <div
-        className="progress-track"
+        className={`progress-track${indeterminate ? ' is-indeterminate' : ''}`}
         style={{ height }}
         role="progressbar"
-        aria-valuenow={Math.round(pct)}
+        aria-valuenow={indeterminate ? undefined : Math.round(pct)}
         aria-valuemin={0}
         aria-valuemax={100}
+        aria-busy={indeterminate || undefined}
         aria-label={ariaLabel ?? label ?? t('progress.aria')}
       >
-        {segments && segments.length > 0 ? (
+        {indeterminate ? (
+          <div
+            className="progress-fill progress-fill-indeterminate"
+            style={{ background: fill, boxShadow: `0 0 6px -1px ${fill}` }}
+          />
+        ) : segments && segments.length > 0 ? (
           segments.map((s, i) => (
             <div
               key={i}

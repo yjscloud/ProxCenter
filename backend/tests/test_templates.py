@@ -285,3 +285,60 @@ class TestResponseShape:
         rows = asyncio.run(templates_router.list_ct_system_templates(user={}))
 
         assert [r["name"] for r in rows] == ["rocky-9.tar.xz"]
+
+
+class _ImageClient:
+    """``/templates/images`` 用到的两个读接口。"""
+
+    def __init__(self, storages, volumes) -> None:
+        self._storages = storages  # 节点 -> [存储 dict, ...]
+        self._volumes = volumes  # (存储名, 内容类型) -> [条目 dict, ...]
+
+    async def storages(self, node):
+        return self._storages.get(node, [])
+
+    async def storage_content(self, node, storage, content=None):
+        return self._volumes.get((storage, content), [])
+
+
+class TestCloudImageImportRisk:
+    """扩展名决定 PVE 会不会去解析容器，界面上必须标出来。
+
+    背景：Ubuntu 官方的 ``*-cloudimg-amd64.img`` 是一只 qcow2（3.5 GiB 虚拟 /
+    248 MiB 实际），而 PVE 只对 ``.qcow2/.qed/.raw/.vmdk/.vdi/.vpc`` 跑
+    ``qemu-img info``，``.img`` 直接当裸盘整块复制 —— 系统盘第一扇区不是引导
+    扇区，模板建得出来、开机停在 ``Boot failed: not a bootable disk``。
+    面板读不到 PVE 上的字节，只能按扩展名把这个风险摆到界面上。
+    """
+
+    def _images(self, monkeypatch, volumes) -> list:
+        client = _ImageClient(
+            {"node01": [{"storage": "local", "content": "iso,import"}]},
+            {("local", "iso"): volumes},
+        )
+        monkeypatch.setattr(templates_router, "get_client", lambda: client)
+        return asyncio.run(templates_router.list_cloud_images(node="node01", user={}))
+
+    def test_img_extension_is_flagged(self, monkeypatch) -> None:
+        rows = self._images(
+            monkeypatch,
+            [
+                {
+                    "volid": "local:iso/ubuntu-24.04-minimal-cloudimg-amd64.img",
+                    "size": 248 * 1024 * 1024,
+                }
+            ],
+        )
+
+        assert rows[0]["import_risk"] is True
+
+    def test_qcow2_and_raw_are_not_flagged(self, monkeypatch) -> None:
+        rows = self._images(
+            monkeypatch,
+            [
+                {"volid": "local:iso/ubuntu-24.04.qcow2", "size": 3 * 1024**3},
+                {"volid": "local:iso/debian-12.raw", "size": 2 * 1024**3},
+            ],
+        )
+
+        assert [r["import_risk"] for r in rows] == [False, False]

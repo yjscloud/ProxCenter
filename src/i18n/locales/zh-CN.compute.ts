@@ -1009,6 +1009,28 @@ export const zhCompute = {
   'templates.fieldImageNoneFound':
     '未找到可用的 cloud-init 镜像（.img / .qcow2）。可以到「存储」页把磁盘镜像上传到 import 目录，或用「虚拟机 → 导入虚拟机」上传。',
   'templates.fieldImageHint': '来自节点各存储的 import 与 ISO 目录，已筛选 .img / .qcow2 / .raw',
+  'templates.fieldImageRisk':
+    '注意：这个文件的扩展名不在 PVE 会解析的容器清单里（Ubuntu 官方的 .img 实际是 qcow2）。PVE 会把容器按裸盘整块复制，建出来的模板开机只会停在「Boot failed: not a bootable disk」。请先在宿主机上转成裸盘再导入：qemu-img convert -O raw 源文件 目标.raw。',
+  'templates.wizImageRisk': '镜像格式可能不对，这个模板大概率开不了机',
+  /* ------------------------------------------------- 从链接下载镜像（PVE 拉取） */
+  'templates.fieldDlUrl': '镜像下载链接',
+  'templates.fieldDlUrlHint':
+    '交给 PVE 自己下载（面板不中转字节），支持 http / https。Ubuntu、Debian 官方云镜像的链接可以直接贴进来。',
+  'templates.fieldDlStorage': '下载到',
+  'templates.fieldDlStorageHint':
+    '存进所选存储的 import 目录，完成后会自动选为上面的镜像来源。文件名会按内容校正（.img → .qcow2）。',
+  'templates.dlNoImportStorage':
+    '这个节点上没有内容类型含 import 的存储。先到「存储」页给某个目录型存储勾上 import，再来下载。',
+  'templates.dlStart': '开始下载',
+  'templates.dlRunning': 'PVE 正在下载 · 已用 {time}',
+  /* 说清楚这条为什么不会填满：PVE 的下载任务中途不回报百分比，猜一个数字
+     反而会误导（慢链路下 1% 可能停两分钟）。 */
+  'templates.dlNoPercent':
+    'PVE 的下载任务只在结束时给结果，中途不回报百分比，所以这条只表示「正在下载」。下载完成后会自动选中该镜像。',
+  'templates.dlTask': '下载镜像 {name}',
+  'templates.dlRenamed': '文件名已按镜像格式校正',
+  'templates.dlRenamedDetail':
+    '已保存为 {name}：PVE 只有见到这些后缀才会解析容器，.img 会被按裸盘整块复制，建出来的模板开不了机。',
   'templates.secSpecs': '规格',
   'templates.fieldOstype': '操作系统类型',
   'templates.fieldBalloon': '最低保留内存（MB）',

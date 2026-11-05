@@ -1400,6 +1400,31 @@ class RoleIn(BaseModel):
     permissions: List[str] = Field(default_factory=list)
 
 
+# ------------------------------------------------------------- storage
+class StorageDownloadUrl(BaseModel):
+    """让 PVE 直接把镜像从 URL 下载进存储（``POST .../storage/{s}/download-url``）。
+
+    面板不碰字节：下载由 PVE 自己发起，几百 MB 的云镜像几分钟内落盘，返回任务
+    UPID 由调用方等。``content`` 决定落到哪个内容目录，也决定文件名规则：
+
+    * ``import`` —— 磁盘镜像（.qcow2 / .raw / .vmdk / .ova），做云镜像模板走这里；
+    * ``iso``    —— 安装盘（.iso）。
+
+    ``filename`` 不填就用 URL 最后一段。面板会按内容类型校正后缀：``import``
+    下 ``.img`` 一律改成 ``.qcow2``（PVE 只对白名单后缀跑 ``qemu-img info``，
+    ``.img`` 会被当裸盘整块复制，建出来的机器开不了机 —— 见 vmconfig.PVE_IMAGE_EXT）。
+    """
+
+    node: str
+    storage: str
+    url: str
+    content: str = "import"
+    filename: Optional[str] = None
+    checksum: Optional[str] = None
+    checksum_algorithm: Optional[str] = None
+    verify_certificates: bool = True
+
+
 # ----------------------------------------------------- import / export
 class VmImportRequest(BaseModel):
     """从 OVF / OVA 导入虚拟机（VMware 互操作）。

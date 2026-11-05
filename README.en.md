@@ -348,8 +348,17 @@ On a host without Node.js, build on a machine that has it, copy `dist/` back and
   mount point management, snapshots, full-only clones, migration, and root password resets over SSH
   via `pct exec` on the host.
 - cloud-init template pipeline: one action builds a template from a cloud image, waiting for each
-  task between steps, and deletes the temporary VM on failure. Images must live on dir / NFS / CIFS
-  storage.
+  task between steps, and deletes the temporary VM on failure. The system disk is imported by PVE
+  itself via `import-from=<image>` (the old `importdisk` endpoint is gone in PVE 9.2). **The file
+  extension must match the real format** (`.qcow2` / `.raw` / `.vmdk` / `.vdi` / `.vpc` / `.qed`):
+  PVE only parses those, and copies anything else verbatim as a raw disk. Ubuntu's official
+  `*-cloudimg-amd64.img` is really a qcow2, so it ends up with no boot signature and the template
+  boots to `Boot failed: not a bootable disk`. Uploads through the panel are detected by file magic
+  and renamed accordingly; files dropped in through PVE directly are not, so rename them or run
+  `qemu-img convert -O raw` first. You do not have to download by hand either: paste an image URL in
+  the wizard and **PVE** fetches it into the import directory of the chosen storage (the panel never
+  proxies the bytes), then selects it as the image source. The file name is corrected to a suffix
+  PVE parses (`.img` → `.qcow2`).
 - Networking and firewall: node-level bridges, bonds and VLANs with changes pending until you apply
   them, plus a wrapper around Proxmox's native firewall covering three scopes, in/out rules with
   protocols, ports, sources and destinations, PVE macros and ordering, security groups, IP sets and
@@ -504,10 +513,15 @@ it only logs a warning, which is what lets you get back in and fix it.
 
 **The console asks for a user name and password**, because an API token cannot access `vncproxy`.
 Add a PVE account under Settings, ideally one with only `PVEVMUser`. **It connects but stays black**
-because cloud images do not write boot output to the graphical console: the panel configures
-`serial0` and `vga: serial0` for templates it builds, but a hand-made template needs them added.
+because cloud images do not write boot output to the graphical console. Templates the panel builds
+attach `serial0` but deliberately leave `vga` alone — pointing `vga` at the serial port hides the
+graphical console, and an image without `console=ttyS0` goes black right after GRUB.
 
-**Template building gets stuck at `importdisk`**: the image must be on dir / NFS / CIFS storage.
+**A template was built, but clones stop at `Boot failed: not a bootable disk`**: the image extension
+does not match its real format. Ubuntu's `*-cloudimg-amd64.img` is a qcow2, PVE does not recognise
+that extension and copies the container verbatim as the system disk, so sector 0 is not a boot
+sector. Check with `qemu-img info <image>` and rebuild after converting it to raw
+(`qemu-img convert -O raw`) or renaming it to `.qcow2`.
 
 **Docker: the container will not start or keeps restarting.** Almost always the database password.
 Run `docker compose logs panel | tail -30` and look for `Access denied` / `Can't connect`. See the

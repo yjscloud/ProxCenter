@@ -233,6 +233,23 @@ VALID_NUMA_POLICIES = ("bind", "interleave", "preferred")
 VALID_EFI_TYPES = ("2m", "4m")
 VALID_TPM_VERSIONS = ("v1.2", "v2.0")
 
+#: PVE 会去 ``qemu-img info`` 解析容器的扩展名，逐字对齐
+#: ``PVE::Storage::Plugin::file_size_info``。
+#:
+#: 名字不在这张表里的文件（典型：Ubuntu 官方的 ``*-cloudimg-amd64.img``，实际
+#: 是一只 qcow2 套着 ``.img`` 外壳），PVE 不解析容器、直接按裸盘整块复制 ——
+#: 复制出来的系统盘第一扇区是 ``QFI\xfb`` 而不是 ``55 aa``，虚拟机开机就停在
+#: ``Boot failed: not a bootable disk``，而 PVE 那边每一步都是“成功”的。
+#:
+#: 上传接口会按文件 magic 提前拦一次（见 ``routers/storages``）；存量文件与
+#: 走 PVE 网页/命令行传进来的文件拦不到，只能在这些地方提示。
+PVE_IMAGE_EXT = (".qcow2", ".qed", ".raw", ".vmdk", ".vdi", ".vpc")
+
+
+def image_format_may_be_misread(volid: Optional[str]) -> bool:
+    """这个镜像卷的扩展名会不会让 PVE 按裸盘处理（= 若是 qcow2 就会被导坏）。"""
+    return bool(volid) and not str(volid).lower().endswith(PVE_IMAGE_EXT)
+
 
 def normalize_cpuset(value: Optional[str]) -> Optional[str]:
     """校准 cpuset（``0-3,8`` 这种写法），非法返回 ``None``。

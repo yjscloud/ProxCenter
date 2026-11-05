@@ -761,6 +761,9 @@ export const enNode: Partial<Record<MessageKey, string>> = {
   'storages.fileEmpty': 'The file is empty',
   'storages.uploadOk': 'Upload complete',
   'storages.uploadOkDetail': '{name} uploaded to {storage}',
+  'storages.uploadRenamed': 'File name corrected to match the real format',
+  'storages.uploadRenamedDetail':
+    '{from} is really a qcow2 disk image, so it was saved as {to}. PVE only parses the container when it sees .qcow2; otherwise it copies the file verbatim as a raw disk and the machine will not boot.',
   'storages.featureUnavailable': 'Feature unavailable',
   'storages.uploadNotImpl': 'The backend has not implemented file upload yet',
   'storages.uploadFailed': 'Upload failed',

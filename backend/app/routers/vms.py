@@ -1156,12 +1156,28 @@ async def _create_vm_core(
         ),
     )
 
+    # 镜像扩展名不在 PVE 的解析清单里时，PVE 会把 qcow2 容器按裸盘整块复制：
+    # 建机任务全绿、机器也在，但系统盘第一扇区没有引导签名，开机就是
+    # 「Boot failed: not a bootable disk」（见 vmconfig.PVE_IMAGE_EXT）。
+    # 不拦 —— 真 raw 的 .img 是正常用法 —— 但必须回一条警告，别让它在开机那一刻
+    # 才暴露：那时 PVE 侧没有任何失败记录可查。
+    warnings: List[str] = []
+    if import_disk and vmconfig.image_format_may_be_misread(payload.cloud_image):
+        warnings.append(
+            f"{payload.cloud_image} 的扩展名不在 PVE 会解析的容器清单内"
+            f"（{'/'.join(vmconfig.PVE_IMAGE_EXT)}），PVE 会按裸盘整块复制。"
+            "若这个文件实际是 qcow2（Ubuntu 官方的 *.img 就是），"
+            "这台机器的系统盘不可引导，开机会停在 “Boot failed: not a bootable disk”；"
+            f"请先转成裸盘再导入：qemu-img convert -O raw 源文件 目标.raw 。"
+        )
+
     return {
         "task": upid,
         "vmid": vmid,
         "node": payload.node,
         "post_steps": post_steps,
         "template": payload.template_mode,
+        "warnings": warnings,
     }
 
 

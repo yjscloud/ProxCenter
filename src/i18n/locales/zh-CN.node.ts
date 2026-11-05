@@ -738,6 +738,11 @@ export const zhNode = {
   'storages.fileEmpty': '该文件为空',
   'storages.uploadOk': '上传成功',
   'storages.uploadOkDetail': '{name} 已上传到 {storage}',
+  /* 后端按文件 magic 发现「叫 .img，内容其实是 qcow2」时会把后缀改对，
+     否则 PVE 会当裸盘复制，建出来的机器开不了机。名字变了必须说一声。 */
+  'storages.uploadRenamed': '文件名已按实际格式修正',
+  'storages.uploadRenamedDetail':
+    '{from} 的内容是 qcow2 磁盘镜像，已改名为 {to} 保存 —— PVE 只有见到 .qcow2 才会解析容器，否则会按裸盘整块复制，机器开不了机。',
   'storages.featureUnavailable': '功能暂不可用',
   'storages.uploadNotImpl': '后端尚未实现文件上传接口',
   'storages.uploadFailed': '上传失败',

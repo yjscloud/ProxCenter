@@ -1225,7 +1225,7 @@ function UploadDialog({
     setUnsupported(false);
 
     try {
-      await storagesApi.upload(
+      const res = await storagesApi.upload(
         { node: storage.node, storage: storage.storage, content },
         file,
         (p) => setProgress(p),
@@ -1234,6 +1234,18 @@ function UploadDialog({
         t('storages.uploadOk'),
         t('storages.uploadOkDetail', { name: file.name, storage: storage.storage }),
       );
+      /* 后端按文件 magic 认出这是 qcow2/vmdk 后会把后缀改对（否则 PVE 当裸盘
+         复制，建出来的机器开不了机）。名字变了必须说一声，不然用户在列表里
+         找不到自己刚传的那个文件。 */
+      if (res?.renamed_to && res.renamed_to !== file.name) {
+        toast.info(
+          t('storages.uploadRenamed'),
+          t('storages.uploadRenamedDetail', {
+            from: file.name,
+            to: res.renamed_to,
+          }),
+        );
+      }
       onUploaded();
     } catch (err) {
       const notImpl = isNotImplemented(err);

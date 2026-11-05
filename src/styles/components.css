@@ -1194,6 +1194,31 @@
   transition: width var(--transition);
 }
 
+/* 不确定态：知道有事在跑，但拿不到完成度（如 PVE 的 download-url）。
+   一条来回扫的窄光带 —— 不冒充百分比，但一眼能看出「还在动」。 */
+.progress-fill-indeterminate {
+  width: 38%;
+  animation: progress-sweep 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-sweep {
+  0% {
+    transform: translateX(-105%);
+  }
+  100% {
+    transform: translateX(275%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 关掉动画时给一条静止的半透明条：状态还在，但不晃眼 */
+  .progress-fill-indeterminate {
+    width: 100%;
+    opacity: 0.35;
+    animation: none;
+  }
+}
+
 .usage-row {
   display: flex;
   flex-direction: column;

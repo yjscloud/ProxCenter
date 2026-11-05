@@ -2303,6 +2303,43 @@ export interface CloudImageItem {
    * PVE 对这两个目录的扩展名规则不同，出问题时得知道该去哪个目录找。
    */
   content?: string;
+  /**
+   * 扩展名不在 PVE 会解析的容器清单里 —— 也就是说 PVE 可能把它按裸盘整块复制。
+   *
+   * 典型就是 Ubuntu 官方的 `*-cloudimg-amd64.img`：内容是 qcow2，名字却是
+   * `.img`。这样导入出来的系统盘没有引导签名，开机会停在
+   * `Boot failed: not a bootable disk`（见后端 `vmconfig.PVE_IMAGE_EXT`）。
+   */
+  import_risk?: boolean;
+}
+
+/**
+ * 让 PVE 自己从 URL 把镜像下载进存储。
+ *
+ * 面板只转发参数、不代理字节：几十 GB 的镜像走面板既占内存又容易在反向代理层
+ * 超时，PVE 的 download-url 是原生任务（进度、限速、重试都由它管）。
+ */
+export interface StorageDownloadRequest {
+  node: string;
+  storage: string;
+  url: string;
+  /** import（磁盘镜像，做模板用这个）或 iso（安装盘） */
+  content?: 'iso' | 'import';
+  /** 不填就用 URL 最后一段。面板会按内容类型校正后缀（import 下 .img → .qcow2） */
+  filename?: string;
+  checksum?: string;
+  checksum_algorithm?: string;
+  verify_certificates?: boolean;
+}
+
+export interface StorageDownloadResult {
+  /** PVE 任务 UPID，任务结束才有文件 */
+  task: string;
+  /** 下载完成后就是这一卷，可直接当作模板镜像来源 */
+  volid: string;
+  filename: string;
+  /** 非空表示后缀被校正过（典型：.img → .qcow2，否则 PVE 会按裸盘复制） */
+  renamed_to?: string;
 }
 
 /** 任意可挂载的 ISO / 镜像卷 */
@@ -2538,6 +2575,14 @@ export interface VmCreateResponse {
    * 100G」；失败（存储不支持、模板盘更大等）如实写明原因。
    */
   disk_note?: string;
+  /**
+   * 建机成功了、但结果可能不可用时的警告。
+   *
+   * 目前只有一种：源镜像的扩展名不在 PVE 会解析的清单里（典型是 Ubuntu 官方的
+   * `*.img`，实际是 qcow2）。PVE 会把容器按裸盘整块复制，机器能建出来却永远
+   * 开不了机（`Boot failed: not a bootable disk`），必须当面告诉用户。
+   */
+  warnings?: string[];
 }
 
 export interface VmCloneRequest {

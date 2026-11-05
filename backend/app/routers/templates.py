@@ -59,6 +59,12 @@ router = APIRouter(prefix="/api", tags=["templates"])
 #: 镜像」，不能直接当模板的系统盘来源。
 CLOUD_IMAGE_EXT = (".img", ".qcow2", ".raw")
 
+#: PVE 会去解析容器的扩展名。名字不在这张表里，PVE 就按裸盘整块复制 ——
+#: Ubuntu 官方的 ``*-cloudimg-amd64.img`` 正是一只 qcow2 套着 ``.img`` 外壳，
+#: 那样复制出来的系统盘第一扇区没有引导签名，开机停在
+#: ``Boot failed: not a bootable disk``。判断只有一份，见 ``vmconfig.PVE_IMAGE_EXT``。
+CLOUD_IMAGE_SAFE_EXT = vmconfig.PVE_IMAGE_EXT
+
 #: cloud-init 镜像可能落在哪几种存储内容里。
 #:
 #: 两处都扫不是冗余：PVE 把存储内容按类型隔开，同一批扩展名在两边待遇不同 ——
@@ -447,6 +453,10 @@ async def list_cloud_images(
                     # 标出来源目录：import 与 iso 是两回事，出了问题能一眼
                     # 看出该去哪个目录找这个文件。
                     "content": content,
+                    # 扩展名不在 PVE 的解析清单里（典型：Ubuntu 官方的 *.img，
+                    # 实际是 qcow2）。这样的文件导入后盘可能是坏的，界面据此
+                    # 在选中时给一句提示，别等开不了机再回来查。
+                    "import_risk": vmconfig.image_format_may_be_misread(volid),
                 }
             )
     return images
@@ -486,6 +496,20 @@ async def build_template_from_image(
 
     def record(name: str, ok: bool, detail: str = "") -> None:
         steps.append({"step": name, "ok": ok, "detail": detail})
+
+    # --- 0. 镜像格式预检 -----------------------------------------------
+    # 不阻断（真有 raw 的 .img），但必须在结果里留一条：这条流水线在格式判错时
+    # 整条都是「成功」的，故障要等有人开机才暴露，届时已经找不到原因了。
+    if vmconfig.image_format_may_be_misread(payload.image):
+        record(
+            "镜像格式预检",
+            False,
+            f"{payload.image} 的扩展名不在 PVE 会解析的清单内"
+            f"（{'/'.join(CLOUD_IMAGE_SAFE_EXT)}），PVE 会按裸盘整块复制。"
+            "若这个文件实际是 qcow2（Ubuntu 官方 *.img 就是），建出来的模板"
+            "开机只会停在 “Boot failed: not a bootable disk”。"
+            f"请先转成裸盘再导入：qemu-img convert -O raw 源文件 目标.raw 。",
+        )
 
     # --- 1. create the shell VM ---------------------------------------
     # 固件与机型要配套算一遍：OVMF 在 i440fx 上不可用（那样建出来的模板直接引导

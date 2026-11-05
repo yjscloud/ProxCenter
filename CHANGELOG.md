@@ -5,6 +5,39 @@
 
 每次发布在这里按「新增 / 变更 / 修复 / 安全」分类记录。
 
+## [v0.4.4] — 2026-11-05
+
+这一版收的是一个「模板建得出来、但永远开不了机」的坑：Ubuntu 官方云镜像的 `.img`
+其实是 qcow2，PVE 不认这个后缀，会把整只容器按裸盘复制进系统盘，第一扇区于是
+没有引导签名。同时补上「从链接直接下载镜像」，省掉先下到本地再上传。
+
+### 新增
+
+- **从链接下载镜像**：模板向导里填 URL，由 **PVE 自己**下载到所选存储的 import
+  目录（`POST /api/storages/download-url`，面板不中转字节，几十 GB 的镜像不会占
+  内存或撑爆反向代理），下完自动选为镜像来源。落地前校正文件名后缀、拒收压缩包、
+  校验存储内容类型与可用性。
+- **镜像格式风险提示**：镜像列表返回 `import_risk`，向导选中该镜像时直接警示；
+  建机接口返回 `warnings`，创建成功后弹提醒。
+- `ProgressBar` 增加**不确定态**（`indeterminate`）：用于 PVE 不回报百分比的长
+  任务（如 `download-url` 用 wget 下载，进度只写进 wget 自己的 stderr）。
+
+### 修复
+
+- **从 cloud 镜像建的模板开机停在 `Boot failed: not a bootable disk`**：上传时按
+  文件头 magic 判定容器格式 —— import 存储把 `.img` 自动校正为 `.qcow2`，iso 存储
+  直接拒收磁盘镜像并给出两条可行做法。PVE 只对
+  `.qcow2/.qed/.raw/.vmdk/.vdi/.vpc` 跑 `qemu-img info`，其余后缀一律按裸盘整块复制。
+- 判定收敛到 `vmconfig.PVE_IMAGE_EXT` 与 `image_format_may_be_misread()`；导入流水线
+  第一步会显式记一条「镜像格式预检」，不再让这类故障一路静默到开机那一刻。
+
+### 变更
+
+- README 中英同步模板流水线与排障；修掉「面板会给模板配 `vga: serial0`」这处与代码
+  相反的说法 —— 代码是刻意不动 `vga` 的，指过去 VNC 里就只剩串口输出。
+- 新增 `backend/tests/test_image_format.py`（magic 识别、探测后流指针必须还原、
+  下载文件名校正）；`test_templates.py` 补 `import_risk` 用例。
+
 ## [v0.4.3] — 2026-11-04
 
 这一版的重点是「一次建多台」：批量下发、批量静态地址与逐台进度都收在同一个

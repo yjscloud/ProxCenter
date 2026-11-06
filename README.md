@@ -186,16 +186,16 @@ curl -fsSLO https://raw.githubusercontent.com/yjscloud/pvecenter/main/docker-com
 docker compose up -d
 ```
 
-打开 `http://你的服务器IP:8080`，账号 `admin`，口令 `PveCenter@2026`。这个口令得改。
+打开 `http://你的服务器IP:8080`，账号 `admin`，口令 `pvecenter@2026`。这个口令得改。
 
 三个口令都在 `docker-compose.yml` 里，搜 `★ 改这里`。口令行长这样：
 
 ```yaml
-ADMIN_PASSWORD: ${ADMIN_PASSWORD:-PveCenter@2026}
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-pvecenter@2026}
 ```
 
 `:-` 是 compose 的「取默认值」记号，`.env` 或环境变量给了就用那个、没给才用后面这段；
-`-`、`$`、`{`、`}` 都只是语法，真正的口令是 `PveCenter@2026` 那一段，改的时候只动它：
+`-`、`$`、`{`、`}` 都只是语法，真正的口令是 `pvecenter@2026` 那一段，改的时候只动它：
 
 ```yaml
 ADMIN_PASSWORD: ${ADMIN_PASSWORD:-MyPassw0rd2026}

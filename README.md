@@ -19,6 +19,23 @@ QEMU 虚拟机、LXC 容器、cloud-init 模板、网络与防火墙、快照备
 > 关键词：Proxmox VE 管理面板 · PVE 面板 · PVE Web UI · LXC 容器管理 · QEMU / KVM ·
 > cloud-init 模板 · 自托管虚拟化平台 · Proxmox alternative UI · homelab · self-hosted
 
+## 联系与反馈
+
+遇到问题、想提功能建议，或者需要部署协助，欢迎扫码加微信；也可以在
+[Issues](https://github.com/yjscloud/pvecenter/issues) 里留言。部分功能还没有经过充分测试，
+遇到问题直接说，不用客气。
+
+pvecenter 由个人维护。如果它帮你省下了时间，欢迎自愿赞赏，用于服务器、测试环境和后续维护；
+不赞赏也完全不影响使用与技术支持。
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/wechat.png" alt="微信联系方式：问题反馈与部署协助" width="180" height="257"><br><sub><b>微信联系</b> · 问题反馈 / 部署协助</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/weixin.jpg" alt="微信赞赏码：自愿支持项目维护" width="180" height="257"><br><sub><b>微信赞赏</b> · 自愿支持</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/zhifubao.jpg" alt="支付宝赞赏码：自愿支持项目维护" width="180" height="257"><br><sub><b>支付宝赞赏</b> · 自愿支持</sub></td>
+  </tr>
+</table>
+
 ## 界面预览
 
 > 截图统一放在 `docs/screenshots/`，建议 **1600×900**（16:9）。下面用到的文件名可直接替换；
@@ -798,13 +815,6 @@ Cookie），跨站页面读不到它、伪造不出来；WebSocket 握手同样�
 `npm run verify` 与后端 `pytest`；功能建议请附上使用场景，方便判断优先级。
 
 如果这个项目对你有帮助，点一个 Star 是最直接的支持。
-
-## 联系与反馈
-
-<img src="docs/screenshots/wechat.png" alt="微信联系方式" width="240">
-
-需要帮助、发现功能有问题、或者想提新需求，都欢迎扫码加微信找我。部分功能还没经过充分测试，
-可能无法正常使用，遇到问题直接说。
 
 ---
 

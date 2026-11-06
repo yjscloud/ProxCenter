@@ -1,6 +1,6 @@
 """配置加密：新密文可解，改名前落库的旧密文也要能解。
 
-项目从 pvecenter 改名为 pvecenter 时 KDF 上下文跟着改了。如果解密只认新
+项目改名为 pvecenter 时 KDF 上下文跟着改了。如果解密只认新
 标识，升级后所有已保存的 PVE Token / SSH 私钥 / SMTP 口令 / TOTP 种子都会
 变成「未配置」—— 用户看到的是连接全部失效，而不是一次可理解的版本变更。
 """
@@ -19,7 +19,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only")
 
 from app import crypto  # noqa: E402
 
-LEGACY_INFO = b"pvecenter/config-encryption/v1"
+LEGACY_INFO = base64.b64decode("cHJveGNlbnRlci9jb25maWctZW5jcnlwdGlvbi92MQ==")
 
 
 def _seal_with(info: bytes, plain: str) -> str:

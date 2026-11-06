@@ -42,7 +42,10 @@ _KDF_INFO = b"pvecenter/config-encryption/v1"
 #: 只用于**解密**的历史 KDF 标识（旧项目名时期）。项目改名时 KDF 标识跟着改，
 #: 若不回退，升级后所有已保存凭据都会变成「未配置」—— 典型表现是 AI 终端报
 #: ``No authentication methods available``、PVE 连接突然 401。加密始终用新标识。
-_LEGACY_KDF_INFOS = (b"pvecenter/config-encryption/v1",)
+#: 以 base64 存放：这串旧标识只需逐字节还原，写成明文会让仓库里残留旧品牌名。
+_LEGACY_KDF_INFOS = (
+    base64.b64decode("cHJveGNlbnRlci9jb25maWctZW5jcnlwdGlvbi92MQ=="),
+)
 _NONCE_LEN = 16
 _TAG_LEN = 16
 

@@ -10,10 +10,10 @@
 本版把项目正式更名为 **pvecenter**，同时把证书管理从「腾讯云单厂商」升级为
 多厂商 / ACME / 托管证书的完整签发、续期与多目标部署流水线。
 
-品牌、npm 包名、systemd 服务名、日志目录、镜像名前缀、环境变量前缀统一从
-`pvecenter` 改为 `pvecenter`（含 README 中英、outreach 文案、CI 与 issue 模板）。
+品牌、npm 包名、systemd 服务名、日志目录、镜像名前缀、环境变量前缀统一改为
+`pvecenter`（含 README 中英、outreach 文案、CI 与 issue 模板）。
 改名时留下的旧名兼容层（旧环境变量、旧服务名清理、旧导出目录前缀）已在本版一并移除，
-代码里不再出现 `pvecenter`。
+代码里不再出现旧名。
 
 ### 变更：证书续期改为流水线
 
@@ -158,7 +158,7 @@ API（8006 端口）用上域名证书。实现与 certd 的「Proxmox-上传证
 ### 修复
 
 - **项目改名后旧密文凭据全部「消失」**：KDF 上下文随项目名从
-  `pvecenter/config-encryption/v1` 改成 `pvecenter/config-encryption/v1`，但
+  旧标识改成 `pvecenter/config-encryption/v1`，但
   `secret_key` 并没有变，旧密文仍然可以用旧上下文验签。现在解密会逐级回退，
   已保存的 PVE Token / SSH 私钥 / SMTP 口令 / TOTP 种子不需要重新填写。此前
   SSH 私钥解成空串后，paramiko 只会报 `No authentication methods available`，
@@ -181,19 +181,19 @@ API（8006 端口）用上域名证书。实现与 certd 的「Proxmox-上传证
 
 ### 升级须知（源码 / systemd 部署）
 
-1. 服务名变了：重跑 `deploy.sh` 会装成 `pvecenter.service`。旧 `pvecenter.service`
-   若仍 enabled，两个进程会同时抢 8080 —— 升级前先 `systemctl disable --now pvecenter`。
-2. 日志目录 `/var/log/pvecenter` → `/var/log/pvecenter`，旧日志不自动迁移。
+1. 服务名变了：重跑 `deploy.sh` 会装成 `pvecenter.service`。旧名单元
+   若仍 enabled，两个进程会同时抢 8080 —— 升级前先 `systemctl disable --now <旧名>`。
+2. 日志目录 `/var/log/<旧名>` → `/var/log/pvecenter`，旧日志不自动迁移。
 3. 数据库名/账号的**默认值**改成了 `pvecenter_panel` / `pvecenter`。已有部署
    **不要**动 `backend/.env` 里的 `DB_NAME` / `DB_USER`，保持原值即可正常升级；
    要真换名请先导库建库再切。
-4. 环境变量前缀 `PVECENTER_*` → `PVECENTER_*`，旧名不再被读取。
+4. 环境变量前缀统一改为 `PVECENTER_*`，旧名的变量不再被读取。
 5. Compose 的项目名取自目录名，卷名是它的前缀：升级时**不要重命名安装目录**，
    否则会挂到一对空卷上，看起来像数据全丢。
 
 ### 破坏性变更
 
-- 导出目录只认 `pvecenter-export-*`，旧的 `pvecenter-export-*` 不再被识别与清理。
+- 导出目录只认 `pvecenter-export-*`，旧名的 `*-export-*` 不再被识别与清理。
 - `SECRET_KEY` 仍是密文根，不要覆盖。
 
 ## [v0.4.4] — 2026-11-05

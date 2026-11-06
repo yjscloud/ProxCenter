@@ -596,7 +596,7 @@ export const zhSettings = {
   'settings.urlSavedHint': '邮件里的链接将统一使用 {url}',
   'settings.urlCleared': '已清除：邮件链接将回落到本次请求的 Host',
   'settings.urlBlockTitle': '对外访问地址',
-  'settings.urlBlockHint': '例如 https://prox.yjscloud.com（协议可省略，默认 https）',
+  'settings.urlBlockHint': '例如 https://pvecenter.yjscloud.com（协议可省略，默认 https）',
   'settings.urlLabel': '面板地址',
   'settings.urlHint': '重置密码、注册审批、飞书回调的链接都用它拼接。面板挂在反代 / frp 后面时请求 Host 常是 localhost，收件人打不开，需填外部可达的域名；留空则回落到请求 Host。',
   'settings.urlPreviewBlock': '生效后的链接',

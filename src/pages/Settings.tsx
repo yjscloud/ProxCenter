@@ -2140,7 +2140,7 @@ function PanelUrlSection() {
             <Input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://prox.yjscloud.com"
+              placeholder="https://pvecenter.yjscloud.com"
               className="mono"
               autoComplete="off"
               disabled={!canManage}

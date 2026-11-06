@@ -181,7 +181,7 @@ async def _panel_url(request: Request) -> str:
     """面板自身地址，用来在邮件里给出可点的登录链接。
 
     优先用管理员在「设置 → 面板全局地址」里配置的对外域名
-    （如 ``https://prox.yjscloud.com``）；未配置时才回落到本次请求的
+    （如 ``https://pvecenter.yjscloud.com``）；未配置时才回落到本次请求的
     base_url —— 走反向代理时它常是 ``localhost``，收件人打不开。
     """
     return await panel_url.resolve(request)

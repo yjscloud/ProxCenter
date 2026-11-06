@@ -616,7 +616,7 @@ export const enSettings: Partial<Record<MessageKey, string>> = {
   'settings.urlSavedHint': 'Links in emails will use {url}',
   'settings.urlCleared': 'Cleared: email links fall back to the Host of the current request',
   'settings.urlBlockTitle': 'External address',
-  'settings.urlBlockHint': 'e.g. https://prox.yjscloud.com (the scheme may be omitted; https is assumed)',
+  'settings.urlBlockHint': 'e.g. https://pvecenter.yjscloud.com (the scheme may be omitted; https is assumed)',
   'settings.urlLabel': 'Panel URL',
   'settings.urlHint': 'Password-reset, registration-approval and Feishu callback links are all built from it. Behind a reverse proxy / frp the request Host is often localhost, which recipients cannot open, so enter an externally reachable domain; blank falls back to the request Host.',
   'settings.urlPreviewBlock': 'Resulting links',

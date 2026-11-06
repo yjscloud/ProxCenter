@@ -8,7 +8,7 @@ Host 可能是 ``localhost:8080`` 或内网 IP —— 邮件里发出的重置�
 收件人根本打不开的地方。
 
 所以这里提供一份**全局配置**：管理员在「设置」里填一次对外地址
-（如 ``https://prox.yjscloud.com``），所有外发链接统一用它；未配置时才回落到
+（如 ``https://pvecenter.yjscloud.com``），所有外发链接统一用它；未配置时才回落到
 本次请求的 Host（保持向后兼容）。
 """
 from __future__ import annotations

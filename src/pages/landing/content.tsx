@@ -407,10 +407,10 @@ export const DOMAINS: Domain[] = [
         icon: <IconBell size={15} />,
       },
       {
-        name: ['网站证书', 'Website certificates'],
+        name: ['证书管理', 'Certificates'],
         desc: [
-          '腾讯云免费 DV 证书申请、签发、部署与到期自动续期一条龙',
-          'Free Tencent Cloud DV certificates: request, issue, deploy and auto-renew before expiry',
+          '腾讯云 / 阿里云 / 华为云或自有 ACME 账号（泛域名、多域名），申请、签发、部署与到期续期全流程',
+          'Tencent / Aliyun / Huawei Cloud or your own ACME account (wildcard, multi-domain): request, issue, deploy and renew end to end',
         ],
         icon: <IconKey size={15} />,
       },
@@ -1031,7 +1031,7 @@ export const SCENARIOS: Scenario[] = [
       ['IP 地址池维护可复用地址段，创建时挑一个即可', 'The IP pool keeps reusable ranges, so you just pick one when creating'],
       ['证书申请、签发、部署与到期续期全流程自动完成', 'Certificate request, issuance, deployment and renewal run end to end automatically'],
     ],
-    tags: [['模板', 'Templates'], ['IP 池', 'IP pools'], ['网站证书', 'Certificates']],
+    tags: [['模板', 'Templates'], ['IP 池', 'IP pools'], ['证书', 'Certificates']],
   },
   {
     id: 'security',

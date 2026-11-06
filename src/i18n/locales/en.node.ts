@@ -682,7 +682,6 @@ export const enNode: Partial<Record<MessageKey, string>> = {
   /* ------------------------------------------------------------ Storage */
   'storages.title': 'Storage',
   'storages.subtitle': '{n} storage pools · {size} total capacity',
-  'storages.uploadIso': 'Upload ISO',
   'storages.selectFirst': 'Select a storage pool first',
   'storages.selectFirstDetail':
     'Click "Browse" on a row in the table below to pick the target storage',
@@ -744,7 +743,7 @@ export const enNode: Partial<Record<MessageKey, string>> = {
   'storages.startUpload': 'Start upload',
   'storages.contentType': 'Content type',
   'storages.contentTypeHint':
-    'Determines the target directory (the iso directory is for installation images)',
+    'Which content type the file is stored as: ISOs can be mounted as a CD-ROM, disk images can be imported as a boot disk',
   'storages.dropHint': 'Click to choose a file, or drag one here',
   'storages.dropFormats': 'Accepted: {formats}',
   'storages.pickFileAria': 'Choose a file to upload',

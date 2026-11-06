@@ -18,6 +18,10 @@ Webhook 地址（拿到即可向群里推送任意消息）和签名密钥。本
 "加密一段 Webhook 字符串"的场景已经足够。注意根密钥来自 ``secret_key``，
 **更换 secret_key 会导致既有密文无法解密**，此时配置会退化成"未配置"，
 需要重新填写。
+
+KDF 的上下文标识（项目改名时改过一次）与 ``secret_key`` 是两回事：旧标识
+保存在 :data:`_LEGACY_KDF_INFOS` 里，解密时会自动回退，因此改名不会让已存
+凭据失效。
 """
 from __future__ import annotations
 
@@ -31,19 +35,23 @@ from .config import settings
 PREFIX = "enc:v1:"
 
 #: KDF 的上下文标识，参与密钥派生：它一变，库里已存的 PVE Token / SMTP 口令 /
-#: TOTP 种子全部解不开，且不可回滚（密文没有可用于回退的 KDF 版本前缀）。
-#: 2026-11 随项目改名，把标识里的旧项目名换成了现在的名字：改名前落库的密文已
-#: 按预期失效，需要在「设置」页重新填写。**此后不要再改它**。
+#: TOTP 种子、SSH 私钥都会解不开。2026-11 随项目改名换成了现在的名字，
+#: 旧密文靠 :data:`_LEGACY_KDF_INFOS` 回退解密，不需要用户重新填写。
+#: **此后不要再改它**。
 _KDF_INFO = b"pvecenter/config-encryption/v1"
+#: 只用于**解密**的历史 KDF 标识（旧项目名时期）。项目改名时 KDF 标识跟着改，
+#: 若不回退，升级后所有已保存凭据都会变成「未配置」—— 典型表现是 AI 终端报
+#: ``No authentication methods available``、PVE 连接突然 401。加密始终用新标识。
+_LEGACY_KDF_INFOS = (b"pvecenter/config-encryption/v1",)
 _NONCE_LEN = 16
 _TAG_LEN = 16
 
 
-def _derive_keys() -> tuple:
-    """从面板 ``secret_key`` 派生 (加密密钥, 认证密钥)。"""
+def _derive_keys(info: bytes = _KDF_INFO) -> tuple:
+    """从面板 ``secret_key`` 与 KDF 上下文派生 (加密密钥, 认证密钥)。"""
     master = (settings.secret_key or "").encode("utf-8")
-    enc_key = hmac.new(master, _KDF_INFO + b"|enc", hashlib.sha256).digest()
-    mac_key = hmac.new(master, _KDF_INFO + b"|mac", hashlib.sha256).digest()
+    enc_key = hmac.new(master, info + b"|enc", hashlib.sha256).digest()
+    mac_key = hmac.new(master, info + b"|mac", hashlib.sha256).digest()
     return enc_key, mac_key
 
 
@@ -87,6 +95,10 @@ def decrypt(value: str) -> str:
 
     非密文（历史明文）原样返回；密文损坏、被篡改或根密钥已更换时返回空串，
     由调用方按"未配置"处理。
+
+    先按当前 KDF 标识验签，失败再按 :data:`_LEGACY_KDF_INFOS` 逐个重试 ——
+    项目改名只改了上下文标识，``secret_key`` 本身没变，旧密文仍然可以还原。
+    这样升级后不需要用户重新填写 PVE Token / SSH 私钥 / SMTP 口令 / TOTP 种子。
     """
     if not value:
         return ""
@@ -101,11 +113,12 @@ def decrypt(value: str) -> str:
     nonce = raw[:_NONCE_LEN]
     tag = raw[_NONCE_LEN:_NONCE_LEN + _TAG_LEN]
     body = raw[_NONCE_LEN + _TAG_LEN:]
-    enc_key, mac_key = _derive_keys()
-    expected = hmac.new(mac_key, nonce + body, hashlib.sha256).digest()[:_TAG_LEN]
-    if not hmac.compare_digest(tag, expected):
-        return ""
-    return _xor(body, enc_key, nonce).decode("utf-8", "replace")
+    for info in (_KDF_INFO, *_LEGACY_KDF_INFOS):
+        enc_key, mac_key = _derive_keys(info)
+        expected = hmac.new(mac_key, nonce + body, hashlib.sha256).digest()[:_TAG_LEN]
+        if hmac.compare_digest(tag, expected):
+            return _xor(body, enc_key, nonce).decode("utf-8", "replace")
+    return ""
 
 
 def mask(value: str, head: int = 4, tail: int = 4) -> str:

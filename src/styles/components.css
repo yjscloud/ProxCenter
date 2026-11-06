@@ -6625,3 +6625,1157 @@ body.is-col-resizing * {
     height: 20px;
   }
 }
+
+/* ==========================================================================
+   证书管理页（src/pages/Certificates.tsx）
+   巡检优先：先把「多少正常、多少要处理」说清楚，再给站点表，最后是清单 /
+   签发渠道 / 日志这些辅助区。层级靠间距、字号与留白，不靠装饰。
+   ========================================================================== */
+
+/* --- 巡检总览 ------------------------------------------------------------ */
+
+.cert-overview {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  min-height: 60px;
+  padding: 0 18px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  background-image: var(--grad-panel);
+}
+
+.cert-overview-stats {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cert-stat {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 82px;
+  padding: 12px 20px;
+  border-right: 1px solid var(--border-muted);
+}
+
+.cert-stat:first-child {
+  padding-left: 0;
+}
+
+.cert-stat:last-child {
+  border-right: 0;
+}
+
+.cert-stat-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.cert-stat-value {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.cert-overview-meta {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.cert-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.cert-status-dot.is-ok { background: var(--success); }
+.cert-status-dot.is-warning { background: var(--warning); }
+.cert-status-dot.is-danger { background: var(--danger); }
+.cert-status-dot.is-muted { background: var(--text-muted); }
+
+/* --- 区块层级：主体一张卡，辅助三张卡各自成组 ---------------------------- */
+
+.cert-section-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 辅助区的标题栏收一点：图标转灰、副标题承担说明文字 */
+.cert-card-sub .card-header {
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+}
+
+.cert-card-sub .card-header-icon {
+  color: var(--text-muted);
+}
+
+.cert-card-sub .card-subtitle {
+  line-height: 1.5;
+}
+
+/* --- 工具栏 -------------------------------------------------------------- */
+
+.cert-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.cert-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 260px;
+  min-width: 180px;
+  color: var(--text-muted);
+}
+
+.cert-search > svg {
+  position: absolute;
+  left: 9px;
+  pointer-events: none;
+}
+
+.cert-search input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px 0 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.cert-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cert-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  margin-left: auto;
+  padding: 2px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.cert-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+
+.cert-filter:hover {
+  color: var(--text-primary);
+}
+
+.cert-filter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cert-filter.is-active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.cert-filter-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cert-filter.is-active .cert-filter-count {
+  color: var(--accent);
+}
+
+/* --- 站点表 -------------------------------------------------------------- */
+
+.cert-table {
+  table-layout: fixed;
+  /* 全局 .table 有最小宽度，这里按容器宽度铺满，避免多余横向滚动条 */
+  min-width: 0;
+}
+
+.cert-table th,
+.cert-table td {
+  overflow-wrap: anywhere;
+}
+
+.cert-table thead th {
+  padding: 8px 12px;
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.02em;
+}
+
+.cert-table tbody td {
+  padding: 12px;
+  vertical-align: top;
+}
+
+/* 列宽：让「部署位置」吃掉剩余宽度，而不是站点列 —— 站点名 / 域名 / 备注都是
+   短文本，宽屏下会把名字留在最左边、右边空出三四百像素；路径与文件名才是真的
+   长，而且原来在 244px 里被截断。这样多出来的宽度落在有内容的那一列上。 */
+.cert-table th.cert-col-site { width: 280px; }
+.cert-table th.cert-col-expire { width: 148px; }
+.cert-table th.cert-col-target { width: auto; }
+.cert-table th.cert-col-run { width: 132px; }
+.cert-table th.cert-col-actions { width: 132px; text-align: right; }
+
+.cert-site-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cert-site-name {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.cert-site-domain {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cert-site-note {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cert-expiry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.cert-days {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.cert-days.is-ok { color: var(--text-primary); }
+.cert-days.is-warning { color: var(--warning); }
+.cert-days.is-danger { color: var(--danger); }
+.cert-days.is-muted { color: var(--text-muted); }
+
+.cert-bar {
+  display: block;
+  width: 100%;
+  max-width: 104px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--border-muted);
+  overflow: hidden;
+}
+
+.cert-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--success);
+}
+
+.cert-bar.is-warning > span { background: var(--warning); }
+.cert-bar.is-danger > span { background: var(--danger); }
+.cert-bar.is-muted > span { background: var(--text-muted); }
+
+.cert-expiry-date {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cert-target {
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+.cert-sub {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cert-run {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.cert-run-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.cert-run-pill.is-ok {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.cert-run-pill.is-failed {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.cert-run-time {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.cert-run-note {
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+.cert-run-note.is-warning { color: var(--warning); }
+.cert-run-note.is-danger { color: var(--danger); }
+
+.cert-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+/* 一行五个动作 + 展开箭头，图标按钮压到 28px 才放得下 */
+.cert-actions .btn-icon-only {
+  width: 28px;
+  height: 28px;
+}
+
+.cert-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cert-actions-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.cert-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease-out, color 120ms ease-out, transform 160ms ease-out;
+}
+
+.cert-expand:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.cert-expand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cert-expand.is-open {
+  color: var(--accent);
+  transform: rotate(180deg);
+}
+
+/* --- 行内展开：运行流水线 + 站点信息 ------------------------------------ */
+
+.cert-detail-row > td {
+  padding: 0;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.cert-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 24px;
+  padding: 16px 18px 18px;
+}
+
+.cert-detail-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.cert-detail-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cert-steps {
+  position: relative;
+  margin: 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+
+.cert-steps::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--border);
+}
+
+.cert-step {
+  position: relative;
+  display: grid;
+  /* 阶段 / 状态 / 耗时 / 说明：耗时紧跟状态，说明吃掉剩余宽度 ——
+     把耗时推到行尾会让它与前面的文字隔出一大段空白。 */
+  grid-template-columns: 88px 44px 74px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: var(--font-size-xs);
+}
+
+.cert-step-dot {
+  position: absolute;
+  left: -16px;
+  top: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--success);
+}
+
+.cert-step.is-skipped .cert-step-dot { background: var(--border); }
+.cert-step.is-failed .cert-step-dot { background: var(--danger); }
+
+.cert-step-name {
+  grid-column: 1;
+  grid-row: 1;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.cert-step-status {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--text-muted);
+}
+
+.cert-step.is-failed .cert-step-status { color: var(--danger); }
+
+.cert-step-detail {
+  grid-column: 4;
+  grid-row: 1;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cert-step-ms {
+  grid-column: 3;
+  grid-row: 1;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  /* 每行都是独立网格：耗时列必须一行装下，否则这一列的宽度会按内容撑开，
+     同一张流水线里各行的列就对不齐了 */
+  white-space: nowrap;
+}
+
+.cert-detail-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 20px;
+  border-left: 1px solid var(--border-muted);
+}
+
+.cert-kv {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.cert-kv > span:last-child {
+  color: var(--text-secondary);
+  /* 先在空格处断行，长串（域名、路径）才按字符断，别把厂商名切成两半 */
+  overflow-wrap: anywhere;
+}
+
+.cert-detail-error {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.cert-detail-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* 窄屏才用：桌面上的动作在行尾图标里，这里不重复占位 */
+.cert-detail-actions-touch {
+  display: none;
+}
+
+/* --- 运行日志弹窗 ------------------------------------------------------- */
+
+.cert-runlog-btn {
+  margin-left: auto;
+}
+
+.cert-runlog {
+  padding: 10px 12px;
+}
+
+/* 一行一步：偏移 / 步骤 / 状态 / 耗时 各自定宽，说明吃掉剩余宽度。
+   说明列不截断 —— 这一栏存在的意义就是「看清到底报了什么」。 */
+.cert-runlog-line {
+  display: grid;
+  grid-template-columns: 62px 88px 40px 62px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+}
+
+.cert-runlog-at {
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cert-runlog-name {
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.cert-runlog-status {
+  color: var(--text-muted);
+}
+
+.cert-runlog-ms {
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cert-runlog-detail {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.cert-runlog-line.is-failed .cert-runlog-status,
+.cert-runlog-line.is-failed .cert-runlog-detail {
+  color: var(--danger);
+}
+
+.cert-runlog-line.is-skipped .cert-runlog-name,
+.cert-runlog-line.is-skipped .cert-runlog-detail {
+  color: var(--text-muted);
+}
+
+/* --- 清单 / 日志 --------------------------------------------------------- */
+
+.cert-table th.cert-col-cert { width: 224px; }
+.cert-table th.cert-col-sites { width: 180px; }
+
+.cert-id {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.cert-log-table tbody td {
+  padding: 9px 12px;
+}
+
+/* 时间 / 动作 / 结果都短，别让它们折行；详情列吃掉剩下的宽度 */
+.cert-log-table th,
+.cert-log-table td {
+  white-space: nowrap;
+}
+
+.cert-log-table td:last-child {
+  white-space: normal;
+  min-width: 260px;
+}
+
+.cert-empty {
+  padding: 22px 4px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+/* 破坏性动作放在辅助卡里：要看得见，但别抢过页面主操作 */
+.cert-danger-text {
+  color: var(--danger);
+}
+
+.cert-danger-text:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* --- 窄屏 ---------------------------------------------------------------
+   优先丢「部署位置」「最近运行」这类可以在展开区看到的列，而不是把文字压
+   成一列一个字；行内动作在 767 以下收进展开区，避免挤掉站点名。 */
+
+@media (max-width: 1120px) {
+  /* 少了列之后，展开行的 colspan 与固定列宽会互相打架（Chrome 会把剩下的
+     列再压一次），自动布局按内容分配，展开前后列宽都不跳。 */
+  .cert-table {
+    table-layout: auto;
+  }
+
+  .cert-col-target {
+    display: none;
+  }
+
+  /* 部署位置这一列没了，剩下的宽度收回给站点列 */
+  .cert-table th.cert-col-site {
+    width: auto;
+  }
+
+  .cert-table th.cert-col-expire { width: 132px; }
+  .cert-table th.cert-col-run { width: 122px; }
+  .cert-table th.cert-col-actions { width: 210px; }
+}
+
+@media (max-width: 767px) {
+  .cert-overview {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    min-height: 0;
+    padding: 10px 14px 12px;
+  }
+
+  .cert-overview-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 16px;
+  }
+
+  .cert-stat {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 6px;
+    min-width: 0;
+    padding: 4px 0;
+    border-right: 0;
+  }
+
+  .cert-stat-value {
+    font-size: var(--font-size-md);
+  }
+
+  .cert-overview-meta {
+    margin-left: 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-muted);
+  }
+
+  .cert-toolbar {
+    gap: 8px;
+  }
+
+  .cert-search {
+    flex: 1 1 100%;
+  }
+
+  .cert-filters {
+    width: 100%;
+    margin-left: 0;
+    overflow-x: auto;
+  }
+
+  .cert-table th,
+  .cert-table td {
+    padding: 10px;
+  }
+
+  .cert-col-run {
+    display: none;
+  }
+
+  .cert-table th.cert-col-expire { width: 104px; }
+  .cert-table th.cert-col-actions { width: 46px; padding-right: 12px; }
+
+  .cert-actions-group,
+  .cert-actions-sep {
+    display: none;
+  }
+
+  .cert-bar {
+    max-width: 76px;
+  }
+
+  .cert-detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .cert-detail-side {
+    padding-left: 0;
+    padding-top: 12px;
+    border-left: 0;
+    border-top: 1px solid var(--border-muted);
+  }
+
+  .cert-step {
+    grid-template-columns: 76px 44px minmax(0, 1fr);
+  }
+
+  .cert-step-detail {
+    grid-column: 3;
+  }
+
+  .cert-step-ms {
+    display: none;
+  }
+
+  /* 窄屏的动作收成两列按钮组：证书操作在上，站点管理在下，中间一条细线分开 */
+  .cert-detail-actions-touch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-muted);
+  }
+
+  .cert-detail-actions-touch > :last-child {
+    grid-column: 1 / -1;
+  }
+
+  .cert-detail-actions-touch .btn,
+  .cert-detail-actions .btn {
+    justify-content: flex-start;
+  }
+
+  .cert-detail-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  /* 清单与日志列多且每列都有实际内容（时间、动作、详情），窄屏不硬压 ——
+     给表格一个下限宽度，让容器横向滑动，读的时候不会一列一个字。 */
+  /* 运行日志：窄屏五列挤压不下，抬头一行、说明缩进一行 */
+  .cert-runlog-line {
+    display: block;
+    padding: 4px 0;
+  }
+
+  .cert-runlog-at,
+  .cert-runlog-name,
+  .cert-runlog-status,
+  .cert-runlog-ms {
+    display: inline;
+    margin-right: 6px;
+    text-align: left;
+  }
+
+  .cert-runlog-detail {
+    display: block;
+    padding-left: 54px;
+  }
+
+  .cert-inventory-table {
+    min-width: 540px;
+  }
+
+  .cert-log-table {
+    min-width: 660px;
+  }
+
+  /* 辅助卡的标题短，操作按钮不必被挤到下一行（全局规则按 12rem 报价，
+     这里放开，省掉一整行高度） */
+  .cert-card-sub .card-header-main {
+    flex: 1 1 0;
+  }
+
+  .cert-card-sub .card-header-actions {
+    flex: 0 0 auto;
+  }
+}
+
+.cert-tc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.cert-tc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 签发渠道：列表 + 添加弹窗。列表只放结果，表单在弹窗里一次填完 */
+.cert-provider-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -8px;
+}
+
+.cert-provider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 8px;
+  border-radius: var(--radius-sm);
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.cert-provider-row:last-child {
+  border-bottom: 0;
+}
+
+.cert-provider-row:hover {
+  background: var(--bg-hover);
+}
+
+.cert-provider-name {
+  flex: 1 1 auto;
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态、AK、续期天数、操作收成一组靠右，别让它们散在整行里 */
+.cert-provider-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+.cert-provider-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cert-provider-renew {
+  white-space: nowrap;
+}
+
+.cert-provider-actions {
+  display: inline-flex;
+  gap: 2px;
+  justify-self: end;
+}
+
+/* 一家都没有时的引导：一条虚线框，动作就在旁边 */
+.cert-provider-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  flex-wrap: wrap;
+}
+
+.cert-provider-empty-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent-dim);
+  color: var(--accent);
+  flex: none;
+}
+
+.cert-provider-empty-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cert-provider-empty-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+/* --- 添加 / 编辑厂商弹窗：左选类型，右填凭据 --- */
+.cert-dialog-spacer {
+  flex: 1;
+}
+
+.cert-picker {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.cert-picker.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* 编辑态没有左侧厂商列表，表单别拉成三列后剩一个孤零零的字段 */
+.cert-picker.is-single .form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.cert-picker-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cert-picker-item {
+  appearance: none;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.cert-picker-item:hover {
+  background: var(--bg-hover);
+}
+
+.cert-picker-item.is-active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.cert-picker-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cert-picker-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.cert-picker-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cert-picker-tagline {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.cert-picker-flag {
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+  color: var(--success);
+  flex: none;
+}
+
+.cert-picker-form {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cert-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cert-picker-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.cert-picker-help {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.cert-picker-help:hover {
+  text-decoration: underline;
+}
+
+.cert-picker-note {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.cert-picker-error {
+  font-size: var(--font-size-xs);
+  color: var(--danger);
+}
+
+@media (max-width: 760px) {
+  .cert-provider-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding: 8px;
+  }
+
+  .cert-provider-name {
+    flex: 1 1 calc(100% - 90px);
+    line-height: 1.4;
+  }
+
+  .cert-provider-meta {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+
+  .cert-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 窄屏：厂商列表压成紧凑三行，别让说明把表单挤到屏幕外 */
+  .cert-picker-tagline {
+    display: none;
+  }
+
+  .cert-picker-item {
+    padding: 7px 10px;
+  }
+}
+
+@media (max-width: 900px) {
+  .cert-detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .cert-detail-side {
+    padding-left: 0;
+    border-left: 0;
+    border-top: 1px solid var(--border-muted);
+    padding-top: 12px;
+  }
+
+  .cert-step {
+    grid-template-columns: 84px 46px minmax(0, 1fr);
+  }
+
+  .cert-step-ms { display: none; }
+}

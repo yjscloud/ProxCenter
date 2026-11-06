@@ -772,7 +772,9 @@ def _load_key(text: str) -> Any:
             return loader.from_private_key(io.StringIO(text))
         except Exception:  # noqa: BLE001 - 逐个尝试各种密钥类型
             continue
-    raise ValueError("私钥格式无法识别（支持 Ed25519 / RSA / ECDSA；PEM 或 OpenSSH 格式）")
+    raise ValueError(
+        "私钥无法解析：仅支持无口令的 Ed25519 / RSA / ECDSA 私钥（PEM 或 OpenSSH 格式）"
+    )
 
 
 def server_key_fingerprint(client: paramiko.SSHClient) -> str:
@@ -897,11 +899,26 @@ def _connect(row: Dict[str, Any], trust_first: bool = False) -> Tuple[paramiko.S
         "look_for_keys": False,
     }
     secret = decrypt_secret(row)
+    has_stored_secret = bool(str(row.get("secret") or ""))
+    if has_stored_secret and not secret:
+        # 密文在，但解不开（SECRET_KEY 变更 / 更早的加密上下文）。不要把它
+        # 当成「没配置」直接去连 —— paramiko 只会抛
+        # ``No authentication methods available``，用户完全看不出该改什么。
+        raise ValueError(
+            "该主机保存的 SSH 凭据无法解密（SECRET_KEY 变更过？），"
+            "请到「受管主机」重新填写私钥或口令"
+        )
     if str(row.get("auth_type")) == "password":
-        kwargs["password"] = secret
         if not secret:
-            raise ValueError("该主机使用口令登录，但没保存口令")
-    elif secret:
+            raise ValueError(
+                "该主机使用口令登录，但没有保存口令；请到「受管主机」重新填写"
+            )
+        kwargs["password"] = secret
+    else:
+        if not secret:
+            raise ValueError(
+                "该主机使用密钥登录，但没有保存私钥；请到「受管主机」重新填写"
+            )
         kwargs["pkey"] = _load_key(secret)
     try:
         client.connect(**kwargs)

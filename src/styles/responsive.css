@@ -313,6 +313,29 @@
       color-mix(in srgb, var(--text-primary) 20%, transparent);
   }
 
+  /* 分页条：窄屏放不下「上一页 / 页码 / 下一页 / 跳至 _ 页」一整排，
+     允许控件内部换行 —— 否则最右边的「页」字会被卡片边界切掉。
+     下拉与区间信息那半边本来就带 flex-wrap，不用改。 */
+  .pagination {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .pagination-controls {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .pagination-page {
+    min-width: 48px;
+  }
+
+  /* 「跳至 _ 页」在手机上要弹数字键盘、点多一次，收益不如翻页按钮；
+     藏掉它，分页条就从三行回到两行 */
+  .pagination-jump {
+    display: none;
+  }
+
   /* 工具栏保持横向换行，不改成纵向堆叠。
      踩过的坑：改成 column + stretch 后，搜索框被 flex 拉成一大块空白，
      截图里占了半屏。这类「若干筛选控件」用换行排布才是对的，

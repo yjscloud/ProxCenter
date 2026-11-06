@@ -72,7 +72,7 @@ export const zhCore = {
   'nav.ports': '端口与进程',
   'nav.securityBaseline': '安全基线',
   'nav.alerts': '监控告警',
-  'nav.certificates': '网站证书',
+  'nav.certificates': '证书管理',
   'nav.feishuBot': '飞书机器人',
   'nav.tasks': '任务队列',
   'nav.users': '用户管理',

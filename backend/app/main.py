@@ -92,6 +92,7 @@ from . import alert_rootcause
 from . import alerting
 from . import accesscontrol
 from . import apitokens
+from . import certmonitor as cert_monitor
 from . import certs as cert_manager
 from . import frp
 from . import metrics as metrics_history
@@ -1246,6 +1247,11 @@ HOST_SYNC_INTERVAL = 300
 # 让启动流程先跑完再去发外部网络请求
 CERT_INTERVAL = 6 * 3600
 CERT_FIRST_DELAY = 120
+# 证书退避重试：主作业 6 小时一轮，覆盖不到 10 分钟 / 30 分钟 / 2 小时这类
+# 短退避，所以单独起一个 5 分钟的轻量作业，只挑「退避到点」的站点补跑。
+# 首次延迟 3 分钟，错开主作业与启动时的连接初始化。
+CERT_RETRY_INTERVAL = 300
+CERT_RETRY_FIRST_DELAY = 180
 # 监控历史采样周期。它同时决定采样点的时间戳对齐粒度（见 metrics.align_ts），
 # 所以那个函数会回头问调度器要当前生效值，两边一起变才不会出现重复点。
 METRICS_INTERVAL = max(int(settings.metrics_sample_interval), 1)
@@ -1679,6 +1685,30 @@ scheduler.register(
         CERT_INTERVAL,
         summarize=_cert_summary,
         first_delay=CERT_FIRST_DELAY,
+    )
+)
+scheduler.register(
+    _job(
+        "cert_retry",
+        "证书记录重试",
+        "监控与证书",
+        "对退避到点的续期失败站点补跑（10 分钟 / 30 分钟 / 2 小时 / 6 小时）",
+        cert_manager.retry_tick,
+        CERT_RETRY_INTERVAL,
+        summarize=_cert_summary,
+        first_delay=CERT_RETRY_FIRST_DELAY,
+    )
+)
+scheduler.register(
+    _job(
+        "cert_monitor",
+        "站点可用性探测",
+        "监控与证书",
+        "对开启监控的证书站点做 HTTP 探测，状态翻转时告警",
+        cert_monitor.monitor_tick,
+        300,
+        summarize=_cert_summary,
+        first_delay=240,
     )
 )
 scheduler.register(

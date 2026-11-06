@@ -686,7 +686,7 @@ export function Storages() {
                 setUploadOpen(true);
               }}
             >
-              {t('storages.uploadIso')}
+              {t('storages.uploadFile')}
             </Button>
           ) : null}
         </>
@@ -1056,7 +1056,7 @@ export function Storages() {
         ) : null}
       </Modal>
 
-      {/* ---- 上传 ISO ---- */}
+      {/* ---- 上传文件（内容类型决定落库类型，不只是 ISO） ---- */}
       <UploadDialog
         open={uploadOpen}
         storage={selected}

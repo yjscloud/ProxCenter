@@ -31,6 +31,11 @@ PyMySQL==1.1.1
 # --- 网站证书：SSH 远程部署（证书文件上传 + 远程重载命令）---
 paramiko==5.0.0
 
+# --- 网站证书：ACME（Let's Encrypt / ZeroSSL）---
+# 账号密钥、CSR 生成与证书解析都直接用 cryptography。paramiko 虽然间接依赖它，
+# 但版本会随 paramiko 漂移，这里显式钉住。
+cryptography==50.0.1
+
 # --- 登录验证码：服务端画 PNG ---
 Pillow==12.3.0
 

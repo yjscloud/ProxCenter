@@ -3502,6 +3502,41 @@ class TestMonitoringIsolation:
         admin_logs = api.get("/api/certs", headers=admin).json()["logs"]
         assert any(row["username"] == "bob" for row in admin_logs)
 
+    def test_cert_sync_and_bind_scoped_to_owner(self, api) -> None:
+        """同步 / 绑定按「自己的站点」取：管理员对别人的站点是 404，不是 500。
+
+        回归：``sync_site`` 与 ``bind_site_cert`` 曾把 ``security.visible_owner(user)``
+        （管理员恒为 None）当成用户字典传给 ``_require_site``，于是管理员点「同步
+        腾讯云状态」必然 500（``'NoneType' object has no attribute 'get'``），
+        连自己名下的站点也同步不了。
+        """
+        admin = auth_headers(api)
+        bob = self._new_user(api, "bob")
+
+        own = api.post(
+            "/api/certs/sites",
+            json=self._site_payload("admin 站点", "admin.example.com"),
+            headers=admin,
+        ).json()["site"]
+        # 自己的站点，但还没绑证书：应是 400 业务错误（改前这里是 500）
+        assert api.post(f"/api/certs/sites/{own['id']}/sync", headers=admin).status_code == 400
+
+        other = api.post(
+            "/api/certs/sites",
+            json=self._site_payload("bob 站点", "bob.example.com"),
+            headers=bob,
+        ).json()["site"]
+        # 别人的站点：管理员可见但不能改，同步与绑定都应是 404
+        assert api.post(f"/api/certs/sites/{other['id']}/sync", headers=admin).status_code == 404
+        assert (
+            api.post(
+                f"/api/certs/sites/{other['id']}/bind",
+                json={"cert_id": "abc123"},
+                headers=admin,
+            ).status_code
+            == 404
+        )
+
     # ---- 飞书机器人页面仅管理员 ----
     def test_feishu_bot_config_is_admin_only(self, api) -> None:
         admin = auth_headers(api)

@@ -102,6 +102,45 @@ class TestHostModel:
         assert public["secret_set"] is True
 
 
+class TestConnectCredentials:
+    """凭据缺失 / 解不开时要给出可操作的错误，而不是 paramiko 的
+    ``No authentication methods available``。"""
+
+    def test_missing_private_key_is_explained(self) -> None:
+        row = {
+            "host": "127.0.0.1",
+            "port": 22,
+            "username": "root",
+            "auth_type": "key",
+            "secret": "",
+        }
+        with pytest.raises(ValueError, match="没有保存私钥"):
+            sshremote._connect(row)
+
+    def test_missing_password_is_explained(self) -> None:
+        row = {
+            "host": "127.0.0.1",
+            "port": 22,
+            "username": "root",
+            "auth_type": "password",
+            "secret": "",
+        }
+        with pytest.raises(ValueError, match="没有保存口令"):
+            sshremote._connect(row)
+
+    def test_undecryptable_secret_is_explained(self) -> None:
+        row = {
+            "host": "127.0.0.1",
+            "port": 22,
+            "username": "root",
+            "auth_type": "key",
+            # 有密文但解不开：模拟 SECRET_KEY 变更或更早的加密上下文
+            "secret": "enc:v1:AAAA",
+        }
+        with pytest.raises(ValueError, match="无法解密"):
+            sshremote._connect(row)
+
+
 class TestCommands:
     @pytest.mark.parametrize(
         "log_source,expected",

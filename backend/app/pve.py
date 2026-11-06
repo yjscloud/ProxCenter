@@ -21,7 +21,7 @@ import ssl as ssl_module
 import time
 from contextvars import ContextVar, Token
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -473,6 +473,37 @@ class ProxmoxClient:
     async def node_network(self, node: str) -> List[Dict[str, Any]]:
         data = await self.get(f"/nodes/{node}/network")
         return data or []
+
+    # ---------------------------------------------------- node certificates
+    async def node_certificates(self, node: str) -> List[Dict[str, Any]]:
+        """当前节点上生效的证书（默认 / 自定义 / ACME）。"""
+        data = await self.get(f"/nodes/{quote(node, safe='')}/certificates/info")
+        return data or []
+
+    async def upload_node_certificate(
+        self,
+        node: str,
+        certificates: str,
+        key: str,
+        force: bool = True,
+        restart: bool = True,
+    ) -> Any:
+        """上传自定义证书到节点（PVE 会自行落盘到 ``/etc/pve/local``）。
+
+        与 certd 的 ``Proxmox-上传证书到Proxmox`` 一致：
+        * ``force=1`` —— 即使新证书有效期不比现有证书长也覆盖，否则 PVE
+          会静默保留旧证书（接口仍返回成功）；
+        * ``restart=1`` —— 由 pveproxy 自己重载证书，不需要再执行 systemctl。
+        """
+        return await self.post(
+            f"/nodes/{quote(node, safe='')}/certificates/custom",
+            data={
+                "certificates": certificates,
+                "key": key,
+                "force": 1 if force else 0,
+                "restart": 1 if restart else 0,
+            },
+        )
 
     # ------------------------------------------------------------ access acl
     async def grant_token_role(

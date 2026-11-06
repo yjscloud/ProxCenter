@@ -295,6 +295,16 @@ class MockPveHandler(BaseHTTPRequestHandler):
                 {"n": 2, "t": "TASK OK"},
             ]
 
+        # /nodes/{node}/certificates/custom — 自定义证书上传
+        match = re.match(
+            r"^/api2/json/nodes/(?P<node>[^/]+)/certificates/custom$", path
+        )
+        if match and method == "POST":
+            node = match.group("node")
+            return lambda: (
+                f"UPID:{node}:0000A1B9:00C3D4EC:65F00008:pvecert:100:root@pam:"
+            )
+
         # ------------------------------------------------------------ 防火墙
         handler = self._firewall(method, path, body)
         if handler is not None:
@@ -964,6 +974,27 @@ class TestTaskHandling:
         tasks = run(client.tasks(limit=10))
         assert len(tasks) == 1
         assert tasks[0]["type"] == "qmstart"
+
+
+class TestNodeCertificates:
+    def test_upload_custom_certificate_sends_force_and_restart(self, mock_pve) -> None:
+        """force/restart 必须显式传 1：缺 force 时 PVE 会保留旧证书却返回成功。"""
+        client = make_client(mock_pve)
+        upid = run(
+            client.upload_node_certificate(
+                "pve1",
+                "-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----",
+                "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----",
+            )
+        )
+        assert upid.startswith("UPID:pve1:")
+        method, _path, body, _headers = next(
+            r for r in REQUESTS if r[1].endswith("/certificates/custom")
+        )
+        assert method == "POST"
+        assert body["force"] == 1
+        assert body["restart"] == 1
+        assert body["certificates"].startswith("-----BEGIN CERTIFICATE-----")
 
 
 class TestStorageAndTemplates:

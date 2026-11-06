@@ -1,12 +1,61 @@
-# pvecenter — Proxmox VE 8.x / 9.x 管理面板
+# pvecenter — Proxmox VE 8.x / 9.x 管理面板（PVE Web UI）
 
 **简体中文 | [English](README.en.md)**
 
-[![License](https://img.shields.io/github/license/yjscloud/pvecenter?color=blue)](LICENSE) [![Release](https://img.shields.io/github/v/release/yjscloud/pvecenter?sort=semver&color=success&label=release)](../../releases) [![CI](https://github.com/yjscloud/pvecenter/actions/workflows/ci.yml/badge.svg)](https://github.com/yjscloud/pvecenter/actions/workflows/ci.yml) [![Stars](https://img.shields.io/github/stars/yjscloud/pvecenter?style=flat)](../../stargazers) ![Python](https://img.shields.io/badge/python-3.11%2B-3776ab) ![React](https://img.shields.io/badge/react-18-61dafb)
+[![License](https://img.shields.io/github/license/yjscloud/pvecenter?color=blue)](LICENSE) [![Release](https://img.shields.io/github/v/release/yjscloud/pvecenter?sort=semver&color=success&label=release)](../../releases) [![CI](https://github.com/yjscloud/pvecenter/actions/workflows/ci.yml/badge.svg)](https://github.com/yjscloud/pvecenter/actions/workflows/ci.yml) [![Stars](https://img.shields.io/github/stars/yjscloud/pvecenter?style=flat)](../../stargazers) [![Forks](https://img.shields.io/github/forks/yjscloud/pvecenter?style=flat)](../../forks) [![Issues](https://img.shields.io/github/issues/yjscloud/pvecenter)](../../issues) ![Proxmox VE](https://img.shields.io/badge/Proxmox%20VE-8.x%20%2F%209.x-e57000) ![Python](https://img.shields.io/badge/python-3.11%2B-3776ab) ![React](https://img.shields.io/badge/react-18-61dafb)
 
-对接 Proxmox VE 8.x / 9.x 的自托管 Web 管理面板。虚拟机和 LXC 容器的全生命周期管理、
-cloud-init 模板流水线、网络与防火墙、监控大盘、快照备份、浏览器里直接开 VNC 控制台，加上
-多用户权限、操作审计，以及几项安全运维能力（SSH 防爆破、端口异常检测、基线加固）。
+**pvecenter** 是一个开源自托管的 **Proxmox VE（PVE）Web 管理面板**：用一套中文界面管理
+QEMU 虚拟机、LXC 容器、cloud-init 模板、网络与防火墙、快照备份、VNC 控制台、证书和多用户权限。
+装成 systemd 服务或用 Docker 跑起来，机器重启自己起来。
+
+> Self-hosted **Proxmox VE (PVE) web UI** for QEMU VMs, LXC containers, cloud-init templates,
+> networking, firewalls, backups, monitoring, certificates and RBAC.
+
+[在线演示](https://pvecenter.yjscloud.com) · [界面预览](#界面预览) · [核心功能](#核心功能) ·
+[快速开始](#一部署) · [常见问题](#六排查问题) · [English](README.en.md)
+
+适合家庭实验室（homelab）、小团队，以及需要把 PVE 开放给多人使用的场景。
+
+> 关键词：Proxmox VE 管理面板 · PVE 面板 · PVE Web UI · LXC 容器管理 · QEMU / KVM ·
+> cloud-init 模板 · 自托管虚拟化平台 · Proxmox alternative UI · homelab · self-hosted
+
+## 界面预览
+
+> 截图统一放在 `docs/screenshots/`，建议 **1600×900**（16:9）。下面用到的文件名可直接替换；
+> 文件还不存在时 GitHub 会显示替代文字，放入图片后自动显示。
+
+<!--
+截图占位清单（放入 docs/screenshots/ 后自动显示）：
+vm-list.png / vm-create.png / lxc-list.png / template-pipeline.png / firewall.png /
+ssh-security.png / security-baseline.png / ai-assistant.png / monitoring.png /
+backup.png / console.png / audit-log.png / certificates.png / users-rbac.png
+-->
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/dashboard.png" alt="pvecenter 监控仪表盘：节点状态、CPU / 内存 / 存储与最近任务"><br><sub><b>监控仪表盘</b> · 节点状态 / 资源占用 / 最近任务</sub></td>
+    <td width="50%"><img src="docs/screenshots/vm-list.png" alt="Proxmox 虚拟机列表：批量开关机、迁移与配额"><br><sub><b>虚拟机列表</b> · 批量操作 / 迁移 / 配额</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/lxc-list.png" alt="LXC 容器管理：生命周期、快照、克隆与迁移"><br><sub><b>LXC 容器</b> · 生命周期 / 快照 / 迁移</sub></td>
+    <td width="50%"><img src="docs/screenshots/console.png" alt="浏览器内 noVNC 控制台：无需把 PVE 8006 暴露到公网"><br><sub><b>VNC 控制台</b> · 浏览器内直接操作</sub></td>
+  </tr>
+</table>
+
+## 核心功能
+
+- **虚拟机管理（QEMU / KVM）**：四步创建、批量开关机、克隆、迁移、扩容、快照与备份
+- **LXC 容器管理**：创建、启停、快照、克隆、迁移、rootfs 扩容、控制台
+- **cloud-init 模板流水线**：从 cloud 镜像一键建模板，克隆时注入主机名 / SSH 公钥 / IP
+- **网络与防火墙**：Linux Bridge / Bond / VLAN，PVE 原生防火墙、安全组、IP 集合
+- **监控与告警**：实时指标、RRD 曲线、容量预测、邮件 / 飞书通知
+- **备份与恢复**：立即备份、定时备份、浏览备份卷、恢复到指定 VMID、防删保护
+- **证书管理**：腾讯云 / 阿里云 / 华为云 / ACME / 托管证书，自动续期，部署到本机、SSH 主机、PVE 虚拟机 / 容器 / 节点
+- **安全运维**：SSH 防爆破、登录审计、安全基线、端口与进程巡检、应急响应
+- **AI 排查助手**：结合巡检数据做归因，只读命令白名单，写操作逐条审批
+- **多用户与审计**：RBAC、配额、全量操作审计、两步验证
+
+## 快速开始
 
 装成 systemd 服务，机器重启自己起来：
 
@@ -19,24 +68,11 @@ sudo ./deploy.sh
 最后一屏会打印面板地址和初始口令，口令只显示这一次。想跑容器看
 [Docker 部署](#docker-部署)，两种方式都写在 [一、部署](#一部署) 里。
 
-> 关键词：Proxmox VE 管理面板 · PVE 面板 · LXC 容器管理 · cloud-init 模板 ·
-> 自托管虚拟化平台 · Proxmox alternative UI
-
 技术栈：Python 3.11+ / FastAPI / httpx，React 18 + TypeScript + Vite，MySQL 8。
-
-在线演示：<https://prox.yjscloud.com>
-
-![控制台仪表盘](docs/screenshots/dashboard.png)
-
-## 联系与反馈
-
-<img src="docs/screenshots/wechat.png" alt="微信联系方式" width="240">
-
-需要帮助、发现功能有问题、或者想提新需求，都欢迎扫码加微信找我。部分功能还没经过充分测试，
-可能无法正常使用，遇到问题直接说。
 
 ## 目录
 
+- [界面预览](#界面预览) · [核心功能](#核心功能)
 - [一、部署](#一部署)：[准备 Token](#准备-proxmox-api-token) · [授权](#授权) ·
   [裸机部署](#裸机部署推荐) · [Docker 部署](#docker-部署) · [上 HTTPS](#上-https) ·
   [服务管理](#服务管理)
@@ -315,7 +351,7 @@ ssl_verify_client on;   # 或 optional + 下面的 if 判断
 
 ## 二、功能
 
-### 虚拟机
+### 虚拟机管理（QEMU / KVM）
 
 四步创建向导（VMID、系统、磁盘与网卡、cloud-init），支持空白新建、从模板克隆、从 cloud 镜像
 导入。开关机（优雅关机带超时和强制停止兜底）、重启、挂起、恢复、删除；在线改 CPU / 内存 /
@@ -323,23 +359,30 @@ ssl_verify_client on;   # 或 optional + 下面的 if 判断
 回报，第 3 台失败不影响其余，也能只重试失败的。重置客户机里的用户口令优先走 Guest Agent
 （即时生效），没装 agent 或已关机就走 cloud-init 写 `cipassword` 并重新生成 config drive。
 
-### 容器（LXC）
+<!-- 截图占位：docs/screenshots/vm-create.png -->
+![虚拟机四步创建向导：系统、磁盘与网卡、cloud-init](docs/screenshots/vm-create.png)
+
+### LXC 容器管理
 
 容器在 PVE 里是另一套 API 端点，面板里也是平行的一套页面。三步创建向导，模板来自节点上内容
 类型含 `vztmpl` 的存储（一个都没有时会给出 `pveam download` 命令）。生命周期、快照（不含内存
 状态）、克隆（只有全量，PVE 不支持容器的链接克隆）、迁移、控制台；rootfs 和挂载点扩容、新增
 挂载点、迁存储；网卡增删，IP 直接写在网卡配置里，改完要重启。
-
+<!-- 截图占位：docs/screenshots/lxc-list.png -->
+![cloud-init 模板流水线：从 cloud 镜像到可批量克隆的模板](docs/screenshots/lxc-list.png)
 重置容器内的 root 口令走「SSH → 受管主机」。容器没有 Guest Agent，PVE 也没有「在容器里执行
 命令」的接口，只能借该宿主机的 SSH 凭据跑 `pct exec`。宿主没配凭据时弹窗会说明，并建议你进
 容器控制台自己 `passwd`。
 
-### 模板（cloud-init 流水线）
+### cloud-init 模板流水线
 
 从 cloud 镜像一键建模板，后端按序执行、每步之间等任务完成：建虚拟机（系统盘在配置里用
 `import-from=<镜像>` 由 PVE 直接导入，不再走已被 PVE 9.2 移除的 `importdisk`）→ 配置启动顺序
 与 cloud-init 驱动 → 按需扩容 → 转模板。任何一步失败都会自动删掉临时虚拟机，不留半成品。
 建好之后可用「从模板部署」批量开机，克隆时自动注入主机名、SSH 公钥和 IP。
+
+<!-- 截图占位：docs/screenshots/template-pipeline.png -->
+![cloud-init 模板流水线：从 cloud 镜像到可批量克隆的模板](docs/screenshots/template-pipeline.png)
 
 > **镜像的扩展名必须和它的真实格式一致**：`.qcow2` / `.raw` / `.vmdk` / `.vdi` / `.vpc` /
 > `.qed`。PVE 只对这几种后缀去解析容器，其余一律当裸盘整块复制 —— 典型是 Ubuntu 官方的
@@ -355,10 +398,13 @@ ssl_verify_client on;   # 或 optional + 下面的 if 判断
 > import 目录（面板不中转字节，几十 GB 的镜像也不会占内存或撑爆反向代理），下完自动选为
 > 镜像来源。文件名会被校正成 PVE 能解析的后缀（`.img` → `.qcow2`）。
 
-### 网络与防火墙
+### 网络与防火墙（Bridge / Bond / VLAN）
 
 节点级 Linux Bridge / Bond / VLAN 的增删改，改动先进「待应用」，点「应用配置」才生效。这样
 和 Proxmox 本身一致，避免改错网桥直接把节点网络断掉。
+
+<!-- 截图占位：docs/screenshots/firewall.png -->
+![PVE 网络与防火墙：Bridge / Bond / VLAN、安全组与 IP 集合](docs/screenshots/firewall.png)
 
 防火墙封装的是 Proxmox 原生防火墙，不是另起一套规则引擎，所以在面板里配的规则和 PVE 界面、
 `pve-firewall` 看到的是同一份数据。三个作用域（集群 / 节点 / 虚拟机容器，qemu 与 lxc 自动
@@ -368,7 +414,7 @@ PVE 预置宏、限定网卡、日志级别与排序。安全组是集群级规�
 机器网卡没开 `firewall=1` 时会明确提示规则不会生效。权限分 `firewall.view` /
 `firewall.manage`（自己名下的虚拟机）/ `firewall.cluster`（集群级与安全组，默认仅管理员）三档。
 
-### SSH 登录安全
+### SSH 登录安全与 fail2ban
 
 读的是面板所在主机的 SSH 日志，集群里其他宿主机的日志读不到，页面会写明数据来自哪台。
 日志来源按 `/var/log/secure` → `/var/log/auth.log` → `journalctl -u ssh -u sshd` 三级回退，
@@ -381,12 +427,18 @@ PVE 预置宏、限定网卡、日志级别与排序。安全组是集群级规�
 事；首次连接要确认 SSH 指纹，之后指纹变了直接拒绝。权限分 `ssh.view`（默认人人可见）与
 `ssh.manage`（封禁、改策略，默认仅管理员）。
 
+<!-- 截图占位：docs/screenshots/ssh-security.png -->
+![SSH 登录安全：失败来源聚合、fail2ban 封禁与告警](docs/screenshots/ssh-security.png)
+
 ### 安全基线与端口巡检
 
 两者共用一个架构。检测对象既可以是本机（面板所在主机，直接读系统文件），也可以是受管主机
 （复用 SSH 通道，在远端跑一条只读命令把数据取回来本地解析），本地与远端共用同一份判定逻辑，
 结论口径一致。对应的权限是 `baseline.view` / `baseline.manage` 与 `ports.view` /
 `ports.manage`，后两个默认仅管理员。
+
+<!-- 截图占位：docs/screenshots/security-baseline.png -->
+![安全基线与端口巡检：评分、加固项与可疑进程](docs/screenshots/security-baseline.png)
 
 基线检查覆盖七类：SSH 配置、口令策略、防火墙、时间同步、账号安全（空口令、UID 0）、关键内核
 参数。评分按严重级别加权（高危 3、中危 2、低危 1）给 A～D 等级，检测不到的项不计入分母，权限
@@ -419,12 +471,15 @@ PVE 预置宏、限定网卡、日志级别与排序。安全组是集群级规�
 > PVE 虚拟网卡，PCI 直通 / SR-IOV 网卡不受控制。PVE 不返回存储内容的校验和，所以备份指纹是
 > `volid|size|ctime` 的哈希，能发现删除和替换，发现不了静默位翻转。
 
-### AI 排查助手
+### AI 运维排查助手
 
 把平台已有的巡检结果（安全基线 / 端口与进程 / 登录审计 / 告警 / 变更记录 / 历史指标）交给大
 模型做归因，回答的是「先修哪一条」。它不是一次性摘要，而是一条可追问的会话：选一台受管主机 →
 先读平台数据，必要时登录主机跑只读命令 → 边查边答 → 结论落成带 `source_ref` 的报告，每条都
 指回原始检查项，能自己核对。
+
+<!-- 截图占位：docs/screenshots/ai-assistant.png -->
+![AI 运维排查助手：结合巡检数据归因，命令逐条审批](docs/screenshots/ai-assistant.png)
 
 只读是默认档。工具是有限的参数化命令模板，没有「随便执行一条命令」的万能入口，参数有正则与
 路径白名单，不用 sudo。勾选「授权 AI 在目标主机执行命令」之后，模型才能自行组合只读命令（如
@@ -446,28 +501,61 @@ CSV（一行 = 一次工具调用）。另有 Token 消耗入口，按 1 / 7 / 3
 > 核对。命令白名单与黑名单由后端代码实时生成，「能力说明」里看到的就是执行时校验的同一份规则。
 > 授权只对当次会话有效，换主机或新建会话都会重置；写命令的审批有 120 秒超时，超时即视为拒绝。
 
-### 审计、监控、备份与控制台
+### 监控与告警
 
-- 主机登录审计：`last` / `lastb` 解析出账号、终端、来源 IP、时间与状态，另有开机记录和
-  auth.log 里的 sudo、su 提权。事件按每台主机一个游标增量汇入 `audit_log`，和面板自身的操作
-  在同一张表里，后台每 5 分钟跑一次，重复汇入不会重复写。读不到 VM 内部的登录日志，但能按
-  VM 的 IP 匹配各主机的登录记录，回答「这台 VM 有没有被用来登录宿主机」。经 frp 暴露到公网的
-  主机若想记录真实来源 IP（而不是入口机地址），见 [frp 真实 IP 接入指南](docs/frp-real-ip.md)。
-- 监控大盘：VM 总数与运行分布、CPU / 内存 / 存储环形图、节点一览、最近任务、资源占用
-  Top 8；节点实时指标走 `/ws/metrics`（5 秒一推，断线自动重连并回落到 10 秒轮询）；磁盘容量
-  按节点根分区历史线性外推，给日均增长率和预计写满天数；节点与虚拟机各有 RRD 曲线。
-- 快照与备份：快照创建（可选含内存状态）、回滚、删除与跨虚拟机视图；立即备份（snapshot /
-  suspend / stop 三种模式）、浏览备份卷、恢复到指定 VMID、删除；可视化创建 PVE 定时备份任务。
-- 控制台：浏览器内 noVNC 图形控制台，支持自动重连、全屏、发送 Ctrl+Alt+Del，后端做
-  WebSocket 双向透传，PVE 的 Web 界面不用暴露到公网。
+VM 总数与运行分布、CPU / 内存 / 存储环形图、节点一览、最近任务、资源占用 Top 8；节点实时指标
+走 `/ws/metrics`（5 秒一推，断线自动重连并回落到 10 秒轮询）；磁盘容量按节点根分区历史线性
+外推，给日均增长率和预计写满天数；节点与虚拟机各有 RRD 曲线。告警规则可配阈值与持续时间，
+通知走邮件和飞书机器人，触发与恢复各发一条。
 
-### 用户、权限与配额
+<!-- 截图占位：docs/screenshots/monitoring.png -->
+![监控与告警：节点指标、容量预测与告警规则](docs/screenshots/monitoring.png)
+
+### 快照、备份与恢复
+
+快照创建（可选含内存状态）、回滚、删除与跨虚拟机视图；立即备份（snapshot / suspend / stop
+三种模式）、浏览备份卷、恢复到指定 VMID、删除；可视化创建 PVE 定时备份任务。备份卷可登记为
+受保护，面板的删除接口会拒删。
+
+<!-- 截图占位：docs/screenshots/backup.png -->
+![备份与恢复：立即备份、定时任务、备份卷与恢复](docs/screenshots/backup.png)
+
+### VNC 控制台
+
+浏览器内 noVNC 图形控制台，支持自动重连、全屏、发送 Ctrl+Alt+Del，后端做 WebSocket 双向
+透传，PVE 的 Web 界面不用暴露到公网。
+
+### 登录审计与操作审计
+
+主机登录审计：`last` / `lastb` 解析出账号、终端、来源 IP、时间与状态，另有开机记录和
+auth.log 里的 sudo、su 提权。事件按每台主机一个游标增量汇入 `audit_log`，和面板自身的操作
+在同一张表里，后台每 5 分钟跑一次，重复汇入不会重复写。读不到 VM 内部的登录日志，但能按
+VM 的 IP 匹配各主机的登录记录，回答「这台 VM 有没有被用来登录宿主机」。经 frp 暴露到公网的
+主机若想记录真实来源 IP（而不是入口机地址），见 [frp 真实 IP 接入指南](docs/frp-real-ip.md)。
+
+<!-- 截图占位：docs/screenshots/audit-log.png -->
+![登录审计与操作审计：来源 IP、动作与结果](docs/screenshots/audit-log.png)
+
+### 证书管理（ACME / 多云 / PVE 节点）
+
+对接腾讯云、阿里云、华为云免费证书、自有 ACME 账号（Let's Encrypt / ZeroSSL，支持泛域名与
+多域名）以及手动上传的托管证书。到期前自动续期，按站点部署到本机目录、SSH 远程服务器、PVE
+虚拟机（Guest Agent）、LXC 容器或 PVE 节点自身的 8006 管理证书；部署后可执行重载命令，PVE
+节点则由 PVE 自行落盘并重启 pveproxy。支持多站点绑定、证书清单、到期监控与失败退避重试。
+
+<!-- 截图占位：docs/screenshots/certificates.png -->
+![证书管理：签发渠道、站点列表与自动续期](docs/screenshots/certificates.png)
+
+### 多用户、RBAC 权限与配额
 
 | 角色 | 能做什么 |
 |---|---|
 | `admin` | 全部权限，含用户管理、连接配置、删虚拟机、集群级防火墙 |
 | `operator` | 创建 / 开关机 / 控制台 / 快照 / 备份 / 克隆 / 改配置，管自己名下机器的防火墙，看 SSH 统计；不能管用户、不能删虚拟机、不能改集群级防火墙 |
 | `viewer` | 只读 |
+
+<!-- 截图占位：docs/screenshots/users-rbac.png -->
+![多用户与 RBAC：角色、权限、配额与审批](docs/screenshots/users-rbac.png)
 
 - 自助注册 + 管理员审批：注册后账号是 `pending` 状态登不了，审批时一次把角色和权限分配好。
   邮箱必填，审批结果会发邮件（邮件是旁路，发不出去只记审计）。
@@ -701,6 +789,22 @@ Cookie），跨站页面读不到它、伪造不出来；WebSocket 握手同样�
   亮色主题与 PWA。
 
 每条的具体理由和验收标准写在 issue 里。
+
+---
+
+## 参与贡献
+
+欢迎提交 [Issue](https://github.com/yjscloud/pvecenter/issues)、Fork 和 Pull Request。提交前请先跑
+`npm run verify` 与后端 `pytest`；功能建议请附上使用场景，方便判断优先级。
+
+如果这个项目对你有帮助，点一个 Star 是最直接的支持。
+
+## 联系与反馈
+
+<img src="docs/screenshots/wechat.png" alt="微信联系方式" width="240">
+
+需要帮助、发现功能有问题、或者想提新需求，都欢迎扫码加微信找我。部分功能还没经过充分测试，
+可能无法正常使用，遇到问题直接说。
 
 ---
 

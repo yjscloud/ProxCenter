@@ -667,7 +667,6 @@ export const zhNode = {
   /* -------------------------------------------------------------- 存储 */
   'storages.title': '存储',
   'storages.subtitle': '共 {n} 个存储池 · 总容量 {size}',
-  'storages.uploadIso': '上传 ISO',
   'storages.selectFirst': '请先选择存储池',
   'storages.selectFirstDetail': '在下方表格中点击「浏览」选定目标存储',
   'storages.filterNodeAria': '按节点筛选存储',
@@ -722,7 +721,8 @@ export const zhNode = {
   'storages.uploadTarget': '目标存储：{storage}（{node}）',
   'storages.startUpload': '开始上传',
   'storages.contentType': '内容类型',
-  'storages.contentTypeHint': '决定文件存放的目录（iso 目录用于安装镜像）',
+  'storages.contentTypeHint':
+    '决定文件以哪种内容类型存进存储池：ISO 可挂成光驱，磁盘镜像可在建机时导入为系统盘',
   'storages.dropHint': '点击选择文件，或将文件拖拽到此处',
   'storages.dropFormats': '可接受：{formats}',
   'storages.pickFileAria': '选择要上传的文件',

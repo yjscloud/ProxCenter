@@ -236,7 +236,11 @@ import type {
   AlertsOverview,
   BotCommand,
   BotConfig,
+  AcmeCertConfig,
+  CertInventoryItem,
+  CertProviderInfo,
   CertSite,
+  CertTemplate,
   CertDeployLog,
   CertOptions,
   RemoteCertificate,
@@ -1935,13 +1939,21 @@ export const alertsApi = {
 };
 
 /* ---------------------------------------------------------------------------
-   网站证书（腾讯云免费证书）
+   证书管理（云厂商 + ACME + 托管证书）
    --------------------------------------------------------------------------- */
 
 export interface CertsOverview {
   tencent: TencentCertConfig;
   secret_set: boolean;
+  /** 当前用户的 ACME 配置（凭据已脱敏） */
+  acme: AcmeCertConfig;
+  /** 已登记的签发渠道（字段 schema + 当前用户配置视图） */
+  providers?: CertProviderInfo[];
+  /** 证书清单：按「厂商 + 证书 ID」聚合的绑定关系 */
+  inventory?: CertInventoryItem[];
   sites: CertSite[];
+  /** 当前用户的站点模板 */
+  templates: CertTemplate[];
   logs: CertDeployLog[];
   options: CertOptions;
   /** 当前登录用户名 */
@@ -1954,10 +1966,29 @@ export interface CertsOverview {
 
 export const certsApi = {
   get: () => get<CertsOverview>("/certs"),
+  /* ---- 签发渠道（统一抽象层：腾讯云 / 阿里云 / 华为云 … 共用同一组接口） ---- */
+  providers: () => get<{ providers: CertProviderInfo[] }>("/certs/providers"),
+  saveProvider: (kind: string, cfg: Record<string, unknown>) =>
+    put<{ provider: CertProviderInfo | null; providers: CertProviderInfo[] }>(
+      `/certs/providers/${kind}`,
+      cfg,
+    ),
+  testProvider: (kind: string) =>
+    post<{ total: number; detail: string; provider: string }>(
+      `/certs/providers/${kind}/test`,
+    ),
+  /** 列出某家厂商账号下已有的证书（绑定用） */
+  remoteCerts: (kind: string, search = "") =>
+    get<{ certificates: RemoteCertificate[]; count: number; provider: string }>(
+      `/certs/providers/${kind}/certificates`,
+      { params: { search } },
+    ),
   saveTencent: (cfg: Partial<TencentCertConfig> & { secret_key_clear?: boolean }) =>
     put<{ tencent: TencentCertConfig; secret_set: boolean }>("/certs/tencent", cfg),
   testTencent: () =>
     post<{ total: number; detail: string }>("/certs/tencent/test"),
+  saveAcme: (cfg: Partial<AcmeCertConfig>) =>
+    put<{ acme: AcmeCertConfig }>("/certs/acme", cfg),
   remoteList: (search = "") =>
     get<{ certificates: RemoteCertificate[]; count: number }>(
       "/certs/tencent/list",
@@ -1980,12 +2011,34 @@ export const certsApi = {
     ),
   sync: (id: string) =>
     post<{ site: CertSite }>(`/certs/sites/${id}/sync`),
-  bind: (id: string, certId: string) =>
+  bind: (id: string, certId: string, provider?: string) =>
     post<{ detail: string; site: CertSite }>(`/certs/sites/${id}/bind`, {
       cert_id: certId,
+      ...(provider ? { provider } : {}),
     }),
+  importCertificate: (id: string, pem: string, key: string) =>
+    post<{ cert_id: string; detail: string; site: CertSite }>(
+      `/certs/sites/${id}/certificate`,
+      { pem, key },
+    ),
+  templates: () => get<{ templates: CertTemplate[] }>("/certs/templates"),
+  saveTemplate: (body: Partial<CertTemplate> & { site_id?: string }) =>
+    post<{ template: CertTemplate }>("/certs/templates", body),
+  removeTemplate: (id: string) =>
+    del<{ removed: boolean }>(`/certs/templates/${id}`),
   syncAll: () => post<{ sites: CertSite[] }>("/certs/sync"),
   clearLogs: () => del<{ removed: number; detail: string }>("/certs/logs"),
+  /* ---- 证书清单与多站点绑定 ---- */
+  inventory: () =>
+    get<{ items: CertInventoryItem[]; count: number }>("/certs/inventory"),
+  bindInventory: (body: { provider: string; cert_id: string; site_ids: string[] }) =>
+    post<{
+      bound: number;
+      detail: string;
+      sites: { id: string; name: string }[];
+      skipped: { id: string; name: string; reason: string }[];
+      inventory: CertInventoryItem[];
+    }>("/certs/inventory/bind", body),
 };
 
 /* ---------------------------------------------------------------------------

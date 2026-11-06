@@ -35,25 +35,8 @@ FREE_PACKAGE_TYPE = "83"
 CERT_MARK = "-----BEGIN CERTIFICATE-----"
 KEY_MARK = "PRIVATE KEY"
 
-# DescribeCertificates 的证书状态码
-STATUS_TEXT = {
-    0: "审核中",
-    1: "已签发",
-    2: "审核失败",
-    3: "已过期",
-    4: "等待 DNS 验证",
-    5: "待提交资料",
-    6: "订单取消中",
-    7: "已取消",
-    8: "待上传确认函",
-    9: "吊销中",
-    10: "已吊销",
-    11: "重颁发中",
-    12: "待上传吊销确认函",
-    13: "免费证书待提交资料",
-    14: "已退款",
-    15: "证书迁移中",
-}
+# DescribeCertificates 的证书状态码（统一口径见 app/certstatus.py）
+from .certstatus import STATUS_TEXT, status_text  # noqa: E402,F401  （对外保留旧名字）
 
 # 已签发（可下载部署）
 STATUS_ISSUED = 1
@@ -305,6 +288,14 @@ class TencentSslClient:
         items = body.get("Certificates") or []
         return items[0] if items else None
 
+    async def delete_certificate(self, cert_id: str) -> None:
+        """删除（腾讯云没有"吊销"，免费 DV 只能删）一张证书。
+
+        续期成功并部署到所有目标后调用，避免旧证书一直占着配额，
+        也避免一份已经没用的私钥留在云上。
+        """
+        await self.call("DeleteCertificate", {"CertificateId": cert_id})
+
     async def download_certificate(self, cert_id: str) -> bytes:
         """下载证书，返回解压后的 ZIP 字节流。"""
         body = await self.call("DownloadCertificate", {"CertificateId": cert_id})
@@ -317,8 +308,4 @@ class TencentSslClient:
             raise TencentCloudError("证书内容不是合法的 base64") from exc
 
 
-def status_text(status: Any) -> str:
-    try:
-        return STATUS_TEXT.get(int(status), "状态 " + str(status))
-    except (TypeError, ValueError):
-        return "未知状态"
+

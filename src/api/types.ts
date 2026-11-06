@@ -3236,7 +3236,7 @@ export interface AlertNotifySource {
   description: string;
 }
 
-/* ---- 网站证书（腾讯云免费证书） ---- */
+/* ---- 证书管理（云厂商 + ACME + 托管证书） ---- */
 
 export interface TencentCertConfig {
   secret_id: string;
@@ -3249,6 +3249,53 @@ export interface TencentCertConfig {
   renew_before_days: number;
 }
 
+/** ACME 账号配置（Let's Encrypt / ZeroSSL，自建客户端签发） */
+export interface AcmeCertConfig {
+  email: string;
+  /** ACME 目录地址，如 https://acme-v02.api.letsencrypt.org/directory */
+  directory: string;
+  /** RSA / ECC */
+  encrypt_algo: string;
+  /** 账号密钥（PEM）。后端只回传空串，用 account_key_set 判断是否已生成 */
+  account_key: string;
+  account_key_set?: boolean;
+  /** dnspod / aliyun / huawei / cloudflare，空 = 未配置 */
+  dns_provider: string;
+  /** 加完 TXT 记录后等多少秒再让 CA 验证 */
+  dns_wait: number;
+  dnspod?: { secret_id?: string; secret_key?: string };
+  aliyun?: { access_key_id?: string; access_key_secret?: string };
+  huawei?: { access_key_id?: string; access_key_secret?: string };
+  cloudflare?: { api_token?: string };
+  /** 各 provider 的密文字段是否已配置（后端计算） */
+  secret_set?: Record<string, Record<string, boolean>>;
+}
+
+/** 一个部署目标：同一张证书写到多个位置时，每个位置一条 */
+export interface CertTarget {
+  id?: string;
+  name?: string;
+  method?: 'local' | 'ssh' | 'agent' | 'lxc' | 'pve';
+  deploy_dir?: string;
+  cert_filename?: string;
+  key_filename?: string;
+  reload_command?: string;
+  ssh_host?: string;
+  ssh_port?: number;
+  ssh_user?: string;
+  ssh_auth?: string;
+  ssh_password?: string;
+  ssh_key?: string;
+  ssh_host_key?: string;
+  agent_node?: string;
+  agent_vmid?: string;
+  last_error?: string;
+  last_deploy_at?: number;
+}
+
+/** 站点模板：只存部署方式与续期策略，不含域名与任何凭据 */
+export type CertTemplate = Partial<CertSite> & { id: string; name: string };
+
 export interface CertSite {
   id: string;
   name: string;
@@ -3258,8 +3305,8 @@ export interface CertSite {
   cert_id: string;
   /** 已提交申请、等待 CA 签发的证书 ID */
   pending_cert_id: string;
-  /** local = 面板本机；ssh = 远程服务器；agent = PVE 虚拟机 Guest Agent */
-  deploy_method: 'local' | 'ssh' | 'agent';
+  /** local = 面板本机；ssh = 远程服务器；agent = PVE 虚拟机；lxc = PVE 容器；pve = PVE 节点证书 */
+  deploy_method: 'local' | 'ssh' | 'agent' | 'lxc' | 'pve';
   deploy_dir: string;
   cert_filename: string;
   key_filename: string;
@@ -3280,6 +3327,39 @@ export interface CertSite {
   auto_renew: boolean;
   /** 0 表示跟随全局设置 */
   renew_before_days: number;
+  /** 部署成功后是否删除 CA 侧的旧证书 */
+  auto_delete_old?: boolean;
+  /**
+   * 签发渠道：云厂商 kind（tencent / aliyun / huawei …，见后端 certproviders 注册表）；
+   * acme = 自建 ACME（泛域名 / 多域名）；upload = 托管证书（自行上传 PEM / 私钥）。
+   * 换厂商只改这个字段，站点其它配置与历史日志都不受影响。
+   */
+  ca?: string;
+  /** 后端下发的厂商展示名（只读） */
+  ca_label?: string;
+  /** 额外域名（SAN）：主域名在 domain，这里放其余 */
+  domains?: string[];
+  /** ACME 验证方式：dns = 自动加 TXT；http = 写 webroot 文件 */
+  acme_challenge?: 'dns' | 'http';
+  acme_webroot?: string;
+  /** 空 = 跟随账号级配置 */
+  acme_dns_provider?: string;
+  /** 后端只回传「有没有」，不回传证书与私钥本体 */
+  acme_pem_set?: boolean;
+  acme_key_set?: boolean;
+  /** 多部署目标：一张证书依次写到每个目标（第一个与上面的单目标字段等价） */
+  targets?: CertTarget[];
+  /* ---- 站点可用性监控 ---- */
+  monitor_enabled?: boolean;
+  monitor_url?: string;
+  monitor_status?: '' | 'up' | 'down';
+  monitor_checked_at?: number;
+  monitor_latency_ms?: number;
+  monitor_error?: string;
+  /** 连续续期失败次数（成功后清零） */
+  attempt_count?: number;
+  /** 下次允许重试的时间戳，0 = 不排队 */
+  next_attempt_at?: number;
   enabled: boolean;
   notes: string;
   cert_status: number;
@@ -3295,6 +3375,20 @@ export interface CertSite {
   needs_renew?: boolean;
   ssh_password_set?: boolean;
   ssh_key_set?: boolean;
+  /** 最近一次续期流水线的逐步结果（见后端 certpipeline） */
+  last_run?: CertRunStep[];
+  last_run_at?: number;
+  last_run_status?: '' | 'ok' | 'failed';
+}
+
+/** 续期流水线的一步：guard / prepare / sync / decide / warn / issue / deploy / drop / notice */
+export interface CertRunStep {
+  step: string;
+  status: 'ok' | 'skipped' | 'failed';
+  detail?: string;
+  ms?: number;
+  /** 相对本次运行开始的毫秒偏移（日志视图按它排时间轴） */
+  at?: number;
 }
 
 export interface CertDeployLog {
@@ -3322,12 +3416,98 @@ export interface RemoteCertificate {
   wildcard: boolean;
   is_dv: boolean;
   source: string;
+  /** 以下字段由统一抽象层补充（不同厂商字段名不同，这里已经抹平） */
+  domains?: string[];
+  provider?: string;
+  provider_label?: string;
 }
 
 export interface CertOptions {
   dv_auth_methods: { value: string; label: string }[];
   encrypt_algos: { value: string; label: string }[];
   deploy_methods: { value: string; label: string }[];
+  /** 签发渠道：云厂商 kind + acme + upload（由后端注册表下发） */
+  cas: { value: string; label: string }[];
+  /** 已登记的云厂商 kind，顺序与注册表一致 */
+  provider_kinds?: string[];
+  /** dns / http */
+  acme_challenges: { value: string; label: string }[];
+  acme_directories: { value: string; label: string }[];
+  dns_providers: { value: string; label: string }[];
+}
+
+/* ---- 签发渠道（统一抽象层） ---- */
+
+export interface CertProviderFieldOption {
+  value: string;
+  /** 前端词条 key：后端只描述结构，文案归前端 */
+  label_key: string;
+}
+
+export interface CertProviderField {
+  key: string;
+  label_key: string;
+  /** text（默认）/ password / select / number */
+  type?: string;
+  /** 密文字段：读接口不回显，写入时留空表示沿用旧值 */
+  secret?: boolean;
+  /** 必填（后端 schema 声明，前端只负责提示与拦截） */
+  required?: boolean;
+  /** 条件显示：``{ key, in }`` —— 例：DNS 凭据只在选到那家 DNS 时出现 */
+  show_if?: { key: string; in: string[] };
+  placeholder?: string;
+  /** 字段下方说明的词条 key；不给则按字段语义兜底 */
+  hint_key?: string;
+  min?: number;
+  max?: number;
+  options?: CertProviderFieldOption[];
+}
+
+export interface CertProviderInfo {
+  kind: string;
+  label: string;
+  label_key: string;
+  /** 一句话说明（词条 key + 中文兜底） */
+  tagline?: string;
+  tagline_key?: string;
+  /** 「去哪拿密钥」的控制台地址 */
+  help_url?: string;
+  /** 凭据是否齐全（缺凭据时页面禁用「测试连接」） */
+  configured: boolean;
+  /** 列表里用哪个字段当标识（AK ID / 邮箱） */
+  identity_key?: string;
+  /** 没有可用于自检的接口（ACME 就是这种） */
+  test_disabled?: boolean;
+  /** 签发即拿证书（不需要轮询） */
+  synchronous?: boolean;
+  fields: CertProviderField[];
+  values: Record<string, string | number>;
+  secret_set: Record<string, boolean>;
+}
+
+/** 一张证书绑了哪些站点：按「厂商 + cert_id」聚合的结果 */
+export interface CertInventorySite {
+  id: string;
+  name: string;
+  domain: string;
+  username: string;
+}
+
+export interface CertInventoryItem {
+  provider: string;
+  provider_label: string;
+  /** 证书归属者（管理员视角下可能有多人） */
+  username?: string;
+  cert_id: string;
+  domains: string[];
+  status: number;
+  status_text: string;
+  expire_at: number;
+  days_left: number | null;
+  /** 证书还在签发中（只有 pending_cert_id） */
+  pending: boolean;
+  sites: CertInventorySite[];
+  site_count: number;
 }
 
 /* ---- 飞书机器人（指令控制） ---- */

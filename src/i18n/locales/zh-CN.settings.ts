@@ -437,7 +437,7 @@ export const zhSettings = {
   'settings.postureOff': '已关闭',
   'settings.postureEnvTitle': '为什么这里不能直接改',
   'settings.postureEnvBody':
-    '这些是安全边界配置，只能改配置文件、不能在界面上即时开关：白名单填错的一瞬间就会把管理员锁在门外。源码 / 裸机部署（deploy.sh、systemd）改安装目录下的 backend/.env —— 即 <安装目录>/backend/.env（模板：backend/.env.example，本机部署就是 /data/pvecenter/backend/.env）；Docker 部署改与 docker-compose.yml 同目录的 .env（compose 用 ${变量} 读取，也可以直接改 docker-compose.yml）。改完重启生效：systemctl restart pvecenter，Docker 用 docker compose up -d。具体写法见 README「公网暴露加固」。',
+    '这些是安全边界配置，只能改配置文件、不能在界面上即时开关：白名单填错的一瞬间就会把管理员锁在门外。源码 / 裸机部署（deploy.sh、systemd）改安装目录下的 backend/.env —— 即 <安装目录>/backend/.env（模板：backend/.env.example）；Docker 部署改与 docker-compose.yml 同目录的 .env（compose 用 ${变量} 读取，也可以直接改 docker-compose.yml）。改完重启生效：systemctl restart pvecenter，Docker 用 docker compose up -d。具体写法见 README「公网暴露加固」。',
   'settings.secFaq': '常见问题',
   'settings.secFaqDesc': '官网「常见问题」区块的内容',
   'settings.secMail': '邮件通知',

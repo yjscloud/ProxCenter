@@ -126,17 +126,17 @@ curl -fsSLO https://raw.githubusercontent.com/yjscloud/pvecenter/main/docker-com
 docker compose up -d
 ```
 
-Open `http://<server-ip>:8080` and sign in as `admin` / `pvecenter@2026`. Change that password.
+Open `http://<server-ip>:8080` and sign in as `admin` / `PveCenter@2026`. Change that password.
 
 All three passwords live in `docker-compose.yml`, search for `★ 改这里`. The lines look like this:
 
 ```yaml
-ADMIN_PASSWORD: ${ADMIN_PASSWORD:-pvecenter@2026}
+ADMIN_PASSWORD: ${ADMIN_PASSWORD:-PveCenter@2026}
 ```
 
 `:-` is compose's "use this default" marker: *"if `.env` or the environment provides
 `ADMIN_PASSWORD`, use that; otherwise use what follows"*. The `-`, `$`, `{` and `}` are syntax
-only. The actual password is the `pvecenter@2026` part, so change only the segment between `:-`
+only. The actual password is the `PveCenter@2026` part, so change only the segment between `:-`
 and the closing `}`:
 
 ```yaml

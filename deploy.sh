@@ -82,6 +82,7 @@ LANG_UI="zh"
 
 resolve_lang() {
   local want="$LANG_OPT"
+  # 旧变量名保留一个版本周期：老部署的 .env / CI 里可能只设了它
   [ -n "$want" ] || want="${PVECENTER_LANG:-}"
   if [ -z "$want" ]; then
     case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in

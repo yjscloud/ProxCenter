@@ -6,7 +6,7 @@
 #      docker compose up -d
 #
 #  然后浏览器打开  http://<服务器IP>:8080
-#  账号 admin，口令 = 本文件里 ADMIN_PASSWORD 的默认值 pvecenter@2026。
+#  账号 admin，口令 = 本文件里 ADMIN_PASSWORD 的默认值 PveCenter@2026。
 #
 # ============================================================================
 #  ★ 自定义口令
@@ -16,36 +16,36 @@
 #
 #   本文件里的口令是这样写的：
 #
-#       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-pvecenter@2026}
+#       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-PveCenter@2026}
 #
 #   把它拆成几段看，就知道哪部分是口令、哪部分只是语法：
 #
 #       ${                   固定开头，不是口令的一部分
 #       ADMIN_PASSWORD       变量名：.env / 环境变量里要找的那个名字
 #       :-                   分隔符，含义是「前面那个变量没给值就用后面的」
-#       pvecenter@2026      默认值  ← **这才是当前真正的口令**
+#       PveCenter@2026      默认值  ← **这才是当前真正的口令**
 #       }                    固定结尾，不是口令的一部分
 #
 #   整句读作：
 #       「如果 .env 或环境变量里给了 ADMIN_PASSWORD，就用那里的；
-#         没给（或给了空值），才用后面的 pvecenter@2026。」
+#         没给（或给了空值），才用后面的 PveCenter@2026。」
 #
-#   ⚠ 所以口令是 `pvecenter@2026`，
+#   ⚠ 所以口令是 `PveCenter@2026`，
 #     `-`、`$`、`{`、`}` 都只是语法符号，不属于口令。
 #
 # ── 二、怎么改成自己的口令（只改 `:-` 后面、`}` 前面那一段）──────────────────
 #
 #   把「默认值」那段换掉即可，前面 `${变量名:-` 和结尾的 `}` 都不要动：
 #
-#       改之前：  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-pvecenter@2026}
+#       改之前：  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-PveCenter@2026}
 #       改之后：  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-MyPassw0rd2026}
 #
-#   也就是说：把 `pvecenter@2026` 换成 `MyPassw0rd2026`，其余原样保留。
+#   也就是说：把 `PveCenter@2026` 换成 `MyPassw0rd2026`，其余原样保留。
 #
 #   数据库那两处同理（同样只换 `:-` 后面、`}` 前面的那一段）：
 #
-#       DB_PASSWORD:         ${DB_PASSWORD:-pvecenter-Db-2026}
-#       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-pvecenter-Root-2026}
+#       DB_PASSWORD:         ${DB_PASSWORD:-PveCenter-Db-2026}
+#       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-PveCenter-Root-2026}
 #
 #   三处改完执行：  docker compose up -d
 #
@@ -100,7 +100,7 @@ services:
       #   只改 `:-` 后面、`}` 前面那一段，例如：
       #       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-你的口令}
       #   只在数据库首次初始化时生效（之后改它不会改变已有数据库的口令）。
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-pvecenter-Root-2026}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-PveCenter-Root-2026}
 
       # 数据库名与账号：一般不用改，改了下面 panel 会跟着变（同一个变量）
       MYSQL_DATABASE: ${DB_NAME:-pvecenter_panel}
@@ -111,7 +111,7 @@ services:
       #       MYSQL_PASSWORD: ${DB_PASSWORD:-你的口令}
       #   与下面 panel 的 DB_PASSWORD 是同一个变量，改这一处两边同步，
       #   不会出现「库口令和面板口令对不上」。
-      MYSQL_PASSWORD: ${DB_PASSWORD:-pvecenter-Db-2026}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-PveCenter-Db-2026}
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
@@ -123,7 +123,7 @@ services:
       start_period: 30s
 
   panel:
-    # 镜像来源可用 PVECENTER_IMAGE 覆盖（例如换成 Docker Hub 或固定版本号）
+    # 镜像来源可用 PVECENTER_IMAGE 覆盖（例如换成 Docker Hub 或固定版本号）。
     image: ${PVECENTER_IMAGE:-ghcr.io/yjscloud/pvecenter:latest}
     restart: unless-stopped
     depends_on:
@@ -140,7 +140,7 @@ services:
       #   要求：至少 12 位，且不能是 admin123 / password 这类弱口令，
       #   否则后端会拒绝启动。只在首次建号时使用；已部署过的实例请到
       #   「个人中心 → 修改密码」改。
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-pvecenter@2026}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-PveCenter@2026}
 
       # --- 密钥 -------------------------------------------------------------
       # `${SECRET_KEY:-}` 就是「没给就用空值」：留空时容器会首次启动随机生成
@@ -155,7 +155,7 @@ services:
       DB_PORT: "3306"
       DB_USER: ${DB_USER:-pvecenter}
       # 与上面 db 的 MYSQL_PASSWORD 是同一个变量，改那一处即可
-      DB_PASSWORD: ${DB_PASSWORD:-pvecenter-Db-2026}
+      DB_PASSWORD: ${DB_PASSWORD:-PveCenter-Db-2026}
       DB_NAME: ${DB_NAME:-pvecenter_panel}
 
       # --- 监听与反代 -------------------------------------------------------
@@ -224,6 +224,8 @@ services:
       retries: 3
       start_period: 20s
 
+# 卷名前缀跟随**目录名**（Compose 拿目录名当项目名）。所以升级时不要改安装目录名：
+# 目录一改名就会新建一对空卷，现象是「数据全没了」。真要改目录，先备份数据卷再恢复。
 volumes:
   db_data:
   panel_data:

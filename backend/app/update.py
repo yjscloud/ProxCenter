@@ -318,7 +318,10 @@ def service_id(name: str = "") -> str:
 
 
 def in_docker() -> bool:
-    return Path("/.dockerenv").exists() or os.environ.get("PVECENTER_IN_DOCKER") == "1"
+    return (
+        Path("/.dockerenv").exists()
+        or os.environ.get("PVECENTER_IN_DOCKER") == "1"
+    )
 
 
 def _porcelain_path(line: str) -> str:

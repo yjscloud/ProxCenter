@@ -79,6 +79,8 @@ IMPORT_DISK_FORMATS = ("qcow2", "raw", "vmdk")
 IMPORT_CPU_MODELS = ("x86-64-v2-AES", "host", "qemu64", "x86-64-v2")
 
 EXPORT_DIR_NAME = "pvecenter-export"
+#: 生成新目录、清理与列表都用这一个前缀
+EXPORT_DIR_PREFIXES = (EXPORT_DIR_NAME,)
 #: 产物目录里的身份文件。作业表只在内存里，面板一重启「这份镜像是我导的」这条
 #: 记录就没了，而几十 GB 的产物还占着磁盘 —— 靠它把产物认回来。
 META_NAME = "export.json"
@@ -1291,9 +1293,10 @@ def _scan_command(dump_dir: str) -> str:
     * 文件大小用 ``stat -c %s``：宿主机上是什么发行版说不准，别用 GNU 的
       ``find -printf``。
     """
+    globs = " ".join(f"{prefix}-*/" for prefix in EXPORT_DIR_PREFIXES)
     return (
         f"cd {_quote(dump_dir)} 2>/dev/null || exit 0; "
-        f"for d in {EXPORT_DIR_NAME}-*/; do "
+        f"for d in {globs}; do "
         '[ -d "$d" ] || continue; '
         "printf '== %s\n' \"$d\"; "
         f"cat \"${{d}}{META_NAME}\" 2>/dev/null; echo; "
@@ -1344,10 +1347,13 @@ def _parse_scan(
     out: List[Dict[str, Any]] = []
     for raw in items:
         dir_name = str(raw["raw_dir"]).rsplit("/", 1)[-1]
-        if not dir_name.startswith(f"{EXPORT_DIR_NAME}-"):
+        prefix = next(
+            (p for p in EXPORT_DIR_PREFIXES if dir_name.startswith(f"{p}-")), ""
+        )
+        if not prefix:
             continue
         meta = raw.get("meta") or {}
-        job_id = dir_name[len(EXPORT_DIR_NAME) + 1 :] or dir_name
+        job_id = dir_name[len(prefix) + 1 :] or dir_name
         out.append(
             {
                 "id": job_id,

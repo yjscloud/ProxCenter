@@ -29,6 +29,11 @@ import os
 from .config import settings
 
 PREFIX = "enc:v1:"
+
+#: KDF 的上下文标识，参与密钥派生：它一变，库里已存的 PVE Token / SMTP 口令 /
+#: TOTP 种子全部解不开，且不可回滚（密文没有可用于回退的 KDF 版本前缀）。
+#: 2026-11 随项目改名，把标识里的旧项目名换成了现在的名字：改名前落库的密文已
+#: 按预期失效，需要在「设置」页重新填写。**此后不要再改它**。
 _KDF_INFO = b"pvecenter/config-encryption/v1"
 _NONCE_LEN = 16
 _TAG_LEN = 16

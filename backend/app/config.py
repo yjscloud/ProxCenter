@@ -207,7 +207,7 @@ class Settings(BaseSettings):
 
     # --- 两步验证（TOTP）---------------------------------------------------
     # 认证器 App 里显示的名称，建议写成面板的公网域名。
-    totp_issuer: str = "Proxmox Panel"
+    totp_issuer: str = "pvecenter"
     # 强制开启两步验证的角色（逗号分隔，如 "admin"）。留空 = 全员可选。
     # 命中列表的角色在完成绑定之前，除 2FA 相关接口外一律 403。
     totp_required_roles: str = ""

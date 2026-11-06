@@ -5,6 +5,33 @@
 
 每次发布在这里按「新增 / 变更 / 修复 / 安全」分类记录。
 
+## [未发布] — 项目更名为 pvecenter
+
+品牌、npm 包名、systemd 服务名、日志目录、镜像名前缀、环境变量前缀统一从
+`pvecenter` 改为 `pvecenter`（含 README 中英、outreach 文案、CI 与 issue 模板）。
+改名时留下的旧名兼容层（旧环境变量、旧服务名清理、旧导出目录前缀）已在本版一并移除，
+代码里不再出现 `pvecenter`。
+
+### 升级须知（源码 / systemd 部署）
+
+1. 服务名变了：重跑 `deploy.sh` 会装成 `pvecenter.service`。旧 `pvecenter.service`
+   若仍 enabled，两个进程会同时抢 8080 —— 升级前先 `systemctl disable --now pvecenter`。
+2. 日志目录 `/var/log/pvecenter` → `/var/log/pvecenter`，旧日志不自动迁移。
+3. 数据库名/账号的**默认值**改成了 `pvecenter_panel` / `pvecenter`。已有部署
+   **不要**动 `backend/.env` 里的 `DB_NAME` / `DB_USER`，保持原值即可正常升级；
+   要真换名请先导库建库再切。
+4. 环境变量前缀 `PVECENTER_*` → `PVECENTER_*`，旧名不再被读取。
+5. Compose 的项目名取自目录名，卷名是它的前缀：升级时**不要重命名安装目录**，
+   否则会挂到一对空卷上，看起来像数据全丢。
+
+### 破坏性变更
+
+- `backend/app/crypto.py` 的 `_KDF_INFO` 已从 `pvecenter/config-encryption/v1` 改为
+  `pvecenter/config-encryption/v1`：改名前落库的密文（PVE Token / SMTP 口令 /
+  飞书 Webhook / TOTP 种子）**全部失效且不可回滚**，需在「设置」页重新填写。
+- 导出目录只认 `pvecenter-export-*`，旧的 `pvecenter-export-*` 不再被识别与清理。
+- `SECRET_KEY` 仍是密文根，不要覆盖。
+
 ## [v0.4.4] — 2026-11-05
 
 这一版收的是一个「模板建得出来、但永远开不了机」的坑：Ubuntu 官方云镜像的 `.img`

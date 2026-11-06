@@ -455,7 +455,7 @@ export const enSettings: Partial<Record<MessageKey, string>> = {
   'settings.postureOff': 'Off',
   'settings.postureEnvTitle': 'Why these are not editable here',
   'settings.postureEnvBody':
-    'These are security boundaries that live in a config file, with no live toggle in the UI: a wrong allowlist locks administrators out instantly. Source / bare-metal installs (deploy.sh, systemd) edit backend/.env inside the install directory — that is <install dir>/backend/.env (template: backend/.env.example; on this host: /data/pvecenter/backend/.env). Docker Compose deployments edit the .env next to docker-compose.yml (compose reads it via ${VARS}; editing docker-compose.yml directly works too). Restart to apply: systemctl restart pvecenter, or docker compose up -d. See “Public exposure hardening” in the README.',
+    'These are security boundaries that live in a config file, with no live toggle in the UI: a wrong allowlist locks administrators out instantly. Source / bare-metal installs (deploy.sh, systemd) edit backend/.env inside the install directory — that is <install dir>/backend/.env (template: backend/.env.example). Docker Compose deployments edit the .env next to docker-compose.yml (compose reads it via ${VARS}; editing docker-compose.yml directly works too). Restart to apply: systemctl restart pvecenter, or docker compose up -d. See “Public exposure hardening” in the README.',
   'settings.secFaq': 'FAQ',
   'settings.secFaqDesc': 'The “FAQ” section on the product site',
   'settings.secMail': 'Email notifications',
